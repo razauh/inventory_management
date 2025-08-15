@@ -298,6 +298,14 @@ class VendorController(BaseModule):
         include_opening: bool = True,
         show_return_origins: bool = False,
     ) -> dict:
+        """
+        Build a vendor statement over a date range.
+
+        Notes:
+        - Purchase headers already reflect CLEARED-ONLY cash rollups (paid_amount).
+        - Here, we also include ONLY payments whose clearing_state='cleared' so
+          the statement reconciles with headers/aging.
+        """
         # --- Opening balances (credit reduces payable) ---
         opening_credit = 0.0
         opening_payable = 0.0
@@ -318,8 +326,10 @@ class VendorController(BaseModule):
                 "amount_effect": float(p["total_amount"]),  # increases payable
             })
 
-        # 2) Cash/payments (already date-filtered in repo)
+        # 2) Cash/payments — CLEARED-ONLY
         for pay in self.ppay.list_payments_for_vendor(vendor_id, date_from, date_to):
+            if str(pay["clearing_state"] or "").lower() != "cleared":
+                continue  # ignore posted/pending/bounced
             amt = float(pay["amount"])
             row_type = "Cash Payment" if amt > 0 else "Refund"
             rows.append({

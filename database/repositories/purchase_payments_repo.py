@@ -30,9 +30,12 @@ class PurchasePaymentsRepo:
         Insert one row into purchase_payments.
 
         Notes:
-          - amount > 0 => payment to vendor; amount < 0 => refund from vendor
-          - DB triggers roll up purchases.paid_amount/payment_status
-          - DB triggers enforce method-specific requirements
+          - amount > 0 => payment to vendor; amount < 0 => refund from vendor.
+          - Business rule (cleared-only policy):
+              Only rows with clearing_state='cleared' contribute to purchases.paid_amount
+              and payment_status via DB triggers. Rows in 'posted', 'pending', or 'bounced'
+              states do NOT affect the header totals/status until they become 'cleared'.
+          - DB triggers enforce the above rollup and method-specific requirements.
           - No commit here; caller controls the transaction.
         """
         state = clearing_state or "posted"

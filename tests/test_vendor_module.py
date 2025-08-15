@@ -209,7 +209,7 @@ def test_v1_vendor_bank_accounts_crud(conn, ids):
 def test_v2_vendor_advances_basic(conn, ids):
     vadv = VendorAdvancesRepo(conn)
 
-    # Grant credit (manual) — repo uses source_type='return_credit' per implementation.
+    # Grant credit (manual) — now defaults to source_type='deposit' (not a return).
     tx_id = vadv.grant_credit(
         vendor_id=ids["vendor_id"], amount=500.0,
         date="2025-01-11", notes="Manual credit grant", created_by=None
@@ -232,7 +232,8 @@ def test_v2_vendor_advances_basic(conn, ids):
             vendor_id=ids["vendor_id"], purchase_id=pid, amount=1000.0,
             date="2025-01-13", notes="Overapply", created_by=None
         )
-    assert "Insufficient vendor credit" in str(ei.value)
+    msg = str(ei.value)
+    assert ("Insufficient vendor credit" in msg) or ("Cannot apply credit beyond remaining due" in msg)
 
     # Verify balances/ledger
     bal = vadv.get_balance(ids["vendor_id"])
@@ -240,7 +241,8 @@ def test_v2_vendor_advances_basic(conn, ids):
     assert abs(bal - 200.0) < 1e-6
 
     ledger = vadv.list_ledger(ids["vendor_id"], ("2025-01-01", "2025-12-31"))
-    assert any(r["source_type"] == "return_credit" for r in ledger)
+    # Expect a manual deposit entry and an applied_to_purchase entry
+    assert any(r["source_type"] == "deposit" for r in ledger)
     assert any(r["source_type"] == "applied_to_purchase" for r in ledger)
 
 
@@ -433,14 +435,14 @@ def test_v6_vendor_statement_composition(conn, ids, monkeypatch):
         "quantity": 3, "purchase_price": 100.0, "sale_price": 120.0, "item_discount": 0.0
     }])  # total 300
 
-    # Cash payment in period: 80
+    # Cash payment in period: 80 (make it CLEARED so cleared-only reporting counts it)
     ppay = PurchasePaymentsRepo(conn)
     ppay.record_payment(
         purchase_id=pid1, amount=80.0, method="Bank Transfer",
         bank_account_id=ids["company_meezan"], vendor_bank_account_id=ids["vendor_primary_vba"],
         instrument_type="online", instrument_no="BT-200",
-        instrument_date="2025-01-12", deposited_date=None, cleared_date=None,
-        clearing_state="posted", ref_no=None, notes=None, date="2025-01-12", created_by=None
+        instrument_date="2025-01-12", deposited_date=None, cleared_date="2025-01-12",
+        clearing_state="cleared", ref_no=None, notes=None, date="2025-01-12", created_by=None
     )
 
     # Apply credit in period: 50

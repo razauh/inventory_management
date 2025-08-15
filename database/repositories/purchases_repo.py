@@ -460,6 +460,8 @@ class PurchasesRepo:
                     notes=notes,
                     created_by=created_by,
                     source_id=pid,
+                    # Keep return credits explicitly labeled
+                    source_type="return_credit",
                 )
 
     # ---------- Hard delete ----------

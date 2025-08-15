@@ -38,7 +38,7 @@ class VendorAdvancesRepo:
         )
         return int(cur.lastrowid)
 
-    # ---------- Grant new credit (+amount), e.g., credit note for returns ----------
+    # ---------- Grant new credit (+amount) ----------
     def grant_credit(
         self,
         vendor_id: int,
@@ -48,25 +48,65 @@ class VendorAdvancesRepo:
         notes: Optional[str],
         created_by: Optional[int],
         source_id: Optional[str] = None,
+        # New: default to manual credit (deposit); callers may pass 'return_credit' for returns.
+        source_type: str = "deposit",
         **_ignore,
     ) -> int:
         """
-        Grant vendor credit (+amount) as source_type='return_credit'.
-        No commit; caller controls the transaction.
+        Grant vendor credit (+amount).
+
+        Default behavior (no source_type passed) records a manual credit/deposit:
+            source_type = 'deposit'
+        This represents a credit not tied to a stock return.
+
+        For credits created by a purchase return flow, pass:
+            source_type = 'return_credit'
+        (Those are typically invoked by the returns orchestration.)
+
+        Notes:
+          - This method does not commit; caller controls the transaction.
+          - 'applied_to_purchase' is handled by apply_credit_to_purchase(...).
         """
         if amount <= 0:
             raise ValueError("amount must be positive when granting credit")
+
+        allowed_types = {"deposit", "return_credit"}
+        st = (source_type or "deposit").lower()
+        if st not in allowed_types:
+            raise ValueError(f"source_type must be one of {allowed_types}, got {source_type!r}")
 
         cur = self.conn.execute(
             """
             INSERT INTO vendor_advances (
                 vendor_id, tx_date, amount, source_type, source_id, notes, created_by
             )
-            VALUES (?, ?, ?, 'return_credit', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (vendor_id, date, float(amount), source_id, notes, created_by),
+            (vendor_id, date, float(amount), st, source_id, notes, created_by),
         )
         return int(cur.lastrowid)
+
+    # Convenience wrapper for clarity at call sites
+    def grant_deposit(
+        self,
+        vendor_id: int,
+        amount: float,
+        *,
+        date: str,
+        notes: Optional[str],
+        created_by: Optional[int],
+        source_id: Optional[str] = None,
+    ) -> int:
+        """Shorthand for a manual credit/deposit (source_type='deposit')."""
+        return self.grant_credit(
+            vendor_id,
+            amount,
+            date=date,
+            notes=notes,
+            created_by=created_by,
+            source_id=source_id,
+            source_type="deposit",
+        )
 
     # ---------- Balances ----------
     def get_balance(self, vendor_id: int) -> float:
@@ -119,6 +159,7 @@ class VendorAdvancesRepo:
         Statement semantics:
           - source_type='return_credit'        → "Credit Note" (reduces payable)
           - source_type='applied_to_purchase'  → "Credit Applied" to source_id (reduces payable)
+          - source_type='deposit'              → Manual credit/deposit (reduces payable)
         """
         # Back-compat: allow date_from to be a (from, to) tuple/list if date_to not provided
         if isinstance(date_from, (tuple, list)) and len(date_from) == 2 and date_to is None:
@@ -183,6 +224,7 @@ class VendorAdvancesRepo:
     ) -> list[dict]:
         """
         All credit-note entries (source_type='return_credit') for a vendor, optional date range.
+        (Manual deposits are not included here.)
         """
         sql = [
             """

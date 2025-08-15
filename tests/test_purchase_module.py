@@ -286,10 +286,13 @@ def test_p3_cheque_payment_then_clear(conn, ids):
         created_by=ids["ops_user"],
     )
 
-    # Header shows partial
-    hdr = conn.execute("SELECT CAST(paid_amount AS REAL) AS p, payment_status FROM purchases WHERE purchase_id=?", (pid,)).fetchone()
-    assert abs(hdr["p"] - 1000.0) < 1e-6
-    assert hdr["payment_status"] == "partial"
+    # With cleared-only policy, a pending cheque does NOT reduce payable
+    hdr = conn.execute(
+        "SELECT CAST(paid_amount AS REAL) AS p, payment_status FROM purchases WHERE purchase_id=?",
+        (pid,)
+    ).fetchone()
+    assert abs(hdr["p"] - 0.0) < 1e-6
+    assert hdr["payment_status"] == "unpaid"
 
     # Clear the cheque
     affected = payr.update_clearing_state(payment_id, clearing_state="cleared", cleared_date="2025-01-10")
@@ -297,6 +300,14 @@ def test_p3_cheque_payment_then_clear(conn, ids):
     prw = conn.execute("SELECT clearing_state, cleared_date FROM purchase_payments WHERE payment_id=?", (payment_id,)).fetchone()
     assert prw["clearing_state"] == "cleared"
     assert prw["cleared_date"] == "2025-01-10"
+
+    # Now it should roll up
+    hdr2 = conn.execute(
+        "SELECT CAST(paid_amount AS REAL) AS p, payment_status FROM purchases WHERE purchase_id=?",
+        (pid,)
+    ).fetchone()
+    assert abs(hdr2["p"] - 1000.0) < 1e-6
+    assert hdr2["payment_status"] == "partial"
 
 
 # -----------------------------------------------------------------
@@ -522,12 +533,15 @@ def test_p8_non_base_uom_rejected(conn, ids):
     # Widget A 'Box' is non-base per seed (base is 'Piece')
     items = [PurchaseItem(None, pid, ids["prod_A"], 1, ids["uom_box"], 1000.0, 1200.0, 0.0)]
 
+    # Use a SAVEPOINT so we can roll back only this attempted insert
+    conn.execute("SAVEPOINT p8;")
     with pytest.raises(sqlite3.IntegrityError) as ei:
         pr.create_purchase(header, items)
     assert "Purchases must use the product base UoM" in str(ei.value)
+    # Roll back just the failed insert and keep the outer test transaction active
+    conn.execute("ROLLBACK TO SAVEPOINT p8;")
+    conn.execute("RELEASE SAVEPOINT p8;")
 
-    # Roll back the failed insert to ensure nothing persisted for this pid
-    conn.rollback()
     # Check no rows exist for this purchase id
     c_items = conn.execute("SELECT COUNT(*) AS c FROM purchase_items WHERE purchase_id=?", (pid,)).fetchone()
     c_itx   = conn.execute("SELECT COUNT(*) AS c FROM inventory_transactions WHERE reference_id=?", (pid,)).fetchone()
@@ -535,7 +549,6 @@ def test_p8_non_base_uom_rejected(conn, ids):
     assert int(c_items["c"]) == 0
     assert int(c_itx["c"]) == 0
     assert int(c_hdr["c"]) == 0
-
 
 # -------------------------------------------------------------------------
 # P9 — Edit purchase: only purchase inventory rebuilt; returns remain
@@ -617,3 +630,39 @@ def test_p10_backdated_marks_dirty(conn, ids):
     assert vrow is not None
     # earliest_impacted should be <= the back-dated date
     assert vrow["earliest_impacted"] <= "2025-01-10"
+
+
+# -------------------------------------------------------------------
+# P11 — Over-apply credit beyond remaining due must fail (new guard)
+# -------------------------------------------------------------------
+def test_p11_overapply_credit_beyond_due_fails(conn, ids):
+    pr = PurchasesRepo(conn)
+    vadv = VendorAdvancesRepo(conn)
+
+    # Create a small purchase with remaining due = 100
+    date = "2025-02-01"
+    pid = new_purchase_id(conn, date)
+    header = build_header(pid, ids["vendor_id"], date, order_discount=0.0, notes=None, created_by=ids["ops_user"])
+    items = [PurchaseItem(None, pid, ids["prod_A"], 1, ids["uom_piece"], 100.0, 120.0, 0.0)]
+    pr.create_purchase(header, items)
+
+    # Grant ample vendor credit
+    vadv.grant_credit(ids["vendor_id"], amount=500.0, date="2025-02-01", notes="bulk deposit", created_by=ids["ops_user"])
+
+    # Attempt to apply 200 credit to a purchase that only has 100 due -> should fail
+    with pytest.raises(sqlite3.IntegrityError):
+        vadv.apply_credit_to_purchase(
+            vendor_id=ids["vendor_id"],
+            purchase_id=pid,
+            amount=200.0,
+            date="2025-02-02",
+            notes="over-apply",
+            created_by=ids["ops_user"],
+        )
+
+    # Confirm no change to the purchase header’s advance_payment_applied
+    hdr = conn.execute(
+        "SELECT CAST(advance_payment_applied AS REAL) AS a FROM purchases WHERE purchase_id=?",
+        (pid,)
+    ).fetchone()
+    assert abs(hdr["a"] - 0.0) < 1e-6

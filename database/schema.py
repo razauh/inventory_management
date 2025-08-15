@@ -1101,10 +1101,28 @@ AFTER INSERT ON purchase_payments
 FOR EACH ROW
 BEGIN
   UPDATE purchases
-     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = NEW.purchase_id), 0.0)),
+     SET paid_amount = MAX(
+           0.0,
+           COALESCE((
+             SELECT SUM(CAST(amount AS REAL))
+             FROM purchase_payments
+             WHERE purchase_id = NEW.purchase_id
+               AND clearing_state = 'cleared'
+           ), 0.0)
+         ),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = NEW.purchase_id),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = NEW.purchase_id),0.0)) > 0 THEN 'partial'
+            WHEN MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = NEW.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+            WHEN MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = NEW.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0)) > 0 THEN 'partial'
             ELSE 'unpaid' END
    WHERE purchase_id = NEW.purchase_id;
 END;
@@ -1114,10 +1132,28 @@ AFTER UPDATE ON purchase_payments
 FOR EACH ROW
 BEGIN
   UPDATE purchases
-     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = NEW.purchase_id), 0.0)),
+     SET paid_amount = MAX(
+           0.0,
+           COALESCE((
+             SELECT SUM(CAST(amount AS REAL))
+             FROM purchase_payments
+             WHERE purchase_id = NEW.purchase_id
+               AND clearing_state = 'cleared'
+           ), 0.0)
+         ),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = NEW.purchase_id),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = NEW.purchase_id),0.0)) > 0 THEN 'partial'
+            WHEN MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = NEW.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+            WHEN MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = NEW.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0)) > 0 THEN 'partial'
             ELSE 'unpaid' END
    WHERE purchase_id = NEW.purchase_id;
 END;
@@ -1127,13 +1163,32 @@ AFTER DELETE ON purchase_payments
 FOR EACH ROW
 BEGIN
   UPDATE purchases
-     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = OLD.purchase_id), 0.0)),
+     SET paid_amount = MAX(
+           0.0,
+           COALESCE((
+             SELECT SUM(CAST(amount AS REAL))
+             FROM purchase_payments
+             WHERE purchase_id = OLD.purchase_id
+               AND clearing_state = 'cleared'
+           ), 0.0)
+         ),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = OLD.purchase_id),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM purchase_payments WHERE purchase_id = OLD.purchase_id),0.0)) > 0 THEN 'partial'
+            WHEN MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = OLD.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+            WHEN MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = OLD.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0)) > 0 THEN 'partial'
             ELSE 'unpaid' END
    WHERE purchase_id = OLD.purchase_id;
 END;
+
 
 /* Enforce method-specific requirements on purchase_payments */
 DROP TRIGGER IF EXISTS trg_pp_method_checks_ins;
@@ -1226,6 +1281,35 @@ BEGIN
       + CAST(NEW.amount AS REAL)  -- NEW.amount negative when applying
     ) < -1e-9
     THEN RAISE(ABORT, 'Insufficient vendor credit')
+    ELSE 1
+  END;
+END;
+
+/* New guard: do not allow applying credit beyond a purchase's remaining due */
+DROP TRIGGER IF EXISTS trg_vendor_advances_not_exceed_remaining_due;
+CREATE TRIGGER trg_vendor_advances_not_exceed_remaining_due
+BEFORE INSERT ON vendor_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_purchase' AND NEW.source_id IS NOT NULL
+BEGIN
+  /* Ensure referenced purchase exists */
+  SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM purchases p WHERE p.purchase_id = NEW.source_id)
+      THEN RAISE(ABORT, 'Invalid purchase reference for vendor credit application')
+    ELSE 1
+  END;
+
+  /* remaining_due = total_amount - paid_amount(cleared-only) - advance_payment_applied */
+  SELECT CASE
+    WHEN (
+      COALESCE((SELECT CAST(total_amount AS REAL)            FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(paid_amount AS REAL)             FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(advance_payment_applied AS REAL) FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      + CAST(NEW.amount AS REAL)  /* NEW.amount negative when applying */
+    ) < -1e-9
+    THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
     ELSE 1
   END;
 END;
