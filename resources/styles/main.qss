@@ -1,0 +1,8 @@
+QListWidget {
+    border-right: 1px solid #ddd;
+    padding: 6px;
+}
+QTableView {
+    gridline-color: #ccc;
+    selection-background-color: #cde8ff;
+}

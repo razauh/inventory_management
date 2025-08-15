@@ -1,0 +1,339 @@
+
+1) Scope & Objectives
+Record sales to customers with multi-UoM items, line and order-level discounts, inventory movement, and moving-average costing.
+
+Take payments at sale time (or later), with multiple methods and support for specific company bank accounts.
+
+Process returns (partial or full) with correct order-discount proration, inventory reversal, and money outcomes:
+
+cash back now (capped by amounts actually paid),
+
+store credit (customer advances ledger),
+
+or a mix the user chooses.
+
+Keep “Remaining” always accurate as: remaining = total_amount − paid_amount (derived, not stored).
+
+Provide a durable customer credit ledger and a payments ledger (incoming/outgoing) for reconciliation and reporting.
+
+2) Data Model (what each part stores)
+Core sales
+
+Sales header: customer, date, total_amount (after all discounts), order_discount, paid_amount, payment_status, notes, created_by, source fields.
+
+Sale items: product, quantity, UoM, unit_price, item_discount.
+
+Inventory transactions: one “sale” row per line item; one “sale_return” row per returned line and quantity.
+
+Stock valuation history: automatically maintained by your existing trigger to keep on-hand and moving-average unit cost.
+
+Discount views (read-only helpers)
+
+Sale totals view computes subtotal_before_order_discount and a calculated_total_amount (subtotal − order_discount).
+
+Payments & bank accounts (incoming and outgoing)
+
+Company bank accounts catalog: each account has label, bank name, number/IBAN, active flag.
+
+Sale payments: 1-to-many from sale; each row is a payment (+) or refund (−). Carries method and, when bankish, a bank_account_id and instrument info (online/cross-cheque/cash deposit, refs, dates, clearing state).
+
+Purchase payments (for vendors): symmetric table and triggers.
+
+Triggers keep sales.paid_amount and purchases.paid_amount in sync with the sum of their payment rows and update payment_status.
+
+Customer credit (store credit / advances)
+
+Customer advances ledger: positive amounts add credit (deposits, return credits); negative amounts consume credit (applied to sale).
+
+Balance view sums that ledger per customer.
+
+Optional trigger prevents over-applying more credit than available.
+
+Useful reporting views
+
+Stock on hand view.
+
+Sale item COGS view (using moving average at sale date).
+
+Profit & loss view (Revenue − COGS − Opex).
+
+Bank ledger view unioning incoming (sales) and outgoing (purchases) per bank account.
+
+3) Identifiers & numbering
+Sale IDs follow SOYYYYMMDD-####.
+
+When creating a new sale on a given date, query the max ID with that date prefix, increment the counter, and format as 4 digits.
+
+4) Pricing & discount math (canonical rules)
+Per line net = quantity × (unit_price − item_discount).
+
+Subtotal before order discount = sum of all per line net.
+
+Order discount is a single amount for the whole sale.
+
+Total amount (header) = subtotal before order discount − order discount (never below zero).
+
+Margin hints (UI) use cost from latest moving average in base UoM, converted to the selected UoM; show per-unit margin and total margin per line.
+
+For returns (proration rule):
+
+Compute the sale’s net_subtotal = sum of quantity × (unit_price − item_discount).
+
+Compute order_factor = total_amount / net_subtotal (if net_subtotal is zero, treat as 1 to avoid division by zero).
+
+Each return line’s refund value = qty_return × (unit_price − item_discount) × order_factor.
+
+Returned value (all lines) = sum of line refund values.
+
+This ensures order discount is fairly distributed across any subset returned.
+
+5) Inventory & costing (what happens behind the scenes)
+On save of a sale: insert one inventory “sale” transaction per item, with product, quantity and UoM, referencing the sale item.
+
+On return: insert one inventory “sale_return” transaction per returned line, with the return quantity.
+
+The moving-average trigger recalculates on-hand, unit_value, and total_value for each product, using the factor_to_base for correct conversions.
+
+The validation trigger enforces:
+
+positive quantity except for adjustments,
+
+references to the correct sale/purchase item rows,
+
+product/UoM coherence with the referenced item.
+
+Oversell: the database does not prevent negative stock. The UI must prevent oversell by checking availability (in the selected UoM) and disallowing quantities beyond available.
+
+6) Main Sales screen (UX & behavior)
+Table shows: SO (id), date, customer name, total, paid, status.
+
+Search filters by id, customer name, or status live (case insensitive).
+
+Items panel shows the items of the selected sale: item id, product, qty, unit price, per-unit discount, line total.
+
+Details panel shows:
+
+id, date, customer, total, order discount, total discount (order + sum of line discounts),
+
+returned qty & value (summed from inventory “sale_return” joined to matching sale items),
+
+net after returns (total − returned value),
+
+paid, remaining (total − paid), status.
+
+Buttons: New, Edit, Return (Delete optional).
+
+Return button uses the currently selected sale; no extra search.
+
+7) “New / Edit Sale” form (UX & behavior)
+Header strip
+Customer: searchable combo with names; show current credit balance beside it.
+
+Contact: auto-fill on existing selection; if the typed name is new and contact is provided, enable “Add Customer” to create on the fly.
+
+Date: defaults to today.
+
+Order discount: numeric; participates in totals math.
+
+Notes: free text.
+
+Items grid
+Columns: row #, product, base UoM (read-only), alt UoM (combo), available (read-only), quantity (edit), unit price (read-only), per-unit discount (edit), margin (read-only), line total (read-only), delete button.
+
+Product change:
+
+Load product’s base UoM and alternates with factors.
+
+Unit price displayed in the currently selected UoM; start with base.
+
+Availability shown in the selected UoM (on-hand base ÷ factor).
+
+Store base cost (for margin) hidden in the row for conversion to current UoM.
+
+Alt UoM change:
+
+Recompute the display unit price (base price × factor).
+
+Recompute availability display (base quantity ÷ factor).
+
+Per-row recalculation:
+
+Oversell indicator: quantity cell goes red if quantity > availability.
+
+Margin indicator: margin cell goes red if per-unit margin < 0.
+
+Line total updated live.
+
+Totals strip
+Display raw subtotal (sum qty × unit_price), line discount total (sum qty × per-unit discount), order discount, total discount (line + order), final total (max(0, subtotal − total_discount)).
+
+Payments strip (at time of sale)
+Initial payment amount and method.
+
+If method is bankish (transfer/card/cheque/cash deposit), show bank account dropdown (from company bank accounts) and instrument details (UTR/cheque no/slip no, dates, clearing state).
+
+Show Customer credit balance and option to auto-apply (up to available credit and up to the remaining after the initial payment). Let the user override the auto-applied amount if needed.
+
+Validation rules on accept
+Customer selected or created.
+
+At least one valid item with: product selected, quantity > 0, unit price > 0, discount ≥ 0, quantity ≤ availability in the currently selected UoM.
+
+Totals must recompute cleanly.
+
+If bankish method: a bank account must be chosen; require instrument no/date as per your policy.
+
+What gets written (transactionally)
+Insert/Update the sale header with total amounts and order discount.
+
+Replace line items (on edit) then insert inventory “sale” rows (one per item) pointing to each sale item.
+
+Do not directly update paid_amount from the UI. Instead:
+
+Insert a sale payment row if initial payment > 0 (with method, date, bank account, instrument info).
+
+If “apply customer credit” > 0, insert an advances ledger row (negative amount) and reflect the applied amount in the sale header’s advance_payment_applied field for visibility.
+
+The sale payments triggers will roll up paid_amount and payment_status automatically.
+
+8) Returns dialog (UX & behavior)
+Entry point
+From the main Sales screen, select an SO and click Return. The dialog opens pre-loaded for that sale (no extra search).
+
+Header
+Show read-only: SO id, date, customer, sale total after order discount, paid amount, current credit balance.
+
+If paid amount is zero, the “Refund now?” toggle starts disabled and unchecked.
+
+Items table (pre-populated)
+Columns: item id, product, qty sold, per-unit net (unit price − item discount), qty return (editable), line refund (read-only).
+
+If “Return whole order” is toggled, auto-fill qty return = qty sold; else leave zero and let user enter per line.
+
+Prevent qty return > qty sold (cell goes red and the line refund stays zero).
+
+Order-discount proration
+Compute net_subtotal = sum of qty_sold × per-unit net.
+
+Compute order_factor = sale total after order discount ÷ net_subtotal (fallback to 1 if net_subtotal is zero).
+
+Per line refund = qty_return × per-unit net × order_factor.
+
+Returned value (grand total) = sum of per line refund.
+
+Money options
+Refund now? toggle controls a numeric entry “Cash refund now”.
+
+The allowed range for Cash refund now is: 0 to min(returned value, paid amount).
+
+Show a read-only “Store credit” figure = returned value − cash refund now.
+
+If Refund now is off (or disabled), Cash refund now = 0 and the entire returned value becomes store credit.
+
+What gets written (transactionally)
+Insert inventory “sale_return” rows, one per returned line, with the return date and references to sale items.
+
+Money outcomes:
+
+If cash refund now > 0: insert a negative sale payment row with method and (if bankish) bank account and instrument info. The triggers will reduce sales.paid_amount and recompute payment_status.
+
+If store credit > 0: insert a customer advances ledger row (positive amount) referencing the sale.
+
+Optional annotations in the sale’s notes:
+
+“[Full return]” if all sold quantities were fully returned.
+
+“[Credit memo X]” or a cleaner message since the real value is now in the ledger.
+
+9) Status, remaining, and subsequent actions
+Paid amount is derived from sale payments (sum of amounts).
+
+Remaining = total_amount − paid_amount (derived in UI).
+
+Payment status is recalculated by trigger on any payment insert/update/delete:
+
+paid if paid_amount ≥ total_amount,
+
+partial if 0 < paid_amount < total_amount,
+
+unpaid if paid_amount = 0.
+
+Customer credits:
+
+The advances balance increases with return credits and decreases when applied to sales.
+
+On future sales, optionally auto-apply available credit and show that to the user.
+
+10) Bank accounts, instruments, and reconciliation
+Maintain the company bank accounts list (label, bank name, number/IBAN, active flag).
+
+On payment creation (sales or purchases), when the method is bankish, require choosing a bank account and instrument metadata:
+
+instrument type (online, cross cheque, cash deposit, pay order, other),
+
+instrument number, instrument date, deposited date, clearing state (posted/pending/cleared/bounced), and optional freeform reference.
+
+Reconciliation/reporting:
+
+Use the bank ledger view to see money in and out per account and date range.
+
+Pivot/filter by instrument type and clearing state to manage cheque pipelines and deposits.
+
+11) Edge cases to handle (rules)
+Oversell: block saving when any row quantity exceeds availability in the selected UoM.
+
+Zero or negative totals: clamp at zero after discounts; show warnings if an order discount makes the total zero.
+
+Returns exceeding sold: forbid; show row-level validation.
+
+Refund now when nothing paid: disable the toggle and set Cash refund now to 0.
+
+Partial paid & partial return: allow the user to choose any Cash refund now up to min(returned value, total paid to date); the rest goes to store credit.
+
+Multiple returns: totals and caps are always computed based on current paid_amount (from payments ledger) and cumulative returned quantities (from inventory).
+
+Backdated transactions: respect the date the user selects for the return; moving-average valuation uses the date to pick prior unit cost when computing COGS for reporting (already covered by your views).
+
+12) Performance & integrity
+Wrap each save (create/edit/return) in a single database transaction.
+
+Keep PRAGMA foreign_keys = ON and WAL journaling as you have it.
+
+Lean on the existing triggers for inventory reference validation and stock valuation—do not hand-compute the costing.
+
+13) Reporting & analytics
+Profit & Loss (you already have): revenue by sales.total_amount; COGS from sale_item_cogs; operating from expenses.
+
+Net after returns for UI: compute as total_amount − returned_value; for formal reporting, either add a view that nets returns per period or create a “sales_net_of_returns” view if you want to treat returns as negative revenue.
+
+Aging / receivables: remaining = total − paid_amount; summarize by customer and by period.
+
+Bank reconciliation: use the bank ledger view; reconcile by account and by clearing state.
+
+Credits outstanding: use the customer advances balance view per customer.
+
+14) QA checklist (what to test)
+New sale with: only line discounts; only order discount; both; totals correct; remaining correct; status correct.
+
+UoM: base and alternates; price and availability conversion; oversell block.
+
+Payments: cash, bank transfer, cheque, card, cash deposit; instrument metadata recorded; bank account properly linked; paid_amount auto-updates.
+
+Returns:
+
+Whole order with zero paid → all store credit; cash toggle disabled.
+
+Whole order with partial paid → cash capped at paid; remainder to credit.
+
+Partial return with partial paid → choose any cash now up to min(returned value, paid); remainder to credit.
+
+Multiple returns on same sale → cumulative behavior remains correct.
+
+Customer credit: return creates credit; new sale auto-applies up to available; manual override; ledger doesn’t overdraft.
+
+Edit sale: lines replaced; inventory rebuilt; totals and payments unaffected unless changed deliberately.
+
+Delete sale: cascade removes items, inventory, and payments; credits/returns must be considered (normally you disallow deleting a sale with returns/payments—define policy).
+
+Bank reconciliation: filters by account and instrument type; pending/cleared states behave as expected.
+

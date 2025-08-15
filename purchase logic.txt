@@ -1,0 +1,329 @@
+1) Scope & Objectives
+Record purchases from vendors with correct UoM handling and discounts.
+
+Post inventory in on purchase; out on purchase return; let the moving-average trigger maintain unit costs and on-hand.
+
+Capture vendor payments (partial or full) over time with bank account attribution and instrument details (online, cross-cheque, cash deposit, etc.).
+
+Support vendor advances/credits (prepayments and supplier-issued credits), and application of those to new purchases.
+
+Keep purchase status and remaining derived from data (not hand-maintained), and summarize returns and net effect.
+
+2) Data Model (what lives where)
+Core purchases
+
+Header: purchase_id, vendor_id, date, total_amount (after discounts), order_discount, paid_amount, payment_status, advance_payment_applied, notes, created_by.
+
+Items: product_id, quantity, uom_id, purchase_price, item_discount, and (optionally) a default sale price field captured at purchase time for downstream pricing.
+
+Inventory:
+
+On purchase: one inventory_transactions row per item with transaction_type='purchase'.
+
+On purchase_return: one row per returned line with transaction_type='purchase_return'.
+
+Valuation: your existing trigger updates stock_valuation_history (on-hand, unit_value moving average, total_value).
+
+Discount/totals helper views
+
+Maintain a view like purchase_detailed_totals to compute:
+
+subtotal_before_order_discount = Σ qty × purchase_price − item_discount (per line)
+
+calculated_total_amount = subtotal − order_discount
+
+Vendor payments & bank accounts
+
+Company bank accounts catalog (shared with sales): label, bank name, account/IBAN, active flag.
+
+Purchase payments table (1-to-many from purchase) with:
+
+amount (+ = money paid to vendor, − = refund received),
+
+method (Cash / Bank Transfer / Card / Cheque / Cash Deposit / Other),
+
+bank_account_id (when bankish),
+
+instrument metadata (type, ref/cheque/UTR, dates, clearing state).
+
+Triggers roll up payments into purchases.paid_amount and recompute payment_status (paid / partial / unpaid).
+
+Vendor advances/credits
+
+A vendor advances ledger (mirrors the customer advances):
+
+Positive = you paid in advance / vendor owes you goods or refund.
+
+Negative = you apply part of that advance to a purchase (consume credit).
+
+A balance view that sums this ledger per vendor.
+
+Optional: a constraint/trigger preventing over-application beyond available balance.
+
+Reconciliation views
+
+Bank ledger view: union of incoming/outgoing payments per company bank account (sales in vs purchases out), with instrument details for reconciliation.
+
+3) Document numbering
+Purchases use POYYYYMMDD-####.
+
+On creation: derive prefix from date, query the max with that prefix, increment to 4 digits.
+
+4) Pricing & Discount Rules
+Line net (cost side) = qty × (purchase_price − item_discount).
+
+Subtotal before order discount = Σ line net.
+
+Order discount = one amount across the entire purchase.
+
+Total amount (header) = max(0, subtotal − order_discount).
+
+Optional pricing capture: allow entering a suggested sale price alongside purchase price per UoM (useful for downstream retail pricing; this is already represented in your items table).
+
+5) Inventory & Costing Behavior
+Purchase save → insert one inventory “purchase” transaction per item (respect item’s UoM; conversion to base handled by trigger using factors).
+
+Purchase return → insert inventory “purchase_return” transactions; this will decrease on-hand.
+
+Moving-average:
+
+Purchases recompute average cost using the purchase price (converted to base).
+
+Purchase returns and sales do not change the current average cost; they adjust quantity and total value accordingly.
+
+Negative stock is not blocked by DB; the UI should prevent purchase returns that would push on-hand below zero (or warn and require override, per your policy).
+
+6) Main Purchases Screen (UX)
+Grid columns: PO (id), date, vendor name, total, paid, status.
+
+Search filters by id, vendor, status (case-insensitive).
+
+Items panel (for selected PO): item id, product, qty, UoM, purchase price, item discount, line net.
+
+Details panel shows:
+
+id, date, vendor,
+
+total, order discount, total discount (sum of line discounts + order),
+
+returned qty/returned value summary,
+
+net after returns = total − returned value,
+
+paid, remaining (= total − paid), status.
+
+Actions: New, Edit, Return (Delete optional).
+
+7) “New / Edit Purchase” Form (UX & flow)
+Header
+Vendor: searchable combo (add-on-the-fly with contact). Show vendor’s advance balance beside it.
+
+Date: defaults to today.
+
+Order discount: numeric.
+
+Notes: free text.
+
+Items grid
+Columns: row #, product, Base UoM (read-only), Alt UoM (combo), Qty, Purchase Price (per selected UoM), Item Discount, Line Net, optional Suggested Sale Price (per UoM), delete.
+
+Product change:
+
+Fill base UoM + alternates from product_uoms.
+
+Default prices in base UoM; convert to selected UoM on the fly (× factor).
+
+Alt UoM change:
+
+Convert purchase/sale prices and display qty in selected UoM.
+
+Row recalculation:
+
+Compute line net live.
+
+(Optional) show a “markup hint” comparing suggested sale price vs cost to guide pricing.
+
+Totals strip
+Show subtotal (raw), line discount total, order discount, total discount, final total.
+
+Payments/advances at creation
+Initial payment amount + method (Cash/Bank/etc.).
+
+If method is bankish, require bank account + instrument metadata (UTR/cheque/slip; instrument/deposited/cleared dates; clearing state).
+
+Apply vendor advance? (checkbox + numeric):
+
+Default to min(advance balance, remaining after initial payment).
+
+User can lower/raise within available balance and within the remaining amount.
+
+Validation on accept
+Vendor present (existing or newly created).
+
+At least one valid item: product selected, qty > 0, purchase price ≥ 0, item discount ≥ 0.
+
+Totals computed cleanly.
+
+If bankish, bank account and instrument details captured per policy.
+
+What persists (single transaction)
+Insert/update purchase header (with total_amount, order_discount, advance_payment_applied for visibility).
+
+Replace items on edit; insert inventory “purchase” rows per item.
+
+Do not directly change purchases.paid_amount. Instead:
+
+If initial payment > 0 → insert one purchase payment row (positive amount) with method/account/instrument.
+
+If applying vendor advance → insert one row in vendor advances ledger (negative amount to consume credit). Keep advance_payment_applied in header in sync for UI display.
+
+Payment triggers auto-recompute paid_amount & payment_status.
+
+8) Purchase Returns (UX & flow)
+Entry
+From the main screen, select the PO, click Return. No extra searching.
+
+Header (read-only)
+PO id, date, vendor, sale total after OD (here: purchase total after OD), paid amount, vendor advance balance.
+
+Items table
+Columns: item id, product, qty received (sold to you), per-unit net (= purchase_price − item_discount), qty return (edit), line refund value (read-only).
+
+Return whole order toggle sets qty return = qty received for all rows; user can tweak.
+
+Order-discount proration (returns)
+Compute net_subtotal = Σ qty_received × per-unit net.
+
+Compute order_factor = total_after_order_discount ÷ net_subtotal (fallback to 1 if zero).
+
+Each line’s refund value = qty_return × per-unit net × order_factor.
+
+Returned value = sum of line refund values.
+
+Money outcomes (purchase returns)
+Calculate remaining payable = total − paid_amount (derived).
+
+Returned value reduces what you owe first.
+
+If you have already paid more than the net owed after the return:
+
+You may get cash back from vendor now: let the operator enter “Refund from vendor now” (capped by min(returned value, paid_amount)).
+
+Any remainder becomes vendor credit (increase vendor advances ledger).
+
+If no cash refund now is chosen:
+
+Entire returned value posts to vendor credit (ledger), reducing future payments.
+
+Persist (single transaction)
+Insert inventory “purchase_return” rows per returned line.
+
+If cash refund now > 0 → insert a negative purchase payment row (method, bank account, instrument).
+
+If credit > 0 → insert vendor advances ledger row (positive amount).
+
+Optional note on the purchase (e.g., “[Full return]”) if 100% of quantities were returned.
+
+9) Status, remaining & follow-ups
+paid_amount: derived from purchase_payments sum via trigger.
+
+remaining: total − paid (shown in UI; don’t store).
+
+payment_status: trigger sets to paid / partial / unpaid based on paid_amount vs total_amount.
+
+Advances:
+
+Vendor advances balance rises with credits/refunds, falls when applied to new purchases.
+
+Show balances in vendor pickers and payment dialogs.
+
+10) Bank accounts, instruments & reconciliation
+Maintain company bank accounts once; reuse in both sales and purchases.
+
+For bankish purchase payments:
+
+Require account selection and instrument fields:
+
+instrument_type: online / cross_cheque / cash_deposit / pay_order / other
+
+instrument_no, instrument_date, deposited_date, cleared_date, clearing_state (posted/pending/cleared/bounced)
+
+Use these to manage cheque pipelines & deposit clearing.
+
+Reconcile via bank ledger view (filter by account, date range, instrument type/state).
+
+11) Edge Cases & Rules
+UoM integrity: factor_to_base rules enforced by triggers; only one base UoM per product (already in schema).
+
+Negative values: clamp total at zero; show warnings if order discount wipes subtotal.
+
+Return limits: forbid qty_return > qty_received per line; do not let returns push stock below zero without an explicit override workflow (your policy).
+
+Multiple returns: cumulative effect should always be correct (inventory and finances).
+
+Backdated posting: return/purchase date should be the business date the operator chooses; moving-average trigger will respect date ordering.
+
+12) Reporting & Analytics
+AP Aging: group purchases by remaining (total − paid); summarize per vendor and by aging buckets.
+
+Purchase Returns: report returned value by period, vendor, and product; optionally net against purchases for a “net purchases” metric.
+
+Cost trend: use stock_valuation_history to chart moving average per product over time.
+
+Bank reconciliation: run by account with instrument filters (pending/cleared cheques, deposits).
+
+Vendor advances: list balances per vendor from the advances ledger view.
+
+13) QA Checklist
+New purchase with: only line discounts; only order discount; both; totals correct.
+
+UoM conversions: base and alternates; prices & quantities convert; totals correct.
+
+Inventory: on save, on-hand increases; moving average recalculates; view reflects.
+
+Payments: cash, transfer, cheque, card, deposit; instrument metadata saved; bank account linked; triggers update paid_amount & status.
+
+Advances: vendor advance increases with manual prepayment; apply part to a purchase; remaining balance updated.
+
+Returns:
+
+Whole order, no prior payments → full vendor credit; no payment row.
+
+Whole order, with prior payments → allow immediate refund up to paid; rest to vendor credit.
+
+Partial return, partial paid → allow any cash refund now up to min(returned value, paid); remainder to vendor credit.
+
+Multiple returns on one PO → cumulative behavior remains correct.
+
+Overshoot protection: forbid returning more than received; warn on potential negative stock.
+
+Edit purchase: lines replaced; inventory rebuilt; payments remain unaffected unless explicitly changed.
+
+Delete purchase: ensure policy (usually disallow if payments/returns exist).
+
+Reconciliation: bank ledger shows correct totals per account; pending/cleared flows work.
+
+14) Operator Guidance
+Use bank accounts consistently whenever method is not cash; include instrument details for traceability.
+
+Treat vendor advances as the canonical place for credits and prepayments; use them instead of ad-hoc notes.
+
+Investigate large order discounts (they can mask pricing slips); use item discounts for negotiated line-level deals.
+
+15) Implementation Notes (what the team actually builds)
+Screens: Purchases List, Purchase Form (New/Edit), Purchase Return dialog.
+
+Repositories/Services (behind UI):
+
+Purchase repository: list/search, header CRUD, items CRUD, insert inventory transactions.
+
+Payments repository: create purchase payment (+/−), query per purchase, query per bank account.
+
+Advances repository (vendor): add/consume, get balance per vendor.
+
+Transactions: wrap each Save/Return in a single DB transaction.
+
+Do not manually compute costing; rely on the moving-average trigger and valuation views.
+
+Do not write paid_amount directly; write payment rows and let triggers roll up.
+
