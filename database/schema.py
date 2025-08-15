@@ -322,7 +322,7 @@ CREATE TABLE IF NOT EXISTS purchase_payments (
   payment_id      INTEGER PRIMARY KEY AUTOINCREMENT,
   purchase_id     TEXT    NOT NULL,
   date            DATE    NOT NULL DEFAULT CURRENT_DATE,
-  amount          NUMERIC NOT NULL,   -- +ve = payment to vendor, -ve = refund from vendor
+  amount          NUMERIC NOT NULL,  -- +ve = payment to vendor, -ve = refund from vendor
   method          TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cash Deposit','Other')),
   bank_account_id INTEGER,
   vendor_bank_account_id INTEGER,
@@ -711,7 +711,11 @@ BEGIN
               ), 1.0))
               *
               COALESCE((
-                SELECT CAST(pi.purchase_price AS REAL) /
+                SELECT (
+                         CAST(pi.purchase_price AS REAL)
+                         - COALESCE(CAST(pi.item_discount AS REAL), 0.0)
+                       )
+                       /
                        COALESCE((
                          SELECT CAST(pu.factor_to_base AS REAL)
                          FROM product_uoms pu
@@ -745,7 +749,11 @@ BEGIN
           )
           ELSE
             COALESCE((
-              SELECT CAST(pi.purchase_price AS REAL) /
+              SELECT (
+                       CAST(pi.purchase_price AS REAL)
+                       - COALESCE(CAST(pi.item_discount AS REAL), 0.0)
+                     )
+                     /
                      COALESCE((
                        SELECT CAST(pu.factor_to_base AS REAL)
                        FROM product_uoms pu
@@ -834,7 +842,11 @@ BEGIN
                         ), 1.0))
                         *
                         COALESCE((
-                          SELECT CAST(pi.purchase_price AS REAL) /
+                          SELECT (
+                                   CAST(pi.purchase_price AS REAL)
+                                   - COALESCE(CAST(pi.item_discount AS REAL), 0.0)
+                                 )
+                                 /
                                  COALESCE((
                                    SELECT CAST(pu.factor_to_base AS REAL)
                                    FROM product_uoms pu
@@ -998,7 +1010,7 @@ END;
 
 DROP TRIGGER IF EXISTS trg_mark_dirty_on_purchase_item_price_change;
 CREATE TRIGGER trg_mark_dirty_on_purchase_item_price_change
-AFTER UPDATE OF purchase_price, uom_id ON purchase_items
+AFTER UPDATE OF purchase_price, item_discount, uom_id ON purchase_items
 FOR EACH ROW
 BEGIN
   INSERT INTO valuation_dirty (product_id, earliest_impacted, reason, updated_at)
