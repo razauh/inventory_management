@@ -27,60 +27,55 @@ class PurchasePaymentsRepo:
         created_by: Optional[int],
     ) -> int:
         """
-        §1B — Insert one row into purchase_payments.
+        Insert one row into purchase_payments.
 
-        Behavior:
-          - amount > 0  => payment to vendor
-            amount < 0  => refund from vendor
-          - DB triggers roll up purchases.paid_amount/payment_status and feed bank ledger views.
-          - DB triggers enforce method-specific requirements.
-          - clearing_state defaults to 'posted' when not provided.
-
-        Returns the inserted payment_id.
+        Notes:
+          - amount > 0 => payment to vendor; amount < 0 => refund from vendor
+          - DB triggers roll up purchases.paid_amount/payment_status
+          - DB triggers enforce method-specific requirements
+          - No commit here; caller controls the transaction.
         """
         state = clearing_state or "posted"
-
-        with self.conn:
-            cur = self.conn.execute(
-                """
-                INSERT INTO purchase_payments (
-                    purchase_id,
-                    date,
-                    amount,
-                    method,
-                    bank_account_id,
-                    vendor_bank_account_id,
-                    instrument_type,
-                    instrument_no,
-                    instrument_date,
-                    deposited_date,
-                    cleared_date,
-                    clearing_state,
-                    ref_no,
-                    notes,
-                    created_by
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    purchase_id,
-                    date,
-                    amount,
-                    method,
-                    bank_account_id,
-                    vendor_bank_account_id,
-                    instrument_type,
-                    instrument_no,
-                    instrument_date,
-                    deposited_date,
-                    cleared_date,
-                    state,
-                    ref_no,
-                    notes,
-                    created_by,
-                ),
+        cur = self.conn.execute(
+            """
+            INSERT INTO purchase_payments (
+                purchase_id,
+                date,
+                amount,
+                method,
+                bank_account_id,
+                vendor_bank_account_id,
+                instrument_type,
+                instrument_no,
+                instrument_date,
+                deposited_date,
+                cleared_date,
+                clearing_state,
+                ref_no,
+                notes,
+                created_by
             )
-            return int(cur.lastrowid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                purchase_id,
+                date,
+                amount,
+                method,
+                bank_account_id,
+                vendor_bank_account_id,
+                instrument_type,
+                instrument_no,
+                instrument_date,
+                deposited_date,
+                cleared_date,
+                state,
+                ref_no,
+                notes,
+                created_by,
+            ),
+        )
+        return int(cur.lastrowid)
 
     def update_clearing_state(
         self,
@@ -91,15 +86,7 @@ class PurchasePaymentsRepo:
         notes: Optional[str] = None,
     ) -> int:
         """
-        Update clearing status for a payment.
-
-        Notes:
-          - Valid clearing_state values per schema: 'posted', 'pending', 'cleared', 'bounced'
-          - No header roll-ups are affected; this is for reconciliation only.
-          - If cleared_date or notes are None, the existing values are left unchanged.
-
-        Returns:
-          Number of rows updated (0 or 1).
+        Update clearing status for a payment (no commit).
         """
         sets = ["clearing_state = ?"]
         params: list[object] = [clearing_state]
@@ -115,10 +102,8 @@ class PurchasePaymentsRepo:
         params.append(payment_id)
 
         sql = f"UPDATE purchase_payments SET {', '.join(sets)} WHERE payment_id = ?"
-
-        with self.conn:
-            cur = self.conn.execute(sql, params)
-            return cur.rowcount
+        cur = self.conn.execute(sql, params)
+        return cur.rowcount
 
     def list_payments(self, purchase_id: str) -> list[dict]:
         """

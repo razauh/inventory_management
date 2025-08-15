@@ -19,30 +19,24 @@ class VendorAdvancesRepo:
         created_by: Optional[int],
     ) -> int:
         """
-        Apply existing vendor credit to a specific purchase.
-
-        Semantics:
-          - Positive `amount` means "apply this much credit".
-          - Stored as NEGATIVE in vendor_advances (credit consumed).
-          - source_type='applied_to_purchase', source_id=purchase_id
-          - Trigger prevents overdrawing credit and rolls up purchases.advance_payment_applied.
+        Apply existing vendor credit to a purchase: stored as NEGATIVE amount
+        with source_type='applied_to_purchase'. Triggers enforce no overdraw and
+        roll up purchases.advance_payment_applied. No commit here.
         """
         if amount <= 0:
             raise ValueError("amount must be positive when applying credit")
 
-        applied = -abs(float(amount))  # store as negative (credit consumed)
-
-        with self.conn:
-            cur = self.conn.execute(
-                """
-                INSERT INTO vendor_advances (
-                    vendor_id, tx_date, amount, source_type, source_id, notes, created_by
-                )
-                VALUES (?, ?, ?, 'applied_to_purchase', ?, ?, ?)
-                """,
-                (vendor_id, date, applied, purchase_id, notes, created_by),
+        applied = -abs(float(amount))
+        cur = self.conn.execute(
+            """
+            INSERT INTO vendor_advances (
+                vendor_id, tx_date, amount, source_type, source_id, notes, created_by
             )
-            return int(cur.lastrowid)
+            VALUES (?, ?, ?, 'applied_to_purchase', ?, ?, ?)
+            """,
+            (vendor_id, date, applied, purchase_id, notes, created_by),
+        )
+        return int(cur.lastrowid)
 
     # ---------- Grant new credit (+amount), e.g., credit note for returns ----------
     def grant_credit(
@@ -53,32 +47,26 @@ class VendorAdvancesRepo:
         date: str,
         notes: Optional[str],
         created_by: Optional[int],
-        # optional linkage to a source purchase_id
         source_id: Optional[str] = None,
-        # ignore legacy callers that may pass source_type
         **_ignore,
     ) -> int:
         """
-        Grant vendor credit (+amount). Typically used for credit notes from returns.
-
-        Writes a POSITIVE amount into vendor_advances with:
-          - source_type='return_credit'
-          - source_id = linked purchase_id if provided, else NULL
+        Grant vendor credit (+amount) as source_type='return_credit'.
+        No commit; caller controls the transaction.
         """
         if amount <= 0:
             raise ValueError("amount must be positive when granting credit")
 
-        with self.conn:
-            cur = self.conn.execute(
-                """
-                INSERT INTO vendor_advances (
-                    vendor_id, tx_date, amount, source_type, source_id, notes, created_by
-                )
-                VALUES (?, ?, ?, 'return_credit', ?, ?, ?)
-                """,
-                (vendor_id, date, float(amount), source_id, notes, created_by),
+        cur = self.conn.execute(
+            """
+            INSERT INTO vendor_advances (
+                vendor_id, tx_date, amount, source_type, source_id, notes, created_by
             )
-            return int(cur.lastrowid)
+            VALUES (?, ?, ?, 'return_credit', ?, ?, ?)
+            """,
+            (vendor_id, date, float(amount), source_id, notes, created_by),
+        )
+        return int(cur.lastrowid)
 
     # ---------- Balances ----------
     def get_balance(self, vendor_id: int) -> float:

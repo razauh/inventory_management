@@ -1,0 +1,6 @@
+tests/test_vendor_module.py::test_v6_vendor_statement_composition
+  /home/pc/Desktop/inventory_management/modules/vendor/controller.py:51: RuntimeWarning: Failed to disconnect (<bound method VendorController._update_details of <inventory_management.modules.vendor.controller.VendorController object at 0x7ed856ce1b50>>) from signal "selectionChanged(QItemSelection,QItemSelection)".
+    sel.selectionChanged.disconnect(self._update_details)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+6 passed, 1 warning in 0.53s

@@ -22,6 +22,7 @@ class VendorController(BaseModule):
         self.repo = VendorsRepo(conn)
         self.vadv = VendorAdvancesRepo(conn)
         self.vbank = VendorBankAccountsRepo(conn)  # <-- bank accounts repo
+        self.ppay = PurchasePaymentsRepo(conn)     # payments repo for statement flow
         self.view = VendorView()
         self._wire()
         self._reload()
@@ -304,93 +305,77 @@ class VendorController(BaseModule):
             opening_credit = float(self.vadv.get_opening_balance(vendor_id, date_from))
             opening_payable -= opening_credit  # credit reduces what we owe
 
-        # --- Fetch period rows ---
-        # Purchases
-        prep = PurchasesRepo(self.conn)
-        purchases = prep.list_purchases_by_vendor(vendor_id, date_from, date_to)
-
-        # Payments / Refunds
-        ppay_repo = PurchasePaymentsRepo(self.conn)
-        payments = ppay_repo.list_payments_for_vendor(vendor_id, date_from, date_to)
-
-        # Credit ledger
-        advances = self.vadv.list_ledger(vendor_id, date_from, date_to)
-
-        # --- Normalize rows ---
         rows: list[dict] = []
 
-        # Purchases → +total_amount
-        for p in purchases:
-            amt = float(p["total_amount"])
+        # 1) Purchases (header rows only, date-filtered)
+        prep = PurchasesRepo(self.conn)
+        for p in prep.list_purchases_by_vendor(vendor_id, date_from, date_to):
             rows.append({
                 "date": p["date"],
                 "type": "Purchase",
                 "doc_id": p["purchase_id"],
                 "reference": {},
-                "amount_effect": +amt,
-                # balance_after filled later
+                "amount_effect": float(p["total_amount"]),  # increases payable
             })
 
-        # Payments/Refunds
-        for r in payments:
-            amt = float(r["amount"])
-            is_refund = amt < 0
+        # 2) Cash/payments (already date-filtered in repo)
+        for pay in self.ppay.list_payments_for_vendor(vendor_id, date_from, date_to):
+            amt = float(pay["amount"])
+            row_type = "Cash Payment" if amt > 0 else "Refund"
             rows.append({
-                "date": r["date"],
-                "type": ("Refund" if is_refund else "Cash Payment"),
-                "doc_id": r["purchase_id"],
+                "date": pay["date"],
+                "type": row_type,
+                "doc_id": pay["purchase_id"],
                 "reference": {
-                    "payment_id": int(r["payment_id"]),
-                    "method": r["method"],
-                    "instrument_no": r["instrument_no"],
-                    "instrument_type": r["instrument_type"],
-                    "bank_account_id": r["bank_account_id"],
-                    "vendor_bank_account_id": r["vendor_bank_account_id"],
-                    "ref_no": r["ref_no"],
-                    "clearing_state": r["clearing_state"],
+                    "payment_id": pay["payment_id"],
+                    "method": pay["method"],
+                    "instrument_no": pay["instrument_no"],
+                    "instrument_type": pay["instrument_type"],
+                    "bank_account_id": pay["bank_account_id"],
+                    "vendor_bank_account_id": pay["vendor_bank_account_id"],
+                    "ref_no": pay["ref_no"],
+                    "clearing_state": pay["clearing_state"],
                 },
-                "amount_effect": -(abs(amt) if is_refund else amt),
+                # payments reduce payable; refunds are negative amounts and still reduce payable
+                "amount_effect": (-abs(amt) if amt < 0 else -amt),
             })
 
-        # Credit ledger
+        # 3) Credit ledger (already date-filtered)
         credit_note_rows_to_enrich: list[tuple[int, dict]] = []
-        for a in advances:
-            src = (a["source_type"] or "").lower()
+        for a in self.vadv.list_ledger(vendor_id, date_from, date_to):
             amt = float(a["amount"])
-            base = {
-                "date": a["tx_date"],
-                "doc_id": a["source_id"],
-                "reference": {"tx_id": int(a["tx_id"])},
-            }
-            if src == "return_credit":
+            src_type = (a["source_type"] or "").lower()
+            if src_type == "return_credit":
                 row = {
-                    **base,
+                    "date": a["tx_date"],
                     "type": "Credit Note",
-                    "amount_effect": -amt,  # amount is +ve; reduces payable
+                    "doc_id": a["source_id"],
+                    "reference": {"tx_id": a["tx_id"]},
+                    "amount_effect": -amt,  # reduces payable
                 }
                 rows.append(row)
-                # remember to optionally enrich with return lines
                 if show_return_origins and a["source_id"]:
                     credit_note_rows_to_enrich.append((a["tx_id"], row))
-            elif src == "applied_to_purchase":
-                row = {
-                    **base,
+            elif src_type == "applied_to_purchase":
+                rows.append({
+                    "date": a["tx_date"],
                     "type": "Credit Applied",
-                    "amount_effect": -abs(amt),  # amount is -ve; reduces payable
-                }
-                rows.append(row)
+                    "doc_id": a["source_id"],
+                    "reference": {"tx_id": a["tx_id"]},
+                    "amount_effect": -abs(amt),  # amount stored negative => reduce payable by abs
+                })
             else:
-                # Other deposit types (if any) — treat +ve as reducing payable
-                row = {
-                    **base,
+                # Fallback (treat other positive credits as reducing payable)
+                rows.append({
+                    "date": a["tx_date"],
                     "type": "Credit Note",
+                    "doc_id": a["source_id"],
+                    "reference": {"tx_id": a["tx_id"]},
                     "amount_effect": -amt,
-                }
-                rows.append(row)
+                })
 
         # Optional enrichment: return origins (descriptive only)
         if show_return_origins and credit_note_rows_to_enrich:
-            # Attach lines from purchase_return_valuations (no extra amount effect)
             for _tx_id, row in credit_note_rows_to_enrich:
                 pid = row.get("doc_id")
                 if pid:
@@ -402,43 +387,32 @@ class VendorController(BaseModule):
                         # Non-fatal: enrichment is optional
                         pass
 
-        # --- Sort chronological with per-type tie-breakers ---
-        def tie_key(r: dict) -> tuple:
-            t = r["type"]
-            if t == "Purchase":
-                return (0, r["doc_id"] or "", 0)
-            if t in ("Cash Payment", "Refund"):
-                return (1, r.get("reference", {}).get("payment_id") or 0, 0)
-            # Credit ledger rows
-            return (2, r.get("reference", {}).get("tx_id") or 0, 0)
+        # 4) Sort and running balance (type order + stable tie-break)
+        type_order = {"Purchase": 1, "Cash Payment": 2, "Refund": 3, "Credit Note": 4, "Credit Applied": 5}
+        def tie_value(r: dict):
+            ref = r.get("reference", {}) or {}
+            return r.get("doc_id") or ref.get("payment_id") or ref.get("tx_id") or ""
+        rows.sort(key=lambda r: (r["date"], type_order.get(r["type"], 9), tie_value(r)))
 
-        rows.sort(key=lambda r: (r["date"], tie_key(r)))
-
-        # --- Running balance & totals ---
-        balance = float(opening_payable)
-        totals = {
-            "purchases": 0.0,
-            "cash_paid": 0.0,
-            "refunds": 0.0,
-            "credit_notes": 0.0,
-            "credit_applied": 0.0,
-        }
-
+        # Running balance & totals
+        balance = opening_payable
+        totals = {"purchases": 0.0, "cash_paid": 0.0, "refunds": 0.0, "credit_notes": 0.0, "credit_applied": 0.0}
+        out_rows: list[dict] = []
         for r in rows:
-            t = r["type"]
-            eff = float(r["amount_effect"])
-            if t == "Purchase":
-                totals["purchases"] += +eff
-            elif t == "Cash Payment":
-                totals["cash_paid"] += (+(-eff))  # eff is negative; add positive paid
-            elif t == "Refund":
-                totals["refunds"] += (+(-eff))    # eff is negative; add positive refund amount
-            elif t == "Credit Note":
-                totals["credit_notes"] += (+(-eff))  # eff negative; add positive credit amount
-            elif t == "Credit Applied":
-                totals["credit_applied"] += (+(-eff))  # eff negative; add positive applied amount
-            balance += eff
-            r["balance_after"] = balance
+            balance += float(r["amount_effect"])
+            rr = dict(r)
+            rr["balance_after"] = balance
+            out_rows.append(rr)
+            if r["type"] == "Purchase":
+                totals["purchases"] += abs(float(r["amount_effect"]))
+            elif r["type"] == "Cash Payment":
+                totals["cash_paid"] += abs(float(r["amount_effect"]))
+            elif r["type"] == "Refund":
+                totals["refunds"] += abs(float(r["amount_effect"]))
+            elif r["type"] == "Credit Note":
+                totals["credit_notes"] += abs(float(r["amount_effect"]))
+            elif r["type"] == "Credit Applied":
+                totals["credit_applied"] += abs(float(r["amount_effect"]))
 
         closing_balance = balance
 
@@ -447,7 +421,7 @@ class VendorController(BaseModule):
             "period": {"from": date_from, "to": date_to},
             "opening_credit": opening_credit,
             "opening_payable": opening_payable,
-            "rows": rows,
+            "rows": out_rows,
             "totals": totals,
             "closing_balance": closing_balance,
         }

@@ -85,9 +85,9 @@ class VendorBankAccountsRepo:
             is_primary (optional bool/int), is_active (optional bool/int; defaults 1)
 
         NOTE: This method performs a direct insert and does NOT normalize primaries.
-              Use set_primary(...) for a safe single-primary toggle. If you insert
-              multiple rows with is_primary=1, the partial UNIQUE index may raise
-              IntegrityError depending on your schema/indexes.
+              Use set_primary(...) or force_set_primary(...) for single-primary handling.
+              If you insert multiple rows with is_primary=1, the partial UNIQUE index
+              may raise IntegrityError depending on your schema/indexes.
         """
         label = (data.get("label") or "").strip()
         if not label:
@@ -100,16 +100,15 @@ class VendorBankAccountsRepo:
         is_primary = 1 if data.get("is_primary") in (True, 1, "1") else 0
         is_active = 0 if data.get("is_active") in (False, 0, "0") else 1
 
-        with self.conn:
-            cur = self.conn.execute(
-                """
-                INSERT INTO vendor_bank_accounts (
-                    vendor_id, label, bank_name, account_no, iban, routing_no, is_primary, is_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (vendor_id, label, bank_name, account_no, iban, routing_no, is_primary, is_active),
-            )
-            return int(cur.lastrowid)
+        cur = self.conn.execute(
+            """
+            INSERT INTO vendor_bank_accounts (
+                vendor_id, label, bank_name, account_no, iban, routing_no, is_primary, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (vendor_id, label, bank_name, account_no, iban, routing_no, is_primary, is_active),
+        )
+        return int(cur.lastrowid)
 
     def update(self, account_id: int, data: Dict[str, Any]) -> int:
         """
@@ -121,7 +120,7 @@ class VendorBankAccountsRepo:
         RAW update: this method does NOT normalize primaries or unset others.
         If you set is_primary=1 while another account for the same vendor is
         already primary, the partial UNIQUE index should raise IntegrityError.
-        Use set_primary(...) to safely toggle a single primary.
+        Use force_set_primary(...) to safely toggle a single primary.
         """
         allowed = {"label", "bank_name", "account_no", "iban", "routing_no", "is_primary", "is_active"}
         update_data = {k: v for k, v in data.items() if k in allowed}
@@ -152,54 +151,44 @@ class VendorBankAccountsRepo:
     # -------------------------
     def deactivate(self, account_id: int) -> int:
         """
-        Deactivate an account. If it is not referenced elsewhere, it may be deleted;
-        otherwise it will be marked is_active = 0.
-
-        Returns number of affected rows (1 if updated/deleted, 0 if no such row).
+        Mark an account inactive (is_active = 0). No deletion here.
+        Returns number of affected rows.
         """
-        # Check references via COUNT for clarity (functionally same as EXISTS)
-        row = self.conn.execute(
-            "SELECT COUNT(1) FROM purchase_payments WHERE vendor_bank_account_id = ?",
+        cur = self.conn.execute(
+            "UPDATE vendor_bank_accounts SET is_active = 0 WHERE vendor_bank_account_id = ?",
             (account_id,),
-        ).fetchone()
-        referenced = (row[0] if row else 0) > 0
+        )
+        return int(cur.rowcount)
 
-        with self.conn:
-            if referenced:
-                cur = self.conn.execute(
-                    "UPDATE vendor_bank_accounts SET is_active = 0 WHERE vendor_bank_account_id = ?",
-                    (account_id,),
-                )
-                return cur.rowcount
-            else:
-                # Safe to hard-delete
-                cur = self.conn.execute(
-                    "DELETE FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
-                    (account_id,),
-                )
-                # If nothing deleted (id not found), return 0
-                return cur.rowcount
-
-    def set_primary(self, vendor_id: int, account_id: int) -> int:
+    def set_primary(self, vendor_id: int, vba_id: int) -> int:
         """
-        Make `account_id` the primary account for the vendor, unsetting others.
-        Partial UNIQUE index (WHERE is_primary=1) enforces the single-primary rule.
+        Strict/naive setter: attempts to set this account as primary.
+        If another account is already primary, the DB's partial unique index
+        will raise sqlite3.IntegrityError. Callers who want to flip should use
+        force_set_primary(...).
+        """
+        cur = self.conn.execute(
+            """
+            UPDATE vendor_bank_accounts
+               SET is_primary = 1
+             WHERE vendor_id = ? AND vendor_bank_account_id = ?
+            """,
+            (vendor_id, vba_id),
+        )
+        return int(cur.rowcount)
 
-        Returns number of rows updated (at least 1 if the account exists).
+    def force_set_primary(self, vendor_id: int, vba_id: int) -> None:
+        """
+        Flip helper for UI: unset all, then set one. This will never raise due to the unique index.
         """
         with self.conn:
-            # Clear others
             self.conn.execute(
                 "UPDATE vendor_bank_accounts SET is_primary = 0 WHERE vendor_id = ?",
                 (vendor_id,),
             )
-            # Set this one (ensure active as well)
-            cur = self.conn.execute(
-                """
-                UPDATE vendor_bank_accounts
-                   SET is_primary = 1, is_active = 1
-                 WHERE vendor_bank_account_id = ? AND vendor_id = ?
-                """,
-                (account_id, vendor_id),
+            self.conn.execute(
+                "UPDATE vendor_bank_accounts "
+                "SET is_primary = 1 "
+                "WHERE vendor_id = ? AND vendor_bank_account_id = ?",
+                (vendor_id, vba_id),
             )
-            return cur.rowcount
