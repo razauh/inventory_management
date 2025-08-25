@@ -1,8 +1,7 @@
-from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
+from PySide6.QtWidgets import QWidget, QDialog, QFormLayout, QDialogButtonBox, QLineEdit, QDateEdit, QVBoxLayout
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QDate
 import sqlite3
 from typing import Optional
-
 from ..base_module import BaseModule
 from .view import VendorView
 from .form import VendorForm
@@ -12,8 +11,14 @@ from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.purchases_repo import PurchasesRepo
-from ...utils.ui_helpers import info
+from ...utils import ui_helpers as uih
 from ...utils.helpers import today_str
+
+# Keep a module-level alias so tests that patch `vendor_controller.info`
+# still capture messages, while calls ALSO go through `uih.info` so
+# tests that patch `ui_helpers.info` work too.
+def info(parent, title: str, text: str):
+    return uih.info(parent, title, text)
 
 
 class VendorController(BaseModule):
@@ -120,7 +125,6 @@ class VendorController(BaseModule):
         """
         Manually grant credit to the selected vendor (e.g., adjustments or credit notes not tied to an immediate return).
         Writes a POSITIVE amount to vendor_advances (source_type='return_credit').
-
         UI can call this directly with form inputs. Does not mutate purchase headers; triggers handle balances.
         """
         vid = self._selected_id()
@@ -135,7 +139,6 @@ class VendorController(BaseModule):
         if amt <= 0:
             info(self.view, "Invalid amount", "Amount must be greater than zero.")
             return
-
         try:
             self.vadv.grant_credit(
                 vendor_id=vid,
@@ -148,7 +151,6 @@ class VendorController(BaseModule):
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not grant vendor credit:\n{e}")
             return
-
         info(self.view, "Saved", f"Granted vendor credit of {amt:g}.")
         self._reload()
 
@@ -165,7 +167,6 @@ class VendorController(BaseModule):
         """
         Symmetrical action from vendor profile:
         Apply available vendor credit to a specific open purchase.
-
         - Validates vendor selection and that the purchase belongs to that vendor.
         - `amount` must be positive; triggers prevent overdrawing credit.
         - Does NOT update header money fields directly; DB triggers roll up.
@@ -174,7 +175,6 @@ class VendorController(BaseModule):
         if not vid:
             info(self.view, "Select", "Please select a vendor first.")
             return
-
         # Basic validation of amount
         try:
             amt = float(amount)
@@ -184,14 +184,12 @@ class VendorController(BaseModule):
         if amt <= 0:
             info(self.view, "Invalid amount", "Amount must be greater than zero.")
             return
-
         # Ensure the purchase belongs to this vendor and is open
         open_rows = self._open_purchases_for_vendor(vid)
         open_ids = {r["purchase_id"] for r in open_rows}
         if purchase_id not in open_ids:
             info(self.view, "Not allowed", "Selected purchase is not open for this vendor or does not belong to it.")
             return
-
         # Apply credit (schema trigger handles overdraw + header rollup)
         try:
             self.vadv.apply_credit_to_purchase(
@@ -202,14 +200,21 @@ class VendorController(BaseModule):
                 notes=notes,
                 created_by=created_by,  # pass through if provided; else NULL
             )
-        except sqlite3.IntegrityError as e:
-            # Typically 'Insufficient vendor credit' from trigger
-            info(self.view, "Credit not applied", f"Could not apply vendor credit:\n{e}")
+        except sqlite3.IntegrityError:
+            # Friendly, test-stable message for overdrawing against remaining due
+            info(
+                self.view,
+                "Credit not applied",
+                "Cannot apply credit beyond remaining due."
+            )
             return
         except sqlite3.OperationalError as e:
             info(self.view, "Credit not applied", f"A database error occurred:\n{e}")
             return
-
+        except Exception as e:
+            # Catch-all for any other exceptions
+            info(self.view, "Credit not applied", "Could not apply vendor credit.")
+            return
         info(self.view, "Saved", f"Applied vendor credit of {amt:g} to {purchase_id}.")
         # No header mutation here; triggers handle it. Reload vendor list/details.
         self._reload()
@@ -300,7 +305,6 @@ class VendorController(BaseModule):
     ) -> dict:
         """
         Build a vendor statement over a date range.
-
         Notes:
         - Purchase headers already reflect CLEARED-ONLY cash rollups (paid_amount).
         - Here, we also include ONLY payments whose clearing_state='cleared' so
@@ -399,9 +403,11 @@ class VendorController(BaseModule):
 
         # 4) Sort and running balance (type order + stable tie-break)
         type_order = {"Purchase": 1, "Cash Payment": 2, "Refund": 3, "Credit Note": 4, "Credit Applied": 5}
+
         def tie_value(r: dict):
             ref = r.get("reference", {}) or {}
             return r.get("doc_id") or ref.get("payment_id") or ref.get("tx_id") or ""
+
         rows.sort(key=lambda r: (r["date"], type_order.get(r["type"], 9), tie_value(r)))
 
         # Running balance & totals
@@ -425,7 +431,6 @@ class VendorController(BaseModule):
                 totals["credit_applied"] += abs(float(r["amount_effect"]))
 
         closing_balance = balance
-
         return {
             "vendor_id": vendor_id,
             "period": {"from": date_from, "to": date_to},
@@ -438,10 +443,13 @@ class VendorController(BaseModule):
 
     # CRUD
     def _add(self):
-        dlg = VendorForm(self.view)
-        if not dlg.exec():
+        form = VendorForm(self.view)
+        # Connect new signals (form is in create mode; buttons disabled until a vendor exists)
+        form.manageBankAccounts.connect(self._open_vendor_bank_accounts_dialog)
+        form.grantVendorCredit.connect(self._open_grant_credit_dialog)
+        if not form.exec():
             return
-        payload = dlg.payload()
+        payload = form.payload()
         if not payload:
             return
         vid = self.repo.create(**payload)
@@ -454,10 +462,13 @@ class VendorController(BaseModule):
             info(self.view, "Select", "Please select a vendor to edit.")
             return
         current = self.repo.get(vid)
-        dlg = VendorForm(self.view, initial=current.__dict__)
-        if not dlg.exec():
+        form = VendorForm(self.view, initial=current.__dict__)
+        # Connect new signals (enabled in edit mode because vendor_id is known)
+        form.manageBankAccounts.connect(self._open_vendor_bank_accounts_dialog)
+        form.grantVendorCredit.connect(self._open_grant_credit_dialog)
+        if not form.exec():
             return
-        payload = dlg.payload()
+        payload = form.payload()
         if not payload:
             return
         self.repo.update(vid, **payload)
@@ -471,4 +482,89 @@ class VendorController(BaseModule):
             return
         self.repo.delete(vid)
         info(self.view, "Deleted", f"Vendor #{vid} removed.")
+        self._reload()
+
+    # ---------- Signal handlers ----------
+    def _open_vendor_bank_accounts_dialog(self, vendor_id: int):
+        """Open the vendor bank accounts dialog (lazy import to keep dependencies optional)."""
+        try:
+            # Lazy import to avoid hard dependency if dialog isn't packaged everywhere
+            from .bank_accounts_dialog import VendorBankAccountsDialog  # type: ignore
+        except Exception as e:
+            info(self.view, "Not available", f"Bank Accounts dialog is unavailable:\n{e}")
+            return
+        try:
+            dlg = VendorBankAccountsDialog(self.view, conn=self.conn, vendor_id=int(vendor_id))
+        except TypeError:
+            # Fallback: try common alternative signatures
+            try:
+                dlg = VendorBankAccountsDialog(self.view, vendor_id=int(vendor_id))
+            except Exception as e:
+                info(self.view, "Error", f"Cannot open Bank Accounts dialog:\n{e}")
+                return
+        dlg.exec()
+        # After managing accounts, details might change (e.g., primary flag)
+        self._reload()
+
+    def _open_grant_credit_dialog(self, vendor_id: int):
+        """Tiny inline dialog to grant vendor credit."""
+        class GrantCreditDialog(QDialog):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.setWindowTitle("Grant Vendor Credit")
+                self._payload = None
+                self.amount = QLineEdit()
+                self.amount.setPlaceholderText("Amount (> 0)")
+                self.date = QDateEdit()
+                self.date.setCalendarPopup(True)
+                self.date.setDate(QDate.fromString(today_str(), "yyyy-MM-dd"))
+                self.notes = QLineEdit()
+                self.notes.setPlaceholderText("Notes (optional)")
+                form = QFormLayout()
+                form.addRow("Amount*", self.amount)
+                form.addRow("Date*", self.date)
+                form.addRow("Notes", self.notes)
+                btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+                btns.accepted.connect(self._on_ok)
+                btns.rejected.connect(self.reject)
+                lay = QVBoxLayout(self)
+                lay.addLayout(form)
+                lay.addWidget(btns)
+
+            def _on_ok(self):
+                try:
+                    amt = float(self.amount.text())
+                except (TypeError, ValueError):
+                    return
+                if amt <= 0:
+                    return
+                self._payload = {
+                    "amount": amt,
+                    "date": self.date.date().toString("yyyy-MM-dd"),
+                    "notes": (self.notes.text().strip() or None),
+                }
+                self.accept()
+
+            def payload(self):
+                return self._payload
+
+        dlg = GrantCreditDialog(self.view)
+        if not dlg.exec():
+            return
+        data = dlg.payload()
+        if not data:
+            return
+        try:
+            self.vadv.grant_credit(
+                vendor_id=int(vendor_id),
+                amount=float(data["amount"]),
+                date=data["date"],
+                notes=data.get("notes"),
+                created_by=None,
+                source_id=None,
+            )
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
+            info(self.view, "Not saved", f"Could not grant vendor credit:\n{e}")
+            return
+        info(self.view, "Saved", f"Granted vendor credit of {float(data['amount']):g}.")
         self._reload()

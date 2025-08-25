@@ -115,6 +115,7 @@ class PurchaseController(BaseModule):
         return {int(r["item_id"]): float(r["returnable"]) for r in rows}
 
     # --- helper: fetch a payment and ensure it belongs to selected purchase ---
+    # --- helper: fetch a payment and ensure it belongs to selected purchase ---
     def _get_payment(self, payment_id: int) -> Optional[dict]:
         row = self._selected_row_dict()
         if not row:
@@ -124,8 +125,10 @@ class PurchaseController(BaseModule):
         FROM purchase_payments
         WHERE payment_id=? AND purchase_id=?
         """
-        return self.conn.execute(sql, (payment_id, row["purchase_id"])).fetchone()
-            
+        r = self.conn.execute(sql, (payment_id, row["purchase_id"])).fetchone()
+        # Normalize to plain dict so downstream code can safely use .get(...)
+        return dict(r) if r is not None else None
+       
     # -------- CRUD --------
     def _add(self):
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products)
@@ -164,48 +167,26 @@ class PurchaseController(BaseModule):
         # 1) Create purchase (header + items + inventory with sequential txn_seq)
         self.repo.create_purchase(h, items)
 
-        # 2) Optional initial payment through purchase_payments (no notes mutation)
-        initial_paid = float(p.get("initial_payment") or 0.0)
-        if initial_paid > 0:
-            method = p.get("initial_method") or "Cash"
-            bank_account_id = p.get("initial_bank_account_id")
-            vendor_bank_account_id = p.get("initial_vendor_bank_account_id")
-
-            instrument_type = p.get("initial_instrument_type")
-            if not instrument_type:
-                if method == "Bank Transfer":
-                    instrument_type = "online"
-                elif method == "Cheque":
-                    instrument_type = "cross_cheque"
-                elif method == "Cash Deposit":
-                    instrument_type = "cash_deposit"
-                else:
-                    instrument_type = None
-
-            instrument_no = p.get("initial_instrument_no")
-            instrument_date = p.get("initial_instrument_date")
-            deposited_date = p.get("initial_deposited_date")
-            cleared_date = p.get("initial_cleared_date")
-            clearing_state = p.get("initial_clearing_state")
-            ref_no = p.get("initial_ref_no")
-            pay_notes = p.get("initial_payment_notes")
-
+        # 2) Optional initial payment
+        #    Prefer the new nested contract if present; fall back to legacy flat fields for backward compatibility.
+        ip = p.get("initial_payment")
+        if isinstance(ip, dict) and float(ip.get("amount") or 0.0) > 0:
             try:
                 self.payments.record_payment(
                     purchase_id=pid,
-                    amount=initial_paid,
-                    method=method,
-                    bank_account_id=bank_account_id,
-                    vendor_bank_account_id=vendor_bank_account_id if method in ("Bank Transfer", "Cheque", "Cash Deposit") else None,
-                    instrument_type=instrument_type,
-                    instrument_no=instrument_no,
-                    instrument_date=instrument_date,
-                    deposited_date=deposited_date,
-                    cleared_date=cleared_date,
-                    clearing_state=clearing_state,
-                    ref_no=ref_no,
-                    notes=pay_notes,
-                    date=p["date"],
+                    amount=float(ip["amount"]),
+                    method=ip["method"],
+                    bank_account_id=ip.get("bank_account_id"),
+                    vendor_bank_account_id=ip.get("vendor_bank_account_id"),
+                    instrument_type=ip.get("instrument_type"),
+                    instrument_no=ip.get("instrument_no"),
+                    instrument_date=ip.get("instrument_date"),
+                    deposited_date=ip.get("deposited_date"),
+                    cleared_date=ip.get("cleared_date"),
+                    clearing_state=ip.get("clearing_state"),
+                    ref_no=ip.get("ref_no"),
+                    notes=ip.get("notes"),
+                    date=ip.get("date") or p["date"],
                     created_by=(self.user["user_id"] if self.user else None),
                 )
             except sqlite3.IntegrityError as e:
@@ -214,6 +195,57 @@ class PurchaseController(BaseModule):
             except sqlite3.OperationalError as e:
                 info(self.view, "Payment not recorded",
                      f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}")
+        else:
+            # Legacy flat fields path (kept to avoid breaking older forms/controllers)
+            initial_paid = float(p.get("initial_payment") or 0.0)
+            if initial_paid > 0:
+                method = p.get("initial_method") or "Cash"
+                bank_account_id = p.get("initial_bank_account_id")
+                vendor_bank_account_id = p.get("initial_vendor_bank_account_id")
+
+                instrument_type = p.get("initial_instrument_type")
+                if not instrument_type:
+                    if method == "Bank Transfer":
+                        instrument_type = "online"
+                    elif method == "Cheque":
+                        instrument_type = "cross_cheque"
+                    elif method == "Cash Deposit":
+                        instrument_type = "cash_deposit"
+                    else:
+                        instrument_type = None
+
+                instrument_no = p.get("initial_instrument_no")
+                instrument_date = p.get("initial_instrument_date")
+                deposited_date = p.get("initial_deposited_date")
+                cleared_date = p.get("initial_cleared_date")
+                clearing_state = p.get("initial_clearing_state")
+                ref_no = p.get("initial_ref_no")
+                pay_notes = p.get("initial_payment_notes")
+
+                try:
+                    self.payments.record_payment(
+                        purchase_id=pid,
+                        amount=initial_paid,
+                        method=method,
+                        bank_account_id=bank_account_id,
+                        vendor_bank_account_id=vendor_bank_account_id if method in ("Bank Transfer", "Cheque", "Cash Deposit") else None,
+                        instrument_type=instrument_type,
+                        instrument_no=instrument_no,
+                        instrument_date=instrument_date,
+                        deposited_date=deposited_date,
+                        cleared_date=cleared_date,
+                        clearing_state=clearing_state,
+                        ref_no=ref_no,
+                        notes=pay_notes,
+                        date=p["date"],
+                        created_by=(self.user["user_id"] if self.user else None),
+                    )
+                except sqlite3.IntegrityError as e:
+                    info(self.view, "Payment not recorded",
+                         f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}")
+                except sqlite3.OperationalError as e:
+                    info(self.view, "Payment not recorded",
+                         f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}")
 
         # 3) Optional initial vendor credit application
         init_credit = float(p.get("initial_credit_amount") or 0.0)

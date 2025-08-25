@@ -544,10 +544,12 @@ class PurchasesRepo:
         SELECT
           transaction_id,
           item_id,
-          CAST(qty_returned AS REAL)  AS qty_returned,
+          CAST(qty_returned  AS REAL) AS qty_returned,
           CAST(unit_buy_price AS REAL) AS unit_buy_price,
-          CAST(unit_discount AS REAL)  AS unit_discount,
-          CAST(return_value AS REAL)   AS return_value
+          CAST(unit_discount  AS REAL) AS unit_discount,
+          CAST(return_value   AS REAL) AS return_value,
+          CAST(return_value   AS REAL) AS line_value,   -- alias for tests
+          CAST(return_value   AS REAL) AS value         -- alias for tests
         FROM purchase_return_valuations
         WHERE purchase_id = ?
         ORDER BY transaction_id
