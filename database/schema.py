@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS customers (
     customer_id  INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,
     contact_info TEXT NOT NULL,
-    address      TEXT
+    address      TEXT,
+    /* added via migration for old DBs; present by default for new DBs */
+    is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
 );
 
 /* -------- expenses -------- */
@@ -1047,7 +1049,7 @@ BEGIN
   END;
 END;
 
-/* Roll up paid_amount & payment_status from sale_payments (clamped >= 0) */
+/* Roll up paid_amount & payment_status from sale_payments (clamped ≥ 0) */
 DROP TRIGGER IF EXISTS trg_paid_from_sale_payments_ai;
 DROP TRIGGER IF EXISTS trg_paid_from_sale_payments_au;
 DROP TRIGGER IF EXISTS trg_paid_from_sale_payments_ad;
@@ -1091,7 +1093,7 @@ BEGIN
    WHERE sale_id = OLD.sale_id;
 END;
 
-/* Roll up paid_amount & payment_status from purchase_payments (clamped >= 0) */
+/* Roll up paid_amount & payment_status from purchase_payments (clamped ≥ 0; cleared only) */
 DROP TRIGGER IF EXISTS trg_paid_from_purchase_payments_ai;
 DROP TRIGGER IF EXISTS trg_paid_from_purchase_payments_au;
 DROP TRIGGER IF EXISTS trg_paid_from_purchase_payments_ad;
@@ -1194,6 +1196,7 @@ END;
 DROP TRIGGER IF EXISTS trg_pp_method_checks_ins;
 DROP TRIGGER IF EXISTS trg_pp_method_checks_upd;
 
+DROP TRIGGER IF EXISTS trg_pp_method_checks_ins;
 CREATE TRIGGER trg_pp_method_checks_ins
 BEFORE INSERT ON purchase_payments
 FOR EACH ROW
@@ -1229,8 +1232,20 @@ BEGIN
     )
     THEN RAISE(ABORT, 'Cash Deposit requires deposit slip #, instrument_type=cash_deposit; vendor account required for outgoing')
     ELSE 1 END;
+
+  /* CASH (hand cash; not a bank movement) */
+  SELECT CASE
+    WHEN NEW.method = 'Cash' AND (
+         NEW.bank_account_id IS NOT NULL OR                              -- no company bank for cash
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type NOT IN ('other')) OR
+         NEW.vendor_bank_account_id IS NOT NULL                          -- not a bank transfer to vendor
+         /* instrument_no optional for cash */
+    )
+    THEN RAISE(ABORT, 'Cash should not reference a bank; set bank_account_id NULL, vendor_bank_account_id NULL, instrument_type NULL/other')
+    ELSE 1 END;
 END;
 
+DROP TRIGGER IF EXISTS trg_pp_method_checks_upd;
 CREATE TRIGGER trg_pp_method_checks_upd
 BEFORE UPDATE ON purchase_payments
 FOR EACH ROW
@@ -1264,7 +1279,18 @@ BEGIN
     )
     THEN RAISE(ABORT, 'Cash Deposit requires deposit slip #, instrument_type=cash_deposit; vendor account required for outgoing')
     ELSE 1 END;
+
+  /* CASH (hand cash; not a bank movement) */
+  SELECT CASE
+    WHEN NEW.method = 'Cash' AND (
+         NEW.bank_account_id IS NOT NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type NOT IN ('other')) OR
+         NEW.vendor_bank_account_id IS NOT NULL
+    )
+    THEN RAISE(ABORT, 'Cash should not reference a bank; set bank_account_id NULL, vendor_bank_account_id NULL, instrument_type NULL/other')
+    ELSE 1 END;
 END;
+
 
 /* Guard: don’t allow applying more credit than available */
 DROP TRIGGER IF EXISTS trg_vendor_advances_no_overdraw;
@@ -1609,14 +1635,127 @@ FROM purchases p
 JOIN purchase_detailed_totals d ON d.purchase_id = p.purchase_id
 WHERE ABS(CAST(p.total_amount AS REAL) - CAST(d.calculated_total_amount AS REAL)) > 0.0001;
 
+
+/* ======================== CUSTOMER-SIDE: BANK FLOW IS INCOMING ONLY ======================== */
+/* Per-method requirements for sale_payments (incoming-only via bank); Card/Other left unconstrained */
+DROP TRIGGER IF EXISTS trg_sp_method_checks_ins;
+DROP TRIGGER IF EXISTS trg_sp_method_checks_upd;
+
+CREATE TRIGGER trg_sp_method_checks_ins
+BEFORE INSERT ON sale_payments
+FOR EACH ROW
+BEGIN
+  /* BANK TRANSFER (incoming only) */
+  SELECT CASE
+    WHEN NEW.method = 'Bank Transfer' AND (
+         CAST(NEW.amount AS REAL) <= 0 OR
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no   IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'online')
+    )
+    THEN RAISE(ABORT, 'Bank Transfer must be incoming (amount>0) and requires company bank, txn #, instrument_type=online')
+    ELSE 1 END;
+
+  /* CHEQUE (incoming only) */
+  SELECT CASE
+    WHEN NEW.method = 'Cheque' AND (
+         CAST(NEW.amount AS REAL) <= 0 OR
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no   IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cross_cheque')
+    )
+    THEN RAISE(ABORT, 'Cheque must be incoming (amount>0) and requires company bank, cheque #, instrument_type=cross_cheque')
+    ELSE 1 END;
+
+  /* CASH DEPOSIT (incoming only) */
+  SELECT CASE
+    WHEN NEW.method = 'Cash Deposit' AND (
+         CAST(NEW.amount AS REAL) <= 0 OR
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no   IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cash_deposit')
+    )
+    THEN RAISE(ABORT, 'Cash Deposit must be incoming (amount>0) and requires company bank + deposit slip #, instrument_type=cash_deposit')
+    ELSE 1 END;
+
+  /* CASH (no bank refs; can be + or -) */
+  SELECT CASE
+    WHEN NEW.method = 'Cash' AND (
+         NEW.bank_account_id IS NOT NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type NOT IN ('other'))
+         /* instrument_no optional */
+    )
+    THEN RAISE(ABORT, 'Cash must not reference a bank; set bank_account_id NULL and instrument_type NULL/other')
+    ELSE 1 END;
+END;
+
+CREATE TRIGGER trg_sp_method_checks_upd
+BEFORE UPDATE ON sale_payments
+FOR EACH ROW
+BEGIN
+  /* Mirror rules on UPDATE */
+  SELECT CASE
+    WHEN NEW.method = 'Bank Transfer' AND (
+         CAST(NEW.amount AS REAL) <= 0 OR
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no   IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'online')
+    )
+    THEN RAISE(ABORT, 'Bank Transfer must be incoming (amount>0) and requires company bank, txn #, instrument_type=online')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN NEW.method = 'Cheque' AND (
+         CAST(NEW.amount AS REAL) <= 0 OR
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no   IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cross_cheque')
+    )
+    THEN RAISE(ABORT, 'Cheque must be incoming (amount>0) and requires company bank, cheque #, instrument_type=cross_cheque')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN NEW.method = 'Cash Deposit' AND (
+         CAST(NEW.amount AS REAL) <= 0 OR
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no   IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cash_deposit')
+    )
+    THEN RAISE(ABORT, 'Cash Deposit must be incoming (amount>0) and requires company bank + deposit slip #, instrument_type=cash_deposit')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN NEW.method = 'Cash' AND (
+         NEW.bank_account_id IS NOT NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type NOT IN ('other'))
+    )
+    THEN RAISE(ABORT, 'Cash must not reference a bank; set bank_account_id NULL and instrument_type NULL/other')
+    ELSE 1 END;
+END;
 """
+
+def _ensure_customer_is_active(conn: sqlite3.Connection) -> None:
+    """
+    Safe migration for older DBs that created `customers` before `is_active` existed.
+    Adds the column if missing. No-op if already present.
+    """
+    cur = conn.execute("PRAGMA table_info(customers);")
+    cols = {row[1] for row in cur.fetchall()}  # row[1] = name
+    if "is_active" not in cols:
+        conn.execute(
+            "ALTER TABLE customers "
+            "ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1));"
+        )
 
 def init_schema(db_path: Path | str = "myshop.db") -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
+        # Apply (idempotent) schema
         conn.executescript(SQL)
+        # Backfill migration for existing DBs missing customers.is_active
+        _ensure_customer_is_active(conn)
         conn.commit()
     print(f"✓ DB applied to {db_path}")
 
