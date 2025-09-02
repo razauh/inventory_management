@@ -106,6 +106,9 @@ class SalesController(BaseModule):
             self.view.btn_print.clicked.connect(self._print)
         if hasattr(self.view, "btn_convert"):
             self.view.btn_convert.clicked.connect(self._convert_to_sale)
+        # NEW: Apply Credit button (sales mode only)
+        if hasattr(self.view, "btn_apply_credit"):
+            self.view.btn_apply_credit.clicked.connect(self._on_apply_credit)
 
         # React to Sales|Quotations toggle → update controller state + reload
         if hasattr(self.view, "modeChanged"):
@@ -151,6 +154,8 @@ class SalesController(BaseModule):
             self.view.btn_return.setEnabled(allow_sales)
         if hasattr(self.view, "btn_record_payment"):
             self.view.btn_record_payment.setEnabled(allow_sales)
+        if hasattr(self.view, "btn_apply_credit"):
+            self.view.btn_apply_credit.setEnabled(allow_sales)
 
         # Quotation-only action
         allow_convert = (self._doc_type == "quotation") and selected
@@ -228,6 +233,47 @@ class SalesController(BaseModule):
         src = self.proxy.mapToSource(idxs[0])
         return self.base.at(src.row())
 
+    # --- small helper: fetch financials using calc view + header -----------
+    def _fetch_sale_financials(self, sale_id: str) -> dict:
+        """
+        Returns a dict with:
+          total_amount, paid_amount, advance_payment_applied,
+          calculated_total_amount, remaining_due
+        remaining_due = calculated_total_amount - paid_amount - advance_payment_applied (clamped ≥ 0)
+        """
+        row = self.conn.execute(
+            """
+            SELECT
+              s.total_amount,
+              COALESCE(s.paid_amount, 0.0)              AS paid_amount,
+              COALESCE(s.advance_payment_applied, 0.0)  AS advance_payment_applied,
+              COALESCE(sdt.calculated_total_amount, s.total_amount) AS calculated_total_amount
+            FROM sales s
+            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            WHERE s.sale_id = ?;
+            """,
+            (sale_id,),
+        ).fetchone()
+        if not row:
+            return {
+                "total_amount": 0.0,
+                "paid_amount": 0.0,
+                "advance_payment_applied": 0.0,
+                "calculated_total_amount": 0.0,
+                "remaining_due": 0.0,
+            }
+        calc_total = float(row["calculated_total_amount"] or 0.0)
+        paid = float(row["paid_amount"] or 0.0)
+        adv = float(row["advance_payment_applied"] or 0.0)
+        remaining = max(0.0, calc_total - paid - adv)
+        return {
+            "total_amount": float(row["total_amount"] or 0.0),
+            "paid_amount": paid,
+            "advance_payment_applied": adv,
+            "calculated_total_amount": calc_total,
+            "remaining_due": remaining,
+        }
+
     def _sync_details(self, *args):
         r = self._selected_row()
 
@@ -280,10 +326,21 @@ class SalesController(BaseModule):
                 r["customer_credit_balance"] = float(bal or 0.0)
             except Exception:
                 r["customer_credit_balance"] = None
+
+            # Financials including credit applied (NEW: include advance_payment_applied)
+            fin = self._fetch_sale_financials(r["sale_id"])
+            r["advance_payment_applied"] = fin["advance_payment_applied"]
+            r["calculated_total_amount"] = fin["calculated_total_amount"]
+            r["paid_plus_credit"] = fin["paid_amount"] + fin["advance_payment_applied"]
+            r["remaining_due"] = fin["remaining_due"]
         else:
             # Quotation: explicitly pass empty payments and no credit balance
             payments_rows = []
             r.pop("customer_credit_balance", None)
+            # Keep remaining_due aligned to quotations (0 by design)
+            r["advance_payment_applied"] = 0.0
+            r["paid_plus_credit"] = float(r.get("paid_amount") or 0.0)
+            r["remaining_due"] = 0.0
 
         # Attach payments to the details payload
         r["payments"] = payments_rows
@@ -736,6 +793,116 @@ class SalesController(BaseModule):
         # After printing attempt, keep states fresh
         self._update_action_states()
         self._sync_details()
+
+    # ---- Apply Credit to Sale (NEW) ---------------------------------------
+
+    def _on_apply_credit(self):
+        """
+        Apply existing customer credit to the currently selected SALE.
+
+        Workflow:
+          1) Validate selection and mode.
+          2) Fetch customer's credit balance and sale remaining due.
+          3) Open 'Apply Credit' UI (lazy import). If available, collect amount.
+          4) Call CustomerAdvancesRepo.apply_credit_to_sale (amount stored as NEGATIVE).
+          5) Reload & refresh view so totals reflect the change.
+        """
+        if self._doc_type != "sale":
+            info(self.view, "Not available", "Apply Credit is available for sales only.")
+            return
+
+        row = self._selected_row()
+        if not row:
+            info(self.view, "Select", "Select a sale first.")
+            return
+
+        sale_id = row["sale_id"]
+        customer_id = int(row.get("customer_id") or 0)
+        if not customer_id:
+            info(self.view, "Missing data", "Selected sale is missing customer information.")
+            return
+
+        # Fetch financials for this sale (includes advance_payment_applied)
+        fin = self._fetch_sale_financials(sale_id)
+        remaining_due = float(fin["remaining_due"])
+
+        # Fetch customer's available credit balance via repo (lazy import path-based)
+        try:
+            from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo  # type: ignore
+            adv_repo = CustomerAdvancesRepo(self._db_path)
+            credit_balance = float(adv_repo.get_balance(customer_id) or 0.0)
+        except Exception as e:
+            info(self.view, "Unavailable", f"Could not fetch customer credit balance: {e}")
+            return
+
+        if remaining_due <= 0.0:
+            info(self.view, "Nothing due", "This sale has no remaining due.")
+            return
+
+        if credit_balance <= 0.0:
+            info(self.view, "No credit", "Customer has no available credit to apply.")
+            return
+
+        # Prefer a dedicated UI if present (same one used in Customers module)
+        try:
+            from ...payments.ui.apply_advance_form import open_apply_advance_form  # type: ignore
+
+            # Build a minimal 'sales' list matching expected shape of the dialog
+            sales_payload = [{
+                "sale_id": sale_id,
+                "date": row.get("date"),
+                "remaining_due": remaining_due,
+                "total": float(fin["calculated_total_amount"]),
+                "paid": float(fin["paid_amount"]),
+            }]
+            defaults = {
+                "sale_id": sale_id,
+                "amount_to_apply": min(remaining_due, credit_balance),
+                "date": today_str(),
+                "notes": "[Apply credit]",
+            }
+            form_payload = open_apply_advance_form(
+                customer_id=customer_id,
+                sales=sales_payload,
+                defaults=defaults,
+            )
+            if not form_payload:
+                return  # cancelled
+
+            amt = form_payload.get("amount_to_apply")
+            if amt is None or float(amt) <= 0:
+                info(self.view, "Required", "Please enter a positive amount to apply.")
+                return
+
+            # Persist application (store negative amount in ledger)
+            try:
+                tx_id = adv_repo.apply_credit_to_sale(
+                    customer_id=customer_id,
+                    sale_id=sale_id,
+                    amount=-abs(float(amt)),
+                    date=form_payload.get("date"),
+                    notes=form_payload.get("notes"),
+                    created_by=(self.user["user_id"] if self.user else None),
+                )
+            except (ValueError, sqlite3.IntegrityError) as e:
+                info(self.view, "Not applied", str(e))
+                return
+
+            info(self.view, "Saved", f"Credit application #{tx_id} recorded.")
+            self._reload()
+            self._sync_details()
+            return
+
+        except Exception:
+            # No UI available; inform the user rather than guessing inputs
+            info(
+                self.view,
+                "Apply Credit UI not available",
+                "The Apply Credit dialog isn't wired in this build. "
+                "Open the Customers module to apply credit from there.",
+            )
+            self._update_action_states()
+            self._sync_details()
 
     # ---- Returns ----------------------------------------------------------
 

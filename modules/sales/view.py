@@ -138,8 +138,9 @@ class SalesView(QWidget):
         # self.btn_del = QPushButton("Delete")
         self.btn_return = QPushButton("Return")
 
-        # Record Payment & Print (always present; visibility depends on mode)
+        # Record Payment, Apply Credit & Print (Apply Credit is new)
         self.btn_record_payment = QPushButton("Record Payment…")
+        self.btn_apply_credit = QPushButton("Apply Credit…")
         self.btn_print = QPushButton("Print")
 
         # Shown only in Quotation mode
@@ -149,6 +150,7 @@ class SalesView(QWidget):
         bar.addWidget(self.btn_edit)
         bar.addWidget(self.btn_return)
         bar.addWidget(self.btn_record_payment)
+        bar.addWidget(self.btn_apply_credit)  # NEW button in toolbar
         bar.addWidget(self.btn_print)
         bar.addWidget(self.btn_convert)
 
@@ -224,8 +226,8 @@ class SalesView(QWidget):
         is_quote = (self._doc_type == "quotation")
 
         # Buttons:
-        # - Quotations: show Convert, hide/disable Return & Record Payment
-        # - Sales: hide Convert, enable Return & Record Payment
+        # - Quotations: show Convert, hide/disable Return, Record Payment & Apply Credit
+        # - Sales: hide Convert, enable Return, Record Payment & Apply Credit
         self.btn_convert.setVisible(is_quote)
         self.btn_convert.setEnabled(is_quote)
 
@@ -234,6 +236,9 @@ class SalesView(QWidget):
 
         self.btn_record_payment.setVisible(not is_quote)
         self.btn_record_payment.setEnabled(not is_quote)
+
+        self.btn_apply_credit.setVisible(not is_quote)   # NEW: only in Sales mode
+        self.btn_apply_credit.setEnabled(not is_quote)
 
         # Payments panel only for sales
         self.payments.setVisible(not is_quote)

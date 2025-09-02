@@ -410,6 +410,8 @@ BEGIN
   END;
 END;
 
+
+
 CREATE TRIGGER trg_product_uoms_factor_guard_upd
 BEFORE UPDATE ON product_uoms
 FOR EACH ROW
@@ -1814,6 +1816,112 @@ BEGIN
     THEN RAISE(ABORT, 'Cash must not reference a bank; set bank_account_id NULL and instrument_type NULL/other')
     ELSE 1 END;
 END;
+
+/* ======================== CUSTOMER CREDIT ↔ SALE ROLLOUPS ======================== */
+/* Keep sales.advance_payment_applied in sync with customer_advances applications */
+
+DROP TRIGGER IF EXISTS trg_adv_applied_from_customer_ai;
+CREATE TRIGGER trg_adv_applied_from_customer_ai
+AFTER INSERT ON customer_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
+BEGIN
+  UPDATE sales
+     SET advance_payment_applied =
+         MAX(0.0, COALESCE((
+           SELECT SUM(-CAST(amount AS REAL))
+           FROM customer_advances ca
+           WHERE ca.source_type = 'applied_to_sale'
+             AND ca.source_id   = NEW.source_id
+         ), 0.0))
+   WHERE sale_id = NEW.source_id;
+END;
+
+-- Handle UPDATEs where the NEW row is an application to a sale
+DROP TRIGGER IF EXISTS trg_adv_applied_from_customer_au_new;
+CREATE TRIGGER trg_adv_applied_from_customer_au_new
+AFTER UPDATE ON customer_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
+BEGIN
+  UPDATE sales
+     SET advance_payment_applied =
+         MAX(0.0, COALESCE((
+           SELECT SUM(-CAST(amount AS REAL))
+           FROM customer_advances ca
+           WHERE ca.source_type = 'applied_to_sale'
+             AND ca.source_id   = NEW.source_id
+         ), 0.0))
+   WHERE sale_id = NEW.source_id;
+END;
+
+-- Handle UPDATEs where the OLD row used to affect another sale (source_id changed or type changed)
+DROP TRIGGER IF EXISTS trg_adv_applied_from_customer_au_old;
+CREATE TRIGGER trg_adv_applied_from_customer_au_old
+AFTER UPDATE ON customer_advances
+FOR EACH ROW
+WHEN OLD.source_type = 'applied_to_sale' AND OLD.source_id IS NOT NULL
+BEGIN
+  UPDATE sales
+     SET advance_payment_applied =
+         MAX(0.0, COALESCE((
+           SELECT SUM(-CAST(amount AS REAL))
+           FROM customer_advances ca
+           WHERE ca.source_type = 'applied_to_sale'
+             AND ca.source_id   = OLD.source_id
+         ), 0.0))
+   WHERE sale_id = OLD.source_id;
+END;
+
+DROP TRIGGER IF EXISTS trg_adv_applied_from_customer_ad;
+CREATE TRIGGER trg_adv_applied_from_customer_ad
+AFTER DELETE ON customer_advances
+FOR EACH ROW
+WHEN OLD.source_type = 'applied_to_sale' AND OLD.source_id IS NOT NULL
+BEGIN
+  UPDATE sales
+     SET advance_payment_applied =
+         MAX(0.0, COALESCE((
+           SELECT SUM(-CAST(amount AS REAL))
+           FROM customer_advances ca
+           WHERE ca.source_type = 'applied_to_sale'
+             AND ca.source_id   = OLD.source_id
+         ), 0.0))
+   WHERE sale_id = OLD.source_id;
+END;
+
+
+/* ======================== CUSTOMER CREDIT GUARD (NO OVER-APPLICATION) ======================== */
+/* Prevent applying more credit to a sale than its remaining due (header total - cash/bank paid - credit already applied). */
+
+DROP TRIGGER IF EXISTS trg_customer_advances_not_exceed_remaining_due;
+CREATE TRIGGER trg_customer_advances_not_exceed_remaining_due
+BEFORE INSERT ON customer_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
+BEGIN
+  /* Ensure referenced sale exists */
+  SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM sales s WHERE s.sale_id = NEW.source_id)
+      THEN RAISE(ABORT, 'Invalid sale reference for customer credit application')
+    ELSE 1
+  END;
+
+  /* remaining_due = total_amount - paid_amount - advance_payment_applied */
+  SELECT CASE
+    WHEN (
+      COALESCE((SELECT CAST(total_amount AS REAL)            FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(paid_amount AS REAL)             FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(advance_payment_applied AS REAL) FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      + CAST(NEW.amount AS REAL)  /* NEW.amount is negative when applying credit */
+    ) < -1e-9
+    THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
+    ELSE 1
+  END;
+END;
+
 """
 
 def _ensure_customer_is_active(conn: sqlite3.Connection) -> None:
