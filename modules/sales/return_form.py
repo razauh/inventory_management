@@ -122,16 +122,42 @@ class SaleReturnForm(QDialog):
         if self._initial_sale_id:
             self._prime_with_sale_id(self._initial_sale_id)
 
+    # ---- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _is_sale_row(row) -> bool:
+        """Best-effort check that the row represents a real sale (not a quotation)."""
+        try:
+            if isinstance(row, dict):
+                dt = row.get("doc_type")
+            else:
+                # sqlite3.Row supports mapping; .keys() may exist or not, so guard
+                dt = row["doc_type"] if "doc_type" in row.keys() else None
+            return (dt or "sale") == "sale"
+        except Exception:
+            # If doc_type is absent, assume it's a sale (legacy behavior),
+            # but our search path tries to request doc_type='sale' anyway.
+            return True
+
     # ---- quick-mode priming ----
     def _prime_with_sale_id(self, sid: str):
         if not self.repo:
             return
-        rows = self.repo.search_sales(query=sid, date=None) or []
+
+        # Try repo.search_sales with doc_type filter if supported
+        rows = []
+        try:
+            rows = self.repo.search_sales(query=sid, date=None, doc_type="sale") or []
+        except TypeError:
+            # Fallback to legacy signature then filter locally
+            rows = self.repo.search_sales(query=sid, date=None) or []
+            rows = [r for r in rows if self._is_sale_row(r)]
+
         row = next((r for r in rows if str(r["sale_id"]) == str(sid)), None)
 
         if not row:
             h = self.repo.get_header(sid)
-            if not h:
+            if not h or str(h.get("doc_type", "sale")) != "sale":
                 return
             row = {
                 "sale_id": h["sale_id"],
@@ -162,12 +188,20 @@ class SaleReturnForm(QDialog):
             return
         q = (self.edt_q.text() or "").strip()
         d = self.edt_date.date().toString("yyyy-MM-dd") if self.edt_date.date() else None
-        rows = self.repo.search_sales(q, d)
+
+        # Prefer repo-side doc_type filtering; fallback to local filter
+        try:
+            rows = self.repo.search_sales(q, d, doc_type="sale")
+        except TypeError:
+            rows = self.repo.search_sales(q, d)
+            rows = [r for r in (rows or []) if self._is_sale_row(r)]
+
+        rows = rows or []
         self.tbl_sales.setRowCount(len(rows))
         for r, x in enumerate(rows):
             self.tbl_sales.setItem(r, 0, QTableWidgetItem(x["sale_id"]))
             self.tbl_sales.setItem(r, 1, QTableWidgetItem(x["date"]))
-            self.tbl_sales.setItem(r, 2, QTableWidgetItem(x["customer_name"]))
+            self.tbl_sales.setItem(r, 2, QTableWidgetItem(x.get("customer_name", "")))
             self.tbl_sales.setItem(r, 3, QTableWidgetItem(fmt_money(x["total_amount"])))
             self.tbl_sales.setItem(r, 4, QTableWidgetItem(fmt_money(x["paid_amount"])))
 
@@ -182,6 +216,10 @@ class SaleReturnForm(QDialog):
 
         # Header (paid + order discount)
         h = self.repo.get_header(sid) or {}
+        # Guard: if somehow a quotation slipped through, do nothing
+        if str(h.get("doc_type", "sale")) != "sale":
+            return
+
         self._sale_paid = float(h.get("paid_amount") or 0.0)
         self._sale_od   = float(h.get("order_discount") or 0.0)
 
@@ -219,7 +257,7 @@ class SaleReturnForm(QDialog):
 
         # Enable refund-now checkbox when something was paid
         self.chk_refund.setEnabled(self._sale_paid > 0.0)
-        # NEW: spinner is enabled whenever there is paid>0 (no need to tick first)
+        # Spinner enabled whenever there is paid>0 (no need to tick first)
         self.spin_cash.setEnabled(self._sale_paid > 0.0)
         if self._sale_paid <= 0.0:
             self.chk_refund.setChecked(False)
@@ -248,7 +286,6 @@ class SaleReturnForm(QDialog):
     def _on_refund_toggle(self, checked: bool):
         # Spinner stays enabled based on paid>0; just refresh defaults/notes.
         if not checked:
-            # do not force zero; user might still pre-fill a value before checking
             pass
         self._recalc()
 

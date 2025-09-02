@@ -1,10 +1,11 @@
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QComboBox,
     QDateEdit, QLineEdit, QLabel, QGroupBox, QTableWidget, QTableWidgetItem,
-    QPushButton, QAbstractItemView, QCompleter
+    QPushButton, QAbstractItemView, QCompleter, QWidget
 )
 from PySide6.QtCore import Qt, QDate
 from ...database.repositories.customers_repo import CustomersRepo
+    # (bank account repo is passed in, not imported here)
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.helpers import today_str, fmt_money
 from ...utils.ui_helpers import info  # <-- added for visible validation messages
@@ -14,10 +15,20 @@ class SaleForm(QDialog):
     # Columns now include Base/Alt UoM and expanded totals logic
     COLS = ["#", "Product", "Base UoM", "Alt UoM", "Avail", "Qty", "Unit Price", "Discount", "Margin", "Line Total", ""]
 
-    def __init__(self, parent=None, customers: CustomersRepo | None = None, products: ProductsRepo | None = None, initial=None):
+    def __init__(
+        self,
+        parent=None,
+        customers: CustomersRepo | None = None,
+        products: ProductsRepo | None = None,
+        bank_accounts=None,  # repo instance providing list_company_bank_accounts(); kept optional, no import here
+        initial=None,
+        mode: str = "sale",   # <-- NEW: 'sale' | 'quotation'
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Sale"); self.setModal(True)
-        self.customers = customers; self.products = products
+        self.mode = "quotation" if str(mode).lower() == "quotation" else "sale"
+        self.setWindowTitle("Quotation" if self.mode == "quotation" else "Sale")
+        self.setModal(True)
+        self.customers = customers; self.products = products; self.bank_accounts = bank_accounts
         self._payload = None
 
         # --- header widgets ---
@@ -123,12 +134,39 @@ class SaleForm(QDialog):
                        ("Total:", self.lab_total)):
             tot.addWidget(QLabel(cap)); tot.addWidget(w)
 
-        # payment strip
-        pay = QHBoxLayout()
+        # payment strip (wrapped in a widget so we can hide for quotations)
+        self.pay_box = QWidget()
+        pay = QHBoxLayout(self.pay_box)
         self.pay_amount = QLineEdit(); self.pay_amount.setPlaceholderText("0")
         self.pay_method = QComboBox(); self.pay_method.addItems(["Cash","Bank Transfer","Card","Cheque","Other"])
         pay.addStretch(1); pay.addWidget(QLabel("Initial Payment:")); pay.addWidget(self.pay_amount)
         pay.addWidget(QLabel("Method:")); pay.addWidget(self.pay_method)
+
+        # --- Bank details strip (visible only when Method == "Bank Transfer") ---
+        self.bank_box = QWidget()
+        bank_layout = QHBoxLayout(self.bank_box)
+        bank_layout.setContentsMargins(0, 0, 0, 0)
+        self.cmb_bank_account = QComboBox()
+        self.cmb_bank_account.setMinimumWidth(280)
+        self.edt_instr_no = QLineEdit(); self.edt_instr_no.setPlaceholderText("Transaction/Reference No.")
+        bank_layout.addStretch(1)
+        bank_layout.addWidget(QLabel("Bank Account:"))
+        bank_layout.addWidget(self.cmb_bank_account)
+        bank_layout.addWidget(QLabel("Reference No.:"))
+        bank_layout.addWidget(self.edt_instr_no)
+
+        # Populate bank accounts if repo provided
+        try:
+            if self.bank_accounts and hasattr(self.bank_accounts, "list_company_bank_accounts"):
+                for a in self.bank_accounts.list_company_bank_accounts():
+                    # Expecting fields: bank_account_id, bank_name, account_title, account_no
+                    label = f"{a['bank_name']} — {a['account_title']} ({a['account_no']})"
+                    self.cmb_bank_account.addItem(label, int(a["bank_account_id"]))
+        except Exception:
+            # Silent: if repo call fails, leave empty; validation will handle later.
+            pass
+
+        self.bank_box.setVisible(False)  # hidden by default; toggled by method selection
 
         # layout assembly
         lay = QVBoxLayout(self)
@@ -139,7 +177,15 @@ class SaleForm(QDialog):
         form.addRow("Date*", self.date)
         form.addRow("Order Discount", self.txt_discount)
         form.addRow("Notes", self.txt_notes)
-        lay.addLayout(form); lay.addWidget(box, 1); lay.addLayout(tot); lay.addLayout(pay)
+        lay.addLayout(form); lay.addWidget(box, 1); lay.addLayout(tot)
+
+        # Add payment/ bank strips only for 'sale' mode (hidden for quotations)
+        lay.addWidget(self.pay_box)
+        lay.addWidget(self.bank_box)
+        if self.mode == "quotation":
+            self.pay_box.setVisible(False)
+            self.bank_box.setVisible(False)
+
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept); self.buttons.rejected.connect(self.reject); lay.addWidget(self.buttons)
         self.resize(1200, 600); self.setSizeGripEnabled(True)
@@ -148,6 +194,7 @@ class SaleForm(QDialog):
         self.tbl.cellChanged.connect(self._cell_changed)
         self.btn_add_row.clicked.connect(self._add_row)
         self.txt_discount.textChanged.connect(self._refresh_totals)
+        self.pay_method.currentTextChanged.connect(self._toggle_bank_fields)
 
         # seed table
         self._rows = [dict(x) for x in (initial.get("items") or [])] if initial else []
@@ -159,6 +206,13 @@ class SaleForm(QDialog):
             self.txt_notes.setText(initial.get("notes") or "")
 
     # --- helpers ---
+    def _toggle_bank_fields(self, text: str):
+        # Only relevant in sale mode
+        if self.mode != "sale":
+            self.bank_box.setVisible(False)
+            return
+        self.bank_box.setVisible(text == "Bank Transfer")
+
     def _warn(self, title: str, message: str, focus_widget=None, row_to_select: int | None = None):
         """Show a friendly message, focus a widget, optionally select a row."""
         info(self, title, message)
@@ -171,7 +225,7 @@ class SaleForm(QDialog):
             except Exception:
                 pass
 
-    def _all_products(self): 
+    def _all_products(self):
         return self.products.list_products()
 
     def _base_uom_id(self, product_id: int) -> int:
@@ -331,10 +385,10 @@ class SaleForm(QDialog):
     def _rebuild_table(self):
         self.tbl.blockSignals(True)
         self.tbl.setRowCount(0)
-        if not self._rows: 
+        if not self._rows:
             self._add_row({})
         else:
-            for row in self._rows: 
+            for row in self._rows:
                 self._add_row(row)
         self.tbl.blockSignals(False)
         self._refresh_totals()
@@ -508,26 +562,48 @@ class SaleForm(QDialog):
         sub_raw = self._calc_raw_subtotal()
         line_disc = self._calc_line_discount()
         total = max(0.0, sub_raw - (line_disc + od))
-        init = float(self.pay_amount.text() or 0)
 
-        return {
+        payload = {
             "customer_id": int(cid),
             "date": self.date.date().toString("yyyy-MM-dd"),
             "order_discount": od,
             "notes": (self.txt_notes.text().strip() or None),
             "items": items,
             "total_amount": total,
-            "initial_payment": init,
-            "initial_method": self.pay_method.currentText(),
             "line_discount_total": line_disc,
             "subtotal_raw": sub_raw,
         }
 
-    def accept(self):
-        p=self.get_payload()
-        if p is None: 
-            return
-        self._payload=p; super().accept()
+        # --- Initial payment only in SALE mode ---
+        if self.mode == "sale":
+            init = float(self.pay_amount.text() or 0)
+            method = self.pay_method.currentText()
+            payload["initial_payment"] = init
+            payload["initial_method"] = method
 
-    def payload(self): 
+            # Bank Transfer specifics (only when initial_payment > 0 and method == Bank Transfer)
+            if init > 0 and method == "Bank Transfer":
+                bank_id = self.cmb_bank_account.currentData()
+                instr_no = (self.edt_instr_no.text() or "").strip()
+
+                if bank_id is None:
+                    self._warn("Bank Required", "Select a company bank account for Bank Transfer.", self.cmb_bank_account)
+                    return None
+                if not instr_no:
+                    self._warn("Reference Required", "Enter the transaction/reference number for Bank Transfer.", self.edt_instr_no)
+                    return None
+
+                payload["initial_bank_account_id"] = int(bank_id)
+                payload["initial_instrument_no"] = instr_no
+                payload["initial_instrument_type"] = "online"  # fixed per rule
+
+        return payload
+
+    def accept(self):
+        p = self.get_payload()
+        if p is None:
+            return
+        self._payload = p; super().accept()
+
+    def payload(self):
         return self._payload

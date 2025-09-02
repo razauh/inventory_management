@@ -1,7 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import sqlite3
-from typing import Iterable
+from typing import Iterable, Optional
+
 
 @dataclass
 class SaleHeader:
@@ -18,6 +19,7 @@ class SaleHeader:
     source_type: str = "direct"
     source_id: int | None = None
 
+
 @dataclass
 class SaleItem:
     item_id: int | None
@@ -28,45 +30,76 @@ class SaleItem:
     unit_price: float
     item_discount: float
 
+
 class SalesRepo:
+    """
+    Sales + Quotations repository.
+
+    Key behavior:
+      - SALES are rows with sales.doc_type='sale' and carry inventory postings.
+      - QUOTATIONS are rows with sales.doc_type='quotation'; they have items but NO inventory,
+        and must keep (payment_status='unpaid', paid_amount=0, advance_payment_applied=0).
+      - Payments roll-up (paid_amount/payment_status) comes from sale_payments triggers.
+        Header math helpers are deprecated and must not be used from UI.
+    """
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    # -------- read ----------
+    # ---------------------------------------------------------------------
+    # READ — SALES
+    # ---------------------------------------------------------------------
     def list_sales(self) -> list[dict]:
+        """
+        List only real SALES (doc_type='sale').
+        """
         sql = """
         SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
-               CAST(s.total_amount AS REAL) AS total_amount,
+               CAST(s.total_amount AS REAL)   AS total_amount,
                CAST(s.order_discount AS REAL) AS order_discount,
-               CAST(s.paid_amount AS REAL) AS paid_amount,
+               CAST(s.paid_amount AS REAL)    AS paid_amount,
                s.payment_status, s.notes
         FROM sales s
         JOIN customers c ON c.customer_id = s.customer_id
+        WHERE s.doc_type = 'sale'
         ORDER BY DATE(s.date) DESC, s.sale_id DESC
         """
         return self.conn.execute(sql).fetchall()
 
-    def search_sales(self, query: str = "", date: str | None = None) -> list[dict]:
+    def search_sales(
+        self,
+        query: str = "",
+        date: str | None = None,
+        *,
+        doc_type: str = "sale",   # 'sale' (default) or 'quotation'
+    ) -> list[dict]:
         """
-        Flexible finder for returns UI: filter by sale_id/customer name and/or exact date.
+        Search within SALES by default.
+        Pass doc_type='quotation' to search quotations.
         """
-        where = []
-        params: list = []
+        where = ["s.doc_type = ?"]
+        params: list = [doc_type]
+
         if query:
             where.append("(s.sale_id LIKE ? OR c.name LIKE ?)")
             params += [f"%{query}%", f"%{query}%"]
+
         if date:
             where.append("DATE(s.date) = DATE(?)")
             params.append(date)
+
         sql = """
           SELECT s.sale_id, s.date, c.name AS customer_name,
                  CAST(s.total_amount AS REAL) AS total_amount,
-                 CAST(s.paid_amount AS REAL) AS paid_amount, s.payment_status
-          FROM sales s JOIN customers c ON c.customer_id=s.customer_id
+                 CAST(s.paid_amount AS REAL)  AS paid_amount,
+                 s.payment_status
+          FROM sales s
+          JOIN customers c ON c.customer_id = s.customer_id
         """
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY DATE(s.date) DESC, s.sale_id DESC"
+
         return self.conn.execute(sql, params).fetchall()
 
     def get_header(self, sid: str) -> dict | None:
@@ -86,84 +119,443 @@ class SalesRepo:
         """
         return self.conn.execute(sql, (sid,)).fetchall()
 
-    # -------- write ----------
+    # ---------------------------------------------------------------------
+    # READ — QUOTATIONS
+    # ---------------------------------------------------------------------
+    def list_quotations(self) -> list[dict]:
+        """
+        List only QUOTATIONS (doc_type='quotation').
+        """
+        sql = """
+        SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
+               CAST(s.total_amount AS REAL)   AS total_amount,
+               CAST(s.order_discount AS REAL) AS order_discount,
+               s.quotation_status,
+               s.notes
+        FROM sales s
+        JOIN customers c ON c.customer_id = s.customer_id
+        WHERE s.doc_type = 'quotation'
+        ORDER BY DATE(s.date) DESC, s.sale_id DESC
+        """
+        return self.conn.execute(sql).fetchall()
+
+    # ---------------------------------------------------------------------
+    # INTERNAL WRITES
+    # ---------------------------------------------------------------------
     def _insert_header(self, h: SaleHeader):
-        self.conn.execute("""
-            INSERT INTO sales(sale_id, customer_id, date, total_amount, order_discount,
-                              payment_status, paid_amount, advance_payment_applied,
-                              notes, created_by, source_type, source_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (h.sale_id, h.customer_id, h.date, h.total_amount, h.order_discount,
-             h.payment_status, h.paid_amount, h.advance_payment_applied,
-             h.notes, h.created_by, h.source_type, h.source_id))
+        """
+        Insert a SALE header (doc_type defaults to 'sale' in schema).
+        """
+        self.conn.execute(
+            """
+            INSERT INTO sales (
+                sale_id, customer_id, date,
+                total_amount, order_discount,
+                payment_status, paid_amount, advance_payment_applied,
+                notes, created_by, source_type, source_id
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                h.sale_id,
+                h.customer_id,
+                h.date,
+                h.total_amount,
+                h.order_discount,
+                h.payment_status,
+                h.paid_amount,
+                h.advance_payment_applied,
+                h.notes,
+                h.created_by,
+                h.source_type,
+                h.source_id,
+            ),
+        )
 
     def _insert_item(self, it: SaleItem) -> int:
-        cur = self.conn.execute("""
-            INSERT INTO sale_items(sale_id, product_id, quantity, uom_id, unit_price, item_discount)
-            VALUES (?,?,?,?,?,?)""",
-            (it.sale_id, it.product_id, it.quantity, it.uom_id, it.unit_price, it.item_discount))
+        cur = self.conn.execute(
+            """
+            INSERT INTO sale_items (
+                sale_id, product_id, quantity, uom_id, unit_price, item_discount
+            ) VALUES (?,?,?,?,?,?)
+            """,
+            (it.sale_id, it.product_id, it.quantity, it.uom_id, it.unit_price, it.item_discount),
+        )
         return int(cur.lastrowid)
 
-    def _insert_inventory_sale(self, *, item_id: int, product_id: int, uom_id: int, qty: float,
-                               sid: str, date: str, created_by: int | None, notes: str | None):
-        self.conn.execute("""
-            INSERT INTO inventory_transactions(product_id, quantity, uom_id, transaction_type,
-                                               reference_table, reference_id, reference_item_id,
-                                               date, notes, created_by)
-            VALUES (?, ?, ?, 'sale', 'sales', ?, ?, ?, ?, ?)""",
-            (product_id, qty, uom_id, sid, item_id, date, notes, created_by))
+    def _insert_inventory_sale(
+        self,
+        *,
+        item_id: int,
+        product_id: int,
+        uom_id: int,
+        qty: float,
+        sid: str,
+        date: str,
+        created_by: int | None,
+        notes: str | None,
+    ):
+        self.conn.execute(
+            """
+            INSERT INTO inventory_transactions (
+                product_id, quantity, uom_id, transaction_type,
+                reference_table, reference_id, reference_item_id,
+                date, notes, created_by
+            )
+            VALUES (?, ?, ?, 'sale', 'sales', ?, ?, ?, ?, ?)
+            """,
+            (product_id, qty, uom_id, sid, item_id, date, notes, created_by),
+        )
 
     def _delete_sale_content(self, sid: str):
-        self.conn.execute("DELETE FROM inventory_transactions WHERE reference_table='sales' AND reference_id=?", (sid,))
+        self.conn.execute(
+            "DELETE FROM inventory_transactions WHERE reference_table='sales' AND reference_id=?",
+            (sid,),
+        )
         self.conn.execute("DELETE FROM sale_items WHERE sale_id=?", (sid,))
 
+    # ---------------------------------------------------------------------
+    # WRITE — SALES (doc_type='sale')
+    # ---------------------------------------------------------------------
     def create_sale(self, header: SaleHeader, items: Iterable[SaleItem]):
+        """
+        Create a SALE (doc_type='sale') and post inventory for each item.
+        Payments must be recorded via SalePaymentsRepo (not header math).
+        """
         with self.conn:
             self._insert_header(header)
             for it in items:
                 it.sale_id = header.sale_id
                 item_id = self._insert_item(it)
                 self._insert_inventory_sale(
-                    item_id=item_id, product_id=it.product_id, uom_id=it.uom_id, qty=it.quantity,
-                    sid=header.sale_id, date=header.date, created_by=header.created_by, notes=header.notes)
+                    item_id=item_id,
+                    product_id=it.product_id,
+                    uom_id=it.uom_id,
+                    qty=it.quantity,
+                    sid=header.sale_id,
+                    date=header.date,
+                    created_by=header.created_by,
+                    notes=header.notes,
+                )
 
     def update_sale(self, header: SaleHeader, items: Iterable[SaleItem]):
+        """
+        Update a SALE (doc_type must be 'sale'). Rebuild items & inventory.
+        """
         with self.conn:
-            self.conn.execute("""
+            # Ensure we’re editing a sale row
+            row = self.conn.execute("SELECT doc_type FROM sales WHERE sale_id=?", (header.sale_id,)).fetchone()
+            if not row or row["doc_type"] != "sale":
+                raise ValueError("update_sale() requires an existing sale (doc_type='sale').")
+
+            self.conn.execute(
+                """
                 UPDATE sales
-                   SET customer_id=?, date=?, total_amount=?, order_discount=?,
-                       payment_status=?, paid_amount=?, advance_payment_applied=?,
-                       notes=?, created_by=?, source_type=?, source_id=?
-                 WHERE sale_id=?""",
-                (header.customer_id, header.date, header.total_amount, header.order_discount,
-                 header.payment_status, header.paid_amount, header.advance_payment_applied,
-                 header.notes, header.created_by, header.source_type, header.source_id,
-                 header.sale_id))
+                   SET customer_id=?,
+                       date=?,
+                       total_amount=?,
+                       order_discount=?,
+                       payment_status=?,      -- maintained by triggers; UI should not hand-edit
+                       paid_amount=?,         -- maintained by triggers; UI should not hand-edit
+                       advance_payment_applied=?,
+                       notes=?,
+                       created_by=?,
+                       source_type=?,
+                       source_id=?
+                 WHERE sale_id=?
+                """,
+                (
+                    header.customer_id,
+                    header.date,
+                    header.total_amount,
+                    header.order_discount,
+                    header.payment_status,
+                    header.paid_amount,
+                    header.advance_payment_applied,
+                    header.notes,
+                    header.created_by,
+                    header.source_type,
+                    header.source_id,
+                    header.sale_id,
+                ),
+            )
+
             self._delete_sale_content(header.sale_id)
             for it in items:
                 it.sale_id = header.sale_id
                 item_id = self._insert_item(it)
                 self._insert_inventory_sale(
-                    item_id=item_id, product_id=it.product_id, uom_id=it.uom_id, qty=it.quantity,
-                    sid=header.sale_id, date=header.date, created_by=header.created_by, notes=header.notes)
+                    item_id=item_id,
+                    product_id=it.product_id,
+                    uom_id=it.uom_id,
+                    qty=it.quantity,
+                    sid=header.sale_id,
+                    date=header.date,
+                    created_by=header.created_by,
+                    notes=header.notes,
+                )
 
     def delete_sale(self, sid: str):
         with self.conn:
             self._delete_sale_content(sid)
             self.conn.execute("DELETE FROM sales WHERE sale_id=?", (sid,))
 
-    # -------- returns ----------
-    def record_return(self, *, sid: str, date: str, created_by: int | None, lines: list[dict], notes: str | None):
+    # ---------------------------------------------------------------------
+    # WRITE — QUOTATIONS (doc_type='quotation')
+    # ---------------------------------------------------------------------
+    def create_quotation(
+        self,
+        header: SaleHeader,
+        items: Iterable[SaleItem],
+        *,
+        quotation_status: str = "draft",
+        expiry_date: Optional[str] = None,  # keep optional; schema allows
+    ) -> None:
+        """
+        Create a QUOTATION: insert sales row with doc_type='quotation', quotation_status,
+        zeroed payment fields, and items — NO inventory postings.
+        """
+        with self.conn:
+            # Insert header explicitly as quotation (enforce payment fields per schema)
+            self.conn.execute(
+                """
+                INSERT INTO sales (
+                    sale_id, customer_id, date,
+                    total_amount, order_discount,
+                    payment_status, paid_amount, advance_payment_applied,
+                    notes, created_by, source_type, source_id,
+                    doc_type, quotation_status, expiry_date
+                )
+                VALUES (?, ?, ?, ?, ?, 'unpaid', 0.0, 0.0, ?, ?, 'quotation', ?, 'quotation', ?, ?)
+                """,
+                (
+                    header.sale_id,
+                    header.customer_id,
+                    header.date,
+                    header.total_amount,
+                    header.order_discount,
+                    header.notes,
+                    header.created_by,
+                    header.source_id,         # keep source_id if you link drafts; else None
+                    quotation_status,         # must be one of: draft/sent/accepted/expired/cancelled
+                    expiry_date,
+                ),
+            )
+
+            # Insert items only (no inventory for quotations)
+            for it in items:
+                it.sale_id = header.sale_id
+                self._insert_item(it)
+
+    def update_quotation(
+        self,
+        header: SaleHeader,
+        items: Iterable[SaleItem],
+        *,
+        quotation_status: Optional[str] = None,
+        expiry_date: Optional[str] = None,
+    ) -> None:
+        """
+        Update a QUOTATION: rebuild items; keep doc_type='quotation';
+        enforce payment fields to zero/unpaid.
+        """
+        with self.conn:
+            row = self.conn.execute("SELECT doc_type FROM sales WHERE sale_id=?", (header.sale_id,)).fetchone()
+            if not row or row["doc_type"] != "quotation":
+                raise ValueError("update_quotation() requires an existing quotation (doc_type='quotation').")
+
+            self.conn.execute(
+                """
+                UPDATE sales
+                   SET customer_id=?,
+                       date=?,
+                       total_amount=?,
+                       order_discount=?,
+                       payment_status='unpaid',
+                       paid_amount=0.0,
+                       advance_payment_applied=0.0,
+                       notes=?,
+                       created_by=?,
+                       source_type=?,           -- you may set 'direct' or keep previous
+                       source_id=?,             -- optional linkage while in quotation phase
+                       quotation_status=COALESCE(?, quotation_status),
+                       expiry_date=COALESCE(?, expiry_date)
+                 WHERE sale_id=? AND doc_type='quotation'
+                """,
+                (
+                    header.customer_id,
+                    header.date,
+                    header.total_amount,
+                    header.order_discount,
+                    header.notes,
+                    header.created_by,
+                    header.source_type,
+                    header.source_id,
+                    quotation_status,
+                    expiry_date,
+                    header.sale_id,
+                ),
+            )
+
+            # Rebuild items (no inventory)
+            self.conn.execute("DELETE FROM sale_items WHERE sale_id=?", (header.sale_id,))
+            for it in items:
+                it.sale_id = header.sale_id
+                self._insert_item(it)
+
+    # ---------------------------------------------------------------------
+    # CONVERSION — QUOTATION ➜ SALE
+    # ---------------------------------------------------------------------
+    def convert_quotation_to_sale(
+        self,
+        qo_id: str,
+        new_so_id: str,
+        date: str,
+        created_by: Optional[int],
+    ) -> None:
+        """
+        Create a SALE from an existing QUOTATION:
+          - Insert new sales row (doc_type='sale', source_type='quotation', source_id=qo_id)
+          - Copy items from quotation to new sale
+          - Post inventory for each new sale item
+          - Mark quotation as converted (quotation_status='accepted')
+        """
+        with self.conn:
+            # Fetch quotation header
+            qh = self.conn.execute(
+                "SELECT * FROM sales WHERE sale_id=? AND doc_type='quotation'",
+                (qo_id,),
+            ).fetchone()
+            if not qh:
+                raise ValueError(f"Quotation not found: {qo_id}")
+
+            # Optionally re-derive totals from view; fallback to header values
+            tot = self.conn.execute(
+                """
+                SELECT CAST(calculated_total_amount AS REAL) AS total_after_od
+                FROM sale_detailed_totals WHERE sale_id=?
+                """,
+                (qo_id,),
+            ).fetchone()
+            total_amount = float(tot["total_after_od"]) if tot and tot["total_after_od"] is not None else float(qh["total_amount"])
+
+            # Insert new SALE header (doc_type defaults to 'sale')
+            self.conn.execute(
+                """
+                INSERT INTO sales (
+                    sale_id, customer_id, date,
+                    total_amount, order_discount,
+                    payment_status, paid_amount, advance_payment_applied,
+                    notes, created_by, source_type, source_id
+                )
+                VALUES (?, ?, ?, ?, ?, 'unpaid', 0.0, 0.0, ?, ?, 'quotation', ?)
+                """,
+                (
+                    new_so_id,
+                    int(qh["customer_id"]),
+                    date,
+                    total_amount,
+                    float(qh["order_discount"] or 0.0),
+                    qh["notes"],
+                    created_by,
+                    qo_id,
+                ),
+            )
+
+            # Copy items from quotation
+            q_items = self.conn.execute(
+                """
+                SELECT product_id,
+                       CAST(quantity AS REAL)      AS quantity,
+                       uom_id,
+                       CAST(unit_price AS REAL)    AS unit_price,
+                       CAST(item_discount AS REAL) AS item_discount
+                  FROM sale_items
+                 WHERE sale_id=?
+                 ORDER BY item_id
+                """,
+                (qo_id,),
+            ).fetchall()
+
+            # Insert items for the new sale + inventory postings
+            for qi in q_items:
+                cur = self.conn.execute(
+                    """
+                    INSERT INTO sale_items (
+                        sale_id, product_id, quantity, uom_id, unit_price, item_discount
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_so_id,
+                        int(qi["product_id"]),
+                        float(qi["quantity"]),
+                        int(qi["uom_id"]),
+                        float(qi["unit_price"]),
+                        float(qi["item_discount"]),
+                    ),
+                )
+                new_item_id = int(cur.lastrowid)
+
+                # Inventory posting for SALE
+                self._insert_inventory_sale(
+                    item_id=new_item_id,
+                    product_id=int(qi["product_id"]),
+                    uom_id=int(qi["uom_id"]),
+                    qty=float(qi["quantity"]),
+                    sid=new_so_id,
+                    date=date,
+                    created_by=created_by,
+                    notes=f"Converted from quotation {qo_id}",
+                )
+
+            # Mark quotation as converted
+            self.conn.execute(
+                """
+                UPDATE sales
+                   SET quotation_status='accepted'
+                 WHERE sale_id=? AND doc_type='quotation'
+                """,
+                (qo_id,),
+            )
+
+    # ---------------------------------------------------------------------
+    # RETURNS (unchanged)
+    # ---------------------------------------------------------------------
+    def record_return(
+        self,
+        *,
+        sid: str,
+        date: str,
+        created_by: int | None,
+        lines: list[dict],
+        notes: str | None,
+    ):
         with self.conn:
             for ln in lines:  # {item_id, product_id, uom_id, qty_return}
-                self.conn.execute("""
-                    INSERT INTO inventory_transactions(product_id, quantity, uom_id, transaction_type,
-                        reference_table, reference_id, reference_item_id, date, notes, created_by)
-                    VALUES (?, ?, ?, 'sale_return', 'sales', ?, ?, ?, ?, ?)""",
-                    (ln["product_id"], ln["qty_return"], ln["uom_id"], sid, ln["item_id"], date, notes, created_by))
+                self.conn.execute(
+                    """
+                    INSERT INTO inventory_transactions(
+                        product_id, quantity, uom_id, transaction_type,
+                        reference_table, reference_id, reference_item_id,
+                        date, notes, created_by
+                    )
+                    VALUES (?, ?, ?, 'sale_return', 'sales', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ln["product_id"],
+                        ln["qty_return"],
+                        ln["uom_id"],
+                        sid,
+                        ln["item_id"],
+                        date,
+                        notes,
+                        created_by,
+                    ),
+                )
 
     def sale_return_totals(self, sale_id: str) -> dict:
-        row = self.conn.execute("""
+        row = self.conn.execute(
+            """
             SELECT
               COALESCE(SUM(CAST(it.quantity AS REAL)), 0.0) AS qty_returned,
               COALESCE(SUM(
@@ -174,45 +566,52 @@ class SalesRepo:
             JOIN sale_items si ON si.item_id = it.reference_item_id
             WHERE it.reference_table='sales'
               AND it.reference_id=? AND it.transaction_type='sale_return'
-        """, (sale_id,)).fetchone()
-        return {"qty": float(row["qty_returned"]), "value": float(row["value_returned"])}
+            """,
+            (sale_id,),
+        ).fetchone()
+        return {
+            "qty": float(row["qty_returned"]),
+            "value": float(row["value_returned"]),
+        }
 
-    # -------- payments ----------
+    # ---------------------------------------------------------------------
+    # PAYMENTS — HEADER MATH DEPRECATED
+    # ---------------------------------------------------------------------
     def apply_payment(self, *, sid: str, amount: float):
-        r = self.conn.execute("SELECT total_amount, paid_amount FROM sales WHERE sale_id=?", (sid,)).fetchone()
-        if not r: return
-        paid = float(r["paid_amount"]) + float(amount)
-        total = float(r["total_amount"])
-        status = "paid" if paid >= total else ("partial" if paid > 0 else "unpaid")
-        with self.conn:
-            self.conn.execute("UPDATE sales SET paid_amount=?, payment_status=? WHERE sale_id=?", (paid, status, sid))
+        """
+        Deprecated: Do not use.
+        Use SalePaymentsRepo.record_payment(...) to insert receipts.
+        Header roll-up is maintained by DB triggers on sale_payments.
+        """
+        raise NotImplementedError(
+            "apply_payment is deprecated. Use SalePaymentsRepo.record_payment(...) instead."
+        )
 
     def apply_refund(self, *, sid: str, amount: float):
         """
-        Reduce paid_amount by 'amount' (not below zero) and update payment_status accordingly.
-        Useful when issuing a cash refund instead of store credit.
+        Deprecated: Do not use.
+        Cash refunds via returns should be represented by the agreed flow
+        (e.g., adjust via business rules + payments model when enabled).
         """
-        row = self.conn.execute(
-            "SELECT CAST(paid_amount AS REAL) AS paid, CAST(total_amount AS REAL) AS total FROM sales WHERE sale_id=?",
-            (sid,)
-        ).fetchone()
-        if not row: 
-            return
-        new_paid = max(0.0, float(row["paid"]) - float(amount))
-        status = "paid" if new_paid >= float(row["total"]) else ("partial" if new_paid > 0 else "unpaid")
-        with self.conn:
-            self.conn.execute("UPDATE sales SET paid_amount=?, payment_status=? WHERE sale_id=?", (new_paid, status, sid))
+        raise NotImplementedError(
+            "apply_refund is deprecated. Use the payments/returns flow per policy."
+        )
 
-    # add inside class SalesRepo
+    # ---------------------------------------------------------------------
+    # SAFE TOTALS — for OD proration in returns UI
+    # ---------------------------------------------------------------------
     def get_sale_totals(self, sale_id: str) -> dict:
         """
         Returns subtotal_before_order_discount and calculated_total_amount
         from the 'sale_detailed_totals' view for correct proration.
         """
-        row = self.conn.execute("""
+        row = self.conn.execute(
+            """
             SELECT CAST(subtotal_before_order_discount AS REAL) AS net_subtotal,
-                CAST(calculated_total_amount        AS REAL) AS total_after_od
+                   CAST(calculated_total_amount        AS REAL) AS total_after_od
             FROM sale_detailed_totals
             WHERE sale_id = ?
-        """, (sale_id,)).fetchone()
+            """,
+            (sale_id,),
+        ).fetchone()
         return row or {"net_subtotal": 0.0, "total_after_od": 0.0}

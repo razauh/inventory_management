@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Sale Invoice — {{ doc.id }}</title>
+  <title>Quotation — {{ doc.id }}</title>
   <style>
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; }
     .page { width: 210mm; min-height: 297mm; padding: 16mm 15mm; box-sizing: border-box; }
@@ -14,11 +14,6 @@
     .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-wrap; }
     .meta { text-align: right; }
     .doc-title { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
-    .meta small { color: #555; }
-    .badge { display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
-    .badge.paid { background: #e7f6ec; color: #137333; }
-    .badge.partial { background: #fff7e6; color: #b36b00; }
-    .badge.unpaid { background: #fdeaea; color: #b3261e; }
 
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
     .card { border: 1px solid #ddd; border-radius: 6px; padding: 10px; }
@@ -33,6 +28,7 @@
     .totals .rule { border-top: 1px solid #ccc; }
     .muted { color: #666; }
     .footer { margin-top: 18px; font-size: 11px; color: #444; display: grid; grid-template-columns: 1fr; gap: 6px; }
+    .validity { background: #fff7e6; color: #8a6100; padding: 6px 8px; border-radius: 4px; }
   </style>
 </head>
 <body>
@@ -53,17 +49,9 @@
         </div>
       </div>
       <div class="meta">
-        <div class="doc-title">SALE INVOICE</div>
+        <div class="doc-title">QUOTATION</div>
         <div><small>Document No:</small> <strong>{{ doc.id }}</strong></div>
         <div><small>Date:</small> <strong>{{ doc.date }}</strong></div>
-        {% if doc.payment_status %}
-          {% set ps = (doc.payment_status|string).lower() %}
-          <div style="margin-top:6px;">
-            <span class="badge {{ 'paid' if ps=='paid' else ('partial' if ps=='partial' else 'unpaid') }}">
-              {{ doc.payment_status|upper }}
-            </span>
-          </div>
-        {% endif %}
       </div>
     </div>
 
@@ -145,32 +133,15 @@
       </table>
     </div>
 
-    <!-- Payments / Balance (sales only) -->
-    <div class="totals" style="margin-top:8px;">
-      <table>
-        <tr>
-          <td class="t-right muted">Paid to Date</td>
-          <td class="t-right">{{ '%.2f' % paid_amount }}</td>
-        </tr>
-        <tr class="rule">
-          <td class="t-right"><strong>Remaining</strong></td>
-          <td class="t-right">
-            <strong>{{ '%.2f' % remaining }}</strong>
-          </td>
-        </tr>
-        {% if credit_applied is defined %}
-        <tr>
-          <td class="t-right muted">Returns/Credits Applied</td>
-          <td class="t-right">{{ '%.2f' % credit_applied }}</td>
-        </tr>
-        {% endif %}
-      </table>
+    <!-- Validity note (required for quotation) -->
+    <div class="validity" style="margin-top: 10px;">
+      <strong>Validity:</strong>
+      This quotation is only valid for {{ doc.date }}. Prices are subject to change.
     </div>
 
     <!-- Footer -->
     <div class="footer">
-      <div>Thank you for your business!</div>
-      <!-- Optional slim contact strip could go here -->
+      <div>Terms &amp; Conditions: Please confirm availability and prices before placing an order.</div>
     </div>
   </div>
 </body>
