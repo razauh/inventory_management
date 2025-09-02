@@ -22,9 +22,13 @@ class CustomerController(BaseModule):
       - Loads active customers by default (customers.is_active = 1).
       - Right pane shows core fields + credit balance + recent activity.
       - Action buttons (Receive Payment, Record Advance, Apply Advance, Payment History)
-        are disabled for inactive customers.
+        are disabled for inactive customers (history is allowed even if inactive).
       - Receipts enforce sale_id refers to a real SALE (not quotation) for this customer.
       - UI modules are imported lazily to keep startup fast.
+
+    Refactor:
+      - Introduces _preflight() and _lazy_attr() to remove repeated boilerplate
+        across payment/credit/history action handlers.
     """
 
     def __init__(self, conn: sqlite3.Connection):
@@ -52,7 +56,6 @@ class CustomerController(BaseModule):
         self.view.search.textChanged.connect(self._apply_filter)
 
         # Payments/credit/history actions
-        # Expect these buttons to exist on CustomerView per our UI plan
         self.view.btn_receive_payment.clicked.connect(self._on_receive_payment)
         self.view.btn_record_advance.clicked.connect(self._on_record_advance)
         self.view.btn_apply_advance.clicked.connect(self._on_apply_advance)
@@ -130,15 +133,23 @@ class CustomerController(BaseModule):
         ).fetchone()
         credit_balance = float(bal_row["balance"]) if bal_row else 0.0
 
-        # sales count + open due sum (using calculated_total_amount; clamp each sale at >=0)
+        # sales count + open due sum (use calculated_total_amount, and subtract advance_payment_applied)
         summary_row = self.conn.execute(
             """
             SELECT
               COUNT(*) AS sales_count,
               COALESCE(SUM(
                 CASE
-                  WHEN (COALESCE(sdt.calculated_total_amount, s.total_amount) - COALESCE(s.paid_amount, 0)) > 0
-                  THEN (COALESCE(sdt.calculated_total_amount, s.total_amount) - COALESCE(s.paid_amount, 0))
+                  WHEN (
+                    COALESCE(sdt.calculated_total_amount, s.total_amount)
+                    - COALESCE(s.paid_amount, 0)
+                    - COALESCE(s.advance_payment_applied, 0)
+                  ) > 0
+                  THEN (
+                    COALESCE(sdt.calculated_total_amount, s.total_amount)
+                    - COALESCE(s.paid_amount, 0)
+                    - COALESCE(s.advance_payment_applied, 0)
+                  )
                   ELSE 0
                 END
               ), 0.0) AS open_due_sum
@@ -212,7 +223,52 @@ class CustomerController(BaseModule):
         self.view.btn_receive_payment.setEnabled(enabled)
         self.view.btn_record_advance.setEnabled(enabled)
         self.view.btn_apply_advance.setEnabled(enabled)
+        # History is allowed as long as something is selected
         self.view.btn_payment_history.setEnabled(True if self._selected_id() else False)
+
+    # ------------------------------------------------------------------ #
+    # Small helpers to reduce repetition
+    # ------------------------------------------------------------------ #
+
+    def _preflight(self, *, require_active: bool = True, require_file_db: bool = True) -> tuple[Optional[int], Optional[str]]:
+        """
+        Common pre-checks for action handlers.
+
+        Returns (customer_id, db_path). Any None means the caller should bail.
+        - require_active: ensure selected customer is active
+        - require_file_db: ensure database is file-backed (payments/credits need this)
+        """
+        cid = self._selected_id()
+        if not cid:
+            info(self.view, "Select", "Please select a customer first.")
+            return None, None
+
+        if require_active and not self._fetch_is_active(cid):
+            info(self.view, "Inactive", "This customer is inactive. Enable the customer to proceed.")
+            return None, None
+
+        db_path: Optional[str]
+        if require_file_db:
+            db_path = self._ensure_db_path_or_toast()
+            if not db_path:
+                return None, None
+        else:
+            db_path = self._db_path_from_conn() or ":memory:"
+
+        return cid, db_path
+
+    def _lazy_attr(self, dotted: str, *, toast_title: str, on_fail: str) -> Any | None:
+        """
+        Lazy-import a symbol using a dotted path (e.g., 'pkg.mod.func' or 'pkg.mod.Class').
+        Shows a toast if import fails and returns None.
+        """
+        try:
+            module_path, attr_name = dotted.rsplit(".", 1)
+            mod = __import__(module_path, fromlist=[attr_name])
+            return getattr(mod, attr_name)
+        except Exception as e:
+            info(self.view, toast_title, f"{on_fail} ({e})")
+            return None
 
     # ------------------------------------------------------------------ #
     # CRUD (unchanged behavior)
@@ -281,32 +337,18 @@ class CustomerController(BaseModule):
     # -- Receive Payment --
 
     def _on_receive_payment(self):
-        cid = self._selected_id()
-        if not cid:
-            info(self.view, "Select", "Please select a customer first.")
+        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        if not cid or not db_path:
             return
 
-        # Must be active
-        if not self._fetch_is_active(cid):
-            info(self.view, "Inactive", "This customer is inactive. Enable the customer to record payments.")
+        open_receipt_form = self._lazy_attr(
+            "payments.ui.customer_receipt_form.open_receipt_form",
+            toast_title="Unavailable",
+            on_fail="Receipt form UI is not available. Please install payments.ui.customer_receipt_form.",
+        )
+        if not open_receipt_form:
             return
 
-        db_path = self._ensure_db_path_or_toast()
-        if not db_path:
-            return
-
-        # Open the receipt UI (lazy import)
-        try:
-            from payments.ui.customer_receipt_form import open_receipt_form  # type: ignore
-        except Exception:
-            info(
-                self.view,
-                "Unavailable",
-                "Receipt form UI is not available. Please install payments.ui.customer_receipt_form.",
-            )
-            return
-
-        # Let the user pick a sale (UI should present only this customer's real sales)
         form_payload = open_receipt_form(customer_id=cid, sale_id=None, defaults=None)
         if not form_payload:
             return  # cancelled
@@ -321,11 +363,12 @@ class CustomerController(BaseModule):
             info(self.view, "Invalid", "Payments can only be recorded against SALES belonging to this customer.")
             return
 
-        # Persist via repo (lazy import)
-        try:
-            from inventory_management.database.repositories.sale_payments_repo import SalePaymentsRepo
-        except Exception as e:
-            info(self.view, "Error", f"Could not load SalePaymentsRepo: {e}")
+        SalePaymentsRepo = self._lazy_attr(
+            "inventory_management.database.repositories.sale_payments_repo.SalePaymentsRepo",
+            toast_title="Error",
+            on_fail="Could not load SalePaymentsRepo",
+        )
+        if not SalePaymentsRepo:
             return
 
         repo = SalePaymentsRepo(db_path)
@@ -356,39 +399,28 @@ class CustomerController(BaseModule):
     # -- Record Advance (Deposit / Credit) --
 
     def _on_record_advance(self):
-        cid = self._selected_id()
-        if not cid:
-            info(self.view, "Select", "Please select a customer first.")
+        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        if not cid or not db_path:
             return
 
-        if not self._fetch_is_active(cid):
-            info(self.view, "Inactive", "This customer is inactive. Enable the customer to record advances.")
-            return
-
-        db_path = self._ensure_db_path_or_toast()
-        if not db_path:
-            return
-
-        try:
-            from payments.ui.customer_advance_form import open_record_advance_form  # type: ignore
-        except Exception:
-            info(
-                self.view,
-                "Unavailable",
-                "Advance form UI is not available. Please install payments.ui.customer_advance_form.",
-            )
+        open_record_advance_form = self._lazy_attr(
+            "payments.ui.customer_advance_form.open_record_advance_form",
+            toast_title="Unavailable",
+            on_fail="Advance form UI is not available. Please install payments.ui.customer_advance_form.",
+        )
+        if not open_record_advance_form:
             return
 
         form_payload = open_record_advance_form(customer_id=cid, defaults=None)
         if not form_payload:
             return  # cancelled
 
-        try:
-            from inventory_management.database.repositories.customer_advances_repo import (
-                CustomerAdvancesRepo,
-            )
-        except Exception as e:
-            info(self.view, "Error", f"Could not load CustomerAdvancesRepo: {e}")
+        CustomerAdvancesRepo = self._lazy_attr(
+            "inventory_management.database.repositories.customer_advances_repo.CustomerAdvancesRepo",
+            toast_title="Error",
+            on_fail="Could not load CustomerAdvancesRepo",
+        )
+        if not CustomerAdvancesRepo:
             return
 
         repo = CustomerAdvancesRepo(db_path)
@@ -444,27 +476,16 @@ class CustomerController(BaseModule):
         return out
 
     def _on_apply_advance(self):
-        cid = self._selected_id()
-        if not cid:
-            info(self.view, "Select", "Please select a customer first.")
+        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        if not cid or not db_path:
             return
 
-        if not self._fetch_is_active(cid):
-            info(self.view, "Inactive", "This customer is inactive. Enable the customer to apply advances.")
-            return
-
-        db_path = self._ensure_db_path_or_toast()
-        if not db_path:
-            return
-
-        try:
-            from payments.ui.apply_advance_form import open_apply_advance_form  # type: ignore
-        except Exception:
-            info(
-                self.view,
-                "Unavailable",
-                "Apply-advance UI is not available. Please install payments.ui.apply_advance_form.",
-            )
+        open_apply_advance_form = self._lazy_attr(
+            "payments.ui.apply_advance_form.open_apply_advance_form",
+            toast_title="Unavailable",
+            on_fail="Apply-advance UI is not available. Please install payments.ui.apply_advance_form.",
+        )
+        if not open_apply_advance_form:
             return
 
         sales = self._eligible_sales_for_application(cid)
@@ -483,12 +504,12 @@ class CustomerController(BaseModule):
             info(self.view, "Invalid", "Credit can only be applied to SALES belonging to this customer.")
             return
 
-        try:
-            from inventory_management.database.repositories.customer_advances_repo import (
-                CustomerAdvancesRepo,
-            )
-        except Exception as e:
-            info(self.view, "Error", f"Could not load CustomerAdvancesRepo: {e}")
+        CustomerAdvancesRepo = self._lazy_attr(
+            "inventory_management.database.repositories.customer_advances_repo.CustomerAdvancesRepo",
+            toast_title="Error",
+            on_fail="Could not load CustomerAdvancesRepo",
+        )
+        if not CustomerAdvancesRepo:
             return
 
         repo = CustomerAdvancesRepo(db_path)
@@ -511,32 +532,34 @@ class CustomerController(BaseModule):
     # -- Payment / Credit History --
 
     def _on_payment_history(self):
-        cid = self._selected_id()
+        # History is allowed even if customer is inactive; file DB not strictly required
+        cid, db_path = self._preflight(require_active=False, require_file_db=False)
         if not cid:
-            info(self.view, "Select", "Please select a customer first.")
             return
 
-        # Build data via service and try to open UI view (both imported lazily)
-        try:
-            from inventory_management.modules.customer.history import CustomerHistoryService
-        except Exception as e:
-            info(self.view, "Error", f"Could not load history service: {e}")
+        CustomerHistoryService = self._lazy_attr(
+            "inventory_management.modules.customer.history.CustomerHistoryService",
+            toast_title="Error",
+            on_fail="Could not load history service",
+        )
+        if not CustomerHistoryService:
             return
 
-        history_service = CustomerHistoryService(self._db_path_from_conn() or ":memory:")
+        history_service = CustomerHistoryService(db_path or ":memory:")
         history_payload = history_service.full_history(cid)
 
-        try:
-            from payments.ui.payment_history_view import open_customer_history  # type: ignore
-        except Exception:
-            # UI not available — just toast and do nothing else
+        open_customer_history = self._lazy_attr(
+            "payments.ui.payment_history_view.open_customer_history",
+            toast_title="Unavailable",
+            on_fail="Payment History UI is not available.",
+        )
+        if not open_customer_history:
             info(
                 self.view,
                 "Unavailable",
                 "Payment History UI is not available. Returning data to logs/console.",
             )
-            # Optional: print payload for debugging
-            # print(history_payload)
+            # Optional: print(history_payload)
             return
 
         open_customer_history(customer_id=cid, history=history_payload)

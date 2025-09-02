@@ -13,7 +13,7 @@ class CustomerAdvancesRepo:
     Conventions:
       • Deposits and return credits ADD credit (positive amounts).
       • Applications to a sale CONSUME credit (written as negative amounts).
-      • DB trigger (trg_advances_no_overdraw) prevents overall overdraw.
+      • DB trigger (e.g., trg_advances_no_overdraw) prevents overall overdraw.
       • v_customer_advance_balance view provides current balance by customer.
 
     source_type values:
@@ -38,8 +38,10 @@ class CustomerAdvancesRepo:
         return x if x > 0 else 0.0
 
     # ---- API --------------------------------------------------------------
+    # NOTE: Method names aligned with controllers/actions expectations.
+    #       Backward-compatible wrappers are provided at the bottom of the class.
 
-    def add_deposit(
+    def grant_credit(
         self,
         *,
         customer_id: int,
@@ -49,7 +51,7 @@ class CustomerAdvancesRepo:
         created_by: Optional[int] = None,
     ) -> int:
         """
-        Add customer credit via a direct deposit (positive amount).
+        Grant customer credit via a direct deposit (positive amount).
         Returns the new tx_id.
         """
         if amount is None or float(amount) <= 0:
@@ -110,7 +112,7 @@ class CustomerAdvancesRepo:
             )
             return int(cur.lastrowid)
 
-    def apply_to_sale(
+    def apply_credit_to_sale(
         self,
         *,
         customer_id: int,
@@ -122,13 +124,14 @@ class CustomerAdvancesRepo:
     ) -> int:
         """
         Apply existing customer credit to a sale (consumes credit).
-        Writes a NEGATIVE amount. DB trigger prevents overdraw.
+        Writes a NEGATIVE amount. Final over-application prevention is enforced by DB triggers.
 
-        Soft checks:
+        Soft checks (for clearer messages before the DB enforces):
           - amount must be positive.
           - sale must exist, be doc_type='sale', and belong to the customer.
-          - will not apply more than the sale's remaining due.
-            remaining_due = total_amount - paid_amount - already_applied_credit_to_this_sale
+          - will not apply more than the sale's remaining due:
+              remaining_due = total_amount - paid_amount - advance_payment_applied
+            (advance_payment_applied is expected to be maintained by DB triggers)
         Returns the new tx_id.
         """
         if not sale_id:
@@ -140,7 +143,12 @@ class CustomerAdvancesRepo:
             # Validate sale exists, is a real sale, and belongs to the customer
             row = con.execute(
                 """
-                SELECT sale_id, customer_id, total_amount, paid_amount, doc_type
+                SELECT sale_id,
+                       customer_id,
+                       COALESCE(total_amount, 0.0)            AS total_amount,
+                       COALESCE(paid_amount, 0.0)              AS paid_amount,
+                       COALESCE(advance_payment_applied, 0.0)  AS advance_payment_applied,
+                       doc_type
                   FROM sales
                  WHERE sale_id = ?;
                 """,
@@ -156,20 +164,9 @@ class CustomerAdvancesRepo:
 
             total_amount = float(row["total_amount"] or 0.0)
             paid_amount = float(row["paid_amount"] or 0.0)
+            adv_applied = float(row["advance_payment_applied"] or 0.0)
 
-            # Already-applied credit to this sale (sum of negative amounts stored as positives here)
-            applied_credit_row = con.execute(
-                """
-                SELECT COALESCE(SUM(-CAST(amount AS REAL)), 0.0) AS applied
-                  FROM customer_advances
-                 WHERE source_type = 'applied_to_sale'
-                   AND source_id   = :sale_id;
-                """,
-                {"sale_id": sale_id},
-            ).fetchone()
-            already_applied = float(applied_credit_row["applied"] or 0.0)
-
-            remaining_due = self._clamp_non_negative(total_amount - paid_amount - already_applied)
+            remaining_due = self._clamp_non_negative(total_amount - paid_amount - adv_applied)
 
             if float(amount) > (remaining_due + 1e-9):
                 raise ValueError(
@@ -221,6 +218,46 @@ class CustomerAdvancesRepo:
                 (customer_id,),
             )
             return cur.fetchall()
+
+    # ---- Backward-compatible wrappers (do not remove without updating callers) ----
+
+    def add_deposit(
+        self,
+        *,
+        customer_id: int,
+        amount: float,
+        date: Optional[str] = None,
+        notes: Optional[str] = None,
+        created_by: Optional[int] = None,
+    ) -> int:
+        """Deprecated wrapper. Use grant_credit()."""
+        return self.grant_credit(
+            customer_id=customer_id,
+            amount=amount,
+            date=date,
+            notes=notes,
+            created_by=created_by,
+        )
+
+    def apply_to_sale(
+        self,
+        *,
+        customer_id: int,
+        sale_id: str,
+        amount: float,
+        date: Optional[str] = None,
+        created_by: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> int:
+        """Deprecated wrapper. Use apply_credit_to_sale()."""
+        return self.apply_credit_to_sale(
+            customer_id=customer_id,
+            sale_id=sale_id,
+            amount=amount,
+            date=date,
+            created_by=created_by,
+            notes=notes,
+        )
 
 
 # Optional convenience factory

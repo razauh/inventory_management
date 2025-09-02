@@ -50,6 +50,9 @@ class CustomerHistoryService:
         """
         Returns sales for the customer with header totals (both header + calc view),
         computed remaining due, and an embedded list of line items.
+
+        remaining_due formula:
+            remaining_due = calculated_total_amount - paid_amount - advance_payment_applied   (clamped at >= 0)
         """
         with self._connect() as con:
             sales = con.execute(
@@ -60,6 +63,7 @@ class CustomerHistoryService:
                     s.date,
                     s.total_amount,
                     s.paid_amount,
+                    s.advance_payment_applied,
                     s.payment_status,
                     s.order_discount,
                     s.notes,
@@ -110,12 +114,13 @@ class CustomerHistoryService:
         for r in items:
             items_by_sale.setdefault(r["sale_id"], []).append(dict(r))
 
-        # Compute remaining due based on calculated_total_amount (more robust)
+        # Compute remaining due using calculated_total_amount - paid_amount - advance_payment_applied
         result: List[Dict[str, Any]] = []
         for s in sales:
             calc_total = float(s["calculated_total_amount"] or 0.0)
             paid = float(s["paid_amount"] or 0.0)
-            remaining_due = self._clamp_non_negative(calc_total - paid)
+            adv_applied = float(s["advance_payment_applied"] or 0.0)
+            remaining_due = self._clamp_non_negative(calc_total - paid - adv_applied)
             header_total = float(s["total_amount"] or 0.0)
             result.append(
                 {

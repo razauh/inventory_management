@@ -1049,6 +1049,35 @@ BEGIN
   END;
 END;
 
+/* New guard: do not allow applying credit beyond a sale's remaining due */
+DROP TRIGGER IF EXISTS trg_customer_advances_not_exceed_remaining_due;
+CREATE TRIGGER trg_customer_advances_not_exceed_remaining_due
+BEFORE INSERT ON customer_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
+BEGIN
+  /* Ensure referenced sale exists */
+  SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM sales s WHERE s.sale_id = NEW.source_id)
+      THEN RAISE(ABORT, 'Invalid sale reference for customer credit application')
+    ELSE 1
+  END;
+
+  /* remaining_due = total_amount - paid_amount - advance_payment_applied */
+  SELECT CASE
+    WHEN (
+      COALESCE((SELECT CAST(total_amount AS REAL)            FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(paid_amount AS REAL)             FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(advance_payment_applied AS REAL) FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      + CAST(NEW.amount AS REAL)  /* NEW.amount negative when applying */
+    ) < -1e-9
+    THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
+    ELSE 1
+  END;
+END;
+
 /* Roll up paid_amount & payment_status from sale_payments (clamped ≥ 0) */
 DROP TRIGGER IF EXISTS trg_paid_from_sale_payments_ai;
 DROP TRIGGER IF EXISTS trg_paid_from_sale_payments_au;
@@ -1091,6 +1120,59 @@ BEGIN
             WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id),0.0)) > 0 THEN 'partial'
             ELSE 'unpaid' END
    WHERE sale_id = OLD.sale_id;
+END;
+
+/* Roll up sales.advance_payment_applied from customer credit applications */
+DROP TRIGGER IF EXISTS trg_adv_applied_from_customer_ai;
+DROP TRIGGER IF EXISTS trg_adv_applied_from_customer_au;
+DROP TRIGGER IF EXISTS trg_adv_applied_from_customer_ad;
+
+CREATE TRIGGER trg_adv_applied_from_customer_ai
+AFTER INSERT ON customer_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
+BEGIN
+  UPDATE sales
+     SET advance_payment_applied =
+         MAX(0.0, COALESCE((
+           SELECT SUM(-CAST(amount AS REAL))
+           FROM customer_advances ca
+           WHERE ca.source_type = 'applied_to_sale'
+             AND ca.source_id   = NEW.source_id
+         ), 0.0))
+   WHERE sale_id = NEW.source_id;
+END;
+
+CREATE TRIGGER trg_adv_applied_from_customer_au
+AFTER UPDATE ON customer_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
+BEGIN
+  UPDATE sales
+     SET advance_payment_applied =
+         MAX(0.0, COALESCE((
+           SELECT SUM(-CAST(amount AS REAL))
+           FROM customer_advances ca
+           WHERE ca.source_type = 'applied_to_sale'
+             AND ca.source_id   = NEW.source_id
+         ), 0.0))
+   WHERE sale_id = NEW.source_id;
+END;
+
+CREATE TRIGGER trg_adv_applied_from_customer_ad
+AFTER DELETE ON customer_advances
+FOR EACH ROW
+WHEN OLD.source_type = 'applied_to_sale' AND OLD.source_id IS NOT NULL
+BEGIN
+  UPDATE sales
+     SET advance_payment_applied =
+         MAX(0.0, COALESCE((
+           SELECT SUM(-CAST(amount AS REAL))
+           FROM customer_advances ca
+           WHERE ca.source_type = 'applied_to_sale'
+             AND ca.source_id   = OLD.source_id
+         ), 0.0))
+   WHERE sale_id = OLD.source_id;
 END;
 
 /* Roll up paid_amount & payment_status from purchase_payments (clamped ≥ 0; cleared only) */
