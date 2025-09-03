@@ -126,8 +126,14 @@ class MainWindow(QMainWindow):
             fallback_placeholder=True,
         )
 
-        # Expense/Reporting/Admin/etc. (placeholders for now)
-        self.add_placeholder("Expense")
+        # Expenses
+        self._add_module_safe(
+            "Expenses",
+            "inventory_management.modules.expense.controller",
+            "ExpenseController",
+            self.conn,
+            fallback_placeholder=True,
+        )
         self.add_placeholder("Reporting")
         if self.user and self.user.get("role") == "admin":
             self.add_placeholder("Users")
