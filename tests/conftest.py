@@ -8,10 +8,13 @@
 # - conn.row_factory = sqlite3.Row, PRAGMA foreign_keys=ON
 # - Provide handy ids + current_user fixtures
 # - Silence benign Qt signal warnings
+# - Enforce offscreen Qt, stub modal dialogs to prevent hangs, and
+#   proactively close top-level widgets between tests
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -30,6 +33,19 @@ SEED_SQL     = PROJECT_ROOT / "tests" / "seed_common.sql"
 @pytest.fixture(scope="session")
 def app(qapp):  # alias to match code that expects an `app` fixture
     return qapp
+
+
+# ---------- Enforce headless/offscreen Qt everywhere ----------
+@pytest.fixture(autouse=True, scope="session")
+def _qt_offscreen_env():
+    """
+    Ensure all tests run with an offscreen Qt platform plugin to avoid
+    modal UI hangs and display dependency on CI.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # Optional reductions in noise / decoration issues on some platforms
+    os.environ.setdefault("QT_DEBUG_PLUGINS", "0")
+    os.environ.setdefault("QT_QPA_DISABLE_WINDOWDECORATION", "1")
 
 
 # ---------- Silence benign Qt warnings ----------
@@ -62,6 +78,45 @@ def _silence_benign_qt():
         yield
     finally:
         QtCore.qInstallMessageHandler(original)
+
+
+# ---------- Globally stub modal message boxes to avoid hangs ----------
+@pytest.fixture(autouse=True)
+def _no_modal_dialogs(monkeypatch):
+    """
+    Prevent any QMessageBox.* call from opening a blocking modal dialog.
+    Returns sensible defaults so code under test can proceed.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    # No-op common modalities
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: 0)
+    monkeypatch.setattr(QMessageBox, "warning",     lambda *a, **k: 0)
+    monkeypatch.setattr(QMessageBox, "critical",    lambda *a, **k: 0)
+    # Default confirm to "Yes" so delete/confirm flows can continue
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+
+# ---------- Proactively close any top-level windows between tests ----------
+@pytest.fixture(autouse=True)
+def _close_top_levels(qtbot):
+    """
+    Ensure no straggler windows remain open, which can interfere with
+    subsequent tests or hang the session teardown.
+    """
+    yield
+    try:
+        from PySide6.QtWidgets import QApplication
+        for w in QApplication.topLevelWidgets():
+            try:
+                w.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # ---------- Seed shared DB once per session ----------

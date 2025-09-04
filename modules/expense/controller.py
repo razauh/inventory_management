@@ -31,12 +31,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableView,
     QLabel,
+    QMessageBox,  # <-- added for test monkeypatching
 )
 
 from ..base_module import BaseModule
-from ..utils import ui_helpers as ui
-from ..utils.helpers import today_str
-from ..database.repositories.expenses_repo import ExpensesRepo
+from ...utils import ui_helpers as ui
+from ...utils.helpers import today_str
+from ...database.repositories.expenses_repo import ExpensesRepo
 from .model import ExpensesTableModel
 
 
@@ -174,7 +175,7 @@ class ExpenseController(BaseModule):
         if exp_id is None:
             ui.info(self.view, "Select", "Please select an expense to delete.")
             return
-        # Confirm deletion
+        # Confirm deletion (lazy import preserved)
         from PySide6.QtWidgets import QMessageBox
 
         resp = QMessageBox.question(

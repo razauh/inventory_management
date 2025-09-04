@@ -21,8 +21,6 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QDate
 
-from ..utils.helpers import today_str
-
 
 class ExpenseView(QWidget):
     """UI container for listing and filtering expenses."""
@@ -44,12 +42,15 @@ class ExpenseView(QWidget):
 
         # Date filter (optional)
         filter_row.addWidget(QLabel("Date:"))
-        self.date_filter = QDateEdit()
-        self.date_filter.setDisplayFormat("yyyy-MM-dd")
+        self.date_filter = QDateEdit(self)
         self.date_filter.setCalendarPopup(True)
-        # Start with no date selected
-        self.date_filter.setDate(QDate.fromString(today_str(), "yyyy-MM-dd"))
-        self.date_filter.clear()
+        self.date_filter.setDisplayFormat("yyyy-MM-dd")
+
+        # Represent "no date selected" via special value
+        self.date_filter.setSpecialValueText("")  # display blank for min date
+        self.date_filter.setMinimumDate(QDate(1900, 1, 1))
+        self.date_filter.setDate(self.date_filter.minimumDate())  # show blank (special value)
+
         filter_row.addWidget(self.date_filter)
 
         # Category filter
@@ -82,8 +83,11 @@ class ExpenseView(QWidget):
 
     @property
     def selected_date(self) -> str | None:
-        date_str = self.date_filter.date().toString("yyyy-MM-dd")
-        return date_str if date_str else None
+        # If at the minimum date, treat as "no filter"
+        if self.date_filter.date() == self.date_filter.minimumDate():
+            return None
+        txt = self.date_filter.text().strip()
+        return txt or None
 
     @property
     def selected_category_id(self) -> int | None:

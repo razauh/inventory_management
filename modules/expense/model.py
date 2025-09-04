@@ -20,7 +20,7 @@ from typing import List, Dict, Any
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
-from ..utils.helpers import fmt_money
+from ...utils.helpers import fmt_money
 
 
 class ExpenseCategoriesModel(QAbstractTableModel):

@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QDate
 
-from ..utils.validators import non_empty
+from ...utils.validators import non_empty
 
 
 class ExpenseForm(QDialog):
@@ -42,7 +42,7 @@ class ExpenseForm(QDialog):
         self.setWindowTitle("Expense")
         self.setModal(True)
 
-        # Record existing expense_id if editing
+        # Record existing expense_id if editing (None for create)
         self._expense_id = int(initial["expense_id"]) if initial and initial.get("expense_id") else None
 
         # Widgets
@@ -101,16 +101,15 @@ class ExpenseForm(QDialog):
         if self.spin_amount.value() <= 0:
             self.spin_amount.setFocus()
             return None
-        desc = self.edt_description.text().strip()
-        amount = float(self.spin_amount.value())
-        date_str = self.date_edit.date().toString("yyyy-MM-dd")
-        category_id = self.cmb_category.currentData()
-        return {
-            "description": desc,
-            "amount": amount,
-            "date": date_str,
-            "category_id": category_id,
+
+        payload = {
+            "expense_id": getattr(self, "_expense_id", None),  # include key for both create/edit
+            "description": self.edt_description.text().strip(),
+            "amount": float(self.spin_amount.value()),
+            "date": self.date_edit.date().toString("yyyy-MM-dd"),
+            "category_id": self.cmb_category.currentData(),  # None if "(None)" selected
         }
+        return payload
 
     def accept(self) -> None:
         p = self.get_payload()
