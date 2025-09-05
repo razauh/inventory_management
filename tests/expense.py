@@ -1,412 +1,438 @@
-# tests/test_expense_module_all.py
-# Combined from:
-# - tests/test_expenses_repo.py
-# - tests/test_expense_models.py
-# - tests/test_expense_view.py
-# - tests/test_expense_form.py
-# - tests/test_expense_controller.py
+# inventory_management/tests/expense.py
+# pytest -q --maxfail=1 --disable-warnings
 
 from __future__ import annotations
 
-import os
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # safe for headless CI
-
-import sqlite3
-from typing import Any, List, Dict, Optional
+import csv
+from typing import List, Dict
 
 import pytest
+from PySide6.QtCore import Qt, QDate
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QFileDialog
 
-# ========================= Repo tests (original: tests/test_expenses_repo.py) =========================
-
-# Import the repo + error exactly as specified
 from inventory_management.database.repositories.expenses_repo import (
     ExpensesRepo,
     DomainError,
 )
+from inventory_management.modules.expense.form import ExpenseForm
+from inventory_management.modules.expense.view import ExpenseView
+from inventory_management.modules.expense.controller import ExpenseController
+from inventory_management.modules.expense.model import ExpensesTableModel
+from inventory_management.modules.expense.category_dialog import CategoryDialog
 
-# --- Minimal schema exactly as documented (no extras) ---
-SCHEMA = """
-CREATE TABLE expense_categories (
-    category_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT UNIQUE NOT NULL
-);
-CREATE TABLE expenses (
-    expense_id  INTEGER PRIMARY KEY AUTOINCREMENT,
-    description TEXT   NOT NULL,
-    amount      NUMERIC NOT NULL CHECK (CAST(amount AS REAL) >= 0),
-    date        DATE    NOT NULL DEFAULT CURRENT_DATE,
-    category_id INTEGER,
-    FOREIGN KEY (category_id) REFERENCES expense_categories(category_id)
-);
-"""
 
-def make_conn() -> sqlite3.Connection:
-    con = sqlite3.connect(":memory:")
-    con.row_factory = sqlite3.Row
-    # foreign_keys pragma is unspecified in the description, so we do not enforce it.
-    con.executescript(SCHEMA)
-    return con
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 
-# ---------- Category tests ----------
+def _ensure_clean_tables(conn) -> None:
+    try:
+        conn.execute("DELETE FROM expenses")
+        conn.execute("DELETE FROM expense_categories")
+        conn.commit()
+    except Exception as e:
+        raise RuntimeError(
+            "Expected 'expenses' and 'expense_categories' to exist in data/myshop.db"
+        ) from e
 
-def test_list_categories_empty():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    assert repo.list_categories() == []  # ordered by name, empty OK
 
-def test_create_category_rejects_blank_name():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    with pytest.raises(DomainError):  # per spec: blank → DomainError
-        repo.create_category("  ")
+def _seed_categories(repo: ExpensesRepo, names: List[str]) -> List[int]:
+    ids = []
+    for n in names:
+        cid = repo.create_category(n)
+        ids.append(cid)
+    return ids
 
-def test_create_category_then_list_is_ordered_by_name():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    a = repo.create_category("Travel")
-    b = repo.create_category("Meals")
-    # list is ORDER BY name, so Meals comes before Travel
+
+def _seed_expenses(conn, rows: List[tuple]) -> None:
+    cat_map = {r["name"]: r["category_id"] for r in conn.execute(
+        "SELECT category_id, name FROM expense_categories"
+    )}
+    for d, a, dt_str, cname in rows:
+        cid = cat_map.get(cname) if cname else None
+        conn.execute(
+            "INSERT INTO expenses(description, amount, date, category_id) VALUES (?,?,?,?)",
+            (d, float(a), dt_str, cid),
+        )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------
+# Repository tests
+# ---------------------------------------------------------------------
+
+def test_repo_category_crud_and_validation(conn):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+
+    assert repo.list_categories() == []
+    cid = repo.create_category(" Fuel ")
     cats = repo.list_categories()
-    assert [c.name for c in cats] == ["Meals", "Travel"]
-    assert sorted([c.category_id for c in cats]) == sorted([a, b])
+    assert len(cats) == 1 and cats[0].name == "Fuel"
 
-def test_create_category_duplicate_raises_unique_violation():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    repo.create_category("Utilities")
-    with pytest.raises(sqlite3.IntegrityError):
-        repo.create_category("Utilities")  # spec: UNIQUE violation raised by SQLite
+    repo.update_category(cid, "Diesel")
+    cats = repo.list_categories()
+    assert cats[0].name == "Diesel"
 
-def test_update_category_validation_and_effect():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    cid = repo.create_category("Misc")
     with pytest.raises(DomainError):
-        repo.update_category(cid, "  ")
-    repo.update_category(cid, "Miscellaneous")
-    out = repo.list_categories()
-    assert any(c.category_id == cid and c.name == "Miscellaneous" for c in out)
+        repo.create_category("  ")
+    with pytest.raises(DomainError):
+        repo.update_category(cid, "")
 
-def test_delete_category_removes_row_without_extra_checks():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    cid = repo.create_category("Temp")
-    # No additional business rules enforced by repo; just delete
-    con.execute("DELETE FROM expense_categories WHERE category_id=?", (cid,))
-    con.commit()
-    assert [c.category_id for c in repo.list_categories()] == []
+    repo.delete_category(cid)
+    assert repo.list_categories() == []
 
-# ---------- Expense tests ----------
 
-def _seed_expenses(con: sqlite3.Connection):
-    con.execute("INSERT INTO expense_categories(name) VALUES (?)", ("Meals",))
-    con.execute("INSERT INTO expense_categories(name) VALUES (?)", ("Travel",))
-    c_meals = con.execute("SELECT category_id FROM expense_categories WHERE name='Meals'").fetchone()[0]
-    c_travel = con.execute("SELECT category_id FROM expense_categories WHERE name='Travel'").fetchone()[0]
-    con.execute(
-        "INSERT INTO expenses(description, amount, date, category_id) VALUES (?,?,?,?)",
-        ("Lunch with client", 150.0, "2025-01-10", c_meals),
+def test_repo_expense_crud_search_totals(conn):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    (fuel_id, stat_id) = _seed_categories(repo, ["Fuel", "Stationery"])
+
+    eid = repo.create_expense("Petrol", 50.0, "2024-01-02", fuel_id)
+    row = repo.get_expense(eid)
+    assert row and row["description"] == "Petrol" and row["amount"] == 50.0
+
+    repo.update_expense(eid, "Petrol 95", 60.5, "2024-01-03", fuel_id)
+    row2 = repo.get_expense(eid)
+    assert row2["amount"] == 60.5 and row2["date"] == "2024-01-03"
+
+    with pytest.raises(DomainError):
+        repo.create_expense("", 10, "2024-01-01", None)
+    with pytest.raises(DomainError):
+        repo.create_expense("X", -1, "2024-01-01", None)
+
+    _seed_expenses(conn, [
+        ("Diesel", 60, "2024-01-02", "Fuel"),
+        ("Pens",    5, "2024-01-02", "Stationery"),
+        ("Paper",  15, "2024-01-03", "Stationery"),
+    ])
+
+    rows = repo.search_expenses(query="Pe", date="2024-01-03", category_id=fuel_id)
+    names = [r["description"] for r in rows]
+    assert names == ["Petrol 95"]
+
+    rows2 = repo.search_expenses_adv(
+        query="e",
+        date_from="2024-01-02",
+        date_to="2024-01-03",
+        category_id=None,
+        amount_min=10,
+        amount_max=60,
     )
-    con.execute(
-        "INSERT INTO expenses(description, amount, date, category_id) VALUES (?,?,?,?)",
-        ("Taxi to airport",  900.0, "2025-01-11", c_travel),
-    )
-    con.execute(
-        "INSERT INTO expenses(description, amount, date, category_id) VALUES (?,?,?,?)",
-        ("Coffee",  250.0, "2025-01-11", c_meals),
-    )
-    con.commit()
-    return c_meals, c_travel
+    names2 = [r["description"] for r in rows2]
+    assert names2 == ["Paper", "Diesel"]
 
-def test_create_expense_validations():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    with pytest.raises(DomainError):
-        repo.create_expense("", 10, "2025-01-01", None)
-    with pytest.raises(DomainError):
-        repo.create_expense("ok", -1, "2025-01-01", None)
-    eid = repo.create_expense("ok", 0, "2025-01-01", None)
-    row = con.execute("SELECT * FROM expenses WHERE expense_id=?", (eid,)).fetchone()
-    assert row["description"] == "ok" and float(row["amount"]) == 0.0 and row["date"] == "2025-01-01"
+    totals = repo.total_by_category()
+    got_names = {t["category_name"] for t in totals}
+    assert {"Fuel", "Stationery"}.issubset(got_names)
 
-def test_update_expense_validations_and_effect():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    eid = repo.create_expense("init", 10, "2025-02-01", None)
-    with pytest.raises(DomainError):
-        repo.update_expense(eid, "  ", 10, "2025-02-01", None)
-    with pytest.raises(DomainError):
-        repo.update_expense(eid, "x", -0.01, "2025-02-01", None)
-    repo.update_expense(eid, "new", 12.5, "2025-02-02", None)
-    r = con.execute("SELECT * FROM expenses WHERE expense_id=?", (eid,)).fetchone()
-    assert r["description"] == "new" and float(r["amount"]) == 12.5 and r["date"] == "2025-02-02"
 
-def test_delete_expense_removes_row():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    eid = repo.create_expense("to delete", 5, "2025-01-01", None)
-    repo.delete_expense(eid)
-    assert con.execute("SELECT COUNT(*) FROM expenses WHERE expense_id=?", (eid,)).fetchone()[0] == 0
+# ---------------------------------------------------------------------
+# Form tests
+# ---------------------------------------------------------------------
 
-def test_list_expenses_ordering_and_join():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    _seed_expenses(con)
-    rows = repo.search_expenses("")  # same ORDER as list: date DESC, id DESC
-    # Expect 2025-01-11 entries first (highest expense_id first), then 2025-01-10
-    assert [r["date"] for r in rows] == ["2025-01-11", "2025-01-11", "2025-01-10"]
-    # category_name joined correctly
-    assert set(r["category_name"] for r in rows) == {"Meals", "Travel"}
+def test_form_defaults_and_validation(qtbot, conn):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    cids = _seed_categories(repo, ["Fuel", "Stationery"])
+    cats = [(cids[0], "Fuel"), (cids[1], "Stationery")]
 
-def test_search_expenses_filters_query_date_category():
-    con = make_conn()
-    repo = ExpensesRepo(con)
-    c_meals, c_travel = _seed_expenses(con)
-    # Description LIKE
-    res = repo.search_expenses("Coffee")
-    assert len(res) == 1 and res[0]["description"] == "Coffee"
-    # Date equality (DATE() comparison)
-    res = repo.search_expenses("", date="2025-01-10")
-    assert len(res) == 1 and res[0]["description"] == "Lunch with client"
-    # Category filter exact ID
-    res = repo.search_expenses("", category_id=c_travel)
-    assert len(res) == 1 and res[0]["category_name"] == "Travel"
-
-# ========================= Model tests (original: tests/test_expense_models.py) =========================
-
-from PySide6.QtCore import Qt, QModelIndex  # noqa: E402
-from inventory_management.modules.expense.model import (  # noqa: E402
-    ExpenseCategoriesModel,
-    ExpensesTableModel,
-)
-from inventory_management.utils.helpers import fmt_money  # noqa: E402
-
-def test_expense_categories_model_basics():
-    rows = [{"category_id": 1, "name": "Meals"}, {"category_id": 2, "name": "Travel"}]
-    m = ExpenseCategoriesModel(rows)
-    assert m.rowCount() == 2 and m.columnCount() == 2
-    # headers
-    assert m.headerData(0, Qt.Horizontal, Qt.DisplayRole) == "ID"
-    assert m.headerData(1, Qt.Horizontal, Qt.DisplayRole) == "Name"
-    # data mapping
-    idx0 = m.index(0, 0)
-    idx1 = m.index(0, 1)
-    assert m.data(idx0, Qt.DisplayRole) == 1
-    assert m.data(idx1, Qt.DisplayRole) == "Meals"
-
-def test_expenses_table_model_formatting_and_mapping():
-    rows = [{
-        "expense_id": 5,
-        "date": "2025-01-11",
-        "category_name": None,  # should render as ""
-        "description": "Coffee",
-        "amount": 250.0
-    }]
-    m = ExpensesTableModel(rows)
-    assert m.HEADERS == ["ID", "Date", "Category", "Description", "Amount"]
-    assert m.rowCount() == 1 and m.columnCount() == 5
-    idxs = [m.index(0, c) for c in range(5)]
-    assert [m.data(i, Qt.DisplayRole) for i in idxs[:4]] == [5, "2025-01-11", "", "Coffee"]
-    # Amount formatted by fmt_money
-    assert m.data(idxs[4], Qt.DisplayRole) == fmt_money(250.0)
-
-# Citations for model behavior: headers & mapping in ExpensesTableModel and ExpenseCategoriesModel ; fmt_money formatting .
-
-# ========================= View tests (original: tests/test_expense_view.py) =========================
-
-from PySide6.QtWidgets import QApplication  # noqa: E402
-from inventory_management.modules.expense.view import ExpenseView  # noqa: E402
-
-def _qapp():
-    app = QApplication.instance()
-    return app or QApplication([])
-
-def test_expense_view_widgets_and_defaults():
-    _qapp()
-    v = ExpenseView()
-    # widgets exist
-    assert hasattr(v, "txt_search") and hasattr(v, "date_filter") and hasattr(v, "cmb_category")
-    assert hasattr(v, "btn_add") and hasattr(v, "btn_edit") and hasattr(v, "btn_delete")
-    assert hasattr(v, "tbl_expenses")
-    # defaults / convenience props
-    assert v.search_text == ""
-    # date was set then cleared in constructor ⇒ property should return None when empty
-    assert v.selected_date is None
-    # no categories yet ⇒ currentData is None
-    assert v.selected_category_id is None
-
-# Citations for view structure and convenience properties: .
-
-# ========================= Form tests (original: tests/test_expense_form.py) =========================
-
-from PySide6.QtCore import QDate  # noqa: E402
-from inventory_management.modules.expense.form import ExpenseForm  # noqa: E402
-
-def test_expense_form_validation_and_payload_roundtrip():
-    _qapp()
-    cats = [(1, "Meals"), (2, "Travel")]
     dlg = ExpenseForm(None, categories=cats, initial=None)
+    qtbot.addWidget(dlg)
 
-    # invalid: empty description
-    dlg.edt_description.setText("   ")
-    dlg.spin_amount.setValue(100.0)
-    dlg.date_edit.setDate(QDate.fromString("2025-01-15", "yyyy-MM-dd"))
-    dlg.cmb_category.setCurrentIndex(1)  # "(None)" is index 0, so 1 => cat id 1
-    assert dlg.get_payload() is None  # invalid description
+    assert dlg.date_edit.date().toString("yyyy-MM-dd") != ""
 
-    # invalid: negative amount
-    dlg.edt_description.setText("Taxi")
-    dlg.spin_amount.setValue(-1.0)
-    assert dlg.get_payload() is None
-
-    # valid payload
-    dlg.spin_amount.setValue(900.0)
-    dlg.date_edit.setDate(QDate.fromString("2025-01-15", "yyyy-MM-dd"))
-    payload = dlg.get_payload()
-    assert payload == {
-        "expense_id": None,
-        "description": "Taxi",
-        "amount": 900.0,
-        "date": "2025-01-15",
-        "category_id": 1,
-    }
-
-    # accept should stash the payload and close OK
+    dlg.spin_amount.setValue(10.0)
     dlg.accept()
-    assert dlg.payload() == payload
+    assert dlg.payload() is None
 
-def test_expense_form_initial_prefill_for_editing():
-    _qapp()
-    cats = [(1, "Meals"), (2, "Travel")]
-    initial = {"expense_id": 7, "description": "Lunch", "amount": 150.5, "date": "2025-01-10", "category_id": 2}
-    dlg = ExpenseForm(None, categories=cats, initial=initial)
-    # fields reflect initial
-    assert dlg._expense_id == 7
-    assert dlg.edt_description.text() == "Lunch"
-    assert dlg.spin_amount.value() == 150.5
-    assert dlg.date_edit.date().toString("yyyy-MM-dd") == "2025-01-10"
-    # category combobox currentData matches 2
-    assert dlg.cmb_category.currentData() == 2
+    dlg.edt_description.setText("Test expense")
+    dlg.spin_amount.setValue(0.0)
+    dlg.accept()
+    assert dlg.payload() is None
 
-# Citations for ExpenseForm behavior (validation, payload shape, initial prefill): .
+    dlg.spin_amount.setValue(12.34)
+    dlg.accept()
+    p = dlg.payload()
+    assert p and p["description"] == "Test expense" and p["amount"] == 12.34
+    assert p["category_id"] is None
 
-# ========================= Controller tests (original: tests/test_expense_controller.py) =========================
 
-from PySide6.QtWidgets import QMessageBox  # noqa: E402
-from PySide6.QtCore import Qt as QtCoreQt  # alias to avoid shadowing above Qt import  # noqa: E402
+def test_form_prefill(qtbot, conn):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    cid_f, = _seed_categories(repo, ["Fuel"])
 
-# Import controller and model exactly as described
-from inventory_management.modules.expense.controller import ExpenseController  # noqa: E402
-from inventory_management.modules.expense.model import ExpensesTableModel as _ExpensesTableModel  # noqa: E402
+    initial = {
+        "expense_id": 99,
+        "description": "Prefilled",
+        "amount": 77.7,
+        "date": "2024-02-10",
+        "category_id": cid_f,
+    }
+    dlg = ExpenseForm(None, categories=[(cid_f, "Fuel")], initial=initial)
+    qtbot.addWidget(dlg)
 
-# We'll patch these within the controller module namespace
-import inventory_management.modules.expense.controller as ctrl_mod  # noqa: E402
+    assert dlg.expense_id() == 99
+    assert dlg.edt_description.text() == "Prefilled"
+    assert abs(dlg.spin_amount.value() - 77.7) < 1e-6
+    assert dlg.date_edit.date().toString("yyyy-MM-dd") == "2024-02-10"
+    assert dlg.cmb_category.currentData() == cid_f
 
-class FakeRepo:
-    def __init__(self, *a, **k):
-        self.calls: list[tuple[str, tuple, dict]] = []
-        self._cats = [
-            # dataclass-like mapping; controller only needs id & name
-            type("C", (), {"category_id": 1, "name": "Travel"})(),
-            type("C", (), {"category_id": 2, "name": "Meals"})(),
-        ]
-        self._rows: list[dict] = []
 
-    def list_categories(self):
-        self.calls.append(("list_categories", (), {}))
-        return self._cats
+# ---------------------------------------------------------------------
+# View tests
+# ---------------------------------------------------------------------
 
-    def search_expenses(self, query: str = "", date: Optional[str] = None, category_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        self.calls.append(("search_expenses", (query, date, category_id), {}))
-        # Echo filters for verification – controller doesn't care about contents
-        return self._rows or [{
-            "expense_id": 5, "date": date or "2025-01-01",
-            "category_name": "Travel" if category_id == 1 else "Meals" if category_id == 2 else "",
-            "description": f"desc:{query}" if query else "desc",
-            "amount": 12.0,
-        }]
+def test_view_single_date_defaults_and_clear(qtbot):
+    v = ExpenseView()
+    qtbot.addWidget(v)
 
-    def delete_expense(self, expense_id: int) -> None:
-        self.calls.append(("delete_expense", (expense_id,), {}))
+    assert v.selected_date is not None  # defaults to today
+    v.btn_clear_date.click()
+    assert v.selected_date is None
 
-def test_controller_builds_ui_loads_categories_and_initial_reload(monkeypatch):
-    _qapp()
-    fake = FakeRepo()
-    monkeypatch.setattr(ctrl_mod, "ExpensesRepo", lambda conn: fake)
-    c = ExpenseController(conn=None)  # controller constructs UI in __init__
-    # "(All)" + 2 categories → 3 items
-    assert c.cmb_category.count() == 1 + 2
-    # initial reload should have built a model on the table
-    assert isinstance(c.table.model(), _ExpensesTableModel)
-    # repo called
-    names = [name for (name, *_rest) in fake.calls]
-    assert "list_categories" in names and "search_expenses" in names
 
-def test_controller_reload_passes_filters(monkeypatch):
-    _qapp()
-    fake = FakeRepo()
-    monkeypatch.setattr(ctrl_mod, "ExpensesRepo", lambda conn: fake)
-    c = ExpenseController(conn=None)
+def test_view_advanced_filters_defaults(qtbot):
+    v = ExpenseView()
+    qtbot.addWidget(v)
+    assert v.date_from_str is None
+    assert v.date_to_str is None
+    assert v.amount_min_val is None
+    assert v.amount_max_val is None
 
-    # set filters
-    c.txt_search.setText("coffee")
-    # choose a date via the widget; controller reads to "yyyy-MM-dd"
-    from PySide6.QtCore import QDate
-    c.date_filter.setDate(QDate.fromString("2025-01-15", "yyyy-MM-dd"))
-    # pick category "Travel" (id=1)
-    idx = c.cmb_category.findText("Travel", Qt.MatchExactly)
-    c.cmb_category.setCurrentIndex(idx)
 
-    # explicit reload
+# ---------------------------------------------------------------------
+# Controller tests
+# ---------------------------------------------------------------------
+
+def test_controller_reload_and_model(qtbot, conn):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    cid_f, = _seed_categories(repo, ["Fuel"])
+    _seed_expenses(conn, [("Petrol", 50, "2024-01-01", "Fuel")])
+
+    c = ExpenseController(conn)
+    qtbot.addWidget(c.get_widget())
+
+    # IMPORTANT: clear the single-date filter (it defaults to today)
+    c.view.btn_clear_date.click()
+
+    model = c.view.tbl_expenses.model()
+    assert isinstance(model, ExpensesTableModel)
+    assert model.rowCount() >= 1
+
+
+def test_controller_advanced_filters_and_totals(qtbot, conn, monkeypatch):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    _seed_categories(repo, ["Fuel", "Stationery"])
+    _seed_expenses(conn, [
+        ("Petrol", 50, "2024-01-01", "Fuel"),
+        ("Diesel", 60, "2024-01-02", "Fuel"),
+        ("Paper",  15, "2024-01-03", "Stationery"),
+    ])
+
+    c = ExpenseController(conn)
+    qtbot.addWidget(c.get_widget())
+
+    # date filter defaults to "today" -> clear before testing ranges
+    c.view.btn_clear_date.click()
+
+    # Advanced filters: date_to earlier than any row -> empty table
+    c.view.date_to.setDate(QDate(2023, 12, 31))
     c._reload()
+    assert c.view.tbl_expenses.model().rowCount() == 0
 
-    # last search_expenses call has our filters
-    last = [call for call in fake.calls if call[0] == "search_expenses"][-1]
-    assert last[1] == ("coffee", "2025-01-15", 1)
+    # Clear advanced filters AND keep single-date cleared -> rows visible
+    c.view.date_to.setDate(c.view.date_to.minimumDate())
+    c._reload()
+    assert c.view.tbl_expenses.model().rowCount() >= 3
 
-def test_controller_delete_no_selection_shows_info(monkeypatch):
-    _qapp()
-    fake = FakeRepo()
-    monkeypatch.setattr(ctrl_mod, "ExpensesRepo", lambda conn: fake)
+    # Totals populated
+    assert c.view.tbl_totals.model().rowCount() >= 2
 
-    # capture info messages
-    seen = []
-    monkeypatch.setattr(ctrl_mod.ui, "info", lambda parent, title, text: seen.append((title, text)))
 
-    c = ExpenseController(conn=None)
-    # no selection yet
-    c._on_delete()
-    assert seen and seen[-1][0] == "Select"  # "Please select an expense to delete."
+def test_controller_export_csv(qtbot, conn, monkeypatch, tmp_path):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    _seed_categories(repo, ["Fuel"])
+    _seed_expenses(conn, [("Petrol", 50, "2024-01-01", "Fuel")])
 
-def test_controller_delete_with_selection_calls_repo_and_reload(monkeypatch):
-    _qapp()
-    fake = FakeRepo()
-    monkeypatch.setattr(ctrl_mod, "ExpensesRepo", lambda conn: fake)
+    c = ExpenseController(conn)
+    qtbot.addWidget(c.get_widget())
 
-    # Stub QMessageBox.question to auto-confirm
+    # Clear single-date filter so the row is visible
+    c.view.btn_clear_date.click()
+
+    out = tmp_path / "expenses.csv"
     monkeypatch.setattr(
-        ctrl_mod, "QMessageBox",
-        type("MB", (), {"question": staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)})
+        QFileDialog, "getSaveFileName",
+        lambda *a, **k: (str(out), "CSV Files (*.csv)")
     )
+    c._on_export_csv()
+    assert out.exists()
+    txt = out.read_text(encoding="utf-8")
+    assert "Petrol" in txt
 
-    c = ExpenseController(conn=None)
 
-    # Put a row in the table and select it
-    rows = [{"expense_id": 42, "date": "2025-01-01", "category_name": "Meals", "description": "x", "amount": 1.0}]
-    c.table.setModel(_ExpensesTableModel(rows))
-    c.table.selectRow(0)
+def test_controller_shortcuts_trigger_handlers(qtbot, conn, monkeypatch):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    _seed_categories(repo, ["Fuel"])
 
-    # Keep track of reloads
-    reloads = {"n": 0}
-    orig_reload = c._reload
-    def wrapped_reload():
-        reloads["n"] += 1
-        return orig_reload()
-    monkeypatch.setattr(c, "_reload", wrapped_reload)
+    # Start with one row so Edit/Delete make sense
+    _seed_expenses(conn, [("Seed", 10, "2024-01-01", "Fuel")])
 
+    c = ExpenseController(conn)
+    qtbot.addWidget(c.get_widget())
+
+    # Clear date to see seeded row; select first row
+    c.view.btn_clear_date.click()
+    tv = c.view.tbl_expenses
+    tv.selectRow(0)
+    tv.setFocus()
+
+    # When Add/Edit are invoked by shortcuts, avoid opening a modal form:
+    # stub _open_form to return synthetic payloads.
+    monkeypatch.setattr(c, "_open_form", lambda initial=None: (
+        {
+            "expense_id": (initial or {}).get("expense_id"),
+            "description": (initial and (initial["description"] + " (edited)")) or "Added via Ctrl+N",
+            "amount": 11.0 if initial else 22.0,
+            "date": "2024-01-02",
+            "category_id": c.repo.list_categories()[0].category_id
+        }
+    ))
+
+    # --- Ctrl+N -> add new row ---
+    before = tv.model().rowCount()
+    # send the key to the VIEW (shortcuts are parented to view)
+    QTest.keyClick(c.view, Qt.Key_N, Qt.ControlModifier)
+    # wait until row count increases (avoid race)
+    qtbot.waitUntil(lambda: tv.model().rowCount() == before + 1, timeout=500)
+
+    # --- Return/Enter -> edit selected row (the selection remains on row 0) ---
+    old_desc = tv.model().index(0, 3).data()  # Description is column 3
+    QTest.keyClick(c.view, Qt.Key_Return)
+    qtbot.wait(50)
+    new_desc = tv.model().index(0, 3).data()
+    assert new_desc != old_desc and "(edited)" in new_desc
+
+    # --- Delete -> delete selected row ---
+    before_del = tv.model().rowCount()
+    QTest.keyClick(c.view, Qt.Key_Delete)
+    qtbot.waitUntil(lambda: tv.model().rowCount() == before_del - 1, timeout=500)
+
+
+def test_controller_add_edit_delete_flow(qtbot, conn, monkeypatch):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    cid, = _seed_categories(repo, ["Fuel"])
+
+    c = ExpenseController(conn)
+    qtbot.addWidget(c.get_widget())
+
+    # Clear single-date filter so added row is visible regardless of date
+    c.view.btn_clear_date.click()
+
+    # Add (stub form)
+    monkeypatch.setattr(c, "_open_form", lambda initial=None: {
+        "expense_id": None, "description": "Diesel", "amount": 75.0,
+        "date": "2024-03-01", "category_id": cid
+    })
+    c._on_add()
+    assert c.view.tbl_expenses.model().rowCount() == 1
+
+    # Select & edit (stub form)
+    exp_id = c.view.tbl_expenses.model().index(0, 0).data()
+    monkeypatch.setattr(c, "_selected_expense_id", lambda: int(exp_id))
+    monkeypatch.setattr(c, "_open_form", lambda initial=None: {
+        "expense_id": exp_id, "description": "Diesel Euro5", "amount": 80.0,
+        "date": "2024-03-02", "category_id": cid
+    })
+    c._on_edit()
+    # Description is column 3
+    assert "Euro" in c.view.tbl_expenses.model().index(0, 3).data()
+
+    # Delete (conftest answers Yes)
     c._on_delete()
+    assert c.view.tbl_expenses.model().rowCount() == 0
 
-    # Repo was called with selected id
-    assert ("delete_expense", (42,), {}) in fake.calls
-    # Reload invoked after delete
-    assert reloads["n"] >= 1
+
+# ---------------------------------------------------------------------
+# Category dialog tests
+# ---------------------------------------------------------------------
+
+def test_category_dialog_crud(qtbot, conn):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    _seed_categories(repo, ["Fuel", "Stationery"])
+
+    dlg = CategoryDialog(None, repo)
+    qtbot.addWidget(dlg)
+
+    # Add
+    dlg.edt_name.setText("Utilities")
+    dlg._add()
+    names = [dlg.tbl.item(r, 1).text() for r in range(dlg.tbl.rowCount())]
+    assert "Utilities" in names
+
+    # Rename first row
+    dlg.tbl.selectRow(0)
+    dlg.edt_name.setText("Fuel-Road")
+    dlg._rename()
+    assert dlg.tbl.item(0, 1).text() == "Fuel-Road"
+
+    # Delete selected
+    before = dlg.tbl.rowCount()
+    dlg._delete()
+    assert dlg.tbl.rowCount() == before - 1
+
+
+# ---------------------------------------------------------------------
+# End-to-end
+# ---------------------------------------------------------------------
+
+def test_expense_e2e_crud_filters_totals_export(qtbot, conn, monkeypatch, tmp_path):
+    _ensure_clean_tables(conn)
+    repo = ExpensesRepo(conn)
+    cid, = _seed_categories(repo, ["Fuel"])
+
+    c = ExpenseController(conn)
+    qtbot.addWidget(c.get_widget())
+
+    # Clear single-date filter for visibility
+    c.view.btn_clear_date.click()
+
+    # Add via form stub
+    monkeypatch.setattr(c, "_open_form", lambda initial=None: {
+        "expense_id": None, "description": "Gas", "amount": 100.0,
+        "date": "2024-05-10", "category_id": cid
+    })
+    c._on_add()
+    assert c.view.tbl_expenses.model().rowCount() == 1
+
+    # Advanced filter that hides the row
+    c.view.date_to.setDate(QDate(2024, 5, 1))
+    c._reload()
+    assert c.view.tbl_expenses.model().rowCount() == 0
+
+    # Clear advanced and keep single-date cleared -> row visible
+    c.view.date_to.setDate(c.view.date_to.minimumDate())
+    c._reload()
+    assert c.view.tbl_totals.model().rowCount() >= 1
+
+    # Export
+    out = tmp_path / "out.csv"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName",
+        lambda *a, **k: (str(out), "CSV Files (*.csv)")
+    )
+    c._on_export_csv()
+    assert out.exists()
+    with out.open("r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+    assert any("Gas" in ",".join(r) for r in rows)

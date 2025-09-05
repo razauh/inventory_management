@@ -1,109 +1,221 @@
-# database/repositories/inventory_repo.py
 from __future__ import annotations
 
+"""
+Repository for inventory queries (transactions, stock-on-hand, adjustments).
+
+This module intentionally avoids schema changes and only issues SELECT/INSERT
+queries against the existing tables/views. It is designed to be consumed by the
+Inventory UI (Adjustments & Recent, Transactions tab, Stock Valuation tab).
+
+Conventions:
+- All list-returning methods yield `list[dict]` (sqlite3.Row -> dict).
+- Date strings are ISO 'YYYY-MM-DD'.
+- Amounts/qty are cast to float in Python for consistent UI display.
+"""
+
 import sqlite3
-from typing import Optional, Sequence
+from typing import Optional, List, Dict
 
 
 class InventoryRepo:
-    """
-    Inventory data access:
-      - stock_on_hand(product_id): read snapshot from v_stock_on_hand
-      - add_adjustment(...): insert a manual inventory adjustment
-      - recent_transactions(limit): list recent inventory transactions for the UI table
-
-    Note:
-      This repo does not compute valuation or on-hand; it relies on your DB views/triggers.
-    """
-
     def __init__(self, conn: sqlite3.Connection):
-        # Ensure rows can be accessed like dictionaries everywhere in this repo
-        if conn.row_factory is None:
-            conn.row_factory = sqlite3.Row
         self.conn = conn
+        # Make sure rows are accessible as dicts
+        try:
+            self.conn.row_factory = sqlite3.Row
+        except Exception:
+            pass
 
-    # ---------- Valuation / Snapshot ----------
+    # ------------------------------------------------------------------
+    # Existing: recent transactions (used by "Adjustments & Recent" tab)
+    # ------------------------------------------------------------------
+    def recent_transactions(self, limit: int = 50) -> List[Dict]:
+        """
+        Return most recent inventory transactions limited by `limit`.
+        Aliases match TransactionsTableModel headers:
+           ID | Date | Type | Product | Qty | UoM | Notes
+        """
+        lim = self._normalize_limit(limit)
+        sql = """
+            SELECT
+                t.inventory_transaction_id AS id,
+                t.txn_date                  AS date,
+                t.txn_type                  AS type,
+                p.name                      AS product,
+                CAST(t.qty AS REAL)         AS qty,
+                u.unit_name                 AS uom,
+                t.notes                     AS notes
+            FROM inventory_transactions t
+            LEFT JOIN products p ON p.product_id = t.product_id
+            LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
+            ORDER BY DATE(t.txn_date) DESC, t.inventory_transaction_id DESC
+            LIMIT ?
+        """
+        rows = self.conn.execute(sql, (lim,)).fetchall()
+        return [self._row_to_dict(r) for r in rows]
 
-    def stock_on_hand(self, product_id: int) -> Optional[sqlite3.Row]:
+    # ------------------------------------------------------------------
+    # NEW: filtered transactions for the Transactions tab
+    # ------------------------------------------------------------------
+    def find_transactions(
+        self,
+        *,
+        date_from: Optional[str] = None,   # inclusive 'YYYY-MM-DD'
+        date_to: Optional[str] = None,     # inclusive 'YYYY-MM-DD'
+        product_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
         """
-        Returns a single row from v_stock_on_hand with columns:
-          product_id, qty_in_base, unit_value, total_value, valuation_date
-        or None if not found.
+        Find transactions by optional date range and/or product id with a limit.
+        Aliases match TransactionsTableModel headers:
+           ID | Date | Type | Product | Qty | UoM | Notes
+
+        Ordering: DATE(txn_date) DESC, inventory_transaction_id DESC
+        Only applies WHERE fragments when corresponding filters are provided.
         """
-        cur = self.conn.execute(
+        lim = self._normalize_limit(limit)
+
+        where: List[str] = []
+        params: List = []
+
+        if date_from:
+            where.append("DATE(t.txn_date) >= DATE(?)")
+            params.append(date_from)
+        if date_to:
+            where.append("DATE(t.txn_date) <= DATE(?)")
+            params.append(date_to)
+        if product_id is not None:
+            where.append("t.product_id = ?")
+            params.append(int(product_id))
+
+        sql = """
+            SELECT
+                t.inventory_transaction_id AS id,
+                t.txn_date                  AS date,
+                t.txn_type                  AS type,
+                p.name                      AS product,
+                CAST(t.qty AS REAL)         AS qty,
+                u.unit_name                 AS uom,
+                t.notes                     AS notes
+            FROM inventory_transactions t
+            LEFT JOIN products p ON p.product_id = t.product_id
+            LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
+        """
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += """
+            ORDER BY DATE(t.txn_date) DESC, t.inventory_transaction_id DESC
+            LIMIT ?
+        """
+        params.append(lim)
+
+        rows = self.conn.execute(sql, tuple(params)).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Existing: stock on hand snapshot for Stock Valuation tab
+    # ------------------------------------------------------------------
+    def stock_on_hand(self, product_id: int) -> Dict | None:
+        """
+        Return a snapshot for a single product from v_stock_on_hand.
+
+        Expected (ideal) view columns:
+          product_id, product_name, uom_name, on_hand_qty, unit_value, total_value
+
+        If `unit_value` or `total_value` are missing from the view, this method
+        fills what it can and computes total_value = on_hand_qty * unit_value
+        when both pieces are available. Returns None if the product isn't found.
+
+        NOTE: This method is read-only and does not update any costing.
+        """
+        row = self.conn.execute(
             """
-            SELECT product_id, qty_in_base, unit_value, total_value, valuation_date
-            FROM v_stock_on_hand
-            WHERE product_id = ?
+            SELECT
+                v.product_id                 AS product_id,
+                v.product_name               AS product_name,
+                v.uom_name                   AS uom_name,
+                CAST(v.on_hand_qty AS REAL)  AS on_hand_qty,
+                /* unit_value/total_value may or may not exist depending on the view */
+                v.unit_value                 AS unit_value,
+                v.total_value                AS total_value
+            FROM v_stock_on_hand v
+            WHERE v.product_id = ?
             """,
-            (product_id,),
+            (int(product_id),),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        d = self._row_to_dict(row)
+
+        # Normalize numeric fields and compute if missing
+        on_hand = self._to_float(d.get("on_hand_qty"))
+        unit_val = self._to_float(d.get("unit_value"))
+        total_val = self._to_float(d.get("total_value"))
+
+        if total_val is None and on_hand is not None and unit_val is not None:
+            total_val = on_hand * unit_val
+
+        d["on_hand_qty"] = on_hand if on_hand is not None else 0.0
+        d["unit_value"] = unit_val  # can be None if the view doesn't provide it
+        d["total_value"] = total_val if total_val is not None else (
+            (on_hand * unit_val) if (on_hand is not None and unit_val is not None) else None
         )
-        return cur.fetchone()
+        return d
 
-    # ---------- Adjustments ----------
-
+    # ------------------------------------------------------------------
+    # (If you already have this in your file, keep your version.)
+    # Provided for completeness since Adjustments tab calls it.
+    # ------------------------------------------------------------------
     def add_adjustment(
         self,
         *,
         product_id: int,
         uom_id: int,
-        quantity: float,
-        date: str,
-        notes: Optional[str],
-        created_by: Optional[int],
+        qty: float,
+        txn_date: str,
+        notes: str | None = None,
     ) -> int:
         """
-        Inserts a single manual adjustment into inventory_transactions.
-
-        Parameters:
-          product_id: target product id
-          uom_id:     UoM id recorded with the transaction
-          quantity:   positive or negative (controller enforces numeric)
-          date:       'YYYY-MM-DD' (controller passes explicit value or today_str())
-          notes:      optional free-text
-          created_by: nullable user id for audit
-
-        Returns:
-          The new transaction_id (lastrowid).
+        Insert an adjustment row into inventory_transactions.
         """
         cur = self.conn.execute(
             """
-            INSERT INTO inventory_transactions (
-                product_id, quantity, uom_id, transaction_type,
-                reference_table, reference_id, reference_item_id,
-                date, notes, created_by
-            )
-            VALUES (?, ?, ?, 'adjustment', NULL, NULL, NULL, ?, ?, ?)
+            INSERT INTO inventory_transactions
+                (product_id, uom_id, qty, txn_type, txn_date, notes)
+            VALUES
+                (?, ?, ?, 'ADJUSTMENT', ?, ?)
             """,
-            (product_id, float(quantity), uom_id, date, notes, created_by),
+            (int(product_id), int(uom_id), float(qty), txn_date, notes),
         )
         self.conn.commit()
         return int(cur.lastrowid)
 
-    # ---------- Listings ----------
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _row_to_dict(r: sqlite3.Row | dict) -> Dict:
+        return dict(r) if isinstance(r, sqlite3.Row) else dict(r)
 
-    def recent_transactions(self, limit: int = 50) -> Sequence[sqlite3.Row]:
+    @staticmethod
+    def _to_float(x) -> Optional[float]:
+        if x is None:
+            return None
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_limit(limit: int) -> int:
         """
-        Returns the latest transactions for the table model with columns:
-          transaction_id, date, transaction_type, product, quantity, unit_name, notes
-        Ordered by newest first (transaction_id DESC).
+        Guard the limit to a safe set (50/100/500) to match UI choices.
+        Default to 100 if unrecognized.
         """
-        cur = self.conn.execute(
-            """
-            SELECT
-                it.transaction_id,
-                it.date,
-                it.transaction_type,
-                p.name AS product,
-                it.quantity,
-                u.unit_name,
-                it.notes
-            FROM inventory_transactions it
-            JOIN products p ON p.product_id = it.product_id
-            JOIN uoms     u ON u.uom_id     = it.uom_id
-            ORDER BY it.transaction_id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        return cur.fetchall()
+        try:
+            v = int(limit)
+        except Exception:
+            return 100
+        return v if v in (50, 100, 500) else 100

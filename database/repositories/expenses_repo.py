@@ -27,7 +27,7 @@ CREATE TABLE expenses (
 );
 
 The repository does not enforce complex business rules beyond ensuring
-non‑empty descriptions and non‑negative amounts.  Consumers (e.g. UI
+non-empty descriptions and non-negative amounts.  Consumers (e.g. UI
 controllers) should handle any additional logic (such as preventing
 deletion of categories that are still referenced).
 """
@@ -200,6 +200,69 @@ class ExpensesRepo:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
+        rows = self.conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def search_expenses_adv(
+        self,
+        query: str = "",
+        date_from: Optional[str] = None,   # 'YYYY-MM-DD'
+        date_to: Optional[str] = None,     # 'YYYY-MM-DD'
+        category_id: Optional[int] = None,
+        amount_min: Optional[float] = None,
+        amount_max: Optional[float] = None,
+    ) -> List[Dict]:
+        """
+        Advanced search by description, date range, category, and amount range.
+
+        - query: LIKE match on description (case-insensitive per collation)
+        - date_from/date_to: inclusive range on calendar days using DATE()
+        - category_id: exact match on category id
+        - amount_min/amount_max: inclusive numeric range (cast to REAL)
+
+        Returns rows ordered by date (DESC) then expense_id (DESC).
+        """
+        where: List[str] = []
+        params: List = []
+
+        if query:
+            where.append("e.description LIKE ?")
+            params.append(f"%{query.strip()}%")
+
+        if date_from:
+            where.append("DATE(e.date) >= DATE(?)")
+            params.append(date_from)
+
+        if date_to:
+            where.append("DATE(e.date) <= DATE(?)")
+            params.append(date_to)
+
+        if category_id is not None:
+            where.append("e.category_id = ?")
+            params.append(category_id)
+
+        if amount_min is not None:
+            where.append("CAST(e.amount AS REAL) >= ?")
+            params.append(float(amount_min))
+
+        if amount_max is not None:
+            where.append("CAST(e.amount AS REAL) <= ?")
+            params.append(float(amount_max))
+
+        sql = """
+            SELECT e.expense_id,
+                   e.description,
+                   CAST(e.amount AS REAL) AS amount,
+                   e.date,
+                   e.category_id,
+                   c.name AS category_name
+            FROM expenses e
+            LEFT JOIN expense_categories c ON c.category_id = e.category_id
+        """
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
+
         rows = self.conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
 

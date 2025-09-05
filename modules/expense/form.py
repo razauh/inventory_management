@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QWidget,
+    QHBoxLayout,
     QSizePolicy,
 )
 from PySide6.QtCore import QDate, Qt
@@ -44,12 +45,12 @@ class ExpenseForm(QDialog):
         self.setModal(True)
         self.setMinimumWidth(420)
 
-        # Record existing expense_id if editing (None for create)
+        # Existing expense_id if editing (None for create)
         self._expense_id = (
             int(initial["expense_id"]) if initial and initial.get("expense_id") else None
         )
 
-        # --- Widgets ------------------------------------------------------
+        # ---------------- Widgets ----------------
         self.edt_description = QLineEdit()
         self.edt_description.setPlaceholderText("e.g., Stationery, fuel, utilities…")
         self.edt_description.setClearButtonEnabled(True)
@@ -64,11 +65,11 @@ class ExpenseForm(QDialog):
         self.date_edit = QDateEdit()
         self.date_edit.setDisplayFormat("yyyy-MM-dd")
         self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDate(QDate.currentDate())  # sensible default
+        self.date_edit.setDate(QDate.currentDate())  # default to today
 
-        # Small clear button for date
+        # Small clear button for date (resets to today)
         self.btn_clear_date = QPushButton("×")
-        self.btn_clear_date.setToolTip("Clear date")
+        self.btn_clear_date.setToolTip("Reset date to today")
         self.btn_clear_date.setFixedWidth(24)
         self.btn_clear_date.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.btn_clear_date.clicked.connect(
@@ -80,37 +81,31 @@ class ExpenseForm(QDialog):
         for cid, name in categories:
             self.cmb_category.addItem(name, userData=cid)
 
-        # Inline error message (hidden by default)
+        # Inline error label (hidden by default)
         self.lbl_error = QLabel("")
         self.lbl_error.setObjectName("errorLabel")
         self.lbl_error.setStyleSheet("color:#b00020;")
         self.lbl_error.setVisible(False)
 
-        # Buttons
+        # OK/Cancel buttons
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
 
-        # --- Layout -------------------------------------------------------
+        # ---------------- Layout ----------------
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        form.addRow("Description*", self.edt_description)
 
+        form.addRow("Description*", self.edt_description)
         form.addRow("Amount*", self.spin_amount)
 
-        # Put date + clear button on one row
-        row_date = QVBoxLayout()
-        row_date_w = QWidget()
-        row_date_h = QVBoxLayout(row_date_w)
-        row_date_h.setContentsMargins(0, 0, 0, 0)
-        # Horizontal mini-row for date + clear
-        from PySide6.QtWidgets import QHBoxLayout
-        row_date_hh = QHBoxLayout()
-        row_date_hh.setContentsMargins(0, 0, 0, 0)
-        row_date_hh.addWidget(self.date_edit, 0)
-        row_date_hh.addWidget(self.btn_clear_date, 0)
-        row_date_h.addLayout(row_date_hh)
-        form.addRow("Date*", row_date_w)
+        # Date row: date widget + clear button side-by-side
+        date_row = QWidget()
+        date_row_h = QHBoxLayout(date_row)
+        date_row_h.setContentsMargins(0, 0, 0, 0)
+        date_row_h.addWidget(self.date_edit, 0)
+        date_row_h.addWidget(self.btn_clear_date, 0)
+        form.addRow("Date*", date_row)
 
         form.addRow("Category", self.cmb_category)
 
@@ -118,7 +113,7 @@ class ExpenseForm(QDialog):
         layout.addWidget(self.lbl_error)
         layout.addWidget(self.buttons)
 
-        # --- Prefill ------------------------------------------------------
+        # ---------------- Prefill (edit mode) ----------------
         if initial:
             self.edt_description.setText(initial.get("description", ""))
             try:
@@ -146,55 +141,52 @@ class ExpenseForm(QDialog):
 
         self._payload: Optional[dict] = None
 
-    # ----------------------------------------------------------------------
-    # Validation & payload
-    # ----------------------------------------------------------------------
+    # ---------------- Validation & payload ----------------
     def _fail(self, message: str, widget_to_focus: QWidget) -> None:
         self.lbl_error.setText(message)
         self.lbl_error.setVisible(True)
         widget_to_focus.setFocus()
 
-    def get_payload(self) -> dict | None:
-        """Validate inputs and return a dict or None on failure."""
-        self.lbl_error.setVisible(False)
-
-        if not non_empty(self.edt_description.text()):
-            self._fail("Description cannot be empty.", self.edt_description)
-            return None
-
-        amount = float(self.spin_amount.value())
-        if amount <= 0.0:
-            self._fail("Amount must be greater than 0.00.", self.spin_amount)
-            return None
-
-        date_txt = self.date_edit.date().toString("yyyy-MM-dd")
-        if not date_txt:
-            self._fail("Please select a valid date.", self.date_edit)
-            return None
-
-        payload = {
-            "expense_id": self._expense_id,               # None for create
-            "description": self.edt_description.text().strip(),
-            "amount": amount,
-            "date": date_txt,
-            "category_id": self.cmb_category.currentData(),  # None if "(None)"
-        }
-        return payload
-
-    def accept(self) -> None:  # type: ignore[override]
-        p = self.get_payload()
-        if p is None:
-            return
-        self._payload = p
-        super().accept()
-
-    # ----------------------------------------------------------------------
-    # Public API used by controller
-    # ----------------------------------------------------------------------
     def payload(self) -> dict | None:
         """Return the last accepted payload, or None if dialog was canceled."""
         return self._payload
 
+    def _build_payload(self) -> dict:
+        date_str = self.date_edit.date().toString("yyyy-MM-dd")
+        return {
+            "expense_id": self._expense_id,  # None for create
+            "description": self.edt_description.text().strip(),
+            "amount": float(self.spin_amount.value()),
+            "date": date_str,
+            "category_id": self.cmb_category.currentData(),  # None if "(None)"
+        }
+
+    def accept(self) -> None:  # type: ignore[override]
+        # Clear previous error
+        self.lbl_error.setVisible(False)
+
+        # Description validation
+        if not non_empty(self.edt_description.text()):
+            self._fail("Description cannot be empty.", self.edt_description)
+            return
+
+        # Amount validation
+        amount = float(self.spin_amount.value())
+        if amount <= 0.0:
+            self._fail("Amount must be greater than 0.00.", self.spin_amount)
+            return
+
+        # Date sanity (QDateEdit always has a date; still ensure text format)
+        date_txt = self.date_edit.date().toString("yyyy-MM-dd")
+        if not date_txt:
+            self._fail("Please select a valid date.", self.date_edit)
+            return
+
+        # Build and stash payload
+        self._payload = self._build_payload()
+        super().accept()
+
+    # ---------------- Public helpers ----------------
     def expense_id(self) -> int | None:
         """Return the current expense id (None for new)."""
         return self._expense_id
