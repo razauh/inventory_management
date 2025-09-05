@@ -1,3 +1,4 @@
+# /home/pc/Desktop/inventory_management/modules/customer/actions.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -149,15 +150,18 @@ def apply_advance(
     db_path: str | Path,
     customer_id: int,
     sale_id: str,
-    amount_to_apply: float,              # positive in UI; will be stored as negative
+    amount_to_apply: float,              # positive in UI; repo writes negative
     date: Optional[str] = None,
     notes: Optional[str] = None,
     created_by: Optional[int] = None,
     repo_factory: Callable[[str | Path], Any] = _get_customer_advances_repo,
 ) -> ActionResult:
     """
-    Apply customer credit to a sale. UI supplies a positive amount; we store negative.
-    DB-level guard prevents over-application overall; repo checks remaining due for the sale.
+    Apply customer credit to a sale.
+
+    The UI supplies a positive amount; the repository (CustomerAdvancesRepo)
+    validates against the sale's remaining due and records the application
+    as a NEGATIVE amount in the ledger. Do not negate here.
     """
     if amount_to_apply is None or amount_to_apply <= 0:
         return ActionResult(success=False, message="Amount to apply must be > 0.")
@@ -166,7 +170,7 @@ def apply_advance(
         tx_id = repo.apply_credit_to_sale(
             customer_id=customer_id,
             sale_id=sale_id,
-            amount=-abs(float(amount_to_apply)),  # store negative
+            amount=float(amount_to_apply),   # pass positive; repo stores negative
             date=date,
             notes=notes,
             created_by=created_by,
