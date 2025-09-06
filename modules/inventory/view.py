@@ -58,8 +58,9 @@ class InventoryView(QWidget):
 
         root.addLayout(row)
 
-        # ---------- Recent transactions table ----------
-        self.tbl_recent = TableView(objectName="tbl_recent")
+        # ---self.tbl_recent = TableView(objectName="tbl_recent")------- Recent transactions table ----------
+        self.tbl_recent = TableView()
+        self.tbl_recent.setObjectName("tbl_recent")
         # Friendly defaults for read-only browsing
         self.tbl_recent.setAlternatingRowColors(True)
         self.tbl_recent.setSelectionBehavior(self.tbl_recent.SelectionBehavior.SelectRows)

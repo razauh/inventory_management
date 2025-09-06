@@ -1,11 +1,16 @@
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QListWidget, QListWidgetItem, QStackedWidget, QMessageBox
+    QListWidget, QListWidgetItem, QStackedWidget, QMessageBox,
+    QHBoxLayout, QMenu, QSizePolicy
 )
+from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt
 from pathlib import Path
 import sys
 import traceback
+import os
 from importlib import import_module
+
 from .constants import APP_NAME, STYLE_FILE
 from .database import get_connection
 from .modules.base_module import BaseModule
@@ -35,6 +40,11 @@ class MainWindow(QMainWindow):
     def __init__(self, conn, current_user: dict):
         super().__init__()
         self.setWindowTitle(APP_NAME)
+        # ensure normal window controls + sensible minimum
+        self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+        self.setMinimumSize(820, 520)
+
         self.conn = conn
         self.user = current_user
 
@@ -43,11 +53,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         self.setCentralWidget(central)
 
+        # Left nav + content
         self.nav = QListWidget()
-        self.nav.setMaximumWidth(220)
+        # Cap the nav width so center content has room
+        self.nav.setFixedWidth(200)
+        self.nav.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+
         self.stack = QStackedWidget()
 
-        from PySide6.QtWidgets import QHBoxLayout
         row = QWidget()
         row_lay = QHBoxLayout(row)
         row_lay.addWidget(self.nav)
@@ -59,15 +72,8 @@ class MainWindow(QMainWindow):
         # nav wiring
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        # Try real Dashboard first; fallback to placeholder
-        self._add_module_safe(
-            "Dashboard",
-            "inventory_management.modules.dashboard.controller",
-            "DashboardController",
-            self.conn,
-            current_user=self.user,
-            fallback_placeholder=True,
-        )
+        # Dashboard -> placeholder only (no import/constructor)
+        self.add_placeholder("Dashboard")
 
         # Products
         self._add_module_safe(
@@ -145,6 +151,85 @@ class MainWindow(QMainWindow):
             self.nav.setCurrentRow(0)
             self.stack.setCurrentIndex(0)
 
+        # -------- Inventory menu anchored to left nav item (click to open) --------
+        self.inventory_menu = QMenu(self)
+        act_adj = QAction("Adjustments & Recent", self.inventory_menu)
+        act_txn = QAction("Transactions", self.inventory_menu)
+        act_val = QAction("Stock Valuation", self.inventory_menu)
+        self.inventory_menu.addAction(act_adj)
+        self.inventory_menu.addAction(act_txn)
+        self.inventory_menu.addSeparator()
+        self.inventory_menu.addAction(act_val)
+
+        # Wire actions to open sub-tabs
+        act_adj.triggered.connect(lambda: self.open_inventory_sub("adjustments"))
+        act_txn.triggered.connect(lambda: self.open_inventory_sub("transactions"))
+        act_val.triggered.connect(lambda: self.open_inventory_sub("valuation"))
+
+        # Open the Inventory menu when user clicks the Inventory row
+        self.nav.setMouseTracking(False)  # no hover popups
+
+        def _show_inventory_menu_at_row():
+            idx = self._find_module_index("Inventory")
+            if idx is None:
+                return
+            item = self.nav.item(idx)
+            if not item:
+                return
+            rect = self.nav.visualItemRect(item)
+            global_pt = self.nav.viewport().mapToGlobal(rect.topRight())
+            global_pt.setX(global_pt.x() + 6)  # slight offset from list edge
+            self.inventory_menu.popup(global_pt)
+
+        def _nav_mouse_press(event):
+            # Qt6: event.position() returns QPointF
+            pos = event.position().toPoint()
+            clicked_item = self.nav.itemAt(pos)
+            # open menu only if user clicked exactly "Inventory"
+            if clicked_item and clicked_item.text() == "Inventory":
+                _show_inventory_menu_at_row()
+                event.accept()
+            else:
+                QListWidget.mousePressEvent(self.nav, event)  # default behavior
+
+        # install the light handler
+        self.nav.viewport().mousePressEvent = _nav_mouse_press
+
+    # ---------- quick open to Inventory sub-tab ----------
+    def open_inventory_sub(self, sub: str):
+        """
+        Ensure the Inventory module is visible and switch its internal tab.
+        sub: 'adjustments' | 'transactions' | 'valuation'
+        """
+        idx = self._find_module_index("Inventory")
+        if idx is None:
+            QMessageBox.warning(self, "Missing", "Inventory module is not available.")
+            return
+
+        # Open Inventory page
+        self.nav.setCurrentRow(idx)
+
+        # Ask controller (if it exposes a selector)
+        ctrl = self.modules[idx][1]
+        if hasattr(ctrl, "select_tab"):
+            try:
+                ctrl.select_tab(sub)
+                return
+            except Exception:
+                pass
+
+        # Fallback: find a QTabWidget and select index
+        try:
+            w = ctrl.get_widget()
+            from PySide6.QtWidgets import QTabWidget
+            tab = w.findChild(QTabWidget)
+            if tab:
+                mapping = {"adjustments": 0, "transactions": 1, "valuation": 2}
+                if sub in mapping and 0 <= mapping[sub] < tab.count():
+                    tab.setCurrentIndex(mapping[sub])
+        except Exception:
+            pass
+
     # ---------- safe add helpers ----------
     def _add_module_safe(
         self,
@@ -155,14 +240,16 @@ class MainWindow(QMainWindow):
         fallback_placeholder: bool = True,
         **kwargs
     ):
-        """Import and instantiate a controller safely. On any error, log and add a placeholder."""
+        """Import and instantiate a controller safely. On any error, add a placeholder silently."""
         try:
             Controller = _lazy_get(module_path, class_name)
             controller = Controller(*args, **kwargs)
             self.add_module(title, controller)
         except Exception as e:
-            print(f"[{title}] failed to load: {e}", file=sys.stderr)
-            traceback.print_exc()
+            # Keep startup clean; add placeholder instead of surfacing dialogs.
+            # If you want console logs, uncomment:
+            # print(f"[{title}] failed to load: {e}", file=sys.stderr)
+            # traceback.print_exc()
             if fallback_placeholder:
                 self.add_placeholder(title)
 
@@ -181,8 +268,17 @@ class MainWindow(QMainWindow):
         self.nav.addItem(item)
         self.stack.addWidget(placeholder)
 
+    def _find_module_index(self, title: str) -> int | None:
+        for i, (t, _m) in enumerate(self.modules):
+            if t == title:
+                return i
+        return None
+
 
 def main():
+    # Make sure no test-time env disables decorations when running the app
+    os.environ.pop("QT_QPA_DISABLE_WINDOWDECORATION", None)
+
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
 
@@ -234,10 +330,8 @@ def main():
             default = QMessageBox.Retry
 
         choice = QMessageBox.question(None, title, msg, buttons, default)
-        # Normalize button choices to exit/continue
         if choice in (QMessageBox.Close, QMessageBox.No):
             return  # exit app
-        # otherwise loop to re-prompt
 
     # Optional style
     qss = load_qss()
@@ -247,8 +341,8 @@ def main():
     # Window
     win = MainWindow(conn, current_user=user)
 
-    # Show UI
-    win.resize(1200, 720)
+    # Show UI (smaller default)
+    win.resize(900, 560)
     win.show()
     sys.exit(app.exec())
 

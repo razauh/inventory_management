@@ -7,11 +7,14 @@ Features:
 - Live reload on filter changes + an explicit Refresh button
 - CSV export of the current table
 - Reuses TransactionsTableModel (columns: ID, Date, Type, Product, Qty, UoM, Notes)
+
+Update:
+- Date editors now default to today's date instead of the 1900-01-01 sentinel.
 """
 
 from __future__ import annotations
 
-from typing import Optional, Iterable, Tuple
+from typing import Optional
 
 import csv
 
@@ -37,7 +40,11 @@ from ...database.repositories.inventory_repo import InventoryRepo
 class TransactionsView(QWidget):
     """Read-only view of inventory transactions with simple filters."""
 
-    def __init__(self, repo: InventoryRepo, parent: QWidget | None = None):
+    def __init__(self, repo: InventoryRepo | object, parent: QWidget | None = None):
+        """
+        `repo` can be an InventoryRepo OR a raw sqlite3.Connection.
+        We normalize where needed.
+        """
         super().__init__(parent)
         self.repo = repo
         self.setWindowTitle("Inventory — Transactions")
@@ -138,32 +145,43 @@ class TransactionsView(QWidget):
     # ----------------------------------------------------------------------
     def _setup_date_edit(self, w: QDateEdit) -> None:
         """
-        Configure a date edit with a sentinel minimum date that displays blank
-        (so 'no filter' is visually empty).
+        Configure a date edit. We keep a sentinel minimum date (to allow 'no filter'
+        if needed) but default the visible date to 'today' instead of the minimum.
         """
         w.setCalendarPopup(True)
         w.setDisplayFormat("yyyy-MM-dd")
         w.setSpecialValueText("")                # blank text for min date
         w.setMinimumDate(QDate(1900, 1, 1))      # sentinel
-        w.setDate(w.minimumDate())               # start as 'no filter'
+        w.setDate(QDate.currentDate())           # <-- default to current date
         w.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _load_products(self) -> None:
         """
         Populate product combo box.
         First item is '(All)' with userData=None.
+
+        Works whether self.repo is InventoryRepo (has `.conn`) or a raw sqlite3.Connection.
         """
         self.cmb_product.blockSignals(True)
         try:
             self.cmb_product.clear()
             self.cmb_product.addItem("(All)", userData=None)
 
-            # fetch product list (id, name). We use the same connection via repo.
-            rows = self.repo.conn.execute(
+            # normalize to a connection
+            conn = getattr(self.repo, "conn", None) or self.repo
+            rows = conn.execute(
                 "SELECT product_id AS id, name AS name FROM products ORDER BY name"
             ).fetchall()
+
             for r in rows:
-                self.cmb_product.addItem(r["name"], userData=int(r["id"]))
+                # support both sqlite3.Row and tuples
+                if hasattr(r, "keys"):
+                    pid = int(r["id"])
+                    name = r["name"]
+                else:
+                    pid = int(r[0])
+                    name = r[1]
+                self.cmb_product.addItem(name, userData=pid)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:
@@ -206,7 +224,10 @@ class TransactionsView(QWidget):
     def _reload(self) -> None:
         """Reload table with current filters."""
         try:
-            rows = self.repo.find_transactions(
+            # if self.repo is a raw connection, wrap it just for this call
+            repo = self.repo if isinstance(self.repo, InventoryRepo) else InventoryRepo(self.repo)
+
+            rows = repo.find_transactions(
                 date_from=self.date_from_str,
                 date_to=self.date_to_str,
                 product_id=self.selected_product_id,

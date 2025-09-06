@@ -131,9 +131,10 @@ class ExpenseView(QWidget):
         self.date_from = QDateEdit()
         self.date_from.setCalendarPopup(True)
         self.date_from.setDisplayFormat("yyyy-MM-dd")
-        self.date_from.setSpecialValueText("")
-        self.date_from.setMinimumDate(QDate(1900, 1, 1))
-        self.date_from.setDate(self.date_from.minimumDate())
+        self.date_from.setSpecialValueText("")               # blank when min sentinel
+        self.date_from.setMinimumDate(QDate(1900, 1, 1))     # sentinel retained
+        # Default: one month back from today
+        self.date_from.setDate(QDate.currentDate().addMonths(-1))
         adv_row.addWidget(self.date_from)
 
         lbl_to = QLabel("To:")
@@ -143,7 +144,8 @@ class ExpenseView(QWidget):
         self.date_to.setDisplayFormat("yyyy-MM-dd")
         self.date_to.setSpecialValueText("")
         self.date_to.setMinimumDate(QDate(1900, 1, 1))
-        self.date_to.setDate(self.date_to.minimumDate())
+        # Default: today
+        self.date_to.setDate(QDate.currentDate())
         adv_row.addWidget(self.date_to)
 
         # Amount range

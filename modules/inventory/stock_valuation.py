@@ -11,6 +11,10 @@ Behavior:
 - On product change or Refresh -> query InventoryRepo.stock_on_hand(product_id)
 - If no product selected -> clear card
 - If repo returns nothing -> show N/A/0.00 gracefully
+
+Update:
+- Accept either an InventoryRepo or a raw sqlite3.Connection (repo_or_conn).
+- Product loading uses the repo’s connection directly and keeps "(Select…)" first.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...utils import ui_helpers as ui
-from ...database.repositories.inventory_repo import InventoryRepo
+from ...database.repositories.inventory_repo import InventoryRepo  # type: ignore
 
 
 def _fmt_float(val: Optional[float], places: int = 2) -> str:
@@ -45,9 +49,14 @@ def _fmt_float(val: Optional[float], places: int = 2) -> str:
 class StockValuationWidget(QWidget):
     """Compact, read-only per-product valuation card."""
 
-    def __init__(self, repo: InventoryRepo, parent: QWidget | None = None):
+    def __init__(self, repo_or_conn, parent: QWidget | None = None):
+        """
+        Accepts either:
+          - InventoryRepo instance, or
+          - raw sqlite3.Connection (will be used via InventoryRepo where needed)
+        """
         super().__init__(parent)
-        self.repo = repo
+        self.repo = repo_or_conn  # may be InventoryRepo or raw connection
         self.setWindowTitle("Inventory — Stock Valuation")
 
         root = QVBoxLayout(self)
@@ -130,17 +139,29 @@ class StockValuationWidget(QWidget):
         Populate the product combo:
           0: "(Select…)" -> userData=None
           n: product name -> userData=product_id
+
+        Works whether `self.repo` is an InventoryRepo (has `.conn`) or a raw
+        sqlite3.Connection.
         """
         self.cmb_product.blockSignals(True)
         try:
             self.cmb_product.clear()
             self.cmb_product.addItem("(Select…)", userData=None)
 
-            rows = self.repo.conn.execute(
-                "SELECT product_id AS id, name AS name FROM products ORDER BY name"
+            # Use the repo's connection directly; add real product_id as userData
+            conn = getattr(self.repo, "conn", None) or self.repo
+            rows = conn.execute(
+                "SELECT product_id, name FROM products ORDER BY name"
             ).fetchall()
             for r in rows:
-                self.cmb_product.addItem(r["name"], r["id"])
+                # tolerate Row or tuple
+                if hasattr(r, "keys"):
+                    pid = int(r["product_id"])
+                    name = r["name"]
+                else:
+                    pid = int(r[0])
+                    name = r[1]
+                self.cmb_product.addItem(name, userData=pid)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:
@@ -185,7 +206,9 @@ class StockValuationWidget(QWidget):
         Handles None / missing fields gracefully.
         """
         try:
-            rec = self.repo.stock_on_hand(product_id)
+            # Normalize to InventoryRepo for method access
+            repo = self.repo if isinstance(self.repo, InventoryRepo) else InventoryRepo(self.repo)
+            rec = repo.stock_on_hand(product_id)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load stock snapshot: {e}")
             self._clear_card()

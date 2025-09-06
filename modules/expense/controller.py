@@ -20,7 +20,7 @@ from typing import Optional, List, Dict
 import csv
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget, QMessageBox, QFileDialog
+from PySide6.QtWidgets import QWidget, QMessageBox, QFileDialog, QDialog
 from PySide6.QtGui import QKeySequence, QShortcut, QStandardItemModel, QStandardItem
 
 from ..base_module import BaseModule
@@ -174,7 +174,7 @@ class ExpenseController(BaseModule):
         # Build (id, name) pairs for the combo
         cats = [(c.category_id, c.name) for c in self.repo.list_categories()]
         dlg = ExpenseForm(self.view, categories=cats, initial=initial)
-        if dlg.exec() != dlg.Accepted:
+        if dlg.exec() != QDialog.Accepted:   # use QDialog.Accepted to avoid enum issues
             return None
         return dlg.payload()
 

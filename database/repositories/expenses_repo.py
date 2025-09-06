@@ -112,12 +112,18 @@ class ExpensesRepo:
         self.conn.commit()
 
     def delete_category(self, category_id: int) -> None:
-        """Remove a category.  Does not check for existing expenses."""
-        self.conn.execute(
-            "DELETE FROM expense_categories WHERE category_id=?",
-            (category_id,),
-        )
-        self.conn.commit()
+        """Remove a category. Translate FK violations into a domain error."""
+        try:
+            self.conn.execute(
+                "DELETE FROM expense_categories WHERE category_id=?",
+                (category_id,),
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError as e:
+            # category is referenced by existing expenses
+            raise DomainError(
+                "Cannot delete a category that is used by existing expenses."
+            ) from e
 
     # ------------------------------------------------------------------
     # Expense operations

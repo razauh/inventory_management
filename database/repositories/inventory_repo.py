@@ -27,6 +27,18 @@ class InventoryRepo:
             pass
 
     # ------------------------------------------------------------------
+    # Small helper for UI product selectors
+    # ------------------------------------------------------------------
+    def list_products_for_select(self) -> list[tuple[int, str]]:
+        """
+        Return [(product_id, name), ...] ordered by name for populating combos.
+        """
+        rows = self.conn.execute(
+            "SELECT product_id, name FROM products ORDER BY name"
+        ).fetchall()
+        return [(int(r["product_id"]), r["name"]) for r in rows]
+
+    # ------------------------------------------------------------------
     # Existing: recent transactions (used by "Adjustments & Recent" tab)
     # ------------------------------------------------------------------
     def recent_transactions(self, limit: int = 50) -> List[Dict]:
@@ -34,21 +46,22 @@ class InventoryRepo:
         Return most recent inventory transactions limited by `limit`.
         Aliases match TransactionsTableModel headers:
            ID | Date | Type | Product | Qty | UoM | Notes
+        Ordered by DATE(date) DESC, transaction_id DESC.
         """
         lim = self._normalize_limit(limit)
         sql = """
             SELECT
-                t.inventory_transaction_id AS id,
-                t.txn_date                  AS date,
-                t.txn_type                  AS type,
+                t.transaction_id           AS id,
+                t.date                      AS date,
+                t.transaction_type          AS type,
                 p.name                      AS product,
-                CAST(t.qty AS REAL)         AS qty,
+                CAST(t.quantity AS REAL)    AS qty,
                 u.unit_name                 AS uom,
-                t.notes                     AS notes
+                COALESCE(t.notes, '')       AS notes
             FROM inventory_transactions t
             LEFT JOIN products p ON p.product_id = t.product_id
             LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
-            ORDER BY DATE(t.txn_date) DESC, t.inventory_transaction_id DESC
+            ORDER BY DATE(t.date) DESC, t.transaction_id DESC
             LIMIT ?
         """
         rows = self.conn.execute(sql, (lim,)).fetchall()
@@ -70,7 +83,7 @@ class InventoryRepo:
         Aliases match TransactionsTableModel headers:
            ID | Date | Type | Product | Qty | UoM | Notes
 
-        Ordering: DATE(txn_date) DESC, inventory_transaction_id DESC
+        Ordering: DATE(t.date) DESC, t.transaction_id DESC
         Only applies WHERE fragments when corresponding filters are provided.
         """
         lim = self._normalize_limit(limit)
@@ -79,10 +92,10 @@ class InventoryRepo:
         params: List = []
 
         if date_from:
-            where.append("DATE(t.txn_date) >= DATE(?)")
+            where.append("DATE(t.date) >= DATE(?)")
             params.append(date_from)
         if date_to:
-            where.append("DATE(t.txn_date) <= DATE(?)")
+            where.append("DATE(t.date) <= DATE(?)")
             params.append(date_to)
         if product_id is not None:
             where.append("t.product_id = ?")
@@ -90,13 +103,13 @@ class InventoryRepo:
 
         sql = """
             SELECT
-                t.inventory_transaction_id AS id,
-                t.txn_date                  AS date,
-                t.txn_type                  AS type,
+                t.transaction_id           AS id,
+                t.date                      AS date,
+                t.transaction_type          AS type,
                 p.name                      AS product,
-                CAST(t.qty AS REAL)         AS qty,
+                CAST(t.quantity AS REAL)    AS qty,
                 u.unit_name                 AS uom,
-                t.notes                     AS notes
+                COALESCE(t.notes, '')       AS notes
             FROM inventory_transactions t
             LEFT JOIN products p ON p.product_id = t.product_id
             LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
@@ -104,7 +117,7 @@ class InventoryRepo:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += """
-            ORDER BY DATE(t.txn_date) DESC, t.inventory_transaction_id DESC
+            ORDER BY DATE(t.date) DESC, t.transaction_id DESC
             LIMIT ?
         """
         params.append(lim)

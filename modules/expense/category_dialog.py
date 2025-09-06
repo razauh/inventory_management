@@ -1,8 +1,13 @@
 from __future__ import annotations
+import sqlite3
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QMessageBox, QAbstractItemView
 )
+
+from ...database.repositories.expenses_repo import DomainError
+
 
 class CategoryDialog(QDialog):
     def __init__(self, parent, repo):
@@ -38,7 +43,7 @@ class CategoryDialog(QDialog):
         self._reload()
 
     def _reload(self):
-        cats = self.repo.list_categories()  # returns dataclasses with id+name :contentReference[oaicite:4]{index=4}
+        cats = self.repo.list_categories()  # returns dataclasses with id+name
         self.tbl.setRowCount(len(cats))
         for r, c in enumerate(cats):
             self.tbl.setItem(r, 0, QTableWidgetItem(str(c.category_id)))
@@ -56,7 +61,7 @@ class CategoryDialog(QDialog):
         if not name:
             QMessageBox.information(self, "Name", "Enter a category name.")
             return
-        self.repo.create_category(name)  # exists in repo :contentReference[oaicite:5]{index=5}
+        self.repo.create_category(name)
         self.edt_name.clear()
         self._reload()
 
@@ -69,7 +74,7 @@ class CategoryDialog(QDialog):
         if not name:
             QMessageBox.information(self, "Name", "Enter a new name.")
             return
-        self.repo.update_category(cat_id, name)  # exists :contentReference[oaicite:6]{index=6}
+        self.repo.update_category(cat_id, name)
         self.edt_name.clear()
         self._reload()
 
@@ -78,5 +83,17 @@ class CategoryDialog(QDialog):
         if cat_id is None:
             QMessageBox.information(self, "Select", "Pick a category row to delete.")
             return
-        self.repo.delete_category(cat_id)  # exists :contentReference[oaicite:7]{index=7}
-        self._reload()
+        try:
+            self.repo.delete_category(cat_id)
+            self._reload()
+        except sqlite3.IntegrityError:
+            QMessageBox.information(
+                self,
+                "Cannot delete",
+                "This category is currently used by one or more expenses.\n\n"
+                "Please reassign or delete those expenses first."
+            )
+        except DomainError as e:
+            QMessageBox.information(self, "Invalid", str(e))
+        except Exception as e:
+            QMessageBox.information(self, "Error", f"Failed to delete category:\n{e}")
