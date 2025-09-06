@@ -47,17 +47,20 @@ class InventoryRepo:
         Aliases match TransactionsTableModel headers:
            ID | Date | Type | Product | Qty | UoM | Notes
         Ordered by DATE(date) DESC, transaction_id DESC.
+
+        IMPORTANT: Column aliases are chosen to match the *model*:
+          transaction_id, date, transaction_type, product, quantity, unit_name, notes
         """
         lim = self._normalize_limit(limit)
         sql = """
             SELECT
-                t.transaction_id           AS id,
-                t.date                      AS date,
-                t.transaction_type          AS type,
-                p.name                      AS product,
-                CAST(t.quantity AS REAL)    AS qty,
-                u.unit_name                 AS uom,
-                COALESCE(t.notes, '')       AS notes
+                t.transaction_id              AS transaction_id,
+                t.date                         AS date,
+                t.transaction_type             AS transaction_type,
+                p.name                         AS product,
+                CAST(t.quantity AS REAL)       AS quantity,
+                u.unit_name                    AS unit_name,
+                COALESCE(t.notes, '')          AS notes
             FROM inventory_transactions t
             LEFT JOIN products p ON p.product_id = t.product_id
             LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
@@ -85,6 +88,9 @@ class InventoryRepo:
 
         Ordering: DATE(t.date) DESC, t.transaction_id DESC
         Only applies WHERE fragments when corresponding filters are provided.
+
+        IMPORTANT: Column aliases are chosen to match the *model*:
+          transaction_id, date, transaction_type, product, quantity, unit_name, notes
         """
         lim = self._normalize_limit(limit)
 
@@ -103,13 +109,13 @@ class InventoryRepo:
 
         sql = """
             SELECT
-                t.transaction_id           AS id,
-                t.date                      AS date,
-                t.transaction_type          AS type,
-                p.name                      AS product,
-                CAST(t.quantity AS REAL)    AS qty,
-                u.unit_name                 AS uom,
-                COALESCE(t.notes, '')       AS notes
+                t.transaction_id              AS transaction_id,
+                t.date                         AS date,
+                t.transaction_type             AS transaction_type,
+                p.name                         AS product,
+                CAST(t.quantity AS REAL)       AS quantity,
+                u.unit_name                    AS unit_name,
+                COALESCE(t.notes, '')          AS notes
             FROM inventory_transactions t
             LEFT JOIN products p ON p.product_id = t.product_id
             LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
@@ -178,29 +184,38 @@ class InventoryRepo:
         return d
 
     # ------------------------------------------------------------------
-    # (If you already have this in your file, keep your version.)
-    # Provided for completeness since Adjustments tab calls it.
+    # Adjustments
     # ------------------------------------------------------------------
     def add_adjustment(
         self,
         *,
         product_id: int,
         uom_id: int,
-        qty: float,
-        txn_date: str,
+        quantity: float,
+        date: str,
         notes: str | None = None,
+        created_by: int | None = None,
     ) -> int:
         """
-        Insert an adjustment row into inventory_transactions.
+        Insert an 'adjustment' row into inventory_transactions.
+
+        Matches real table columns (from PRAGMA table_info):
+          transaction_id, product_id, quantity, uom_id, transaction_type,
+          reference_table, reference_id, reference_item_id,
+          date, posted_at, txn_seq, notes, created_by
         """
         cur = self.conn.execute(
             """
             INSERT INTO inventory_transactions
-                (product_id, uom_id, qty, txn_type, txn_date, notes)
+                (product_id, quantity, uom_id, transaction_type,
+                 reference_table, reference_id, reference_item_id,
+                 date, notes, created_by)
             VALUES
-                (?, ?, ?, 'ADJUSTMENT', ?, ?)
+                (?, ?, ?, 'adjustment',
+                 NULL, NULL, NULL,
+                 ?, ?, ?)
             """,
-            (int(product_id), int(uom_id), float(qty), txn_date, notes),
+            (int(product_id), float(quantity), int(uom_id), date, notes, created_by),
         )
         self.conn.commit()
         return int(cur.lastrowid)

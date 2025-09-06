@@ -8,14 +8,25 @@ class TransactionsTableModel(QAbstractTableModel):
     """
     Table model for inventory transactions.
 
-    Expected row keys (as returned by InventoryRepo.recent_transactions):
-      - transaction_id : int
-      - date           : str (YYYY-MM-DD)
-      - transaction_type : str (e.g., 'adjustment')
-      - product        : str (human-readable name)
-      - quantity       : float | int
-      - unit_name      : str
-      - notes          : str | None
+    The model now tolerates TWO possible row schemas (for safety):
+
+    Preferred keys (from updated InventoryRepo):
+      - transaction_id
+      - date
+      - transaction_type
+      - product
+      - quantity
+      - unit_name
+      - notes
+
+    Also accepted (legacy/old):
+      - id
+      - date
+      - type
+      - product
+      - qty
+      - uom
+      - notes
     """
     HEADERS: List[str] = ["ID", "Date", "Type", "Product", "Qty", "UoM", "Notes"]
 
@@ -38,36 +49,39 @@ class TransactionsTableModel(QAbstractTableModel):
         r = self._rows[index.row()]
         col = index.column()
 
+        def _get(*keys, default=""):
+            for k in keys:
+                if k in r and r[k] is not None:
+                    return r[k]
+            return default
+
         # Display / Edit text
         if role in (Qt.DisplayRole, Qt.EditRole):
-            # Map row dict -> columns, with defensive fallbacks
             try:
-                if col == 0:
-                    return r.get("transaction_id", "")
-                elif col == 1:
-                    return r.get("date", "")
-                elif col == 2:
-                    return r.get("transaction_type", "")
-                elif col == 3:
-                    return r.get("product", "")
-                elif col == 4:
-                    # quantity: display compact numeric (e.g., 5, 5.5, -3)
-                    q = r.get("quantity", 0)
+                if col == 0:  # ID
+                    return _get("transaction_id", "id")
+                elif col == 1:  # Date
+                    return _get("date")
+                elif col == 2:  # Type
+                    return _get("transaction_type", "type")
+                elif col == 3:  # Product
+                    return _get("product")
+                elif col == 4:  # Qty
+                    q = _get("quantity", "qty", default=0)
                     try:
                         return f"{float(q):g}"
                     except Exception:
-                        return str(q)
-                elif col == 5:
-                    return r.get("unit_name", "")
-                elif col == 6:
-                    return (r.get("notes") or "")
+                        return str(q) if q is not None else ""
+                elif col == 5:  # UoM
+                    return _get("unit_name", "uom")
+                elif col == 6:  # Notes
+                    return _get("notes", default="")
             except Exception:
-                # If a row is malformed, never crash the view
                 return ""
 
-        # Align numeric-ish columns (ID and Qty) to center/right for readability
+        # Align numeric-ish columns (ID and Qty) to right for readability
         if role == Qt.TextAlignmentRole:
-            if col in (0, 4):  # ID, Qty
+            if col in (0, 4):
                 return int(Qt.AlignRight | Qt.AlignVCenter)
 
         return None
@@ -79,7 +93,6 @@ class TransactionsTableModel(QAbstractTableModel):
             except IndexError:
                 return ""
         if orientation == Qt.Horizontal and role == Qt.TextAlignmentRole:
-            # Mirror cell alignment for numeric headers
             if section in (0, 4):  # ID, Qty
                 return int(Qt.AlignRight | Qt.AlignVCenter)
         return super().headerData(section, orientation, role)
