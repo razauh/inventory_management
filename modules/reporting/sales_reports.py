@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDateEdit, QPushButton, QComboBox,
-    QTabWidget, QSplitter, QTableView, QCheckBox, QListWidget, QListWidgetItem,
-    QFormLayout, QFrame, QSpinBox, QAbstractItemView, QMessageBox
+    QTabWidget, QTableView, QCheckBox, QListWidget, QListWidgetItem,
+    QFrame, QSpinBox, QAbstractItemView, QMessageBox, QGridLayout, QSizePolicy
 )
 
 # Use app’s TableView if available
@@ -29,23 +29,11 @@ except Exception:  # pragma: no cover
 
 from ...database.repositories.reporting_repo import ReportingRepo
 
-
-# ---------------------------------------------------------------------------
-# Simple generic table model (dynamic columns)
-# ---------------------------------------------------------------------------
-
 from PySide6.QtCore import QAbstractTableModel
 
-class _SimpleTableModel(QAbstractTableModel):
-    """
-    Minimal, flexible table model.
 
-    headers: list[str]
-    rows: list[dict] (keys should align with field_map)
-    field_map: list[str] mapping column index -> dict key
-    money_cols: set[int] columns to format as money
-    right_cols: set[int] columns to right-align (numbers)
-    """
+# ----------------------------- Simple model ------------------------------
+class _SimpleTableModel(QAbstractTableModel):
     def __init__(self,
                  headers: List[str],
                  field_map: List[str],
@@ -65,7 +53,6 @@ class _SimpleTableModel(QAbstractTableModel):
         self._rows = rows or []
         self.endResetModel()
 
-    # Qt API
     def rowCount(self, parent=QModelIndex()) -> int:  # type: ignore[override]
         return 0 if parent.isValid() else len(self._rows)
 
@@ -90,7 +77,6 @@ class _SimpleTableModel(QAbstractTableModel):
             val = row.get(key)
             if c in self._money_cols:
                 return fmt_money(val)
-            # Percent columns convention: if header endswith '%', format float as pct with 1 decimal
             if isinstance(val, float) and self._headers[c].endswith('%'):
                 try:
                     return f"{val:.1%}"
@@ -106,48 +92,8 @@ class _SimpleTableModel(QAbstractTableModel):
         return None
 
 
-# ---------------------------------------------------------------------------
-# Main Sales Reports Tab
-# ---------------------------------------------------------------------------
-
+# --------------------------- Main widget ---------------------------------
 class SalesReportsTab(QWidget):
-    """
-    Sales Reports with common filters and multiple sub-tabs.
-
-    Sub-tabs:
-      1) Sales by Day (granularity daily/monthly/yearly)
-      2) Sales by Customer
-      3) Sales by Product
-      4) Sales by Category
-      5) Margin by Day
-      6) Margin by Customer
-      7) Margin by Product
-      8) Margin by Category
-      9) Top Customers
-     10) Top Products
-     11) Returns Summary
-     12) Status Breakdown
-     13) Drill-down (matching sales list)
-
-    IMPORTANT — Repo requirements (to be added in reporting_repo.py):
-      - get_product_categories() -> list[str]
-      - sales_by_period(date_from, date_to, granularity, statuses, customer_id, product_id, category) -> rows[{period, revenue, order_count}]
-      - sales_by_customer(date_from, date_to, statuses, customer_id, product_id, category) -> rows[{customer_id, customer_name, revenue, order_count}]
-      - sales_by_product(date_from, date_to, statuses, customer_id, product_id, category) -> rows[{product_id, product_name, qty_base, revenue}]
-      - sales_by_category(date_from, date_to, statuses, customer_id, product_id, category) -> rows[{category, qty_base, revenue}]
-      - margin_by_period(date_from, date_to, granularity, statuses, customer_id, product_id, category) -> rows[{period, revenue, cogs, gross, margin_pct}]
-      - margin_by_customer(date_from, date_to, statuses, customer_id, product_id, category) -> rows[{customer_id, customer_name, revenue, cogs, gross, margin_pct}]
-      - margin_by_product(date_from, date_to, statuses, customer_id, product_id, category) -> rows[{product_id, product_name, revenue, cogs, gross, margin_pct}]
-      - margin_by_category(date_from, date_to, statuses, customer_id, product_id, category) -> rows[{category, revenue, cogs, gross, margin_pct}]
-      - top_customers(date_from, date_to, statuses, limit_n) -> rows[{customer_id, customer_name, revenue, order_count}]
-      - top_products(date_from, date_to, statuses, limit_n) -> rows[{product_id, product_name, qty_base, revenue}]
-      - returns_summary(date_from, date_to) -> rows[{metric, value}]  (should at least return refunds_sum (negative payments) and returns_qty_base)
-      - status_breakdown(date_from, date_to, customer_id, product_id, category) -> rows[{payment_status, order_count, revenue}]
-      - drilldown_sales(date_from, date_to, statuses, customer_id, product_id, category) -> rows[{sale_id, date, customer_name, total_amount, paid_amount, advance_payment_applied, remaining, payment_status}]
-
-    This widget will handle “status multiselect”, category dropdown, and date range.
-    """
-
     def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
         super().__init__(parent)
         self.conn = conn
@@ -157,99 +103,160 @@ class SalesReportsTab(QWidget):
         self._build_ui()
         self._wire()
         self._load_categories()
-        self.refresh()  # initial load
+        self.refresh()
 
     # ---------------- UI ----------------
+    def _fix_width(self, w, max_w: int) -> None:
+        """Clamp a widget to a fixed, compact width."""
+        w.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        w.setMinimumWidth(max_w)
+        w.setMaximumWidth(max_w)
+
+    def _build_row(self, label: str, widget: QWidget) -> QWidget:
+        row = QWidget()
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(6)
+        lab = QLabel(label)
+        lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._fix_width(lab, 90)
+        hl.addWidget(lab, 0)
+        hl.addWidget(widget, 0)  # widget is fixed-size; won't stretch
+        hl.addStretch(1)         # consume leftover so row stays tight
+        return row
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
-        # Filter bar (top)
+        # Filter bar — 3 compact columns
         bar = QFrame()
         bar.setFrameShape(QFrame.StyledPanel)
-        fl = QFormLayout(bar)
-        fl.setLabelAlignment(Qt.AlignRight)
-        fl.setFormAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        bar.setContentsMargins(8, 8, 8, 8)
+        bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        grid = QGridLayout(bar)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(4)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 0)
+        grid.setColumnStretch(2, 1)  # actions column grows a bit if needed
 
         today = QDate.currentDate()
+
         self.dt_from = QDateEdit()
         self.dt_from.setCalendarPopup(True)
         self.dt_from.setDisplayFormat("yyyy-MM-dd")
         self.dt_from.setDate(QDate(today.year(), today.month(), 1))
+        self._fix_width(self.dt_from, 110)
 
         self.dt_to = QDateEdit()
         self.dt_to.setCalendarPopup(True)
         self.dt_to.setDisplayFormat("yyyy-MM-dd")
         self.dt_to.setDate(today)
+        self._fix_width(self.dt_to, 110)
 
         self.cmb_gran = QComboBox()
         self.cmb_gran.addItems(["daily", "monthly", "yearly"])
         self.cmb_gran.setCurrentText("daily")
+        self.cmb_gran.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._fix_width(self.cmb_gran, 100)
 
-        # Customer / Product ids as ints (you asked not to assume names in filter)
         self.spn_customer = QSpinBox()
-        self.spn_customer.setMinimum(0)
-        self.spn_customer.setMaximum(10**9)
+        self.spn_customer.setRange(0, 10**9)
         self.spn_customer.setSpecialValueText("Any")
         self.spn_customer.setValue(0)
+        self._fix_width(self.spn_customer, 120)
 
         self.spn_product = QSpinBox()
-        self.spn_product.setMinimum(0)
-        self.spn_product.setMaximum(10**9)
+        self.spn_product.setRange(0, 10**9)
         self.spn_product.setSpecialValueText("Any")
         self.spn_product.setValue(0)
+        self._fix_width(self.spn_product, 120)
 
-        # Category dropdown from products.category distinct
         self.cmb_category = QComboBox()
-        self.cmb_category.addItem("Any", userData=None)  # populated later
+        self.cmb_category.addItem("Any", userData=None)
+        self.cmb_category.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._fix_width(self.cmb_category, 160)
 
-        # Status multi-select (paid/unpaid/partial)
         self.lst_status = QListWidget()
         self.lst_status.setSelectionMode(QAbstractItemView.MultiSelection)
         for s in ("paid", "unpaid", "partial"):
-            item = QListWidgetItem(s)
-            item.setSelected(True)  # default: include all
-            self.lst_status.addItem(item)
-        self.lst_status.setMaximumHeight(70)
+            it = QListWidgetItem(s)
+            it.setSelected(True)
+            self.lst_status.addItem(it)
+        self.lst_status.setMaximumHeight(64)
+        self._fix_width(self.lst_status, 140)
 
-        self.chk_include_returns = QCheckBox("Include returns impact (if repo supports it)")
+        self.chk_include_returns = QCheckBox("Include returns")
+        # keep text short; no width clamp needed
 
         self.spn_topn = QSpinBox()
         self.spn_topn.setRange(1, 1000)
         self.spn_topn.setValue(10)
+        self._fix_width(self.spn_topn, 60)
 
         self.btn_apply = QPushButton("Apply")
+        self._fix_width(self.btn_apply, 80)
         self.btn_export_pdf = QPushButton("Export PDF…")
+        self._fix_width(self.btn_export_pdf, 110)
         self.btn_export_csv = QPushButton("Export CSV…")
+        self._fix_width(self.btn_export_csv, 110)
 
-        fl.addRow(QLabel("<b>Date Range</b>"))
-        fl.addRow("From:", self.dt_from)
-        fl.addRow("To:", self.dt_to)
-        fl.addRow("Granularity:", self.cmb_gran)
-        fl.addRow(QLabel("<b>Filters</b>"))
-        fl.addRow("Customer ID:", self.spn_customer)
-        fl.addRow("Product ID:", self.spn_product)
-        fl.addRow("Category:", self.cmb_category)
-        fl.addRow("Status:", self.lst_status)
-        fl.addRow(self.chk_include_returns)
-        fl.addRow(QLabel("<b>Top N</b>"))
-        fl.addRow("N:", self.spn_topn)
-        rowb = QHBoxLayout()
-        rowb.addWidget(self.btn_apply)
-        rowb.addStretch(1)
-        rowb.addWidget(self.btn_export_pdf)
-        rowb.addWidget(self.btn_export_csv)
-        fl.addRow(rowb)
+        # --- place rows into 3 columns ---
+        grid.addWidget(QLabel("<b>Date</b>"),           0, 0, 1, 1, Qt.AlignLeft)
+        grid.addWidget(self._build_row("From:", self.dt_from), 1, 0)
+        grid.addWidget(self._build_row("To:",   self.dt_to),   2, 0)
+        grid.addWidget(self._build_row("Granularity:", self.cmb_gran), 3, 0)
 
-        root.addWidget(bar)
+        grid.addWidget(QLabel("<b>Filters</b>"),        0, 1, 1, 1, Qt.AlignLeft)
+        grid.addWidget(self._build_row("Customer ID:", self.spn_customer), 1, 1)
+        grid.addWidget(self._build_row("Product ID:",  self.spn_product),  2, 1)
+        grid.addWidget(self._build_row("Category:",    self.cmb_category), 3, 1)
 
-        # Tabs with results
+        grid.addWidget(QLabel("<b>Status & Actions</b>"), 0, 2, 1, 1, Qt.AlignLeft)
+        # status row
+        srow = QWidget()
+        srl = QHBoxLayout(srow)
+        srl.setContentsMargins(0, 0, 0, 0)
+        srl.setSpacing(6)
+        lab_status = QLabel("Status:")
+        self._fix_width(lab_status, 60)
+        srl.addWidget(lab_status, 0)
+        srl.addWidget(self.lst_status, 0)
+        srl.addStretch(1)
+        grid.addWidget(srow, 1, 2)
+
+        # options row
+        opt = QWidget()
+        ol = QHBoxLayout(opt)
+        ol.setContentsMargins(0, 0, 0, 0)
+        ol.setSpacing(10)
+        ol.addWidget(self.chk_include_returns, 0)
+        ol.addWidget(QLabel("Top N:"), 0)
+        ol.addWidget(self.spn_topn, 0)
+        ol.addStretch(1)
+        grid.addWidget(opt, 2, 2)
+
+        # buttons row
+        brow = QWidget()
+        bl = QHBoxLayout(brow)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(8)
+        bl.addWidget(self.btn_apply, 0)
+        bl.addStretch(1)
+        bl.addWidget(self.btn_export_pdf, 0)
+        bl.addWidget(self.btn_export_csv, 0)
+        grid.addWidget(brow, 3, 2)
+
+        root.addWidget(bar, 0)
+
+        # Results tabs
         self.tabs = QTabWidget(self)
         root.addWidget(self.tabs, 1)
 
-        # Create all result tables
+        # Tables
         self._tables: Dict[str, _BaseTableView] = {}
 
         def _add_tab(key: str, title: str, headers: List[str], fields: List[str],
@@ -260,86 +267,61 @@ class SalesReportsTab(QWidget):
             tv.setSortingEnabled(True)
             model = _SimpleTableModel(headers, fields, [], money_cols=money_cols, right_cols=right_cols, parent=tv)
             tv.setModel(model)
-            self._tables[key] = tv
             page = QWidget()
             lay = QVBoxLayout(page)
             lay.setContentsMargins(0, 0, 0, 0)
             lay.addWidget(tv)
+            self._tables[key] = tv
             self.tabs.addTab(page, title)
 
-        # 1) Sales by Day
         _add_tab("sales_by_day", "Sales by Day",
                  ["Period", "Orders", "Revenue"],
                  ["period", "order_count", "revenue"],
                  money_cols=(2,), right_cols=(1,))
-
-        # 2) Sales by Customer
         _add_tab("sales_by_customer", "Sales by Customer",
                  ["Customer", "Orders", "Revenue", "COGS", "Gross", "Gross %"],
                  ["customer_name", "order_count", "revenue", "cogs", "gross", "margin_pct"],
                  money_cols=(2, 3, 4), right_cols=(1, 5))
-
-        # 3) Sales by Product
         _add_tab("sales_by_product", "Sales by Product",
                  ["Product", "Qty (base)", "Revenue", "COGS", "Gross", "Gross %"],
                  ["product_name", "qty_base", "revenue", "cogs", "gross", "margin_pct"],
                  money_cols=(2, 3, 4), right_cols=(1, 5))
-
-        # 4) Sales by Category
         _add_tab("sales_by_category", "Sales by Category",
                  ["Category", "Qty (base)", "Revenue", "COGS", "Gross", "Gross %"],
                  ["category", "qty_base", "revenue", "cogs", "gross", "margin_pct"],
                  money_cols=(2, 3, 4), right_cols=(1, 5))
-
-        # 5) Margin by Day
         _add_tab("margin_by_day", "Margin by Day",
                  ["Period", "Revenue", "COGS", "Gross", "Gross %"],
                  ["period", "revenue", "cogs", "gross", "margin_pct"],
                  money_cols=(1, 2, 3), right_cols=(4,))
-
-        # 6) Margin by Customer
         _add_tab("margin_by_customer", "Margin by Customer",
                  ["Customer", "Revenue", "COGS", "Gross", "Gross %"],
                  ["customer_name", "revenue", "cogs", "gross", "margin_pct"],
                  money_cols=(1, 2, 3), right_cols=(4,))
-
-        # 7) Margin by Product
         _add_tab("margin_by_product", "Margin by Product",
                  ["Product", "Revenue", "COGS", "Gross", "Gross %"],
                  ["product_name", "revenue", "cogs", "gross", "margin_pct"],
                  money_cols=(1, 2, 3), right_cols=(4,))
-
-        # 8) Margin by Category
         _add_tab("margin_by_category", "Margin by Category",
                  ["Category", "Revenue", "COGS", "Gross", "Gross %"],
                  ["category", "revenue", "cogs", "gross", "margin_pct"],
                  money_cols=(1, 2, 3), right_cols=(4,))
-
-        # 9) Top Customers
         _add_tab("top_customers", "Top Customers",
                  ["Customer", "Orders", "Revenue"],
                  ["customer_name", "order_count", "revenue"],
                  money_cols=(2,), right_cols=(1,))
-
-        # 10) Top Products
         _add_tab("top_products", "Top Products",
                  ["Product", "Qty (base)", "Revenue"],
                  ["product_name", "qty_base", "revenue"],
                  money_cols=(2,), right_cols=(1,))
-
-        # 11) Returns Summary
         _add_tab("returns_summary", "Returns Summary",
                  ["Metric", "Value"],
                  ["metric", "value"],
                  money_cols=(), right_cols=(1,))
-
-        # 12) Status Breakdown
         _add_tab("status_breakdown", "Status Breakdown",
                  ["Status", "Orders", "Revenue"],
                  ["payment_status", "order_count", "revenue"],
                  money_cols=(2,), right_cols=(1,))
-
-        # 13) Drill-down Sales
         _add_tab("drilldown", "Drill-down Sales",
                  ["Sale ID", "Date", "Customer", "Status", "Total", "Paid", "Advance Applied", "Remaining"],
                  ["sale_id", "date", "customer_name", "payment_status", "total_amount", "paid_amount", "advance_payment_applied", "remaining"],
@@ -351,7 +333,6 @@ class SalesReportsTab(QWidget):
         self.btn_export_csv.clicked.connect(self._export_csv)
 
     # -------------- Filters helpers --------------
-
     def _statuses(self) -> List[str]:
         out: List[str] = []
         for i in range(self.lst_status.count()):
@@ -375,19 +356,16 @@ class SalesReportsTab(QWidget):
         return str(ud) if ud != "" else None
 
     # -------------- Data loading --------------
-
     def _load_categories(self) -> None:
-        """Populate category dropdown from repo (distinct products.category)."""
         self.cmb_category.blockSignals(True)
         self.cmb_category.clear()
         self.cmb_category.addItem("Any", userData=None)
         try:
             rows = getattr(self.repo, "get_product_categories")()
             for r in rows:
-                # accept either a row with 'category' or a plain string
                 if isinstance(r, (tuple, list)) and r:
                     cat = r[0]
-                elif hasattr(r, "keys") and "category" in r.keys():  # sqlite3.Row
+                elif hasattr(r, "keys") and "category" in r.keys():
                     cat = r["category"]
                 else:
                     cat = r
@@ -395,12 +373,10 @@ class SalesReportsTab(QWidget):
                     continue
                 self.cmb_category.addItem(str(cat), userData=str(cat))
         except Exception:
-            # if repo method missing, just keep "Any"
             pass
         self.cmb_category.blockSignals(False)
 
     # -------------- Refresh dispatcher --------------
-
     @Slot()
     def refresh(self) -> None:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
@@ -411,9 +387,7 @@ class SalesReportsTab(QWidget):
         product_id = self._product_id()
         category = self._category_value()
         top_n = int(self.spn_topn.value())
-        include_returns = self.chk_include_returns.isChecked()
 
-        # Helper to set a table safely from repo method
         def load_into(key: str, repo_method: str, *args) -> None:
             tv = self._tables[key]
             model: _SimpleTableModel = tv.model()  # type: ignore
@@ -425,27 +399,15 @@ class SalesReportsTab(QWidget):
             try:
                 rows = fn(*args)
             except Exception as e:
-                # Show error as a single row for visibility
                 model.set_rows([{"metric": "Error", "value": str(e)}] if key == "returns_summary" else [])
                 return
 
-            # Normalize rows (sqlite3.Row -> dict)
             out: List[Dict[str, Any]] = []
             for r in rows or []:
                 if hasattr(r, "keys"):
                     out.append({k: r[k] for k in r.keys()})
                 else:
                     out.append(dict(r))
-            # Derived fields
-            if key == "sales_by_product" and out:
-                for row in out:
-                    # ensure numeric display
-                    for k in ("qty_base", "revenue", "cogs", "gross", "margin_pct"):
-                        row[k] = row.get(k, 0.0)
-            if key == "sales_by_category" and out:
-                for row in out:
-                    for k in ("qty_base", "revenue", "cogs", "gross", "margin_pct"):
-                        row[k] = row.get(k, 0.0)
             if key.startswith("margin_") and out:
                 for row in out:
                     rev = float(row.get("revenue") or 0.0)
@@ -463,42 +425,30 @@ class SalesReportsTab(QWidget):
             tv.resizeColumnsToContents()
             tv.horizontalHeader().setStretchLastSection(True)
 
-        # Load each tab
         load_into("sales_by_day", "sales_by_period",
                   date_from, date_to, gran, statuses, customer_id, product_id, category)
-
         load_into("sales_by_customer", "sales_by_customer",
                   date_from, date_to, statuses, customer_id, product_id, category)
-
         load_into("sales_by_product", "sales_by_product",
                   date_from, date_to, statuses, customer_id, product_id, category)
-
         load_into("sales_by_category", "sales_by_category",
                   date_from, date_to, statuses, customer_id, product_id, category)
-
         load_into("margin_by_day", "margin_by_period",
                   date_from, date_to, gran, statuses, customer_id, product_id, category)
-
         load_into("margin_by_customer", "margin_by_customer",
                   date_from, date_to, statuses, customer_id, product_id, category)
-
         load_into("margin_by_product", "margin_by_product",
                   date_from, date_to, statuses, customer_id, product_id, category)
-
         load_into("margin_by_category", "margin_by_category",
                   date_from, date_to, statuses, customer_id, product_id, category)
-
         load_into("top_customers", "top_customers",
                   date_from, date_to, statuses, int(top_n))
-
         load_into("top_products", "top_products",
                   date_from, date_to, statuses, int(top_n))
 
-        # Returns: only date range (repo decides details)
-        # If include_returns is OFF, we still show the summary but repos can return zeros.
         try:
             fn = getattr(self.repo, "returns_summary")
-            rows = fn(date_from, date_to)  # must return rows [{metric,value}, ...]
+            rows = fn(date_from, date_to)
         except Exception:
             rows = [{"metric": "Info", "value": "Repo.returns_summary not implemented"}]
         model_rs: _SimpleTableModel = self._tables["returns_summary"].model()  # type: ignore
@@ -508,17 +458,14 @@ class SalesReportsTab(QWidget):
 
         load_into("status_breakdown", "status_breakdown",
                   date_from, date_to, customer_id, product_id, category)
-
         load_into("drilldown", "drilldown_sales",
                   date_from, date_to, statuses, customer_id, product_id, category)
 
     # -------------- Export helpers --------------
-
     def _active_table(self) -> Optional[_BaseTableView]:
         idx = self.tabs.currentIndex()
         if idx < 0:
             return None
-        # find the QTableView in this page
         page = self.tabs.currentWidget()
         if not page:
             return None
