@@ -140,7 +140,17 @@ class MainWindow(QMainWindow):
             self.conn,
             fallback_placeholder=True,
         )
-        self.add_placeholder("Reporting")
+
+        # Reporting (load actual module; if it fails we will print the exact error)
+        self._add_module_safe(
+            "Reporting",
+            "inventory_management.modules.reporting.controller",
+            "ReportingController",
+            self.conn,
+            current_user=self.user,
+            fallback_placeholder=True,
+        )
+
         if self.user and self.user.get("role") == "admin":
             self.add_placeholder("Users")
             self.add_placeholder("System Logs")
@@ -246,10 +256,12 @@ class MainWindow(QMainWindow):
             controller = Controller(*args, **kwargs)
             self.add_module(title, controller)
         except Exception as e:
-            # Keep startup clean; add placeholder instead of surfacing dialogs.
-            # If you want console logs, uncomment:
-            # print(f"[{title}] failed to load: {e}", file=sys.stderr)
-            # traceback.print_exc()
+            # === DEBUG Reporting only ===
+            if title == "Reporting":
+                import traceback as _tb, sys as _sys
+                print("[Reporting] failed to load:", e, file=_sys.stderr)
+                _tb.print_exc()
+            # ============================
             if fallback_placeholder:
                 self.add_placeholder(title)
 
