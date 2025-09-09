@@ -17,11 +17,12 @@ from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str
 
+
 def new_purchase_id(conn: sqlite3.Connection, date_str: str) -> str:
     # prefix by selected business date
     d = date_str.replace("-", "")
     prefix = f"PO{d}-"
-    row = conn.execute("SELECT MAX(purchase_id) AS m FROM purchases WHERE purchase_id LIKE ?", (prefix+"%",)).fetchone()
+    row = conn.execute("SELECT MAX(purchase_id) AS m FROM purchases WHERE purchase_id LIKE ?", (prefix + "%",)).fetchone()
     if row and row["m"]:
         try:
             last = int(row["m"].split("-")[-1])
@@ -30,6 +31,7 @@ def new_purchase_id(conn: sqlite3.Connection, date_str: str) -> str:
     else:
         last = 0
     return f"{prefix}{last+1:04d}"
+
 
 class PurchaseController(BaseModule):
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None):
@@ -43,10 +45,10 @@ class PurchaseController(BaseModule):
         self.products = ProductsRepo(conn)
         self._wire()
         self._reload()
-        
+
     def get_widget(self) -> QWidget:
         return self.view
-        
+
     def _wire(self):
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_edit.clicked.connect(self._edit)
@@ -54,7 +56,7 @@ class PurchaseController(BaseModule):
         self.view.btn_return.clicked.connect(self._return)
         self.view.btn_pay.clicked.connect(self._payment)
         self.view.search.textChanged.connect(self._apply_filter)
-        
+
     def _build_model(self):
         rows = self.repo.list_purchases()
         self.base = PurchasesTableModel(rows)
@@ -65,10 +67,12 @@ class PurchaseController(BaseModule):
         self.view.tbl.setModel(self.proxy)
         self.view.tbl.resizeColumnsToContents()
         sel = self.view.tbl.selectionModel()
-        try: sel.selectionChanged.disconnect(self._sync_details)
-        except (TypeError, RuntimeError): pass
+        try:
+            sel.selectionChanged.disconnect(self._sync_details)
+        except (TypeError, RuntimeError):
+            pass
         sel.selectionChanged.connect(self._sync_details)
-        
+
     def _reload(self):
         self._build_model()
         if self.proxy.rowCount() > 0:
@@ -76,16 +80,17 @@ class PurchaseController(BaseModule):
         else:
             self.view.details.set_data(None)
             self.view.items.set_rows([])
-            
+
     def _apply_filter(self, text: str):
         self.proxy.setFilterRegularExpression(QRegularExpression(text))
-        
+
     def _selected_row_dict(self) -> dict | None:
         idxs = self.view.tbl.selectionModel().selectedRows()
-        if not idxs: return None
+        if not idxs:
+            return None
         src = self.proxy.mapToSource(idxs[0])
         return self.base.at(src.row())
-        
+
     def _sync_details(self, *args):
         row = self._selected_row_dict()
         self.view.details.set_data(row)
@@ -115,7 +120,6 @@ class PurchaseController(BaseModule):
         return {int(r["item_id"]): float(r["returnable"]) for r in rows}
 
     # --- helper: fetch a payment and ensure it belongs to selected purchase ---
-    # --- helper: fetch a payment and ensure it belongs to selected purchase ---
     def _get_payment(self, payment_id: int) -> Optional[dict]:
         row = self._selected_row_dict()
         if not row:
@@ -128,13 +132,54 @@ class PurchaseController(BaseModule):
         r = self.conn.execute(sql, (payment_id, row["purchase_id"])).fetchone()
         # Normalize to plain dict so downstream code can safely use .get(...)
         return dict(r) if r is not None else None
-       
+
+    # --- helper: financials for purchase (for open-purchases adapter) ---
+    def _fetch_purchase_financials(self, purchase_id: str) -> dict:
+        """
+        Returns: total_amount, paid_amount, advance_payment_applied, calculated_total_amount, remaining_due
+        remaining_due = calculated_total_amount - paid_amount - advance_payment_applied (clamped ≥ 0)
+        """
+        row = self.conn.execute(
+            """
+            SELECT
+              p.total_amount,
+              COALESCE(p.paid_amount, 0.0)              AS paid_amount,
+              COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
+              COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount
+            FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+            WHERE p.purchase_id = ?;
+            """,
+            (purchase_id,),
+        ).fetchone()
+        if not row:
+            return {
+                "total_amount": 0.0,
+                "paid_amount": 0.0,
+                "advance_payment_applied": 0.0,
+                "calculated_total_amount": 0.0,
+                "remaining_due": 0.0,
+            }
+        calc = float(row["calculated_total_amount"] or 0.0)
+        paid = float(row["paid_amount"] or 0.0)
+        adv = float(row["advance_payment_applied"] or 0.0)
+        rem = max(0.0, calc - paid - adv)
+        return {
+            "total_amount": float(row["total_amount"] or 0.0),
+            "paid_amount": paid,
+            "advance_payment_applied": adv,
+            "calculated_total_amount": calc,
+            "remaining_due": rem,
+        }
+
     # -------- CRUD --------
     def _add(self):
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products)
-        if not dlg.exec(): return
+        if not dlg.exec():
+            return
         p = dlg.payload()
-        if not p: return
+        if not p:
+            return
 
         pid = new_purchase_id(self.conn, p["date"])
 
@@ -149,17 +194,18 @@ class PurchaseController(BaseModule):
             paid_amount=0.0,
             advance_payment_applied=0.0,
             notes=p.get("notes"),
-            created_by=(self.user["user_id"] if self.user else None)
+            created_by=(self.user["user_id"] if self.user else None),
         )
         items = [
             PurchaseItem(
-                None, pid,
+                None,
+                pid,
                 it["product_id"],
                 it["quantity"],
                 it["uom_id"],
                 it["purchase_price"],
                 it["sale_price"],
-                it["item_discount"]
+                it["item_discount"],
             )
             for it in p["items"]
         ]
@@ -190,11 +236,17 @@ class PurchaseController(BaseModule):
                     created_by=(self.user["user_id"] if self.user else None),
                 )
             except sqlite3.IntegrityError as e:
-                info(self.view, "Payment not recorded",
-                     f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}")
+                info(
+                    self.view,
+                    "Payment not recorded",
+                    f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
+                )
             except sqlite3.OperationalError as e:
-                info(self.view, "Payment not recorded",
-                     f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}")
+                info(
+                    self.view,
+                    "Payment not recorded",
+                    f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}",
+                )
         else:
             # Legacy flat fields path (kept to avoid breaking older forms/controllers)
             initial_paid = float(p.get("initial_payment") or 0.0)
@@ -241,11 +293,17 @@ class PurchaseController(BaseModule):
                         created_by=(self.user["user_id"] if self.user else None),
                     )
                 except sqlite3.IntegrityError as e:
-                    info(self.view, "Payment not recorded",
-                         f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}")
+                    info(
+                        self.view,
+                        "Payment not recorded",
+                        f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
+                    )
                 except sqlite3.OperationalError as e:
-                    info(self.view, "Payment not recorded",
-                         f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}")
+                    info(
+                        self.view,
+                        "Payment not recorded",
+                        f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}",
+                    )
 
         # 3) Optional initial vendor credit application
         init_credit = float(p.get("initial_credit_amount") or 0.0)
@@ -260,15 +318,13 @@ class PurchaseController(BaseModule):
                     created_by=(self.user["user_id"] if self.user else None),
                 )
             except sqlite3.IntegrityError as e:
-                info(self.view, "Credit not applied",
-                     f"Purchase {pid} was created, but vendor credit could not be applied:\n{e}")
+                info(self.view, "Credit not applied", f"Purchase {pid} was created, but vendor credit could not be applied:\n{e}")
             except sqlite3.OperationalError as e:
-                info(self.view, "Credit not applied",
-                     f"Purchase {pid} was created, but a database error occurred while applying credit:\n{e}")
+                info(self.view, "Credit not applied", f"Purchase {pid} was created, but a database error occurred while applying credit:\n{e}")
 
         info(self.view, "Saved", f"Purchase {pid} created.")
         self._reload()
-        
+
     def _edit(self):
         row = self._selected_row_dict()
         if not row:
@@ -281,31 +337,54 @@ class PurchaseController(BaseModule):
             "date": row["date"],
             "order_discount": row["order_discount"],
             "notes": row.get("notes"),
-            "items": [{
-                "product_id": it["product_id"], "uom_id": it["uom_id"],
-                "quantity": it["quantity"], "purchase_price": it["purchase_price"],
-                "sale_price": it["sale_price"], "item_discount": it["item_discount"]
-            } for it in items]
+            "items": [
+                {
+                    "product_id": it["product_id"],
+                    "uom_id": it["uom_id"],
+                    "quantity": it["quantity"],
+                    "purchase_price": it["purchase_price"],
+                    "sale_price": it["sale_price"],
+                    "item_discount": it["item_discount"],
+                }
+                for it in items
+            ],
         }
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products, initial=init)
-        if not dlg.exec(): return
+        if not dlg.exec():
+            return
         p = dlg.payload()
-        if not p: return
+        if not p:
+            return
         pid = row["purchase_id"]
         h = PurchaseHeader(
-            purchase_id=pid, vendor_id=p["vendor_id"], date=p["date"],
-            total_amount=p["total_amount"], order_discount=p["order_discount"],
-            payment_status=row["payment_status"], paid_amount=row["paid_amount"],
+            purchase_id=pid,
+            vendor_id=p["vendor_id"],
+            date=p["date"],
+            total_amount=p["total_amount"],
+            order_discount=p["order_discount"],
+            payment_status=row["payment_status"],
+            paid_amount=row["paid_amount"],
             advance_payment_applied=row["advance_payment_applied"],
-            notes=p["notes"], created_by=(self.user["user_id"] if self.user else None)
+            notes=p["notes"],
+            created_by=(self.user["user_id"] if self.user else None),
         )
-        items = [PurchaseItem(None, pid, it["product_id"], it["quantity"], it["uom_id"],
-                              it["purchase_price"], it["sale_price"], it["item_discount"])
-                 for it in p["items"]]
+        items = [
+            PurchaseItem(
+                None,
+                pid,
+                it["product_id"],
+                it["quantity"],
+                it["uom_id"],
+                it["purchase_price"],
+                it["sale_price"],
+                it["item_discount"],
+            )
+            for it in p["items"]
+        ]
         self.repo.update_purchase(h, items)
         info(self.view, "Saved", f"Purchase {pid} updated.")
         self._reload()
-        
+
     def _delete(self):
         row = self._selected_row_dict()
         if not row:
@@ -314,7 +393,7 @@ class PurchaseController(BaseModule):
         self.repo.delete_purchase(row["purchase_id"])
         info(self.view, "Deleted", f'Purchase {row["purchase_id"]} removed.')
         self._reload()
-        
+
     # -------- Returns --------
     def _return(self):
         row = self._selected_row_dict()
@@ -334,10 +413,10 @@ class PurchaseController(BaseModule):
             items_for_form.append(it2)
 
         dlg = PurchaseReturnForm(self.view, items_for_form)
-        if not dlg.exec(): 
+        if not dlg.exec():
             return
         payload = dlg.payload()
-        if not payload: 
+        if not payload:
             return
 
         # map lines to include product_id + uom_id from original items
@@ -345,14 +424,16 @@ class PurchaseController(BaseModule):
         lines = []
         for ln in payload["lines"]:
             it = by_id.get(ln["item_id"])
-            if not it: 
+            if not it:
                 continue
-            lines.append({
-                "item_id": it["item_id"],
-                "product_id": it["product_id"],
-                "uom_id": it["uom_id"],
-                "qty_return": float(ln["qty_return"]),
-            })
+            lines.append(
+                {
+                    "item_id": it["item_id"],
+                    "product_id": it["product_id"],
+                    "uom_id": it["uom_id"],
+                    "qty_return": float(ln["qty_return"]),
+                }
+            )
 
         # Pass settlement info (refund/credit_note + instrument meta) straight to repo
         settlement = payload.get("settlement")
@@ -417,24 +498,77 @@ class PurchaseController(BaseModule):
 
         info(self.view, "Saved", f"Applied vendor credit of {amt:g} to {row['purchase_id']}.")
         self._reload()
-        
-    # -------- Payments --------
+
+    # -------- Payments (UPDATED to use Vendor money dialog) --------
     def _payment(self):
         """
         Record a payment (or refund) using PurchasePaymentsRepo.
-          - Positive amount => pay vendor
-          - Negative amount => refund from vendor
-        Header totals/status are updated via DB triggers; do not touch the header directly.
+
+        Preferred: open the vendor money dialog (mode="payment") and forward its payload to the repo.
+        Fallback: keep the legacy amount-only dialog to avoid breaking existing flows.
         """
         row = self._selected_row_dict()
         if not row:
             info(self.view, "Select", "Select a purchase to record payment.")
             return
 
+        purchase_id = str(row["purchase_id"])
+        vendor_id = int(row.get("vendor_id") or 0)
+        vendor_display = str(row.get("vendor_name") or vendor_id)
+
+        # --- Preferred path: new vendor money dialog (lazy import) ---
+        try:
+            from ...vendor.payment_dialog import open_vendor_money_form  # type: ignore
+
+            payload = open_vendor_money_form(
+                mode="payment",
+                vendor_id=vendor_id,
+                purchase_id=purchase_id,  # allow the dialog to pick if you pass None
+                defaults={
+                    "list_company_bank_accounts": self._list_company_bank_accounts,
+                    "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
+                    "list_open_purchases_for_vendor": self._list_open_purchases_for_vendor,
+                    "vendor_display": vendor_display,
+                },
+            )
+            if payload:
+                try:
+                    self.payments.record_payment(
+                        purchase_id=str(payload.get("purchase_id") or purchase_id),
+                        amount=float(payload.get("amount")),
+                        method=payload.get("method"),
+                        bank_account_id=payload.get("bank_account_id"),
+                        vendor_bank_account_id=payload.get("vendor_bank_account_id"),
+                        instrument_type=payload.get("instrument_type"),
+                        instrument_no=payload.get("instrument_no"),
+                        instrument_date=payload.get("instrument_date"),
+                        deposited_date=payload.get("deposited_date"),
+                        cleared_date=payload.get("cleared_date"),
+                        clearing_state=payload.get("clearing_state"),
+                        ref_no=payload.get("ref_no"),
+                        notes=payload.get("notes"),
+                        date=payload.get("date") or today_str(),
+                        created_by=(self.user["user_id"] if self.user else None),
+                    )
+                except (TypeError, ValueError):
+                    info(self.view, "Payment not recorded", "Incomplete form data returned from Vendor dialog.")
+                    return
+                except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
+                    info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
+                    return
+
+                info(self.view, "Saved", "Payment recorded.")
+                self._reload()
+                return
+        except Exception:
+            # Fall through to legacy path
+            pass
+
+        # --- Fallback: legacy amount-only dialog (kept for compatibility) ---
         dlg = PurchasePaymentDialog(
             self.view,
             current_paid=float(row["paid_amount"]),
-            total=float(row["total_amount"])
+            total=float(row["total_amount"]),
         )
         if not dlg.exec():
             return
@@ -442,6 +576,7 @@ class PurchaseController(BaseModule):
         if not amount:
             return
 
+        # Legacy path always used Cash / posted; keep that behavior unchanged.
         method = "Cash"
         bank_account_id = None
         vendor_bank_account_id = None
@@ -457,7 +592,7 @@ class PurchaseController(BaseModule):
 
         try:
             self.payments.record_payment(
-                purchase_id=row["purchase_id"],
+                purchase_id=purchase_id,
                 amount=float(amount),
                 method=method,
                 bank_account_id=bank_account_id,
@@ -543,3 +678,89 @@ class PurchaseController(BaseModule):
 
         info(self.view, "Saved", f"Payment #{payment_id} marked as bounced.")
         self._reload()
+
+    # -------- Adapters for Vendor dialog defaults (lazy, safe) --------
+    def _list_company_bank_accounts(self) -> list[dict]:
+        """
+        Returns [{id, name}] for company bank accounts.
+        Lazy-imports a bank accounts repo if present. Safe empty list on failure.
+        """
+        try:
+            from ...database.repositories.bank_accounts_repo import BankAccountsRepo  # type: ignore
+            repo = BankAccountsRepo(self.conn)
+            # Try common method names
+            for attr in ("list_accounts", "list", "list_all", "all"):
+                if hasattr(repo, attr):
+                    rows = list(getattr(repo, attr)())
+                    out = []
+                    for r in rows:
+                        d = dict(r)
+                        _id = d.get("id") or d.get("account_id") or d.get("bank_account_id")
+                        _name = d.get("name") or d.get("account_name") or d.get("title")
+                        if _id is not None and _name is not None:
+                            out.append({"id": int(_id), "name": str(_name)})
+                    if out:
+                        return out
+        except Exception:
+            pass
+        return []
+
+    def _list_vendor_bank_accounts(self, vendor_id: int) -> list[dict]:
+        """
+        Returns [{id, name}] for a vendor's bank accounts (if your app supports it).
+        Safe empty list on failure or if repo not present.
+        """
+        try:
+            from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo  # type: ignore
+            repo = VendorBankAccountsRepo(self.conn)
+            rows = []
+            for attr in ("list_by_vendor", "list_for_vendor", "list"):
+                if hasattr(repo, attr):
+                    try:
+                        rows = list(getattr(repo, attr)(vendor_id))
+                    except TypeError:
+                        # some repos use keyword arg
+                        try:
+                            rows = list(getattr(repo, attr)(vendor_id=vendor_id))
+                        except Exception:
+                            rows = []
+                    break
+            out = []
+            for r in rows:
+                d = dict(r)
+                _id = d.get("id") or d.get("vendor_bank_account_id") or d.get("account_id")
+                _name = d.get("name") or d.get("account_name") or d.get("title") or d.get("iban") or d.get("account_no")
+                if _id is not None and _name is not None:
+                    out.append({"id": int(_id), "name": str(_name)})
+            return out
+        except Exception:
+            return []
+
+    def _list_open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
+        """
+        Returns a list of open purchases for a vendor with remaining due > 0.
+        Shape: {purchase_id, date, total, paid, remaining_due}
+        """
+        out: list[dict] = []
+        try:
+            cur = self.conn.execute(
+                "SELECT purchase_id, date, total_amount AS total, COALESCE(paid_amount,0) AS paid, COALESCE(advance_payment_applied,0) AS adv "
+                "FROM purchases WHERE vendor_id = ? ORDER BY date DESC, purchase_id DESC LIMIT 300;",
+                (vendor_id,),
+            )
+            for row in cur.fetchall():
+                pid = str(row["purchase_id"])
+                fin = self._fetch_purchase_financials(pid)
+                if fin["remaining_due"] > 1e-9:
+                    out.append(
+                        {
+                            "purchase_id": pid,
+                            "date": str(row["date"]),
+                            "total": float(fin["calculated_total_amount"]),
+                            "paid": float(fin["paid_amount"]),
+                            "remaining_due": float(fin["remaining_due"]),
+                        }
+                    )
+        except Exception:
+            return []
+        return out

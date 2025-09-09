@@ -151,9 +151,21 @@ class MainWindow(QMainWindow):
             fallback_placeholder=True,
         )
 
+        # # Payments (load actual module; not admin-gated)
+        # self._add_module_safe(
+        #     "Payments",
+        #     "inventory_management.modules.payments.controller",
+        #     "PaymentsController",
+        #     self.conn,
+        #     current_user=self.user,
+        #     fallback_placeholder=True,
+        # )
+
+        # Admin-only: System Logs
         if self.user and self.user.get("role") == "admin":
-            self.add_placeholder("Users")
             self.add_placeholder("System Logs")
+
+        # Printing (still a placeholder)
         self.add_placeholder("Printing")
 
         # Ensure first page is visible

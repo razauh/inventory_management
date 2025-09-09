@@ -106,7 +106,7 @@ class SalesController(BaseModule):
             self.view.btn_print.clicked.connect(self._print)
         if hasattr(self.view, "btn_convert"):
             self.view.btn_convert.clicked.connect(self._convert_to_sale)
-        # NEW: Apply Credit button (sales mode only)
+        # Apply Credit button (sales mode only)
         if hasattr(self.view, "btn_apply_credit"):
             self.view.btn_apply_credit.clicked.connect(self._on_apply_credit)
 
@@ -400,6 +400,102 @@ class SalesController(BaseModule):
                 except Exception:
                     return None
 
+    # ---- local adapters for customer dialog/actions -----------------------
+
+    def _list_company_bank_accounts(self) -> list[dict]:
+        """
+        Adapter used by customer.money dialog. Tries common repo shapes; returns list of {id, name}.
+        """
+        # Try repo methods if present
+        try:
+            if self.bank_accounts:
+                for attr in ("list_accounts", "list", "list_all", "all"):
+                    if hasattr(self.bank_accounts, attr):
+                        rows = list(getattr(self.bank_accounts, attr)())
+                        # Try to normalize to {id, name}
+                        norm = []
+                        for r in rows:
+                            d = dict(r)
+                            _id = d.get("id") or d.get("account_id") or d.get("bank_account_id")
+                            _name = d.get("name") or d.get("account_name") or d.get("title")
+                            if _id is not None and _name is not None:
+                                norm.append({"id": int(_id), "name": str(_name)})
+                        if norm:
+                            return norm
+        except Exception:
+            pass
+        # Fallback empty list
+        return []
+
+    def _list_sales_for_customer(self, customer_id: int) -> list[dict]:
+        """
+        Adapter used by customer.money dialog. Shape: {sale_id, doc_no, date, total, paid}
+        """
+        # Prefer repo helper if exists
+        try:
+            if hasattr(self.repo, "list_sales_for_customer"):
+                rows = list(self.repo.list_sales_for_customer(customer_id))
+                out = []
+                for r in rows:
+                    d = dict(r)
+                    out.append({
+                        "sale_id": str(d.get("sale_id")),
+                        "doc_no": str(d.get("sale_id")),
+                        "date": str(d.get("date")),
+                        "total": float(d.get("total_amount") or d.get("total") or 0.0),
+                        "paid": float(d.get("paid_amount") or d.get("paid") or 0.0),
+                    })
+                return out
+        except Exception:
+            pass
+
+        # Safe fallback SQL (keeps compatibility with existing schema used elsewhere in this module)
+        try:
+            cur = self.conn.execute(
+                """
+                SELECT sale_id, date, total_amount AS total, COALESCE(paid_amount,0.0) AS paid
+                FROM sales
+                WHERE customer_id = ?
+                ORDER BY date DESC, sale_id DESC
+                LIMIT 200;
+                """,
+                (customer_id,),
+            )
+            out = []
+            for row in cur.fetchall():
+                out.append({
+                    "sale_id": str(row["sale_id"]),
+                    "doc_no": str(row["sale_id"]),
+                    "date": str(row["date"]),
+                    "total": float(row["total"]),
+                    "paid": float(row["paid"]),
+                })
+            return out
+        except Exception:
+            return []
+
+    def _eligible_sales_for_application(self, customer_id: int) -> list[dict]:
+        """
+        Build a list of sales with remaining_due > 0 for apply-advance UI.
+        Shape per input spec: at least {sale_id, date, remaining_due, total, paid}
+        """
+        rows = self._list_sales_for_customer(customer_id)
+        out: list[dict] = []
+        for r in rows:
+            sid = str(r.get("sale_id") or "")
+            if not sid:
+                continue
+            fin = self._fetch_sale_financials(sid)
+            if fin["remaining_due"] > 1e-9:
+                out.append({
+                    "sale_id": sid,
+                    "date": r.get("date"),
+                    "remaining_due": fin["remaining_due"],
+                    "total": fin["calculated_total_amount"],
+                    "paid": fin["paid_amount"],
+                })
+        return out
+
     # ---- CRUD -------------------------------------------------------------
 
     def _add(self):
@@ -682,6 +778,7 @@ class SalesController(BaseModule):
     def _record_payment(self):
         """
         Open the customer payment UI for the selected sale (sales mode only).
+        Route ONLY to the local Customer dialog + actions.
         """
         doc_type = self._doc_type
         if doc_type != "sale":
@@ -693,46 +790,43 @@ class SalesController(BaseModule):
             info(self.view, "Select", "Select a sale first.")
             return
 
-        sale_id = row["sale_id"]
+        sale_id = str(row["sale_id"])
+        customer_id = int(row.get("customer_id") or 0)
+        customer_display = str(row.get("customer_name") or customer_id)
 
-        # Prefer the dedicated payments dialog if present
+        # Local dialog + actions (lazy import)
         try:
-            from ...payments.ui.customer_receipt_form import CustomerReceiptForm  # type: ignore
+            from ...customer.receipt_dialog import open_payment_or_advance_form  # type: ignore
+            from ...customer import actions as customer_actions  # type: ignore
 
-            dlg = None
-            for args in (
-                (self.view, sale_id, self._db_path),
-                (self.view, sale_id, self.conn),
-                (self.view, sale_id),
-                (self.view,),
-            ):
-                try:
-                    dlg = CustomerReceiptForm(*args)
-                    break
-                except TypeError:
-                    dlg = None
-
-            if dlg is None:
-                raise RuntimeError("CustomerReceiptForm constructor not recognized.")
-
-            if hasattr(dlg, "set_sale_id"):
-                try:
-                    dlg.set_sale_id(sale_id)
-                except Exception:
-                    pass
-
-            dlg.exec()
-            self._reload()
-            self._sync_details()
-            return
+            payload = open_payment_or_advance_form(
+                mode="receipt",
+                customer_id=customer_id,
+                sale_id=sale_id,
+                defaults={
+                    "list_company_bank_accounts": self._list_company_bank_accounts,
+                    "list_sales_for_customer": self._list_sales_for_customer,
+                    "customer_display": customer_display,
+                },
+            )
+            if payload:
+                _ = customer_actions.receive_payment(
+                    db_path=self._db_path,
+                    sale_id=sale_id,
+                    customer_id=customer_id,
+                    with_ui=False,
+                    form_defaults=payload,
+                )
+                self._reload()
+                self._sync_details()
+                return
         except Exception:
             info(
                 self.view,
                 "Payments UI not available",
-                "The payments dialog isn't wired in this build. "
-                "Open the Payments module to record a receipt.",
+                "The local customer money dialog isn't available. "
+                "Enable modules.customer.receipt_dialog or use the Customers module.",
             )
-            # Even if dialog isn't available, keep UI in a sane state
             self._update_action_states()
             self._sync_details()
 
@@ -794,18 +888,13 @@ class SalesController(BaseModule):
         self._update_action_states()
         self._sync_details()
 
-    # ---- Apply Credit to Sale (NEW) ---------------------------------------
+    # ---- Apply Credit to Sale (UPDATED) -----------------------------------
 
     def _on_apply_credit(self):
         """
         Apply existing customer credit to the currently selected SALE.
 
-        Workflow:
-          1) Validate selection and mode.
-          2) Fetch customer's credit balance and sale remaining due.
-          3) Open 'Apply Credit' UI (lazy import). If available, collect amount.
-          4) Call CustomerAdvancesRepo.apply_credit_to_sale (amount stored as NEGATIVE).
-          5) Reload & refresh view so totals reflect the change.
+        Route ONLY to the local Customer dialog + actions.
         """
         if self._doc_type != "sale":
             info(self.view, "Not available", "Apply Credit is available for sales only.")
@@ -816,90 +905,51 @@ class SalesController(BaseModule):
             info(self.view, "Select", "Select a sale first.")
             return
 
-        sale_id = row["sale_id"]
+        sale_id = str(row["sale_id"])
         customer_id = int(row.get("customer_id") or 0)
         if not customer_id:
             info(self.view, "Missing data", "Selected sale is missing customer information.")
             return
 
-        # Fetch financials for this sale (includes advance_payment_applied)
-        fin = self._fetch_sale_financials(sale_id)
-        remaining_due = float(fin["remaining_due"])
-
-        # Fetch customer's available credit balance via repo (lazy import path-based)
+        # Local dialog + actions (lazy import)
         try:
-            from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo  # type: ignore
-            adv_repo = CustomerAdvancesRepo(self._db_path)
-            credit_balance = float(adv_repo.get_balance(customer_id) or 0.0)
-        except Exception as e:
-            info(self.view, "Unavailable", f"Could not fetch customer credit balance: {e}")
-            return
+            from ...customer.receipt_dialog import open_payment_or_advance_form  # type: ignore
+            from ...customer import actions as customer_actions  # type: ignore
 
-        if remaining_due <= 0.0:
-            info(self.view, "Nothing due", "This sale has no remaining due.")
-            return
-
-        if credit_balance <= 0.0:
-            info(self.view, "No credit", "Customer has no available credit to apply.")
-            return
-
-        # Prefer a dedicated UI if present (same one used in Customers module)
-        try:
-            from ...payments.ui.apply_advance_form import open_apply_advance_form  # type: ignore
-
-            # Build a minimal 'sales' list matching expected shape of the dialog
-            sales_payload = [{
-                "sale_id": sale_id,
-                "date": row.get("date"),
-                "remaining_due": remaining_due,
-                "total": float(fin["calculated_total_amount"]),
-                "paid": float(fin["paid_amount"]),
-            }]
-            defaults = {
-                "sale_id": sale_id,
-                "amount_to_apply": min(remaining_due, credit_balance),
-                "date": today_str(),
-                "notes": "[Apply credit]",
-            }
-            form_payload = open_apply_advance_form(
+            payload = open_payment_or_advance_form(
+                mode="apply_advance",
                 customer_id=customer_id,
-                sales=sales_payload,
-                defaults=defaults,
+                sale_id=None,
+                defaults={
+                    "list_sales_for_customer": self._list_sales_for_customer,
+                    "sales": self._eligible_sales_for_application(customer_id),
+                },
             )
-            if not form_payload:
-                return  # cancelled
-
-            amt = form_payload.get("amount_to_apply")
-            if amt is None or float(amt) <= 0:
-                info(self.view, "Required", "Please enter a positive amount to apply.")
-                return
-
-            # Persist application (store negative amount in ledger)
-            try:
-                tx_id = adv_repo.apply_credit_to_sale(
+            if payload:
+                _ = customer_actions.apply_customer_advance(
+                    db_path=self._db_path,
                     customer_id=customer_id,
-                    sale_id=sale_id,
-                    amount=-abs(float(amt)),
-                    date=form_payload.get("date"),
-                    notes=form_payload.get("notes"),
-                    created_by=(self.user["user_id"] if self.user else None),
+                    sale_id=str(payload["sale_id"]),
+                    with_ui=False,
+                    form_defaults={
+                        "customer_id": customer_id,
+                        "sale_id": payload["sale_id"],
+                        "amount_to_apply": payload["amount"],
+                        "date": payload.get("date"),
+                        "notes": payload.get("notes"),
+                        "created_by": payload.get("created_by"),
+                    },
                 )
-            except (ValueError, sqlite3.IntegrityError) as e:
-                info(self.view, "Not applied", str(e))
+                info(self.view, "Saved", "Credit application recorded.")
+                self._reload()
+                self._sync_details()
                 return
-
-            info(self.view, "Saved", f"Credit application #{tx_id} recorded.")
-            self._reload()
-            self._sync_details()
-            return
-
         except Exception:
-            # No UI available; inform the user rather than guessing inputs
             info(
                 self.view,
                 "Apply Credit UI not available",
-                "The Apply Credit dialog isn't wired in this build. "
-                "Open the Customers module to apply credit from there.",
+                "The local customer money dialog isn't available. "
+                "Enable modules.customer.receipt_dialog or use the Customers module.",
             )
             self._update_action_states()
             self._sync_details()

@@ -24,11 +24,12 @@ class CustomerController(BaseModule):
       - Action buttons (Receive Payment, Record Advance, Apply Advance, Payment History)
         are disabled for inactive customers (history is allowed even if inactive).
       - Receipts enforce sale_id refers to a real SALE (not quotation) for this customer.
-      - UI modules are imported lazily to keep startup fast.
+      - UI and actions are imported lazily to keep startup fast.
 
     Refactor:
       - Introduces _preflight() and _lazy_attr() to remove repeated boilerplate
         across payment/credit/history action handlers.
+      - Adds local adapters for bank accounts and customer sales to support dialogs.
     """
 
     def __init__(self, conn: sqlite3.Connection):
@@ -60,6 +61,10 @@ class CustomerController(BaseModule):
         self.view.btn_record_advance.clicked.connect(self._on_record_advance)
         self.view.btn_apply_advance.clicked.connect(self._on_apply_advance)
         self.view.btn_payment_history.clicked.connect(self._on_payment_history)
+
+        # Optional: Update Clearing button (wire only if present on the view)
+        if hasattr(self.view, "btn_update_clearing"):
+            self.view.btn_update_clearing.clicked.connect(self._on_update_clearing)
 
     def _build_model(self):
         # Active-only by default
@@ -225,6 +230,9 @@ class CustomerController(BaseModule):
         self.view.btn_apply_advance.setEnabled(enabled)
         # History is allowed as long as something is selected
         self.view.btn_payment_history.setEnabled(True if self._selected_id() else False)
+        # Optional clearing button mirrors enabled state (if present)
+        if hasattr(self.view, "btn_update_clearing"):
+            self.view.btn_update_clearing.setEnabled(enabled)
 
     # ------------------------------------------------------------------ #
     # Small helpers to reduce repetition
@@ -311,139 +319,49 @@ class CustomerController(BaseModule):
         self._reload()
 
     # ------------------------------------------------------------------ #
-    # Payment / Credit Actions
+    # Adapters required by dialogs
     # ------------------------------------------------------------------ #
 
-    def _ensure_db_path_or_toast(self) -> Optional[str]:
-        db_path = self._db_path_from_conn()
-        if not db_path:
-            info(
-                self.view,
-                "Unavailable",
-                "This action requires a file-backed database. In-memory databases are not supported for payments.",
-            )
-            return None
-        return db_path
+    def _list_company_bank_accounts(self) -> List[Dict[str, Any]]:
+        """
+        Return active company bank accounts as [{id, name}].
+        """
+        rows = self.conn.execute(
+            """
+            SELECT account_id AS id,
+                   COALESCE(label, bank_name || ' ' || account_no) AS name
+            FROM company_bank_accounts
+            WHERE is_active = 1
+            ORDER BY name ASC;
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
 
-    def _sale_belongs_to_customer_and_is_sale(self, sale_id: str, customer_id: int) -> bool:
-        row = self.conn.execute(
-            "SELECT customer_id, doc_type FROM sales WHERE sale_id = ?;",
-            (sale_id,),
-        ).fetchone()
-        if not row:
-            return False
-        return int(row["customer_id"]) == int(customer_id) and row["doc_type"] == "sale"
-
-    # -- Receive Payment --
-
-    def _on_receive_payment(self):
-        cid, db_path = self._preflight(require_active=True, require_file_db=True)
-        if not cid or not db_path:
-            return
-
-        open_receipt_form = self._lazy_attr(
-            "payments.ui.customer_receipt_form.open_receipt_form",
-            toast_title="Unavailable",
-            on_fail="Receipt form UI is not available. Please install payments.ui.customer_receipt_form.",
-        )
-        if not open_receipt_form:
-            return
-
-        form_payload = open_receipt_form(customer_id=cid, sale_id=None, defaults=None)
-        if not form_payload:
-            return  # cancelled
-
-        sale_id = form_payload.get("sale_id")
-        if not sale_id:
-            info(self.view, "Required", "Please select a sale to receive payment.")
-            return
-
-        # Guard: must be a real SALE for this customer (not a quotation)
-        if not self._sale_belongs_to_customer_and_is_sale(sale_id, cid):
-            info(self.view, "Invalid", "Payments can only be recorded against SALES belonging to this customer.")
-            return
-
-        SalePaymentsRepo = self._lazy_attr(
-            "inventory_management.database.repositories.sale_payments_repo.SalePaymentsRepo",
-            toast_title="Error",
-            on_fail="Could not load SalePaymentsRepo",
-        )
-        if not SalePaymentsRepo:
-            return
-
-        repo = SalePaymentsRepo(db_path)
-        try:
-            payment_id = repo.record_payment(
-                sale_id=sale_id,
-                amount=float(form_payload.get("amount", 0) or 0),
-                method=str(form_payload.get("method") or ""),
-                date=form_payload.get("date"),
-                bank_account_id=form_payload.get("bank_account_id"),
-                instrument_type=form_payload.get("instrument_type"),
-                instrument_no=form_payload.get("instrument_no"),
-                instrument_date=form_payload.get("instrument_date"),
-                deposited_date=form_payload.get("deposited_date"),
-                cleared_date=form_payload.get("cleared_date"),
-                clearing_state=form_payload.get("clearing_state"),
-                ref_no=form_payload.get("ref_no"),
-                notes=form_payload.get("notes"),
-                created_by=form_payload.get("created_by"),
-            )
-        except (ValueError, sqlite3.IntegrityError) as e:
-            info(self.view, "Not saved", str(e))
-            return
-
-        info(self.view, "Saved", f"Payment #{payment_id} recorded.")
-        self._reload()
-
-    # -- Record Advance (Deposit / Credit) --
-
-    def _on_record_advance(self):
-        cid, db_path = self._preflight(require_active=True, require_file_db=True)
-        if not cid or not db_path:
-            return
-
-        open_record_advance_form = self._lazy_attr(
-            "payments.ui.customer_advance_form.open_record_advance_form",
-            toast_title="Unavailable",
-            on_fail="Advance form UI is not available. Please install payments.ui.customer_advance_form.",
-        )
-        if not open_record_advance_form:
-            return
-
-        form_payload = open_record_advance_form(customer_id=cid, defaults=None)
-        if not form_payload:
-            return  # cancelled
-
-        CustomerAdvancesRepo = self._lazy_attr(
-            "inventory_management.database.repositories.customer_advances_repo.CustomerAdvancesRepo",
-            toast_title="Error",
-            on_fail="Could not load CustomerAdvancesRepo",
-        )
-        if not CustomerAdvancesRepo:
-            return
-
-        repo = CustomerAdvancesRepo(db_path)
-        try:
-            tx_id = repo.grant_credit(
-                customer_id=cid,
-                amount=float(form_payload.get("amount", 0) or 0),
-                date=form_payload.get("date"),
-                notes=form_payload.get("notes"),
-                created_by=form_payload.get("created_by"),
-            )
-        except (ValueError, sqlite3.IntegrityError) as e:
-            info(self.view, "Not saved", str(e))
-            return
-
-        info(self.view, "Saved", f"Advance #{tx_id} recorded.")
-        self._reload()
-
-    # -- Apply Advance to a Sale --
+    def _list_sales_for_customer(self, customer_id: int) -> List[Dict[str, Any]]:
+        """
+        Return sales for a customer with totals/paid to compute remaining.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT
+              s.sale_id,
+              s.doc_no,
+              s.date,
+              COALESCE(sdt.calculated_total_amount, s.total_amount) AS total,
+              COALESCE(s.paid_amount, 0.0) AS paid
+            FROM sales s
+            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            WHERE s.customer_id = ? AND s.doc_type = 'sale'
+            ORDER BY s.date DESC, s.sale_id DESC;
+            """,
+            (customer_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def _eligible_sales_for_application(self, customer_id: int) -> List[Dict[str, Any]]:
         """
         Return list of sales with remaining due > 0 for the customer.
+        (Used to seed 'apply advance' UI when needed.)
         """
         rows = self.conn.execute(
             """
@@ -475,58 +393,206 @@ class CustomerController(BaseModule):
                 )
         return out
 
+    # ------------------------------------------------------------------ #
+    # Payment / Credit Actions
+    # ------------------------------------------------------------------ #
+
+    def _ensure_db_path_or_toast(self) -> Optional[str]:
+        db_path = self._db_path_from_conn()
+        if not db_path:
+            info(
+                self.view,
+                "Unavailable",
+                "This action requires a file-backed database. In-memory databases are not supported for payments.",
+            )
+            return None
+        return db_path
+
+    def _sale_belongs_to_customer_and_is_sale(self, sale_id: str, customer_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT customer_id, doc_type FROM sales WHERE sale_id = ?;",
+            (sale_id,),
+        ).fetchone()
+        if not row:
+            return False
+        return int(row["customer_id"]) == int(customer_id) and row["doc_type"] == "sale"
+
+    # -- Receive Payment --
+
+    def _on_receive_payment(self):
+        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        if not cid or not db_path:
+            return
+
+        # Use local dialog to gather payload so the user can PICK the sale (legacy UX).
+        open_payment_or_advance_form = self._lazy_attr(
+            "inventory_management.modules.customer.receipt_dialog.open_payment_or_advance_form",
+            toast_title="Unavailable",
+            on_fail="Receipt dialog is not available.",
+        )
+        if not open_payment_or_advance_form:
+            return
+
+        form_defaults = {
+            "list_company_bank_accounts": self._list_company_bank_accounts,
+            "list_sales_for_customer": self._list_sales_for_customer,
+            "customer_display": str(cid),
+        }
+        payload = open_payment_or_advance_form(
+            mode="receipt",
+            customer_id=cid,
+            sale_id=None,           # allow the dialog to present the sale picker (legacy UX)
+            defaults=form_defaults,
+        )
+        if not payload:
+            return  # cancelled
+
+        sale_id = payload.get("sale_id")
+        if not sale_id:
+            info(self.view, "Required", "Please select a sale to receive payment.")
+            return
+
+        # Guard: must be a real SALE for this customer (not a quotation)
+        if not self._sale_belongs_to_customer_and_is_sale(sale_id, cid):
+            info(self.view, "Invalid", "Payments can only be recorded against SALES belonging to this customer.")
+            return
+
+        # Persist via the actions layer (no additional UI)
+        receive_payment = self._lazy_attr(
+            "inventory_management.modules.customer.actions.receive_payment",
+            toast_title="Error",
+            on_fail="Could not load actions.receive_payment",
+        )
+        if not receive_payment:
+            return
+
+        result = receive_payment(
+            db_path=db_path,
+            sale_id=str(sale_id),
+            customer_id=cid,
+            with_ui=False,
+            form_defaults=payload,  # already validated by dialog; actions will recheck required keys
+        )
+        if not result or not result.success:
+            info(self.view, "Not saved", (result.message if result else "Unknown error"))
+            return
+
+        info(self.view, "Saved", f"Payment #{result.id} recorded.")
+        self._reload()
+
+    # -- Record Advance (Deposit / Credit) --
+
+    def _on_record_advance(self):
+        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        if not cid or not db_path:
+            return
+
+        record_customer_advance = self._lazy_attr(
+            "inventory_management.modules.customer.actions.record_customer_advance",
+            toast_title="Error",
+            on_fail="Could not load actions.record_customer_advance",
+        )
+        if not record_customer_advance:
+            return
+
+        form_defaults = {
+            # Optional: you can pass today() or created_by here if desired
+            "customer_display": str(cid),
+        }
+        result = record_customer_advance(
+            db_path=db_path,
+            customer_id=cid,
+            with_ui=True,
+            form_defaults=form_defaults,
+        )
+        if not result or not result.success:
+            if result and result.message:
+                info(self.view, "Not saved", result.message)
+            return
+
+        info(self.view, "Saved", f"Advance #{result.id} recorded.")
+        self._reload()
+
+    # -- Apply Advance to a Sale --
+
     def _on_apply_advance(self):
         cid, db_path = self._preflight(require_active=True, require_file_db=True)
         if not cid or not db_path:
             return
 
-        open_apply_advance_form = self._lazy_attr(
-            "payments.ui.apply_advance_form.open_apply_advance_form",
-            toast_title="Unavailable",
-            on_fail="Apply-advance UI is not available. Please install payments.ui.apply_advance_form.",
-        )
-        if not open_apply_advance_form:
-            return
-
-        sales = self._eligible_sales_for_application(cid)
-        form_payload = open_apply_advance_form(customer_id=cid, sales=sales, defaults=None)
-        if not form_payload:
-            return  # cancelled
-
-        sale_id = form_payload.get("sale_id")
-        amt = form_payload.get("amount_to_apply")
-        if not sale_id or amt is None:
-            info(self.view, "Required", "Please select a sale and enter an amount to apply.")
-            return
-
-        # Guard: ensure sale is valid for this customer and a real sale
-        if not self._sale_belongs_to_customer_and_is_sale(sale_id, cid):
-            info(self.view, "Invalid", "Credit can only be applied to SALES belonging to this customer.")
-            return
-
-        CustomerAdvancesRepo = self._lazy_attr(
-            "inventory_management.database.repositories.customer_advances_repo.CustomerAdvancesRepo",
+        apply_customer_advance = self._lazy_attr(
+            "inventory_management.modules.customer.actions.apply_customer_advance",
             toast_title="Error",
-            on_fail="Could not load CustomerAdvancesRepo",
+            on_fail="Could not load actions.apply_customer_advance",
         )
-        if not CustomerAdvancesRepo:
+        if not apply_customer_advance:
             return
 
-        repo = CustomerAdvancesRepo(db_path)
-        try:
-            tx_id = repo.apply_credit_to_sale(
-                customer_id=cid,
-                sale_id=sale_id,
-                amount=-abs(float(amt)),  # store as negative
-                date=form_payload.get("date"),
-                notes=form_payload.get("notes"),
-                created_by=form_payload.get("created_by"),
-            )
-        except (ValueError, sqlite3.IntegrityError) as e:
-            info(self.view, "Not saved", str(e))
+        # Provide sales list; dialog may also query via adapter
+        form_defaults = {
+            "sales": self._eligible_sales_for_application(cid),
+            "list_sales_for_customer": self._list_sales_for_customer,
+            "customer_display": str(cid),
+        }
+        result = apply_customer_advance(
+            db_path=db_path,
+            customer_id=cid,
+            sale_id=None,           # allow dialog to select the sale
+            with_ui=True,
+            form_defaults=form_defaults,
+        )
+        if not result or not result.success:
+            if result and result.message:
+                info(self.view, "Not saved", result.message)
             return
 
-        info(self.view, "Saved", f"Advance application #{tx_id} recorded.")
+        info(self.view, "Saved", f"Advance application #{result.id} recorded.")
+        self._reload()
+
+    # -- Update Clearing (optional button) --
+
+    def _on_update_clearing(self):
+        """
+        Optional handler for a 'Update Clearing' toolbar button if your view provides it.
+        Implement a tiny prompt dialog to collect payment_id, state, cleared_date, notes.
+        """
+        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        if not cid or not db_path:
+            return
+
+        # Small, generic prompt utility could live elsewhere; for now, import lazily if you have one.
+        # Expect a dict like: {"payment_id": int, "clearing_state": str, "cleared_date": str|None, "notes": str|None}
+        prompt_update = self._lazy_attr(
+            "inventory_management.modules.shared.prompts.prompt_update_clearing",  # hypothetical optional prompt
+            toast_title="Unavailable",
+            on_fail="Clearing prompt is not available.",
+        )
+        if not prompt_update:
+            return
+        data = prompt_update(parent=self.view)
+        if not data:
+            return
+
+        update_receipt_clearing = self._lazy_attr(
+            "inventory_management.modules.customer.actions.update_receipt_clearing",
+            toast_title="Error",
+            on_fail="Could not load actions.update_receipt_clearing",
+        )
+        if not update_receipt_clearing:
+            return
+
+        result = update_receipt_clearing(
+            db_path=db_path,
+            payment_id=int(data.get("payment_id")),
+            clearing_state=str(data.get("clearing_state")),
+            cleared_date=data.get("cleared_date"),
+            notes=data.get("notes"),
+        )
+        if not result or not result.success:
+            info(self.view, "Not updated", (result.message if result else "Unknown error"))
+            return
+
+        info(self.view, "Updated", result.message or "Receipt clearing updated.")
         self._reload()
 
     # -- Payment / Credit History --
@@ -537,29 +603,19 @@ class CustomerController(BaseModule):
         if not cid:
             return
 
-        CustomerHistoryService = self._lazy_attr(
-            "inventory_management.modules.customer.history.CustomerHistoryService",
+        open_payment_history = self._lazy_attr(
+            "inventory_management.modules.customer.actions.open_payment_history",
             toast_title="Error",
-            on_fail="Could not load history service",
+            on_fail="Could not load actions.open_payment_history",
         )
-        if not CustomerHistoryService:
+        if not open_payment_history:
             return
 
-        history_service = CustomerHistoryService(db_path or ":memory:")
-        history_payload = history_service.full_history(cid)
-
-        open_customer_history = self._lazy_attr(
-            "payments.ui.payment_history_view.open_customer_history",
-            toast_title="Unavailable",
-            on_fail="Payment History UI is not available.",
+        result = open_payment_history(
+            db_path=db_path or ":memory:",
+            customer_id=cid,
+            with_ui=True,
         )
-        if not open_customer_history:
-            info(
-                self.view,
-                "Unavailable",
-                "Payment History UI is not available. Returning data to logs/console.",
-            )
-            # Optional: print(history_payload)
-            return
-
-        open_customer_history(customer_id=cid, history=history_payload)
+        if result and result.message:
+            # Optionally surface a non-fatal message (e.g., UI fallback not available)
+            info(self.view, "Info", result.message)

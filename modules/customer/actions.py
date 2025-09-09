@@ -57,28 +57,35 @@ def receive_payment(
     """
     Receive a customer payment against a SALE (not a quotation).
 
-    If with_ui=True (default), opens `payments/ui/customer_receipt_form.py`
-    and expects a function `open_receipt_form(sale_id, customer_id, defaults) -> dict|None`
-    that returns a mapping with keys compatible with `SalePaymentsRepo.record_payment`.
+    If with_ui=True (default), opens the local dialog:
+        inventory_management.modules.customer.receipt_dialog.open_payment_or_advance_form(mode="receipt", ...)
 
-    Otherwise, it uses `form_defaults` directly.
+    Otherwise (with_ui=False), uses `form_defaults` directly.
     """
     # 1) Collect data (UI or provided)
     form_data: Optional[Dict[str, Any]] = None
     if with_ui:
+        # Prefer the new local dialog
         try:
-            # Lazy import UI only when needed
-            from payments.ui.customer_receipt_form import open_receipt_form  # type: ignore
+            from inventory_management.modules.customer.receipt_dialog import (  # type: ignore
+                open_payment_or_advance_form,
+            )
         except ImportError:
+            # Per update: do not fall back to legacy payments UI
             return ActionResult(
                 success=False,
                 message=(
-                    "Receipt form UI is unavailable. "
-                    "Either install `payments.ui.customer_receipt_form` or call with with_ui=False "
-                    "and pass `form_defaults`."
+                    "Receipt form UI is unavailable. Enable 'modules.customer.receipt_dialog' "
+                    "or call with with_ui=False and pass `form_defaults`."
                 ),
             )
-        form_data = open_receipt_form(sale_id=sale_id, customer_id=customer_id, defaults=form_defaults or {})
+        form_data = open_payment_or_advance_form(
+            mode="receipt",
+            customer_id=customer_id,
+            sale_id=sale_id,
+            defaults=form_defaults or {},
+        )
+
         if not form_data:
             return ActionResult(success=False, message="Payment cancelled by user.", payload=None)
     else:
@@ -117,6 +124,7 @@ def receive_payment(
 
 
 # ======================= Actions: Advances (Credit) ==========================
+# Existing non-UI actions (kept for backward compatibility)
 
 def record_advance(
     *,
@@ -180,6 +188,168 @@ def apply_advance(
         return ActionResult(success=False, message=str(e))
 
 
+# ======================= NEW: UI-enabled Advance Helpers =====================
+
+def record_customer_advance(
+    *,
+    db_path: str | Path,
+    customer_id: int,
+    # If you already collected fields in your UI, pass them here and set with_ui=False
+    form_defaults: Optional[Dict[str, Any]] = None,
+    with_ui: bool = True,
+    repo_factory: Callable[[str | Path], Any] = _get_customer_advances_repo,
+) -> ActionResult:
+    """
+    Record a customer advance via UI or direct payload.
+
+    UI path (preferred):
+        inventory_management.modules.customer.receipt_dialog.open_payment_or_advance_form(mode="advance", ...)
+
+    Non-UI path:
+        Uses `form_defaults` as payload to CustomerAdvancesRepo.grant_credit(...)
+    """
+    form_data: Optional[Dict[str, Any]] = None
+    if with_ui:
+        try:
+            from inventory_management.modules.customer.receipt_dialog import (  # type: ignore
+                open_payment_or_advance_form,
+            )
+        except ImportError:
+            return ActionResult(
+                success=False,
+                message=(
+                    "Advance form UI is unavailable. "
+                    "Enable 'modules.customer.receipt_dialog' or call with with_ui=False and pass `form_defaults`."
+                ),
+            )
+        form_data = open_payment_or_advance_form(
+            mode="advance",
+            customer_id=customer_id,
+            sale_id=None,
+            defaults=form_defaults or {},
+        )
+        if not form_data:
+            return ActionResult(success=False, message="Advance entry cancelled by user.", payload=None)
+    else:
+        if not form_defaults:
+            return ActionResult(success=False, message="Missing form_defaults while with_ui=False.")
+        form_data = dict(form_defaults)
+
+    # required: amount (>0)
+    if "amount" not in form_data or form_data["amount"] is None or float(form_data["amount"]) <= 0:
+        return ActionResult(success=False, message="Amount must be greater than zero.", payload=form_data)
+
+    repo = repo_factory(db_path)
+    try:
+        tx_id = repo.grant_credit(
+            customer_id=customer_id,
+            amount=float(form_data["amount"]),
+            date=form_data.get("date"),
+            notes=form_data.get("notes"),
+            created_by=form_data.get("created_by"),
+        )
+        return ActionResult(success=True, id=tx_id, message="Advance recorded.", payload=form_data)
+    except (ValueError, sqlite3.IntegrityError) as e:
+        return ActionResult(success=False, message=str(e), payload=form_data)
+
+
+def apply_customer_advance(
+    *,
+    db_path: str | Path,
+    customer_id: int,
+    sale_id: Optional[str] = None,           # may be chosen in UI if None
+    # If you already collected fields in your UI, pass them here and set with_ui=False
+    form_defaults: Optional[Dict[str, Any]] = None,
+    with_ui: bool = True,
+    repo_factory: Callable[[str | Path], Any] = _get_customer_advances_repo,
+) -> ActionResult:
+    """
+    Apply an existing customer advance to a sale via UI or direct payload.
+
+    UI path (preferred):
+        inventory_management.modules.customer.receipt_dialog.open_payment_or_advance_form(mode="apply_advance", ...)
+
+    Non-UI path:
+        Uses `form_defaults` as payload to CustomerAdvancesRepo.apply_credit_to_sale(...)
+    """
+    form_data: Optional[Dict[str, Any]] = None
+    if with_ui:
+        try:
+            from inventory_management.modules.customer.receipt_dialog import (  # type: ignore
+                open_payment_or_advance_form,
+            )
+        except ImportError:
+            return ActionResult(
+                success=False,
+                message=(
+                    "Apply-advance UI is unavailable. "
+                    "Enable 'modules.customer.receipt_dialog' or call with with_ui=False and pass `form_defaults`."
+                ),
+            )
+        form_data = open_payment_or_advance_form(
+            mode="apply_advance",
+            customer_id=customer_id,
+            sale_id=sale_id,
+            defaults=form_defaults or {},
+        )
+        if not form_data:
+            return ActionResult(success=False, message="Apply advance cancelled by user.", payload=None)
+    else:
+        if not form_defaults:
+            return ActionResult(success=False, message="Missing form_defaults while with_ui=False.")
+        form_data = dict(form_defaults)
+
+    # required: sale_id, amount (>0)
+    sid = form_data.get("sale_id") or sale_id
+    if not sid:
+        return ActionResult(success=False, message="Missing sale_id for applying advance.", payload=form_data)
+    if "amount" not in form_data or form_data["amount"] is None or float(form_data["amount"]) <= 0:
+        return ActionResult(success=False, message="Amount must be greater than zero.", payload=form_data)
+
+    repo = repo_factory(db_path)
+    try:
+        tx_id = repo.apply_credit_to_sale(
+            customer_id=customer_id,
+            sale_id=str(sid),
+            amount=float(form_data["amount"]),   # positive; repo stores negative
+            date=form_data.get("date"),
+            notes=form_data.get("notes"),
+            created_by=form_data.get("created_by"),
+        )
+        return ActionResult(success=True, id=tx_id, message="Advance applied to sale.", payload=form_data)
+    except (ValueError, sqlite3.IntegrityError) as e:
+        return ActionResult(success=False, message=str(e), payload=form_data)
+
+
+# ======================= NEW: Payments Clearing Lifecycle ====================
+
+def update_receipt_clearing(
+    *,
+    db_path: str | Path,
+    payment_id: int,
+    clearing_state: str,                 # 'posted' | 'pending' | 'cleared' | 'bounced'
+    cleared_date: Optional[str] = None,  # 'YYYY-MM-DD' or None
+    notes: Optional[str] = None,
+    repo_factory: Callable[[str | Path], Any] = _get_sale_payments_repo,
+) -> ActionResult:
+    """
+    Update the clearing lifecycle for an existing sale payment (receipt).
+    """
+    repo = repo_factory(db_path)
+    try:
+        updated = repo.update_clearing_state(
+            payment_id=payment_id,
+            clearing_state=clearing_state,
+            cleared_date=cleared_date,
+            notes=notes,
+        )
+        if updated <= 0:
+            return ActionResult(success=False, message="No receipt updated.")
+        return ActionResult(success=True, message="Receipt clearing updated.")
+    except (ValueError, sqlite3.IntegrityError) as e:
+        return ActionResult(success=False, message=str(e))
+
+
 # ======================= Actions: History (Presenter) ========================
 
 def open_payment_history(
@@ -191,8 +361,10 @@ def open_payment_history(
     """
     Builds the customer's payment/credit history and (optionally) opens a UI view.
 
-    If with_ui=True, it expects `payments/ui/payment_history_view.py` with:
-        `open_customer_history(customer_id: int, history: dict) -> None`
+    If with_ui=True, it first tries local:
+        inventory_management.modules.customer.payment_history_view.open_customer_history(...)
+
+    After change: if local UI import fails, do NOT fall back to legacy — just return success with payload.
     """
     history_service = _get_customer_history_service(db_path)
     history_payload = history_service.full_history(customer_id)
@@ -200,20 +372,17 @@ def open_payment_history(
     if not with_ui:
         return ActionResult(success=True, payload=history_payload)
 
-    # Try to open the optional UI.
+    # Try to open the local UI first.
     try:
-        from payments.ui.payment_history_view import open_customer_history  # type: ignore
+        from inventory_management.modules.customer.payment_history_view import (  # type: ignore
+            open_customer_history,
+        )
+        open_customer_history(customer_id=customer_id, history=history_payload)
+        return ActionResult(success=True, message="History view opened.", payload=None)
     except ImportError:
-        # No UI available — still succeed and return the payload for the caller/UI to use.
+        # Per update: do not open legacy UI; return payload instead.
         return ActionResult(
             success=True,
-            message=(
-                "History view UI is unavailable; returning data payload only. "
-                "Install `payments.ui.payment_history_view` to enable the window."
-            ),
             payload=history_payload,
+            message="History view UI unavailable.",
         )
-
-    # Open the UI — any exceptions here should bubble up to help debugging
-    open_customer_history(customer_id=customer_id, history=history_payload)
-    return ActionResult(success=True, message="History view opened.", payload=None)

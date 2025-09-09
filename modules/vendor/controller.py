@@ -1,7 +1,7 @@
-from PySide6.QtWidgets import QWidget, QDialog, QFormLayout, QDialogButtonBox, QLineEdit, QDateEdit, QVBoxLayout
+from PySide6.QtWidgets import QWidget, QDialog, QFormLayout, QDialogButtonBox, QLineEdit, QDateEdit, QVBoxLayout, QLabel, QComboBox
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QDate
 import sqlite3
-from typing import Optional
+from typing import Optional, Any, Dict, List
 from ..base_module import BaseModule
 from .view import VendorView
 from .form import VendorForm
@@ -40,6 +40,24 @@ class VendorController(BaseModule):
         self.view.btn_edit.clicked.connect(self._edit)
         # self.view.btn_del.clicked.connect(self._delete)
         self.view.search.textChanged.connect(self._apply_filter)
+
+        # New money actions (guarded so we don't break older views)
+        if hasattr(self.view, "btn_record_payment"):
+            self.view.btn_record_payment.clicked.connect(self._on_record_payment)
+        if hasattr(self.view, "btn_record_advance"):
+            self.view.btn_record_advance.clicked.connect(self._on_record_advance_dialog)
+        if hasattr(self.view, "btn_apply_advance"):
+            self.view.btn_apply_advance.clicked.connect(self._on_apply_advance_dialog)
+        if hasattr(self.view, "btn_update_clearing"):
+            self.view.btn_update_clearing.clicked.connect(self._on_update_clearing)
+
+        # Optional list buttons (if your view exposes them)
+        if hasattr(self.view, "btn_list_vendor_payments"):
+            self.view.btn_list_vendor_payments.clicked.connect(self._on_list_vendor_payments)
+        if hasattr(self.view, "btn_list_purchase_payments"):
+            self.view.btn_list_purchase_payments.clicked.connect(self._on_list_purchase_payments)
+        if hasattr(self.view, "btn_list_pending_instruments"):
+            self.view.btn_list_pending_instruments.clicked.connect(self._on_list_pending_instruments)
 
     def _build_model(self):
         rows = self.repo.list_vendors()
@@ -83,7 +101,34 @@ class VendorController(BaseModule):
     def _update_details(self, *args):
         self.view.details.set_data(self._current_vendor_row())
 
-    # ---------- Helper: list open purchases for selected vendor ----------
+    # ---------- Adapters used by dialogs (company bank, vendor bank, open purchases) ----------
+    def _list_company_bank_accounts(self) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT account_id AS id,
+               COALESCE(label, bank_name || ' ' || account_no) AS name
+        FROM company_bank_accounts
+        WHERE is_active = 1
+        ORDER BY name ASC;
+        """
+        try:
+            rows = self.conn.execute(sql).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def _list_vendor_bank_accounts(self, vendor_id: int) -> List[Dict[str, Any]]:
+        try:
+            rows = self.vbank.list(vendor_id, active_only=True)
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                out.append({
+                    "id": int(r["vendor_bank_account_id"]),
+                    "name": r.get("label") or (r.get("bank_name") or "") + " " + (r.get("account_no") or ""),
+                })
+            return out
+        except Exception:
+            return []
+
     def _open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
         """
         Returns purchases with positive remaining balance:
@@ -104,6 +149,27 @@ class VendorController(BaseModule):
         """
         return self.conn.execute(sql, (vendor_id,)).fetchall()
 
+    def _list_open_purchases_for_vendor(self, vendor_id: int) -> List[Dict[str, Any]]:
+        """
+        Adapter for dialog: normalize keys to {purchase_id, doc_no, date, total, paid}
+        """
+        try:
+            rows = self._open_purchases_for_vendor(vendor_id)
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                total = float(r["total_amount"] or 0.0)
+                paid = float(r["paid_amount"] or 0.0)
+                out.append({
+                    "purchase_id": r["purchase_id"],
+                    "doc_no": r["purchase_id"],
+                    "date": r["date"],
+                    "total": total,
+                    "paid": paid,
+                })
+            return out
+        except Exception:
+            return []
+
     # Public helper for UI to fetch open purchases of current vendor
     def list_open_purchases(self) -> list[dict]:
         vid = self._selected_id()
@@ -112,186 +178,323 @@ class VendorController(BaseModule):
             return []
         return self._open_purchases_for_vendor(vid)
 
-    # ---------- Action: grant (manual) vendor credit ----------
-    def grant_vendor_credit(
-        self,
-        *,
-        amount: float,
-        date: Optional[str] = None,
-        notes: Optional[str] = None,
-        source_id: Optional[str] = None,
-        created_by: Optional[int] = None,
-    ) -> None:
-        """
-        Manually grant credit to the selected vendor (e.g., adjustments or credit notes not tied to an immediate return).
-        Writes a POSITIVE amount to vendor_advances (source_type='return_credit').
-        UI can call this directly with form inputs. Does not mutate purchase headers; triggers handle balances.
-        """
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor first.")
-            return
-        try:
-            amt = float(amount)
-        except (TypeError, ValueError):
-            info(self.view, "Invalid amount", "Enter a valid positive amount to grant as credit.")
-            return
-        if amt <= 0:
-            info(self.view, "Invalid amount", "Amount must be greater than zero.")
-            return
-        try:
-            self.vadv.grant_credit(
-                vendor_id=vid,
-                amount=amt,
-                date=date or today_str(),
-                notes=notes,
-                created_by=created_by,
-                source_id=source_id,
-            )
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-            info(self.view, "Not saved", f"Could not grant vendor credit:\n{e}")
-            return
-        info(self.view, "Saved", f"Granted vendor credit of {amt:g}.")
-        self._reload()
+    # ---------- Helpers ----------
+    def _purchase_belongs_to_vendor(self, purchase_id: str, vendor_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT vendor_id FROM purchases WHERE purchase_id=?;",
+            (purchase_id,),
+        ).fetchone()
+        return bool(row) and int(row["vendor_id"]) == int(vendor_id)
 
-    # ---------- Action: apply existing vendor credit to an open purchase ----------
-    def apply_vendor_credit_to_purchase(
-        self,
-        *,
-        purchase_id: str,
-        amount: float,
-        date: Optional[str] = None,
-        notes: Optional[str] = None,
-        created_by: Optional[int] = None,
-    ) -> None:
+    # ========================= Money actions (Dialogs + Repo) =========================
+
+    def _on_record_payment(self):
         """
-        Symmetrical action from vendor profile:
-        Apply available vendor credit to a specific open purchase.
-        - Validates vendor selection and that the purchase belongs to that vendor.
-        - `amount` must be positive; triggers prevent overdrawing credit.
-        - Does NOT update header money fields directly; DB triggers roll up.
+        Open vendor money dialog in 'payment' mode, then persist via PurchasePaymentsRepo.
         """
         vid = self._selected_id()
         if not vid:
             info(self.view, "Select", "Please select a vendor first.")
             return
-        # Basic validation of amount
+
+        # Lazy import the new unified dialog
         try:
-            amt = float(amount)
-        except (TypeError, ValueError):
-            info(self.view, "Invalid amount", "Enter a valid positive amount to apply as credit.")
-            return
-        if amt <= 0:
-            info(self.view, "Invalid amount", "Amount must be greater than zero.")
-            return
-        # Ensure the purchase belongs to this vendor and is open
-        open_rows = self._open_purchases_for_vendor(vid)
-        open_ids = {r["purchase_id"] for r in open_rows}
-        if purchase_id not in open_ids:
-            info(self.view, "Not allowed", "Selected purchase is not open for this vendor or does not belong to it.")
-            return
-        # Apply credit (schema trigger handles overdraw + header rollup)
-        try:
-            self.vadv.apply_credit_to_purchase(
-                vendor_id=vid,
-                purchase_id=purchase_id,
-                amount=amt,
-                date=date or today_str(),
-                notes=notes,
-                created_by=created_by,  # pass through if provided; else NULL
-            )
-        except sqlite3.IntegrityError:
-            # Friendly, test-stable message for overdrawing against remaining due
-            info(
-                self.view,
-                "Credit not applied",
-                "Cannot apply credit beyond remaining due."
-            )
-            return
-        except sqlite3.OperationalError as e:
-            info(self.view, "Credit not applied", f"A database error occurred:\n{e}")
-            return
+            from .payment_dialog import open_vendor_money_form  # type: ignore
         except Exception as e:
-            # Catch-all for any other exceptions
-            info(self.view, "Credit not applied", "Could not apply vendor credit.")
+            info(self.view, "Unavailable", f"Vendor payment dialog is not available:\n{e}")
             return
-        info(self.view, "Saved", f"Applied vendor credit of {amt:g} to {purchase_id}.")
-        # No header mutation here; triggers handle it. Reload vendor list/details.
+
+        defaults = {
+            "list_company_bank_accounts": self._list_company_bank_accounts,
+            "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
+            "list_open_purchases_for_vendor": self._list_open_purchases_for_vendor,
+            "today": today_str,
+            "vendor_display": str(vid),
+        }
+
+        payload = open_vendor_money_form(
+            mode="payment",
+            vendor_id=vid,
+            purchase_id=None,  # let user pick the purchase
+            defaults=defaults,
+        )
+        if not payload:
+            return
+
+        purchase_id = payload.get("purchase_id")
+        if not purchase_id:
+            info(self.view, "Required", "Please select a purchase.")
+            return
+
+        if not self._purchase_belongs_to_vendor(purchase_id, vid):
+            info(self.view, "Invalid", "Purchase does not belong to the selected vendor.")
+            return
+
+        try:
+            pid = self.ppay.record_payment(
+                purchase_id=str(purchase_id),
+                amount=float(payload.get("amount", 0) or 0),
+                method=str(payload.get("method") or ""),
+                date=payload.get("date"),
+                bank_account_id=payload.get("bank_account_id"),
+                vendor_bank_account_id=payload.get("vendor_bank_account_id"),
+                instrument_type=payload.get("instrument_type"),
+                instrument_no=payload.get("instrument_no"),
+                instrument_date=payload.get("instrument_date"),
+                deposited_date=payload.get("deposited_date"),
+                cleared_date=payload.get("cleared_date"),
+                clearing_state=payload.get("clearing_state"),
+                notes=payload.get("notes"),
+                created_by=payload.get("created_by"),
+            )
+        except (ValueError, sqlite3.IntegrityError) as e:
+            info(self.view, "Not saved", str(e))
+            return
+
+        info(self.view, "Saved", f"Payment #{pid} recorded.")
         self._reload()
 
-    # =========================
-    # Vendor Bank Accounts API
-    # (for future UI usage)
-    # =========================
-    def list_bank_accounts(self, active_only: bool = True) -> list[dict]:
-        """List bank accounts for the currently selected vendor."""
+    def _on_record_advance_dialog(self):
+        """
+        Open vendor money dialog in 'advance' mode, then persist via VendorAdvancesRepo.
+        """
         vid = self._selected_id()
         if not vid:
             info(self.view, "Select", "Please select a vendor first.")
-            return []
-        return self.vbank.list(vid, active_only=active_only)
+            return
 
-    def create_bank_account(self, data: dict) -> Optional[int]:
-        """Create a bank account for the selected vendor."""
+        try:
+            from .payment_dialog import open_vendor_money_form  # type: ignore
+        except Exception as e:
+            info(self.view, "Unavailable", f"Vendor money dialog is not available:\n{e}")
+            return
+
+        payload = open_vendor_money_form(
+            mode="advance",
+            vendor_id=vid,
+            purchase_id=None,
+            defaults={"vendor_display": str(vid), "today": today_str},
+        )
+        if not payload:
+            return
+
+        try:
+            tx_id = self.vadv.grant_credit(
+                vendor_id=vid,
+                amount=float(payload.get("amount", 0) or 0),
+                date=payload.get("date"),
+                notes=payload.get("notes"),
+                created_by=payload.get("created_by"),
+                source_id=None,
+            )
+        except (ValueError, sqlite3.IntegrityError) as e:
+            info(self.view, "Not saved", str(e))
+            return
+
+        info(self.view, "Saved", f"Advance #{tx_id} recorded.")
+        self._reload()
+
+    def _on_apply_advance_dialog(self):
+        """
+        Open vendor money dialog in 'apply_advance' mode, then persist via VendorAdvancesRepo.
+        """
         vid = self._selected_id()
         if not vid:
             info(self.view, "Select", "Please select a vendor first.")
-            return None
-        try:
-            return self.vbank.create(vid, data)
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-            info(self.view, "Not saved", f"Could not create bank account:\n{e}")
-            return None
+            return
 
-    def update_bank_account(self, account_id: int, data: dict) -> bool:
-        """Update a vendor bank account."""
         try:
-            return self.vbank.update(account_id, data) > 0
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-            info(self.view, "Not saved", f"Could not update bank account:\n{e}")
-            return False
+            from .payment_dialog import open_vendor_money_form  # type: ignore
+        except Exception as e:
+            info(self.view, "Unavailable", f"Vendor money dialog is not available:\n{e}")
+            return
 
-    def deactivate_bank_account(self, account_id: int) -> bool:
-        """Deactivate (or delete if unreferenced) a vendor bank account."""
+        defaults = {
+            "list_open_purchases_for_vendor": self._list_open_purchases_for_vendor,
+            "today": today_str,
+            "vendor_display": str(vid),
+        }
+        payload = open_vendor_money_form(
+            mode="apply_advance",
+            vendor_id=vid,
+            purchase_id=None,
+            defaults=defaults,
+        )
+        if not payload:
+            return
+
+        purchase_id = payload.get("purchase_id")
+        amt = payload.get("amount")
+        if not purchase_id or amt is None:
+            info(self.view, "Required", "Please select a purchase and enter amount.")
+            return
+
+        if not self._purchase_belongs_to_vendor(purchase_id, vid):
+            info(self.view, "Invalid", "Purchase does not belong to the selected vendor.")
+            return
+
         try:
-            return self.vbank.deactivate(account_id) > 0
-        except sqlite3.OperationalError as e:
-            info(self.view, "Not saved", f"Could not deactivate bank account:\n{e}")
-            return False
+            tx_id = self.vadv.apply_credit_to_purchase(
+                vendor_id=vid,
+                purchase_id=str(purchase_id),
+                amount=float(amt),
+                date=payload.get("date"),
+                notes=payload.get("notes"),
+                created_by=payload.get("created_by"),
+            )
+        except (ValueError, sqlite3.IntegrityError) as e:
+            info(self.view, "Not saved", str(e))
+            return
 
-    def set_primary_bank_account(self, account_id: int) -> bool:
-        """Mark an account as primary for the selected vendor."""
+        info(self.view, "Saved", f"Advance application #{tx_id} recorded.")
+        self._reload()
+
+    # ---------- Clearing state update ----------
+    def _on_update_clearing(self):
+        """
+        Prompt for a payment_id, clearing_state, optional cleared_date & notes,
+        and call PurchasePaymentsRepo.update_clearing_state(...).
+        """
         vid = self._selected_id()
         if not vid:
             info(self.view, "Select", "Please select a vendor first.")
-            return False
+            return
+
+        # Tiny inline prompt dialog to keep this file self-contained.
+        class ClearingDialog(QDialog):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.setWindowTitle("Update Clearing State")
+                self._payload = None
+
+                self.paymentId = QLineEdit()
+                self.paymentId.setPlaceholderText("Payment ID (int)")
+                self.stateCombo = QComboBox()
+                self.stateCombo.addItems(["posted", "pending", "cleared", "bounced"])
+                self.clearedDate = QDateEdit()
+                self.clearedDate.setCalendarPopup(True)
+                self.clearedDate.setDisplayFormat("yyyy-MM-dd")
+                self.clearedDate.setDate(QDate.currentDate())
+                self.notes = QLineEdit()
+                self.notes.setPlaceholderText("Notes (optional)")
+
+                form = QFormLayout()
+                form.addRow("Payment ID*", self.paymentId)
+                form.addRow("Clearing State*", self.stateCombo)
+                form.addRow("Cleared Date", self.clearedDate)
+                form.addRow("Notes", self.notes)
+
+                btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+                btns.accepted.connect(self._on_ok)
+                btns.rejected.connect(self.reject)
+
+                lay = QVBoxLayout(self)
+                lay.addLayout(form)
+                lay.addWidget(btns)
+
+            def _on_ok(self):
+                pid_txt = self.paymentId.text().strip()
+                if not pid_txt:
+                    return
+                try:
+                    pid = int(pid_txt)
+                except ValueError:
+                    return
+                state = self.stateCombo.currentText()
+                date_str = self.clearedDate.date().toString("yyyy-MM-dd") if state == "cleared" else None
+                self._payload = {
+                    "payment_id": pid,
+                    "clearing_state": state,
+                    "cleared_date": date_str,
+                    "notes": (self.notes.text().strip() or None),
+                }
+                self.accept()
+
+            def payload(self):
+                return self._payload
+
+        dlg = ClearingDialog(self.view)
+        if not dlg.exec():
+            return
+        data = dlg.payload()
+        if not data:
+            return
+
         try:
-            return self.vbank.set_primary(vid, account_id) > 0
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-            info(self.view, "Not saved", f"Could not set primary account:\n{e}")
-            return False
+            updated = self.ppay.update_clearing_state(
+                payment_id=int(data["payment_id"]),
+                clearing_state=str(data["clearing_state"]),
+                cleared_date=data.get("cleared_date"),
+                notes=data.get("notes"),
+            )
+        except (ValueError, sqlite3.IntegrityError) as e:
+            info(self.view, "Not updated", str(e))
+            return
 
-    # -------- Provider used by purchase payment flow --------
-    def get_primary_vendor_bank_account(self, vendor_id: Optional[int] = None) -> Optional[dict]:
-        """
-        Return the default/primary bank account dict for a vendor (None if not present).
-        Useful to pre-populate the purchase payment flow with a vendor's receiving account.
-        """
-        vid = vendor_id or self._selected_id()
+        if updated <= 0:
+            info(self.view, "Not updated", "No payment updated.")
+            return
+        info(self.view, "Updated", "Payment clearing updated.")
+        self._reload()
+
+    # ---------- Lists / exports ----------
+    def _on_list_vendor_payments(self):
+        vid = self._selected_id()
         if not vid:
-            return None
-        accounts = self.vbank.list(vid, active_only=True)
-        for acc in accounts:
-            if int(acc.get("is_primary") or 0) == 1:
-                return acc
-        return None
+            info(self.view, "Select", "Please select a vendor first.")
+            return
+        # Minimal UX: just count/fetch; you can wire to a table dialog if you have one.
+        rows = self.ppay.list_payments_for_vendor(vid, date_from=None, date_to=None)
+        info(self.view, "Payments", f"Found {len(rows)} payment(s) for vendor.")
 
-    def get_primary_vendor_bank_account_id(self, vendor_id: Optional[int] = None) -> Optional[int]:
-        """
-        Return the vendor_bank_account_id of the primary account (or None).
-        """
-        acc = self.get_primary_vendor_bank_account(vendor_id)
-        return int(acc["vendor_bank_account_id"]) if acc and acc.get("vendor_bank_account_id") is not None else None
+    def _on_list_purchase_payments(self):
+        vid = self._selected_id()
+        if not vid:
+            info(self.view, "Select", "Please select a vendor first.")
+            return
+        # Tiny prompt for purchase id
+        pid = self._prompt_text("Enter Purchase ID")
+        if not pid:
+            return
+        rows = self.ppay.list_payments_for_purchase(pid)
+        info(self.view, "Payments", f"Found {len(rows)} payment(s) for purchase {pid}.")
+
+    def _on_list_pending_instruments(self):
+        vid = self._selected_id()
+        if not vid:
+            info(self.view, "Select", "Please select a vendor first.")
+            return
+        rows = self.ppay.list_pending_instruments(vid)
+        info(self.view, "Pending", f"Found {len(rows)} pending instrument(s).")
+
+    def _prompt_text(self, title: str) -> Optional[str]:
+        # very small inline line-edit prompt
+        class _Prompt(QDialog):
+            def __init__(self, parent=None, title="Enter"):
+                super().__init__(parent)
+                self.setWindowTitle(title)
+                self._val = None
+                self.line = QLineEdit()
+                form = QFormLayout()
+                form.addRow(QLabel(title), self.line)
+                btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+                btns.accepted.connect(self._on_ok)
+                btns.rejected.connect(self.reject)
+                lay = QVBoxLayout(self)
+                lay.addLayout(form)
+                lay.addWidget(btns)
+
+            def _on_ok(self):
+                self._val = self.line.text().strip()
+                self.accept()
+
+            def value(self):
+                return self._val
+
+        dlg = _Prompt(self.view, title=title)
+        if not dlg.exec():
+            return None
+        return dlg.value()
 
     # ---------- Statement orchestration ----------
     def build_vendor_statement(
@@ -440,6 +643,80 @@ class VendorController(BaseModule):
             "totals": totals,
             "closing_balance": closing_balance,
         }
+
+    # =========================
+    # Vendor Bank Accounts API
+    # (for future UI usage)
+    # =========================
+    def list_bank_accounts(self, active_only: bool = True) -> list[dict]:
+        """List bank accounts for the currently selected vendor."""
+        vid = self._selected_id()
+        if not vid:
+            info(self.view, "Select", "Please select a vendor first.")
+            return []
+        return self.vbank.list(vid, active_only=active_only)
+
+    def create_bank_account(self, data: dict) -> Optional[int]:
+        """Create a bank account for the selected vendor."""
+        vid = self._selected_id()
+        if not vid:
+            info(self.view, "Select", "Please select a vendor first.")
+            return None
+        try:
+            return self.vbank.create(vid, data)
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
+            info(self.view, "Not saved", f"Could not create bank account:\n{e}")
+            return None
+
+    def update_bank_account(self, account_id: int, data: dict) -> bool:
+        """Update a vendor bank account."""
+        try:
+            return self.vbank.update(account_id, data) > 0
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
+            info(self.view, "Not saved", f"Could not update bank account:\n{e}")
+            return False
+
+    def deactivate_bank_account(self, account_id: int) -> bool:
+        """Deactivate (or delete if unreferenced) a vendor bank account."""
+        try:
+            return self.vbank.deactivate(account_id) > 0
+        except sqlite3.OperationalError as e:
+            info(self.view, "Not saved", f"Could not deactivate bank account:\n{e}")
+            return False
+
+    def set_primary_bank_account(self, account_id: int) -> bool:
+        """Mark an account as primary for the selected vendor."""
+        vid = self._selected_id()
+        if not vid:
+            info(self.view, "Select", "Please select a vendor first.")
+            return False
+        try:
+            return self.vbank.set_primary(vid, account_id) > 0
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
+            info(self.view, "Not saved", f"Could not set primary account:\n{e}")
+            return False
+
+    # -------- Provider used by purchase payment flow --------
+    def get_primary_vendor_bank_account(self, vendor_id: Optional[int] = None) -> Optional[dict]:
+        """
+        Return the default/primary bank account dict for a vendor (None if not present).
+        Useful to pre-populate the purchase payment flow with a vendor's receiving account.
+        """
+        vid = vendor_id or self._selected_id()
+        if not vid:
+            return None
+        accounts = self.vbank.list(vid, active_only=True)
+        for acc in accounts:
+            if int(acc.get("is_primary") or 0) == 1:
+                return acc
+        return None
+
+    def get_primary_vendor_bank_account_id(self, vendor_id: Optional[int] = None) -> Optional[int]:
+        """
+        Return the vendor_bank_account_id of the primary account (or None).
+        """
+        acc = self.get_primary_vendor_bank_account(vendor_id)
+        return int(acc["vendor_bank_account_id"]) if acc and acc.get("vendor_bank_account_id") is not None else None
 
     # CRUD
     def _add(self):
