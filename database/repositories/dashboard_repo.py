@@ -18,6 +18,20 @@ class DashboardRepo:
 
     All methods are read-only and compatible with schema.py.
     Each method returns either a float or a list[dict].
+
+    Performance note:
+    - Date columns are compared directly (e.g., col >= ? AND col <= ?) to keep
+      SQLite eligible to use indexes on those columns. Ensure dates are stored
+      as ISO 8601 'YYYY-MM-DD' text.
+    - NO use of SQLite clock (DATE('now'), strftime(...)) inside filters; the
+      caller must pass app-locale date_from/date_to for time-bound queries.
+
+    Consistency note:
+    - For both sales and purchases, we standardize on:
+        paid_total := paid_amount + advance_payment_applied
+      (for sales, paid_amount rolls up *all* payments; for purchases, triggers
+      already clamp paid_amount to cleared-only). Open receivables/payables use
+      this composition: remaining = total_amount - paid_total.
     """
 
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -32,7 +46,7 @@ class DashboardRepo:
             SELECT COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS v
             FROM sales s
             WHERE s.doc_type = 'sale'
-              AND DATE(s.date) BETWEEN DATE(?) AND DATE(?)
+              AND s.date >= ? AND s.date <= ?
         """
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
@@ -43,7 +57,7 @@ class DashboardRepo:
             FROM sale_item_cogs c
             JOIN sales s ON s.sale_id = c.sale_id
             WHERE s.doc_type = 'sale'
-              AND DATE(s.date) BETWEEN DATE(?) AND DATE(?)
+              AND s.date >= ? AND s.date <= ?
         """
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
@@ -51,7 +65,7 @@ class DashboardRepo:
         sql = """
             SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS v
             FROM expenses e
-            WHERE DATE(e.date) BETWEEN DATE(?) AND DATE(?)
+            WHERE e.date >= ? AND e.date <= ?
         """
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
@@ -72,12 +86,13 @@ class DashboardRepo:
         """
         Incoming receipts that actually CLEARED in the window.
         Uses cleared_date and clearing_state='cleared'.
+        (This is a bank-cleared metric; it intentionally excludes customer-credit applications.)
         """
         sql = """
             SELECT COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0) AS v
             FROM sale_payments sp
             WHERE sp.clearing_state = 'cleared'
-              AND DATE(sp.cleared_date) BETWEEN DATE(?) AND DATE(?)
+              AND sp.cleared_date >= ? AND sp.cleared_date <= ?
         """
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
@@ -86,12 +101,13 @@ class DashboardRepo:
         Outgoing payments to vendors that CLEARED in the window.
         Positive amounts = outflow; negative = refunds (inflow).
         Returns the signed net (out - refunds).
+        (Purchase side is already cleared-only in triggers for paid rollups.)
         """
         sql = """
             SELECT COALESCE(SUM(CAST(pp.amount AS REAL)), 0.0) AS v
             FROM purchase_payments pp
             WHERE pp.clearing_state = 'cleared'
-              AND DATE(pp.cleared_date) BETWEEN DATE(?) AND DATE(?)
+              AND pp.cleared_date >= ? AND pp.cleared_date <= ?
         """
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
@@ -111,7 +127,7 @@ class DashboardRepo:
             FROM v_bank_ledger_ext v
             JOIN company_bank_accounts a
               ON a.account_id = v.bank_account_id
-            WHERE DATE(v.date) BETWEEN DATE(?) AND DATE(?)
+            WHERE v.date >= ? AND v.date <= ?
             GROUP BY a.account_id, a.label
             ORDER BY a.label COLLATE NOCASE
         """
@@ -135,7 +151,7 @@ class DashboardRepo:
 
     def open_receivables(self) -> float:
         """
-        Remaining = total_amount - paid_amount - advance_payment_applied.
+        Remaining = total_amount - (paid_amount + advance_payment_applied).
         Only real sales (doc_type = 'sale'); only positive remaining.
         """
         sql = """
@@ -143,8 +159,10 @@ class DashboardRepo:
             FROM (
               SELECT
                 CAST(s.total_amount AS REAL)
-                - COALESCE(CAST(s.paid_amount AS REAL), 0.0)
-                - COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
+                - (
+                    COALESCE(CAST(s.paid_amount AS REAL), 0.0)
+                    + COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
+                  )
                 AS remaining
               FROM sales s
               WHERE s.doc_type = 'sale'
@@ -155,16 +173,19 @@ class DashboardRepo:
 
     def open_payables(self) -> float:
         """
-        Remaining for purchases = total_amount - paid_amount(cleared roll-up) - advance_payment_applied.
+        Remaining for purchases = total_amount - (paid_amount + advance_payment_applied).
         Only positive remaining.
+        (For purchases, paid_amount is already a cleared-only rollup via triggers.)
         """
         sql = """
             SELECT COALESCE(SUM(remaining), 0.0) AS v
             FROM (
               SELECT
                 CAST(p.total_amount AS REAL)
-                - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
-                - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+                - (
+                    COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                    + COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+                  )
                 AS remaining
               FROM purchases p
             )
@@ -183,7 +204,7 @@ class DashboardRepo:
             LEFT JOIN v_stock_on_hand v ON v.product_id = p.product_id
             WHERE COALESCE(CAST(v.qty_in_base AS REAL), 0.0) < CAST(p.min_stock_level AS REAL)
         """
-        val = self._scalar(sql)
+        val = self._scalar(sql)  # alias 'c' – handled by _scalar's fallback
         try:
             return int(val or 0)
         except Exception:
@@ -246,7 +267,7 @@ class DashboardRepo:
             FROM sale_items si
             JOIN sales s    ON s.sale_id = si.sale_id AND s.doc_type = 'sale'
             JOIN products p ON p.product_id = si.product_id
-            WHERE DATE(s.date) BETWEEN DATE(?) AND DATE(?)
+            WHERE s.date >= ? AND s.date <= ?
             GROUP BY p.name
             ORDER BY revenue DESC, qty_base DESC, p.name COLLATE NOCASE
             LIMIT ?
@@ -261,26 +282,27 @@ class DashboardRepo:
             for r in rows
         ]
 
-    def top_customers_mtd(self, limit_n: int = 5) -> List[Dict[str, Any]]:
+    def top_customers(
+        self, date_from: str, date_to: str, limit_n: int = 5
+    ) -> List[Dict[str, Any]]:
         """
-        Top customers by revenue in the current calendar month (local DB clock).
+        Top customers by revenue over an explicit date range (app-locale provided).
+        Replace any prior MTD variant that used the DB clock.
         """
         sql = """
-            WITH month_key AS (SELECT strftime('%Y-%m', DATE('now')) AS k)
             SELECT
               c.name AS customer_name,
               COUNT(*) AS order_count,
               COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS revenue
             FROM sales s
             JOIN customers c ON c.customer_id = s.customer_id
-            JOIN month_key mk
             WHERE s.doc_type = 'sale'
-              AND strftime('%Y-%m', s.date) = mk.k
+              AND s.date >= ? AND s.date <= ?
             GROUP BY c.name
             ORDER BY revenue DESC, order_count DESC, c.name COLLATE NOCASE
             LIMIT ?
         """
-        rows = self._rows(sql, (int(limit_n),))
+        rows = self._rows(sql, (date_from, date_to, int(limit_n)))
         return [
             {
                 "customer_name": r["customer_name"],
@@ -290,10 +312,10 @@ class DashboardRepo:
             for r in rows
         ]
 
-    def quotations_expiring(self, days: int = 7) -> List[Dict[str, Any]]:
+    def quotations_expiring(self, date_from: str, date_to: str) -> List[Dict[str, Any]]:
         """
-        Quotations whose expiry_date is within [today, today + days].
-        Returns a small list sorted by soonest expiry.
+        Quotations whose expiry_date is within [date_from, date_to] (inclusive).
+        Caller must pass app-locale bounds (e.g., today → today+N).
         """
         sql = """
             SELECT
@@ -305,11 +327,11 @@ class DashboardRepo:
             JOIN customers c ON c.customer_id = s.customer_id
             WHERE s.doc_type = 'quotation'
               AND s.expiry_date IS NOT NULL
-              AND DATE(s.expiry_date) BETWEEN DATE('now') AND DATE('now', '+' || ? || ' days')
-            ORDER BY DATE(s.expiry_date) ASC, s.sale_id
+              AND s.expiry_date >= ? AND s.expiry_date <= ?
+            ORDER BY s.expiry_date ASC, s.sale_id
             LIMIT 50
         """
-        rows = self._rows(sql, (int(days),))
+        rows = self._rows(sql, (date_from, date_to))
         return [
             {
                 "sale_id": r["sale_id"],
@@ -328,6 +350,8 @@ class DashboardRepo:
         """
         Sum sales payments by method and clearing_state over posting date range.
         (Use cleared_date only for 'cleared totals' KPI; this is a pipeline view.)
+        Note: This is *payments only*; customer-credit applications are reflected
+        in 'paid_total' via advance_payment_applied, not in this breakdown table.
         """
         sql = """
             SELECT
@@ -335,7 +359,7 @@ class DashboardRepo:
               sp.clearing_state,
               COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0) AS amount
             FROM sale_payments sp
-            WHERE DATE(sp.date) BETWEEN DATE(?) AND DATE(?)
+            WHERE sp.date >= ? AND sp.date <= ?
             GROUP BY sp.method, sp.clearing_state
             ORDER BY sp.method, sp.clearing_state
         """
@@ -362,7 +386,7 @@ class DashboardRepo:
               pp.clearing_state,
               COALESCE(SUM(CAST(pp.amount AS REAL)), 0.0) AS amount
             FROM purchase_payments pp
-            WHERE DATE(pp.date) BETWEEN DATE(?) AND DATE(?)
+            WHERE pp.date >= ? AND pp.date <= ?
             GROUP BY pp.method, pp.clearing_state
             ORDER BY pp.method, pp.clearing_state
         """
@@ -376,12 +400,75 @@ class DashboardRepo:
             for r in rows
         ]
 
+    # --------------------------- Paid-total helpers -------------------------
+
+    def sales_paid_total(self, date_from: str, date_to: str) -> float:
+        """
+        Sum of (paid_amount + advance_payment_applied) for sales whose *invoice date*
+        is within [date_from, date_to]. This treats 'paid total' by sale header date.
+        """
+        sql = """
+            SELECT COALESCE(SUM(
+                COALESCE(CAST(s.paid_amount AS REAL), 0.0)
+              + COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
+            ), 0.0) AS v
+            FROM sales s
+            WHERE s.doc_type = 'sale'
+              AND s.date >= ? AND s.date <= ?
+        """
+        return _to_float(self._scalar(sql, (date_from, date_to)))
+
+    def purchases_paid_total(self, date_from: str, date_to: str) -> float:
+        """
+        Sum of (paid_amount + advance_payment_applied) for purchases whose *header date*
+        is within [date_from, date_to]. Note: paid_amount on purchases is cleared-only.
+        """
+        sql = """
+            SELECT COALESCE(SUM(
+                COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+              + COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+            ), 0.0) AS v
+            FROM purchases p
+            WHERE p.date >= ? AND p.date <= ?
+        """
+        return _to_float(self._scalar(sql, (date_from, date_to)))
+
     # ------------------------------- Helpers --------------------------------
 
-    def _scalar(self, sql: str, params: Tuple[Any, ...] | List[Any] | None = None) -> Any:
+    def _scalar(
+        self,
+        sql: str,
+        params: Tuple[Any, ...] | List[Any] | None = None,
+        *,
+        alias: str = "v",
+    ) -> Any:
+        """
+        Execute a scalar query. Prefer returning by named alias (default 'v').
+        Falls back to the single column or index 0 for robustness.
+        """
         cur = self.conn.execute(sql, params or [])
         row = cur.fetchone()
-        return None if row is None else (row[0] if isinstance(row, tuple) else list(row)[0])
+        if row is None:
+            return None
+        try:
+            if isinstance(row, sqlite3.Row):
+                keys = row.keys()
+                if alias in keys:
+                    return row[alias]
+                if len(keys) == 1:
+                    return row[keys[0]]
+                return row[0]  # fallback
+            # tuple or sequence
+            return row[0]
+        except Exception:
+            # very defensive fallback paths
+            try:
+                return row[alias]
+            except Exception:
+                try:
+                    return row[0]
+                except Exception:
+                    return None
 
     def _rows(self, sql: str, params: Tuple[Any, ...] | List[Any] | None = None) -> List[sqlite3.Row]:
         cur = self.conn.execute(sql, params or [])

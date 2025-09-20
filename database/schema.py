@@ -394,6 +394,27 @@ CREATE INDEX IF NOT EXISTS idx_vadv_vendor     ON vendor_advances(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_vadv_vendor_dt  ON vendor_advances(vendor_id, tx_date);
 CREATE INDEX IF NOT EXISTS idx_vadv_source     ON vendor_advances(source_id);
 
+/* -------- customers: indexes to speed list/search -------- */
+
+/* 1) Cover the common list view: WHERE is_active=1 ORDER BY customer_id DESC */
+CREATE INDEX IF NOT EXISTS idx_customers_active_id
+  ON customers(is_active, customer_id DESC);
+
+/* 2) Columns used by LIKE in search() */
+CREATE INDEX IF NOT EXISTS idx_customers_name
+  ON customers(name);
+
+CREATE INDEX IF NOT EXISTS idx_customers_contact_info
+  ON customers(contact_info);
+
+CREATE INDEX IF NOT EXISTS idx_customers_address
+  ON customers(address);
+
+/* 3) If you keep CAST(customer_id AS TEXT) in LIKE, an expression index helps for prefix matches */
+CREATE INDEX IF NOT EXISTS idx_customers_id_text
+  ON customers( CAST(customer_id AS TEXT) );
+
+
 
 /* ======================== UoM INTEGRITY TRIGGERS ======================== */
 DROP TRIGGER IF EXISTS trg_product_uoms_factor_guard_ins;

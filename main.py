@@ -37,6 +37,47 @@ def _lazy_get(name: str, attr: str):
 
 
 class MainWindow(QMainWindow):
+    # -----------------------------
+    # Lightweight DB manager shim
+    # -----------------------------
+    class _AppDbManager:
+        def __init__(self, main_window: "MainWindow"):
+            self._mw = main_window
+
+        def close_all(self):
+            # Close the primary app connection
+            try:
+                if self._mw.conn:
+                    try:
+                        self._mw.conn.commit()
+                    except Exception:
+                        pass
+                    self._mw.conn.close()
+                    self._mw.conn = None
+            except Exception:
+                pass
+
+            # Notify modules so they can drop cursors/prepare to rebind (optional)
+            for _, mod in self._mw.modules:
+                if hasattr(mod, "on_db_closed"):
+                    try:
+                        mod.on_db_closed()
+                    except Exception:
+                        pass
+
+        def open(self):
+            # Recreate the main connection
+            from .database import get_connection as _gc  # local import avoids circularities
+            self._mw.conn = _gc()
+
+            # Give modules a chance to rebind their repos/cursors with the new connection
+            for _, mod in self._mw.modules:
+                if hasattr(mod, "on_db_reopened"):
+                    try:
+                        mod.on_db_reopened(self._mw.conn)
+                    except Exception:
+                        pass
+
     def __init__(self, conn, current_user: dict):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -162,11 +203,11 @@ class MainWindow(QMainWindow):
         # )
 
         # Admin-only: System Logs
-        if self.user and self.user.get("role") == "admin":
-            self.add_placeholder("System Logs")
+        # if self.user and self.user.get("role") == "admin":
+        #     self.add_placeholder("System Logs")
 
-        # Printing (still a placeholder)
-        self.add_placeholder("Printing")
+        # ---- Backup & Restore (replace previous placeholder) ----
+        self._add_backup_restore_module()
 
         # Ensure first page is visible
         if self.nav.count():
@@ -276,6 +317,35 @@ class MainWindow(QMainWindow):
             # ============================
             if fallback_placeholder:
                 self.add_placeholder(title)
+
+    def _add_backup_restore_module(self) -> None:
+        """
+        Create the Backup & Restore module using its factory and register
+        File → Backup/Restore menu actions.
+        """
+        try:
+            # Use the module factory (lazy import)
+            backup_pkg = import_module("inventory_management.modules.backup_restore")
+            create_module = getattr(backup_pkg, "create_module")
+            module_title = getattr(backup_pkg, "MODULE_TITLE", "Backup & Restore")
+
+            controller = create_module()
+
+            # Attach the lightweight DB manager shim so restore can close/reopen the DB.
+            setattr(controller, "_app_db_manager", MainWindow._AppDbManager(self))
+
+            # Add to nav/stack
+            self.add_module(module_title, controller)
+
+            # Register File menu actions (controller wires actions to Backup/Restore dialogs)
+            if hasattr(controller, "register_menu_actions"):
+                controller.register_menu_actions(self.menuBar())
+
+        except Exception as e:
+            # If anything goes wrong, fall back to placeholder to keep app usable.
+            print("[BackupRestore] failed to load:", e, file=sys.stderr)
+            traceback.print_exc()
+            self.add_placeholder("Backup & Restore")
 
     def add_module(self, title: str, module: BaseModule):
         page = module.get_widget()

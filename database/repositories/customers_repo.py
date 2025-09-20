@@ -142,6 +142,6 @@ class CustomersRepo:
         )
         self.conn.commit()
 
-    def delete(self, customer_id: int) -> None:
-        self.conn.execute("DELETE FROM customers WHERE customer_id=?", (customer_id,))
-        self.conn.commit()
+    # def delete(self, customer_id: int) -> None:
+    #     self.conn.execute("DELETE FROM customers WHERE customer_id=?", (customer_id,))
+    #     self.conn.commit()

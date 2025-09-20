@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Optional, List, Dict
 import csv
+import sqlite3  # for error mapping of DB exceptions
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QMessageBox, QFileDialog, QDialog
@@ -201,6 +202,43 @@ class ExpenseController(BaseModule):
         self._sc_edit_c.activated.connect(self._on_edit)
 
     # ------------------------------------------------------------------
+    # Error mapping helpers (standardize UX messages)
+    # ------------------------------------------------------------------
+    def _handle_error(self, context: str, err: Exception) -> None:
+        """Map low-level exceptions to consistent user-facing messages."""
+        title, msg = self._map_error(context, err)
+        ui.info(self.view, title, msg)
+
+    @staticmethod
+    def _map_error(context: str, err: Exception) -> tuple[str, str]:
+        """
+        Convert exceptions (DomainError/sqlite3.IntegrityError/others) to (title, message).
+        Keeps messages generic & consistent across controllers.
+        """
+        # Domain-level validation failures
+        if isinstance(err, DomainError):
+            return "Invalid data", str(err)
+
+        # Database constraints & FKs
+        if isinstance(err, sqlite3.IntegrityError):
+            raw = str(err).lower()
+            if "foreign key" in raw or "constraint failed" in raw or "constraint" in raw:
+                return (
+                    "Not allowed",
+                    "This action violates a data rule (it may be referenced by other records).",
+                )
+            if "unique" in raw:
+                return ("Already exists", "A record with the same value already exists.")
+            return ("Database constraint", "Operation failed due to a database rule. Please check your inputs.")
+
+        # File-related issues (export)
+        if isinstance(err, FileNotFoundError):
+            return ("File not found", "Please choose a valid location and try again.")
+
+        # Fallback
+        return ("Error", f"{context}: {err}")
+
+    # ------------------------------------------------------------------
     # Button handlers
     # ------------------------------------------------------------------
     def _on_add(self) -> None:
@@ -216,10 +254,8 @@ class ExpenseController(BaseModule):
             )
             self._reload()
             ui.info(self.view, "Saved", "Expense added successfully.")
-        except DomainError as e:
-            ui.info(self.view, "Invalid data", str(e))
-        except Exception as e:  # defensive
-            ui.info(self.view, "Error", f"Failed to add expense: {e}")
+        except Exception as e:  # map DomainError / sqlite3.IntegrityError / others
+            self._handle_error("Failed to add expense", e)
 
     def _on_edit(self) -> None:
         exp_id = self._selected_expense_id()
@@ -247,10 +283,8 @@ class ExpenseController(BaseModule):
             )
             self._reload()
             ui.info(self.view, "Saved", "Expense updated successfully.")
-        except DomainError as e:
-            ui.info(self.view, "Invalid data", str(e))
         except Exception as e:
-            ui.info(self.view, "Error", f"Failed to update expense: {e}")
+            self._handle_error("Failed to update expense", e)
 
     def _on_delete(self) -> None:
         exp_id = self._selected_expense_id()
@@ -272,7 +306,7 @@ class ExpenseController(BaseModule):
             self._reload()
             ui.info(self.view, "Deleted", "Expense deleted.")
         except Exception as e:
-            ui.info(self.view, "Error", f"Failed to delete expense: {e}")
+            self._handle_error("Failed to delete expense", e)
 
     def _on_manage_categories(self) -> None:
         """Open the category manager dialog and refresh combos & data afterwards."""
@@ -282,7 +316,7 @@ class ExpenseController(BaseModule):
             self._load_categories()  # refresh filter combo
             self._reload()           # refresh table & totals
         except Exception as e:
-            ui.info(self.view, "Categories", f"Failed to open manager: {e}")
+            self._handle_error("Failed to open category manager", e)
 
     def _on_export_csv(self) -> None:
         """Export the current table view to CSV."""
@@ -318,4 +352,4 @@ class ExpenseController(BaseModule):
 
             ui.info(self.view, "Exported", f"Saved to {path}")
         except Exception as e:
-            ui.info(self.view, "Export", f"Failed to export CSV: {e}")
+            self._handle_error("Failed to export CSV", e)

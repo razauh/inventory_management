@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -109,7 +109,6 @@ class DashboardController(QObject):
             first_of_month = date(today.year, today.month, 1).isoformat()
             return DateRange(first_of_month, iso_today)
         if key == "last7":
-            from datetime import timedelta
             start = (today - timedelta(days=6)).isoformat()  # inclusive of today → 7 days window
             return DateRange(start, iso_today)
         # custom
@@ -149,7 +148,12 @@ class DashboardController(QObject):
 
         # 5) Optional small tables
         top_products = self.safe_repo_call(lambda: self.repo.top_products(df, dt, limit_n=5), [])
-        quotes_exp = self.safe_repo_call(lambda: self.repo.quotations_expiring(days=7), [])
+
+        # Expiring quotations: anchor to app-local 'today'
+        today = date.today()
+        df_q = today.isoformat()
+        dt_q = (today + timedelta(days=7)).isoformat()
+        quotes_exp = self.safe_repo_call(lambda: self.repo.quotations_expiring(df_q, dt_q), [])
 
         # -------- Push to view --------
         # KPI Cards

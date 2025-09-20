@@ -17,6 +17,11 @@ import sqlite3
 from typing import Optional, List, Dict
 
 
+class DomainError(Exception):
+    """Domain-level error suitable for surfacing to the UI."""
+    pass
+
+
 class InventoryRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -204,6 +209,18 @@ class InventoryRepo:
           reference_table, reference_id, reference_item_id,
           date, posted_at, txn_seq, notes, created_by
         """
+        # Pre-validate product↔UoM mapping to prevent silent stock corruption.
+        # (The schema triggers will also guard this, but we fail early with a clear message.)
+        exists = self.conn.execute(
+            "SELECT 1 FROM product_uoms WHERE product_id=? AND uom_id=? LIMIT 1",
+            (int(product_id), int(uom_id)),
+        ).fetchone()
+        if not exists:
+            raise DomainError(
+                "Selected unit of measure does not belong to the chosen product. "
+                "Please pick a valid UoM for this product."
+            )
+
         cur = self.conn.execute(
             """
             INSERT INTO inventory_transactions
