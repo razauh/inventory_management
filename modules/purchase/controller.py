@@ -17,6 +17,18 @@ from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str
 
+# Optional domain errors (guarded import; repos may or may not expose them)
+try:  # type: ignore[attr-defined]
+    from ...database.repositories.vendor_advances_repo import OverapplyVendorAdvanceError  # type: ignore
+except Exception:  # pragma: no cover
+    OverapplyVendorAdvanceError = None  # type: ignore
+try:  # type: ignore[attr-defined]
+    from ...database.repositories.purchase_payments_repo import OverpayPurchaseError  # type: ignore
+except Exception:  # pragma: no cover
+    OverpayPurchaseError = None  # type: ignore
+
+_EPS = 1e-9  # numeric tolerance for float comparisons
+
 
 def new_purchase_id(conn: sqlite3.Connection, date_str: str) -> str:
     # prefix by selected business date
@@ -172,6 +184,34 @@ class PurchaseController(BaseModule):
             "remaining_due": rem,
         }
 
+    # --- helper: remaining due using header fields (matches trigger math) ---
+    def _remaining_due_header(self, purchase_id: str) -> float:
+        row = self.conn.execute(
+            """
+            SELECT
+                CAST(total_amount AS REAL) AS total_amount,
+                CAST(paid_amount AS REAL) AS paid_amount,
+                CAST(advance_payment_applied AS REAL) AS advance_payment_applied
+            FROM purchases
+            WHERE purchase_id = ?
+            """,
+            (purchase_id,),
+        ).fetchone()
+        if not row:
+            return 0.0
+        total = float(row["total_amount"] or 0.0)
+        paid = float(row["paid_amount"] or 0.0)
+        applied = float(row["advance_payment_applied"] or 0.0)
+        remaining = total - paid - applied
+        return max(0.0, remaining)
+
+    # --- helper: vendor credit balance ---
+    def _vendor_credit_balance(self, vendor_id: int) -> float:
+        try:
+            return float(self.vadv.get_balance(vendor_id))
+        except Exception:
+            return 0.0
+
     # -------- CRUD --------
     def _add(self):
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products)
@@ -235,18 +275,23 @@ class PurchaseController(BaseModule):
                     date=ip.get("date") or p["date"],
                     created_by=(self.user["user_id"] if self.user else None),
                 )
-            except sqlite3.IntegrityError as e:
-                info(
-                    self.view,
-                    "Payment not recorded",
-                    f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
-                )
-            except sqlite3.OperationalError as e:
-                info(
-                    self.view,
-                    "Payment not recorded",
-                    f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}",
-                )
+            except Exception as e:
+                if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):  # type: ignore
+                    info(self.view, "Payment not recorded", str(e))
+                    # Keep purchase; only warn about the payment
+                    pass
+                elif isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
+                    info(
+                        self.view,
+                        "Payment not recorded",
+                        f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
+                    )
+                else:
+                    info(
+                        self.view,
+                        "Payment not recorded",
+                        f"Purchase {pid} was created, but recording the initial payment failed:\n{e}",
+                    )
         else:
             # Legacy flat fields path (kept to avoid breaking older forms/controllers)
             initial_paid = float(p.get("initial_payment") or 0.0)
@@ -292,35 +337,48 @@ class PurchaseController(BaseModule):
                         date=p["date"],
                         created_by=(self.user["user_id"] if self.user else None),
                     )
-                except sqlite3.IntegrityError as e:
-                    info(
-                        self.view,
-                        "Payment not recorded",
-                        f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
-                    )
-                except sqlite3.OperationalError as e:
-                    info(
-                        self.view,
-                        "Payment not recorded",
-                        f"Purchase {pid} was created, but the initial payment hit a database error:\n{e}",
-                    )
+                except Exception as e:
+                    if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):  # type: ignore
+                        info(self.view, "Payment not recorded", str(e))
+                    elif isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
+                        info(
+                            self.view,
+                            "Payment not recorded",
+                            f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
+                        )
+                    else:
+                        info(
+                            self.view,
+                            "Payment not recorded",
+                            f"Purchase {pid} was created, but a database error occurred while saving the initial payment:\n{e}",
+                        )
 
-        # 3) Optional initial vendor credit application
+        # 3) Optional initial vendor credit application — pre-check against remaining & credit balance
         init_credit = float(p.get("initial_credit_amount") or 0.0)
         if init_credit > 0:
-            try:
-                self.vadv.apply_credit_to_purchase(
-                    vendor_id=p["vendor_id"],
-                    purchase_id=pid,
-                    amount=init_credit,
-                    date=p["date"],
-                    notes=p.get("initial_credit_notes"),
-                    created_by=(self.user["user_id"] if self.user else None),
-                )
-            except sqlite3.IntegrityError as e:
-                info(self.view, "Credit not applied", f"Purchase {pid} was created, but vendor credit could not be applied:\n{e}")
-            except sqlite3.OperationalError as e:
-                info(self.view, "Credit not applied", f"Purchase {pid} was created, but a database error occurred while applying credit:\n{e}")
+            # Compute allowable using header numbers (matches trigger math)
+            remaining = self._remaining_due_header(pid)
+            credit_bal = self._vendor_credit_balance(int(p["vendor_id"]))
+            allowable = min(credit_bal, remaining)
+            if init_credit - allowable > _EPS:
+                info(self.view, "Credit not applied", f"Initial credit exceeds available credit or remaining due (max {allowable:.2f}).")
+            else:
+                try:
+                    self.vadv.apply_credit_to_purchase(
+                        vendor_id=p["vendor_id"],
+                        purchase_id=pid,
+                        amount=init_credit,
+                        date=p["date"],
+                        notes=p.get("initial_credit_notes"),
+                        created_by=(self.user["user_id"] if self.user else None),
+                    )
+                except Exception as e:
+                    if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):  # type: ignore
+                        info(self.view, "Credit not applied", str(e))
+                    elif isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
+                        info(self.view, "Credit not applied", f"Purchase {pid} was created, but vendor credit could not be applied:\n{e}")
+                    else:
+                        info(self.view, "Credit not applied", f"Purchase {pid} was created, but applying vendor credit failed:\n{e}")
 
         info(self.view, "Saved", f"Purchase {pid} created.")
         self._reload()
@@ -459,9 +517,8 @@ class PurchaseController(BaseModule):
         """
         Apply existing vendor credit to the selected purchase.
         - Positive `amount` is required.
+        - Pre-check against min(vendor credit balance, remaining due per header).
         - Does NOT touch header money fields; DB triggers roll up advance_payment_applied.
-
-        Intended to be called from a future UI action (e.g. a button/menu).
         """
         row = self._selected_row_dict()
         if not row:
@@ -478,6 +535,14 @@ class PurchaseController(BaseModule):
             info(self.view, "Invalid amount", "Amount must be greater than zero.")
             return
 
+        # Pre-checks: remaining due (header-based) and vendor credit balance
+        remaining = self._remaining_due_header(row["purchase_id"])
+        credit_bal = self._vendor_credit_balance(int(row["vendor_id"]))
+        allowable = min(credit_bal, remaining)
+        if amt - allowable > _EPS:
+            info(self.view, "Credit not applied", f"Amount exceeds available credit or remaining due (max {allowable:.2f}).")
+            return
+
         when = date or today_str()
         try:
             self.vadv.apply_credit_to_purchase(
@@ -488,12 +553,14 @@ class PurchaseController(BaseModule):
                 notes=notes,
                 created_by=(self.user["user_id"] if self.user else None),
             )
-        except sqlite3.IntegrityError as e:
-            # Likely insufficient credit (trigger trg_vendor_advances_no_overdraw)
-            info(self.view, "Credit not applied", f"Could not apply vendor credit:\n{e}")
-            return
-        except sqlite3.OperationalError as e:
-            info(self.view, "Credit not applied", f"A database error occurred:\n{e}")
+        except Exception as e:
+            if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):  # type: ignore
+                info(self.view, "Credit not applied", str(e))
+                return
+            if isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
+                info(self.view, "Credit not applied", f"A database error occurred:\n{e}")
+                return
+            info(self.view, "Credit not applied", str(e))
             return
 
         info(self.view, "Saved", f"Applied vendor credit of {amt:g} to {row['purchase_id']}.")
@@ -506,6 +573,10 @@ class PurchaseController(BaseModule):
 
         Preferred: open the vendor money dialog (mode="payment") and forward its payload to the repo.
         Fallback: keep the legacy amount-only dialog to avoid breaking existing flows.
+
+        Added:
+          - Pre-check amount vs remaining due (header-based) to mirror trigger math.
+          - Catch OverpayPurchaseError from repo, but still surface sqlite errors.
         """
         row = self._selected_row_dict()
         if not row:
@@ -523,7 +594,7 @@ class PurchaseController(BaseModule):
             payload = open_vendor_money_form(
                 mode="payment",
                 vendor_id=vendor_id,
-                purchase_id=purchase_id,  # allow the dialog to pick if you pass None
+                purchase_id=purchase_id,  # lock the purchase in the dialog
                 defaults={
                     "list_company_bank_accounts": self._list_company_bank_accounts,
                     "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
@@ -533,9 +604,22 @@ class PurchaseController(BaseModule):
             )
             if payload:
                 try:
+                    amt = float(payload.get("amount"))
+                except (TypeError, ValueError):
+                    info(self.view, "Payment not recorded", "Incomplete form data returned from Vendor dialog.")
+                    return
+
+                method = (payload.get("method") or "").strip()
+                # Guard against overpay (header-based remaining)
+                remaining = self._remaining_due_header(str(payload.get("purchase_id") or purchase_id))
+                if method.lower() != "cash" and amt - remaining > _EPS:
+                    info(self.view, "Payment not recorded", f"Amount exceeds remaining due ({remaining:.2f}).")
+                    return
+
+                try:
                     self.payments.record_payment(
                         purchase_id=str(payload.get("purchase_id") or purchase_id),
-                        amount=float(payload.get("amount")),
+                        amount=amt,
                         method=payload.get("method"),
                         bank_account_id=payload.get("bank_account_id"),
                         vendor_bank_account_id=payload.get("vendor_bank_account_id"),
@@ -550,11 +634,14 @@ class PurchaseController(BaseModule):
                         date=payload.get("date") or today_str(),
                         created_by=(self.user["user_id"] if self.user else None),
                     )
-                except (TypeError, ValueError):
-                    info(self.view, "Payment not recorded", "Incomplete form data returned from Vendor dialog.")
-                    return
-                except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-                    info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
+                except Exception as e:
+                    if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):  # type: ignore
+                        info(self.view, "Payment not recorded", str(e))
+                        return
+                    if isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
+                        info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
+                        return
+                    info(self.view, "Payment not recorded", str(e))
                     return
 
                 info(self.view, "Saved", "Payment recorded.")
@@ -576,6 +663,17 @@ class PurchaseController(BaseModule):
         if not amount:
             return
 
+        # Guard legacy path against overpay (positive amounts only here)
+        remaining = self._remaining_due_header(purchase_id)
+        try:
+            amt = float(amount)
+        except (TypeError, ValueError):
+            info(self.view, "Payment not recorded", "Invalid amount.")
+            return
+        if amt - remaining > _EPS:
+            info(self.view, "Payment not recorded", f"Amount exceeds remaining due ({remaining:.2f}).")
+            return
+
         # Legacy path always used Cash / posted; keep that behavior unchanged.
         method = "Cash"
         bank_account_id = None
@@ -593,7 +691,7 @@ class PurchaseController(BaseModule):
         try:
             self.payments.record_payment(
                 purchase_id=purchase_id,
-                amount=float(amount),
+                amount=amt,
                 method=method,
                 bank_account_id=bank_account_id,
                 vendor_bank_account_id=vendor_bank_account_id,
@@ -608,8 +706,14 @@ class PurchaseController(BaseModule):
                 date=pay_date,
                 created_by=(self.user["user_id"] if self.user else None),
             )
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-            info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
+        except Exception as e:
+            if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):  # type: ignore
+                info(self.view, "Payment not recorded", str(e))
+                return
+            if isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
+                info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
+                return
+            info(self.view, "Payment not recorded", str(e))
             return
 
         info(self.view, "Saved", f"Transaction of {float(amount):g} recorded.")

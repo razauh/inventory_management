@@ -1416,7 +1416,7 @@ BEGIN
   END;
 END;
 
-/* New guard: do not allow applying credit beyond a purchase's remaining due */
+/* New guard: do not allow applying credit beyond a purchase's remaining due (INSERT) */
 DROP TRIGGER IF EXISTS trg_vendor_advances_not_exceed_remaining_due;
 CREATE TRIGGER trg_vendor_advances_not_exceed_remaining_due
 BEFORE INSERT ON vendor_advances
@@ -1430,7 +1430,7 @@ BEGIN
     ELSE 1
   END;
 
-  /* remaining_due = total_amount - paid_amount(cleared-only) - advance_payment_applied */
+  /* remaining_due = total_amount - cleared paid_amount - advance_payment_applied */
   SELECT CASE
     WHEN (
       COALESCE((SELECT CAST(total_amount AS REAL)            FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
@@ -1439,6 +1439,36 @@ BEGIN
       -
       COALESCE((SELECT CAST(advance_payment_applied AS REAL) FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
       + CAST(NEW.amount AS REAL)  /* NEW.amount negative when applying */
+    ) < -1e-9
+    THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
+    ELSE 1
+  END;
+END;
+
+/* New guard: do not allow applying credit beyond a purchase's remaining due (UPDATE) */
+DROP TRIGGER IF EXISTS trg_vendor_advances_not_exceed_remaining_due_upd;
+CREATE TRIGGER trg_vendor_advances_not_exceed_remaining_due_upd
+BEFORE UPDATE ON vendor_advances
+FOR EACH ROW
+WHEN NEW.source_type = 'applied_to_purchase' AND NEW.source_id IS NOT NULL
+BEGIN
+  /* Ensure referenced purchase exists */
+  SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM purchases p WHERE p.purchase_id = NEW.source_id)
+      THEN RAISE(ABORT, 'Invalid purchase reference for vendor credit application')
+    ELSE 1
+  END;
+
+  /* remaining_due = total - cleared paid - advance_applied
+     On UPDATE, advance_applied already includes OLD.amount; check DELTA (NEW.amount - OLD.amount). */
+  SELECT CASE
+    WHEN (
+      COALESCE((SELECT CAST(total_amount AS REAL)            FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(paid_amount AS REAL)             FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      -
+      COALESCE((SELECT CAST(advance_payment_applied AS REAL) FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      + (CAST(NEW.amount AS REAL) - CAST(OLD.amount AS REAL))  /* apply only the change */
     ) < -1e-9
     THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
     ELSE 1

@@ -39,6 +39,9 @@ from .model import AgingSnapshotTableModel, OpenInvoicesTableModel
 from ...database.repositories.reporting_repo import ReportingRepo
 
 
+_EPS = 1e-9  # guard for tiny float noise when comparing remaining due
+
+
 def _days_between(older_yyyy_mm_dd: str, asof_yyyy_mm_dd: str) -> int:
     """Inclusive day span: (as_of - older_date)."""
     try:
@@ -56,6 +59,12 @@ class VendorAgingTab(QWidget):
       - Splitter:
           * Top table: per-vendor aging buckets (Total Due, 0–30, 31–60, 61–90, 91+, Available Credit)
           * Bottom table: open purchase headers for the selected vendor
+
+    Notes on math:
+      - Remaining due uses the same definition as the DB trigger:
+          remaining = total_amount - paid_amount - advance_payment_applied
+        (paid_amount reflects CLEARED-ONLY cash; advances are tracked separately and not double-counted)
+      - We clamp tiny negatives to zero using _EPS to avoid stray micro-overages.
     """
 
     def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
@@ -181,13 +190,17 @@ class VendorAgingTab(QWidget):
             total_due = 0.0
             b_0_30 = b_31_60 = b_61_90 = b_91_plus = 0.0
 
+            # Use header roll-ups as of the selected date; these reflect trigger math:
+            # remaining = total_amount - paid_amount - advance_payment_applied
             for h in self.repo.vendor_headers_as_of(vid, as_of):
                 total_amount = float(h["total_amount"] or 0.0)
                 paid_amount = float(h["paid_amount"] or 0.0)
                 adv_applied = float(h["advance_payment_applied"] or 0.0)
-                remaining = total_amount - paid_amount - adv_applied
-                if remaining <= 0:
+                raw_remaining = total_amount - paid_amount - adv_applied
+                remaining = raw_remaining if raw_remaining > _EPS else 0.0
+                if remaining <= 0.0:
                     continue
+
                 days = _days_between(str(h["date"]), as_of)
                 total_due += remaining
                 if days <= 30:
@@ -200,10 +213,10 @@ class VendorAgingTab(QWidget):
                     b_91_plus += remaining
 
             if total_due == 0.0:
-                # Still include the vendor (common accounting practice varies);
-                # here we keep zero rows out to reduce noise. Comment next line to include zeros.
+                # Keep list concise; remove vendors with no outstanding balance.
                 continue
 
+            # Show available credit separately; not part of remaining due computation.
             avail_credit = float(self.repo.vendor_credit_as_of(vid, as_of) or 0.0)
 
             rows.append({
@@ -235,9 +248,11 @@ class VendorAgingTab(QWidget):
             total_amount = float(h["total_amount"] or 0.0)
             paid_amount = float(h["paid_amount"] or 0.0)
             adv_applied = float(h["advance_payment_applied"] or 0.0)
-            remaining = total_amount - paid_amount - adv_applied
-            if remaining <= 0:
+            raw_remaining = total_amount - paid_amount - adv_applied
+            remaining = raw_remaining if raw_remaining > _EPS else 0.0
+            if remaining <= 0.0:
                 continue
+
             hdr_date = str(h["date"])
             opens.append({
                 "doc_no": str(h["doc_no"]),

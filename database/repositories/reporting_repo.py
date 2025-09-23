@@ -17,6 +17,13 @@ class ReportingRepo:
                 inventory_transactions, product_uoms,
                 stock_valuation_history
       - Views:  sale_detailed_totals, v_stock_on_hand, sale_item_cogs
+
+    Notes on date handling:
+      • All ORDER BY clauses sort directly on the date/timestamp column (no DATE() wrapper)
+        to preserve index usage.
+      • Callers should pass ISO 'YYYY-MM-DD' (or the same normalized format stored in the DB).
+        If timestamps are ever used, ensure the cutoff value matches the stored representation
+        so comparisons like `<= ?` behave as intended.
     """
 
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -42,7 +49,7 @@ class ReportingRepo:
         FROM purchases p
         WHERE p.vendor_id = ?
           AND p.date <= ?
-        ORDER BY DATE(p.date), p.purchase_id
+        ORDER BY p.date, p.purchase_id
         """
         return list(self.conn.execute(sql, (vendor_id, as_of)))
 
@@ -71,7 +78,7 @@ class ReportingRepo:
         WHERE s.customer_id = ?
           AND s.doc_type = 'sale'
           AND s.date <= ?
-        ORDER BY DATE(s.date), s.sale_id
+        ORDER BY s.date, s.sale_id
         """
         return list(self.conn.execute(sql, (customer_id, as_of)))
 
@@ -143,7 +150,7 @@ class ReportingRepo:
         WHERE e.date >= ?
           AND e.date <= ?
           {where_extra}
-        ORDER BY DATE(e.date) DESC, e.expense_id DESC
+        ORDER BY e.date DESC, e.expense_id DESC
         """
         return list(self.conn.execute(sql, params))
 
@@ -225,7 +232,7 @@ class ReportingRepo:
          AND pu.uom_id     = it.uom_id
         WHERE it.date >= ? AND it.date <= ?
         {where_extra}
-        ORDER BY DATE(it.date) ASC, it.transaction_id ASC
+        ORDER BY it.date ASC, it.transaction_id ASC
         """
         return list(self.conn.execute(sql, params))
 
@@ -242,7 +249,7 @@ class ReportingRepo:
           svh.total_value    AS total_value
         FROM stock_valuation_history svh
         WHERE svh.product_id = ?
-        ORDER BY DATE(svh.valuation_date) DESC, svh.valuation_id DESC
+        ORDER BY svh.valuation_date DESC, svh.valuation_id DESC
         LIMIT ?
         """
         return list(self.conn.execute(sql, (product_id, limit)))
@@ -316,7 +323,7 @@ class ReportingRepo:
           AND sp.cleared_date >= ?
           AND sp.cleared_date <= ?
         GROUP BY sp.cleared_date
-        ORDER BY DATE(sp.cleared_date)
+        ORDER BY sp.cleared_date
         """
         return list(self.conn.execute(sql, (date_from, date_to)))
 
@@ -333,7 +340,7 @@ class ReportingRepo:
           AND pp.cleared_date >= ?
           AND pp.cleared_date <= ?
         GROUP BY pp.cleared_date
-        ORDER BY DATE(pp.cleared_date)
+        ORDER BY pp.cleared_date
         """
         return list(self.conn.execute(sql, (date_from, date_to)))
 
@@ -989,6 +996,6 @@ class ReportingRepo:
         FROM sales s
         LEFT JOIN customers cu ON cu.customer_id = s.customer_id
         {where}
-        ORDER BY DATE(s.date) DESC, s.sale_id DESC
+        ORDER BY s.date DESC, s.sale_id DESC
         """
         return list(self.conn.execute(sql, params))

@@ -8,23 +8,29 @@ from .model import ProductsTableModel
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.ui_helpers import info, error
 
+
 class ProductController(BaseModule):
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.repo = ProductsRepo(conn)
         self.view = ProductView()
+        self._wired = False  # ensure signals are connected only once
         self._connect_signals()
         self._reload()
-        
+
     def get_widget(self) -> QWidget:
         return self.view
-        
+
     def _connect_signals(self):
+        # Guard against double-connecting when controller/view is re-created
+        if self._wired:
+            return
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_edit.clicked.connect(self._edit)
         # self.view.btn_del.clicked.connect(self._delete)
         self.view.search.textChanged.connect(self._apply_filter)
-        
+        self._wired = True
+
     def _build_model(self):
         rows = self.repo.list_products()
         self.base_model = ProductsTableModel(rows)
@@ -34,19 +40,20 @@ class ProductController(BaseModule):
         self.proxy.setFilterKeyColumn(-1)
         self.view.table.setModel(self.proxy)
         self.view.table.resizeColumnsToContents()
-        
+
     def _reload(self):
         self._build_model()
-        
+
     def _apply_filter(self, text: str):
         self.proxy.setFilterRegularExpression(QRegularExpression(text))
-        
+
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()
-        if not idxs: return None
+        if not idxs:
+            return None
         src_index = self.proxy.mapToSource(idxs[0])
         return self.base_model.at(src_index.row()).product_id
-        
+
     def _add(self):
         dlg = ProductForm(self.view, repo=self.repo)
         if not dlg.exec():
@@ -72,7 +79,7 @@ class ProductController(BaseModule):
             self.repo.upsert_roles(pid, roles)
         info(self.view, "Saved", f"Product #{pid} created.")
         self._reload()
-        
+
     def _edit(self):
         pid = self._selected_id()
         if not pid:
@@ -81,7 +88,13 @@ class ProductController(BaseModule):
         current = self.repo.get(pid)
         maps = self.repo.product_uoms(pid)
         roles = self.repo.roles_map(pid)
-        dlg = ProductForm(self.view, repo=self.repo, initial_product=current, initial_uoms=maps, initial_roles=roles)
+        dlg = ProductForm(
+            self.view,
+            repo=self.repo,
+            initial_product=current,
+            initial_uoms=maps,
+            initial_roles=roles,
+        )
         if not dlg.exec():
             return
         pdata = dlg.payload()
@@ -103,7 +116,7 @@ class ProductController(BaseModule):
             self.repo.upsert_roles(pid, roles_map)
         info(self.view, "Saved", f"Product #{pid} updated.")
         self._reload()
-        
+
     def _delete(self):
         pid = self._selected_id()
         if not pid:

@@ -96,6 +96,13 @@ def open_vendor_money_form(
       - "payment": capture vendor payment/refund → payload for PurchasePaymentsRepo.record_payment(...)
       - "advance": record vendor advance (prepayment) → payload for VendorAdvancesRepo.grant_credit(...)
       - "apply_advance": apply advance to a purchase → payload for VendorAdvancesRepo.apply_credit_to_purchase(...)
+
+    Optional submit callbacks (all optional, backward-compatible):
+      defaults['submit_payment'](payload) -> None
+      defaults['submit_advance'](payload) -> None
+      defaults['submit_apply'](payload)   -> None
+    If provided they will be invoked on Save. Any raised exception will be shown
+    to the user and the dialog will remain open.
     """
     app = QApplication.instance()
     owns_app = app is None
@@ -121,6 +128,11 @@ class _VendorMoneyDialog(QDialog):
       - Record Advance
       - Apply Advance
     Produces repo-shaped payloads.
+
+    Optional submit callbacks (from defaults):
+      - submit_payment(payload)
+      - submit_advance(payload)
+      - submit_apply(payload)
     """
 
     PAGE_PAYMENT = 0
@@ -143,6 +155,11 @@ class _VendorMoneyDialog(QDialog):
         self._list_vendor_bank_accounts: Optional[Callable[[int], list]] = self._defaults.get("list_vendor_bank_accounts")
         self._list_open_purchases_for_vendor: Optional[Callable[[int], list]] = self._defaults.get("list_open_purchases_for_vendor")
         self._today: Optional[Callable[[], str]] = self._defaults.get("today")
+
+        # Optional submit callbacks (graceful DB error handling)
+        self._submit_payment: Optional[Callable[[dict], None]] = self._defaults.get("submit_payment")
+        self._submit_advance: Optional[Callable[[dict], None]] = self._defaults.get("submit_advance")
+        self._submit_apply: Optional[Callable[[dict], None]] = self._defaults.get("submit_apply")
 
         # Prefills (payment page)
         self._prefill_method: Optional[str] = self._defaults.get("method")
@@ -345,6 +362,7 @@ class _VendorMoneyDialog(QDialog):
 
         # Wire
         self.purchasePicker.currentIndexChanged.connect(self._update_remaining)
+        self.purchasePicker.currentIndexChanged.connect(self._apply_payment_amount_limits)
         self.methodCombo.currentIndexChanged.connect(self._on_method_changed)
         self.clearingStateCombo.currentIndexChanged.connect(self._on_clearing_changed)
         self.amountEdit.valueChanged.connect(self._validate_live_payment)
@@ -428,6 +446,7 @@ class _VendorMoneyDialog(QDialog):
 
         # Wire
         self.applyPurchasePicker.currentIndexChanged.connect(self._update_apply_remaining)
+        self.applyPurchasePicker.currentIndexChanged.connect(self._apply_apply_amount_limits)
         self.applyAmountEdit.valueChanged.connect(self._validate_live_apply)
 
     # ---------- Tab events ----------
@@ -438,6 +457,11 @@ class _VendorMoneyDialog(QDialog):
         self._validate_live_payment()
         self._validate_live_advance()
         self._validate_live_apply()
+        # Re-apply limits in case user switched tabs
+        if idx == self.PAGE_PAYMENT:
+            self._apply_payment_amount_limits()
+        elif idx == self.PAGE_APPLY:
+            self._apply_apply_amount_limits()
 
     def _sync_window_title(self) -> None:
         titles = {
@@ -468,6 +492,7 @@ class _VendorMoneyDialog(QDialog):
                 rem = total - paid
                 self.purchasePicker.addItem(f"{doc} — {date} — Total {total:.2f} Paid {paid:.2f} Rem {rem:.2f}", r)
             self._update_remaining()
+            self._apply_payment_amount_limits()
 
         # Apply picker
         if hasattr(self, "applyPurchasePicker"):
@@ -481,6 +506,7 @@ class _VendorMoneyDialog(QDialog):
                 rem = total - paid
                 self.applyPurchasePicker.addItem(f"{doc} — {date} — Total {total:.2f} Paid {paid:.2f} Rem {rem:.2f}", r)
             self._update_apply_remaining()
+            self._apply_apply_amount_limits()
 
     def _load_company_banks(self) -> None:
         if not hasattr(self, "companyBankCombo"):
@@ -621,6 +647,8 @@ class _VendorMoneyDialog(QDialog):
         else:
             self.amountEdit.setFocus()
 
+        # Update limits & validations
+        self._apply_payment_amount_limits()
         self._update_hint()
         self._validate_live_payment()
 
@@ -673,6 +701,36 @@ class _VendorMoneyDialog(QDialog):
             self.applyRemainingLabel.setText(f"{rem:.2f}")
         else:
             self.applyRemainingLabel.setText("")
+
+    # ---------- Amount limit helpers ----------
+    def _remaining_from_data(self, data: Optional[dict]) -> float:
+        if not isinstance(data, dict):
+            return 0.0
+        try:
+            total = float(data.get("total", 0.0))
+            paid = float(data.get("paid", 0.0))
+            rem = total - paid
+            return max(0.0, rem)
+        except Exception:
+            return 0.0
+
+    def _apply_payment_amount_limits(self) -> None:
+        """Limit payment amount to remaining due for non-Cash methods; allow refunds (negative) for Cash."""
+        data = self.purchasePicker.currentData()
+        remaining = self._remaining_from_data(data)
+        method = self.methodCombo.currentText()
+        if method == "Cash":
+            # Refunds allowed: keep a generous negative min, cap positive to remaining
+            self.amountEdit.setRange(-1_000_000_000.0, max(0.0, remaining))
+        else:
+            # Outgoing only: 0..remaining
+            self.amountEdit.setRange(0.0, max(0.0, remaining))
+
+    def _apply_apply_amount_limits(self) -> None:
+        """Limit apply-advance amount to remaining due."""
+        data = self.applyPurchasePicker.currentData()
+        remaining = self._remaining_from_data(data)
+        self.applyAmountEdit.setRange(0.0, max(0.0, remaining))
 
     # ---------- Validation (payment) ----------
     def _validate_live_payment(self) -> None:
@@ -739,6 +797,11 @@ class _VendorMoneyDialog(QDialog):
                 if len(s) != 10:
                     return False, _t("Please enter dates in YYYY-MM-DD.")
 
+        # 9) Client-side cap vs remaining due
+        remaining = self._remaining_from_data(p)
+        if method != "Cash" and amount - remaining > 1e-9:
+            return False, _t("Amount exceeds remaining due for the selected purchase.")
+
         return True, None
 
     # ---------- Validation (advance) ----------
@@ -787,24 +850,38 @@ class _VendorMoneyDialog(QDialog):
     # ---------- Save ----------
     def _on_save(self) -> None:
         idx = self.pageStack.currentIndex()
+        cb: Optional[Callable[[dict], None]] = None
+
         if idx == self.PAGE_PAYMENT:
             ok, msg = self._validate_payment()
             if not ok:
                 self._warn(msg)
                 return
             self._payload = self._build_payload_payment()
+            cb = self._submit_payment
         elif idx == self.PAGE_ADVANCE:
             ok, msg = self._validate_advance()
             if not ok:
                 self._warn(msg)
                 return
             self._payload = self._build_payload_advance()
+            cb = self._submit_advance
         elif idx == self.PAGE_APPLY:
             ok, msg = self._validate_apply()
             if not ok:
                 self._warn(msg)
                 return
             self._payload = self._build_payload_apply()
+            cb = self._submit_apply
+
+        # If submit callback provided, use it to persist and surface any DB constraint errors.
+        if callable(cb):
+            try:
+                cb(self._payload or {})
+            except Exception as e:
+                self._handle_submit_error(e)
+                self._payload = None
+                return
 
         self.accept()
 
@@ -815,6 +892,19 @@ class _VendorMoneyDialog(QDialog):
     def _warn(self, msg: Optional[str]) -> None:
         self.errorLabel.setText(msg or "")
         QMessageBox.warning(self, _t("Cannot Save"), msg or _t("Please correct the highlighted fields."))
+
+    def _handle_submit_error(self, exc: Exception) -> None:
+        # Show a friendly message but preserve the DB-provided detail if available
+        message = str(exc).strip() or _t("A database rule prevented saving.")
+        # Common cases (best-effort string match without importing domain exceptions)
+        lowered = message.lower()
+        if "cannot apply credit beyond remaining due" in lowered:
+            message = _t("Amount exceeds remaining due for the selected purchase.")
+        elif "insufficient vendor credit" in lowered:
+            message = _t("Insufficient vendor credit to apply.")
+        elif "payments cannot be recorded against quotations" in lowered:
+            message = _t("Payments cannot be recorded against quotations.")
+        self._warn(message)
 
     def _current_company_bank_id(self) -> Optional[int]:
         data = self.companyBankCombo.currentData()

@@ -20,6 +20,8 @@ Notes
   (source → temp → final) with byte sizes and timestamps.
 - When `strict_verify=True`, a SHA-256 checksum of the produced file is computed and logged.
 - All new parameters are optional and keyword-only; existing callers continue to work unchanged.
+- Live SQLite databases are never raw-copied anymore; we use the SQLite backup API to
+  produce a consistent snapshot even under WAL.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import hashlib
 import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -95,7 +98,10 @@ def _fsync_dir(path: Path) -> None:
 
 
 def _copy_file_fsync(src: Path, dst: Path) -> None:
-    """Copy file bytes+metadata and fsync the destination."""
+    """Copy file bytes+metadata and fsync the destination.
+
+    NOTE: Do not use this for live SQLite databases—use _sqlite_backup().
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(src), str(dst))
     _fsync_file(dst)
@@ -109,6 +115,30 @@ def _same_device(p1: Path, p2: Path) -> bool:
         # Fall back to anchor comparison (Windows drive letter); good enough for deciding strategy.
         return p1.resolve().anchor == p2.resolve().anchor
 
+
+def _sqlite_backup(src_db: Path, dst_db: Path, *, verbose: bool = False, logger: Optional[logging.Logger] = None) -> None:
+    """
+    Create a consistent SQLite snapshot of `src_db` into `dst_db` using the
+    built-in backup API. Works safely with WAL without copying -wal/-shm.
+    """
+    dst_db.parent.mkdir(parents=True, exist_ok=True)
+    _log(logger, verbose, "sqlite_backup.start", ts=_now_iso(), src=str(src_db), dst=str(dst_db))
+
+    # Use read-only URI for source; allow some time for busy dbs.
+    src_uri = f"file:{src_db.as_posix()}?mode=ro"
+    with sqlite3.connect(src_uri, uri=True, timeout=30.0) as src_conn, sqlite3.connect(str(dst_db)) as dst_conn:
+        # Perform the backup in one go; sqlite handles WAL consistency.
+        src_conn.backup(dst_conn)
+
+    _fsync_file(dst_db)
+    _log(
+        logger,
+        verbose,
+        "sqlite_backup.done",
+        ts=_now_iso(),
+        dst=str(dst_db),
+        size=(dst_db.stat().st_size if dst_db.exists() else 0),
+    )
 
 # ----------------------------
 # Public API
@@ -217,9 +247,13 @@ def atomic_move(
 
 def safety_copy_current_db(db_path: str, timestamp: str, *, verbose: bool = False, logger: Optional[logging.Logger] = None) -> str:
     """
-    Create a safety copy folder adjacent to the DB file:
+    Create a safety snapshot folder adjacent to the DB file:
       <db_dir>/pre-restore-<timestamp>/
-    Copy the DB file and its -wal/-shm companions if present.
+
+    Use the SQLite backup API to write a *consistent* copy of the live database
+    to <folder>/<db_name>. We intentionally do NOT copy -wal/-shm; the backup
+    is a standalone snapshot.
+
     Return the safety folder path.
 
     Optional:
@@ -231,16 +265,9 @@ def safety_copy_current_db(db_path: str, timestamp: str, *, verbose: bool = Fals
     out_dir = db.parent / f"pre-restore-{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Core DB file
-    _copy_file_fsync(db, out_dir / db.name)
-    _log(logger, verbose, "safety_copy.file", ts=_now_iso(), src=str(db), dst=str(out_dir / db.name), size=(out_dir / db.name).stat().st_size)
-
-    # Companion files (WAL/SHM)
-    for suffix in ("-wal", "-shm"):
-        comp = Path(str(db) + suffix)
-        if comp.exists() and comp.is_file():
-            _copy_file_fsync(comp, out_dir / comp.name)
-            _log(logger, verbose, "safety_copy.file", ts=_now_iso(), src=str(comp), dst=str(out_dir / comp.name), size=(out_dir / comp.name).stat().st_size)
+    # Consistent snapshot into the safety folder (no wal/shm copying)
+    out_db = out_dir / db.name
+    _sqlite_backup(db, out_db, verbose=verbose, logger=logger)
 
     _fsync_dir(out_dir)
     _log(logger, verbose, "safety_copy.done", ts=_now_iso(), dir=str(out_dir.resolve()))

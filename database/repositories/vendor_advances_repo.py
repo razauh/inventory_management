@@ -3,11 +3,39 @@ import sqlite3
 from typing import Optional
 
 
+# ----------------------------
+# Domain errors (friendly)
+# ----------------------------
+class VendorAdvancesError(Exception):
+    """Base class for vendor advances domain errors."""
+
+
+class OverapplyVendorAdvanceError(VendorAdvancesError):
+    """Attempted to apply more credit than a purchase's remaining due."""
+
+
+class InsufficientVendorCreditError(VendorAdvancesError):
+    """Attempted to apply more credit than the vendor has available."""
+
+
+class InvalidPurchaseReferenceError(VendorAdvancesError):
+    """Provided purchase_id does not exist (or is not usable)."""
+
+
+class ConstraintViolationError(VendorAdvancesError):
+    """Fallback for other constraint violations; wraps the original SQLite error."""
+    def __init__(self, message: str, *, original: BaseException | None = None):
+        super().__init__(message)
+        self.original = original
+
+
 class VendorAdvancesRepo:
     def __init__(self, conn: sqlite3.Connection):
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
         self.conn = conn
+        # small epsilon to mirror SQL triggers' tolerance
+        self._eps = 1e-9
 
     # ---------- Apply existing credit to a purchase (−amount) ----------
     def apply_credit_to_purchase(
@@ -24,21 +52,57 @@ class VendorAdvancesRepo:
         Apply existing vendor credit to a purchase: stored as NEGATIVE amount
         with source_type='applied_to_purchase'. Triggers enforce no overdraw and
         roll up purchases.advance_payment_applied. No commit here.
+
+        Raises:
+            ValueError                        : if amount <= 0
+            InvalidPurchaseReferenceError     : if purchase_id is unknown
+            InsufficientVendorCreditError     : if vendor credit < amount
+            OverapplyVendorAdvanceError       : if amount > remaining due on purchase
+            ConstraintViolationError          : other DB constraint violations
         """
         if amount <= 0:
             raise ValueError("amount must be positive when applying credit")
 
-        applied = -abs(float(amount))
-        cur = self.conn.execute(
-            """
-            INSERT INTO vendor_advances (
-                vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+        # --- pre-validate against DB state (friendly errors) ---
+        remaining_due = self._get_purchase_remaining_due(purchase_id)
+        if remaining_due is None:
+            raise InvalidPurchaseReferenceError(f"Unknown purchase_id: {purchase_id!r}")
+
+        # Current available vendor credit (from view)
+        available_credit = self.get_balance(vendor_id)
+
+        if available_credit + self._eps < float(amount):
+            raise InsufficientVendorCreditError(
+                f"Insufficient vendor credit: have {available_credit:.2f}, tried to apply {amount:.2f}"
             )
-            VALUES (?, ?, ?, 'applied_to_purchase', ?, ?, ?)
-            """,
-            (vendor_id, date, applied, purchase_id, notes, created_by),
-        )
-        return int(cur.lastrowid)
+
+        if float(amount) - remaining_due > self._eps:
+            raise OverapplyVendorAdvanceError(
+                f"Cannot apply {amount:.2f} beyond remaining due {remaining_due:.2f} for purchase {purchase_id}"
+            )
+
+        # --- perform insert; map any trigger violations to domain errors ---
+        applied = -abs(float(amount))
+        try:
+            cur = self.conn.execute(
+                """
+                INSERT INTO vendor_advances (
+                    vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+                )
+                VALUES (?, ?, ?, 'applied_to_purchase', ?, ?, ?)
+                """,
+                (vendor_id, date, applied, purchase_id, notes, created_by),
+            )
+            return int(cur.lastrowid)
+        except sqlite3.IntegrityError as e:
+            # Map well-known trigger messages
+            self._raise_mapped_error(e)
+        except sqlite3.OperationalError as e:
+            # Some SQLite builds surface RAISE(ABORT, ...) here
+            self._raise_mapped_error(e)
+
+        # mypy: unreachable, _raise_mapped_error always raises
+        raise AssertionError("unreachable")
 
     # ---------- Grant new credit (+amount) ----------
     def grant_credit(
@@ -50,7 +114,7 @@ class VendorAdvancesRepo:
         notes: Optional[str],
         created_by: Optional[int],
         source_id: Optional[str] = None,
-        # New: default to manual credit (deposit); callers may pass 'return_credit' for returns.
+        # Default to manual credit (deposit); callers may pass 'return_credit' for returns.
         source_type: str = "deposit",
         **_ignore,
     ) -> int:
@@ -77,16 +141,24 @@ class VendorAdvancesRepo:
         if st not in allowed_types:
             raise ValueError(f"source_type must be one of {allowed_types}, got {source_type!r}")
 
-        cur = self.conn.execute(
-            """
-            INSERT INTO vendor_advances (
-                vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+        try:
+            cur = self.conn.execute(
+                """
+                INSERT INTO vendor_advances (
+                    vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (vendor_id, date, float(amount), st, source_id, notes, created_by),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (vendor_id, date, float(amount), st, source_id, notes, created_by),
-        )
-        return int(cur.lastrowid)
+            return int(cur.lastrowid)
+        except sqlite3.IntegrityError as e:
+            # Defensive: map any constraint violations
+            self._raise_mapped_error(e)
+        except sqlite3.OperationalError as e:
+            self._raise_mapped_error(e)
+
+        raise AssertionError("unreachable")
 
     # Convenience wrapper for clarity at call sites
     def grant_deposit(
@@ -254,3 +326,48 @@ class VendorAdvancesRepo:
 
         sql.append("ORDER BY DATE(va.tx_date) ASC, va.tx_id ASC")
         return self.conn.execute("\n".join(sql), params).fetchall()
+
+    # ----------------------------
+    # Internal helpers
+    # ----------------------------
+    def _get_purchase_remaining_due(self, purchase_id: str) -> Optional[float]:
+        """
+        Returns remaining due for the purchase as:
+            total_amount - paid_amount - advance_payment_applied
+        or None if the purchase is missing.
+        """
+        row = self.conn.execute(
+            """
+            SELECT
+              CAST(total_amount AS REAL)            AS total_amount,
+              CAST(paid_amount AS REAL)             AS paid_amount,
+              CAST(advance_payment_applied AS REAL) AS advance_applied
+            FROM purchases WHERE purchase_id = ?
+            """,
+            (purchase_id,),
+        ).fetchone()
+        if not row:
+            return None
+        total = float(row["total_amount"])
+        paid = float(row["paid_amount"])
+        adv  = float(row["advance_applied"])
+        return total - paid - adv
+
+    def _raise_mapped_error(self, e: sqlite3.Error) -> None:
+        """
+        Translate known SQLite trigger messages to domain errors.
+        Always raises; never returns.
+        """
+        msg = (e.args[0] if e.args else "") or ""
+        normalized = msg.lower()
+
+        # Match messages used in schema triggers
+        if "insufficient vendor credit" in normalized:
+            raise InsufficientVendorCreditError(msg) from e
+        if "cannot apply credit beyond remaining due" in normalized:
+            raise OverapplyVendorAdvanceError(msg) from e
+        if "invalid purchase reference for vendor credit application" in normalized:
+            raise InvalidPurchaseReferenceError(msg) from e
+
+        # Fallback
+        raise ConstraintViolationError(msg or "Constraint violation while saving vendor advance", original=e) from e

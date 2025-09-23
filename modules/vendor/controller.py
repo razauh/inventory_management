@@ -14,6 +14,22 @@ from ...database.repositories.purchases_repo import PurchasesRepo
 from ...utils import ui_helpers as uih
 from ...utils.helpers import today_str
 
+# Attempt to import optional domain errors (guarded so we don't assume presence)
+try:  # type: ignore[attr-defined]
+    # e.g., raised when applying > available credit or > remaining due
+    from ...database.repositories.vendor_advances_repo import OverapplyVendorAdvanceError  # type: ignore
+except Exception:  # pragma: no cover
+    OverapplyVendorAdvanceError = None  # type: ignore
+
+try:  # type: ignore[attr-defined]
+    # e.g., raised when a payment would overpay a purchase
+    from ...database.repositories.purchase_payments_repo import OverpayPurchaseError  # type: ignore
+except Exception:  # pragma: no cover
+    OverpayPurchaseError = None  # type: ignore
+
+_EPS = 1e-9  # numeric tolerance for float math
+
+
 # Keep a module-level alias so tests that patch `vendor_controller.info`
 # still capture messages, while calls ALSO go through `uih.info` so
 # tests that patch `ui_helpers.info` work too.
@@ -186,11 +202,44 @@ class VendorController(BaseModule):
         ).fetchone()
         return bool(row) and int(row["vendor_id"]) == int(vendor_id)
 
+    def _remaining_due_for_purchase(self, purchase_id: str) -> float:
+        """
+        Compute remaining due using header numbers that (per schema) reflect trigger math:
+          remaining = total_amount - paid_amount - advance_payment_applied
+        """
+        row = self.conn.execute(
+            """
+            SELECT
+                CAST(total_amount AS REAL) AS total_amount,
+                CAST(paid_amount AS REAL) AS paid_amount,
+                CAST(advance_payment_applied AS REAL) AS advance_payment_applied
+            FROM purchases
+            WHERE purchase_id = ?
+            """,
+            (purchase_id,),
+        ).fetchone()
+        if not row:
+            return 0.0
+        total = float(row["total_amount"] or 0.0)
+        paid = float(row["paid_amount"] or 0.0)
+        applied = float(row["advance_payment_applied"] or 0.0)
+        remaining = total - paid - applied
+        return max(0.0, remaining)
+
+    def _vendor_credit_balance(self, vendor_id: int) -> float:
+        try:
+            return float(self.vadv.get_balance(vendor_id))
+        except Exception:
+            return 0.0
+
     # ========================= Money actions (Dialogs + Repo) =========================
 
     def _on_record_payment(self):
         """
         Open vendor money dialog in 'payment' mode, then persist via PurchasePaymentsRepo.
+        Orchestration update:
+          - Pre-check remaining due to avoid obvious overpay.
+          - Catch domain errors (if exposed) and surface DB integrity errors.
         """
         vid = self._selected_id()
         if not vid:
@@ -230,11 +279,19 @@ class VendorController(BaseModule):
             info(self.view, "Invalid", "Purchase does not belong to the selected vendor.")
             return
 
+        # ---- Pre-check remaining due (consistency with trigger math) ----
+        amount = float(payload.get("amount", 0) or 0.0)
+        method = str(payload.get("method") or "")
+        remaining = self._remaining_due_for_purchase(str(purchase_id))
+        if method.lower() != "cash" and amount - remaining > _EPS:
+            info(self.view, "Too much", f"Amount exceeds remaining due ({remaining:.2f}).")
+            return
+
         try:
             pid = self.ppay.record_payment(
                 purchase_id=str(purchase_id),
-                amount=float(payload.get("amount", 0) or 0),
-                method=str(payload.get("method") or ""),
+                amount=amount,
+                method=method,
                 date=payload.get("date"),
                 bank_account_id=payload.get("bank_account_id"),
                 vendor_bank_account_id=payload.get("vendor_bank_account_id"),
@@ -247,7 +304,15 @@ class VendorController(BaseModule):
                 notes=payload.get("notes"),
                 created_by=payload.get("created_by"),
             )
-        except (ValueError, sqlite3.IntegrityError) as e:
+        except Exception as e:
+            # Catch domain error first (if available), then fall back to sqlite errors or generic
+            if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):  # type: ignore
+                info(self.view, "Not saved", str(e))
+                return
+            if isinstance(e, (ValueError, sqlite3.IntegrityError)):
+                info(self.view, "Not saved", str(e))
+                return
+            # Unexpected but still surface it so we don't swallow DB errors
             info(self.view, "Not saved", str(e))
             return
 
@@ -287,7 +352,10 @@ class VendorController(BaseModule):
                 created_by=payload.get("created_by"),
                 source_id=None,
             )
-        except (ValueError, sqlite3.IntegrityError) as e:
+        except Exception as e:
+            if isinstance(e, (ValueError, sqlite3.IntegrityError)):
+                info(self.view, "Not saved", str(e))
+                return
             info(self.view, "Not saved", str(e))
             return
 
@@ -297,6 +365,9 @@ class VendorController(BaseModule):
     def _on_apply_advance_dialog(self):
         """
         Open vendor money dialog in 'apply_advance' mode, then persist via VendorAdvancesRepo.
+        Orchestration update:
+          - Pre-check both vendor credit balance and purchase remaining due.
+          - Catch domain errors (e.g., OverapplyVendorAdvanceError) plus DB integrity errors.
         """
         vid = self._selected_id()
         if not vid:
@@ -333,16 +404,33 @@ class VendorController(BaseModule):
             info(self.view, "Invalid", "Purchase does not belong to the selected vendor.")
             return
 
+        amount = float(amt)
+        # ---- Pre-checks: credit balance & remaining due ----
+        remaining = self._remaining_due_for_purchase(str(purchase_id))
+        credit_bal = self._vendor_credit_balance(int(vid))
+        allowable = min(credit_bal, remaining)
+        if amount - allowable > _EPS:
+            info(self.view, "Too much", f"Amount exceeds available credit or remaining due (max {allowable:.2f}).")
+            return
+
         try:
             tx_id = self.vadv.apply_credit_to_purchase(
                 vendor_id=vid,
                 purchase_id=str(purchase_id),
-                amount=float(amt),
+                amount=amount,
                 date=payload.get("date"),
                 notes=payload.get("notes"),
                 created_by=payload.get("created_by"),
             )
-        except (ValueError, sqlite3.IntegrityError) as e:
+        except Exception as e:
+            # Prefer domain error message if the repo mapped constraints
+            if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):  # type: ignore
+                info(self.view, "Not saved", str(e))
+                return
+            if isinstance(e, (ValueError, sqlite3.IntegrityError)):
+                info(self.view, "Not saved", str(e))
+                return
+            # Unexpected: still surface the message; do not swallow
             info(self.view, "Not saved", str(e))
             return
 

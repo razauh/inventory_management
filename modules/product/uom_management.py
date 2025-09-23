@@ -5,7 +5,20 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.ui_helpers import info, error
-from ...utils.validators import is_positive_number
+
+# Prefer strict validator (> 0). Fallback to legacy if the project hasn't been updated yet.
+try:  # new API
+    from ...utils.validators import is_strictly_positive_number as _is_pos
+except Exception:  # legacy API
+    try:
+        from ...utils.validators import is_positive_number as _is_pos  # type: ignore
+    except Exception:  # very defensive fallback
+        def _is_pos(x) -> bool:
+            try:
+                return float(x) > 0
+            except Exception:
+                return False
+
 
 class UomManagerDialog(QDialog):
     def __init__(self, repo: ProductsRepo, product_id: int, product_name: str, parent=None):
@@ -41,7 +54,7 @@ class UomManagerDialog(QDialog):
         form = QFormLayout()
         self.cmb_all_uoms = QComboBox()
         self.txt_factor = QLineEdit()
-        self.txt_factor.setPlaceholderText("e.g., 0.5 or 12")
+        self.txt_factor.setPlaceholderText("Factor to Base (must be > 0, e.g., 0.5 or 12)")
         form.addRow("UoM", self.cmb_all_uoms)
         form.addRow("Factor to Base", self.txt_factor)
         root.addLayout(form)
@@ -75,6 +88,7 @@ class UomManagerDialog(QDialog):
             self.tbl.setItem(r, 3, QTableWidgetItem(str(d["product_uom_id"])))
 
         # fill all uoms combo
+        self.cmb_all_uoms.clear
         self.cmb_all_uoms.clear()
         for u in self.repo.list_uoms():
             self.cmb_all_uoms.addItem(u["unit_name"], u["uom_id"])
@@ -123,12 +137,45 @@ class UomManagerDialog(QDialog):
 
     def _add_alt(self):
         uom_id = self.cmb_all_uoms.currentData()
-        factor = self.txt_factor.text().strip()
-        if not is_positive_number(factor):
-            error(self, "Invalid", "Factor must be a positive number.")
+        factor_txt = self.txt_factor.text().strip()
+
+        # Strict validation: must be a valid number and strictly > 0
+        if not _is_pos(factor_txt):
+            error(self, "Invalid", "Factor must be a number greater than 0.")
             return
-        f = float(factor)
-        # This will create/update alternate (trigger enforces >0, and base=1 means factor=1)
+
+        try:
+            f = float(factor_txt)
+        except Exception:
+            error(self, "Invalid", "Factor must be a number greater than 0.")
+            return
+        if not (f > 0):
+            error(self, "Invalid", "Factor must be greater than 0.")
+            return
+
+        # Prevent adding an alternate mapping for the current base UoM
+        current = self.repo.product_uoms(self.product_id)
+        for row in current:
+            if int(row["uom_id"]) == int(uom_id):
+                if row["is_base"]:
+                    info(
+                        self,
+                        "Blocked",
+                        "Selected UoM is the current base. Its factor is fixed at 1.0.\n"
+                        "Choose a different UoM or change the base first.",
+                    )
+                    return
+                # If mapping already exists with same factor, no-op to avoid churn
+                try:
+                    existing = float(row.get("factor_to_base") or 0.0)
+                except Exception:
+                    existing = None
+                if existing is not None and abs(existing - f) < 1e-12:
+                    info(self, "No changes", "This alternate mapping already has the same factor.")
+                    return
+                break  # same UoM exists as alternate; will be updated below
+
+        # This will create/update alternate (DB enforces >0; base is always factor=1)
         self.repo.add_alt_uom(self.product_id, int(uom_id), f)
         info(self, "Saved", "Alternate UoM saved.")
         self._reload()
