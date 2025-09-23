@@ -41,7 +41,7 @@ class ReportingRepo:
             COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied
         FROM purchases p
         WHERE p.vendor_id = ?
-          AND DATE(p.date) <= DATE(?)
+          AND p.date <= ?
         ORDER BY DATE(p.date), p.purchase_id
         """
         return list(self.conn.execute(sql, (vendor_id, as_of)))
@@ -51,7 +51,7 @@ class ReportingRepo:
         SELECT COALESCE(SUM(CAST(va.amount AS REAL)), 0.0) AS credit
         FROM vendor_advances va
         WHERE va.vendor_id = ?
-          AND DATE(va.tx_date) <= DATE(?)
+          AND va.tx_date <= ?
         """
         row = self.conn.execute(sql, (vendor_id, as_of)).fetchone()
         return float(row["credit"] if row and row["credit"] is not None else 0.0)
@@ -70,7 +70,7 @@ class ReportingRepo:
         FROM sales s
         WHERE s.customer_id = ?
           AND s.doc_type = 'sale'
-          AND DATE(s.date) <= DATE(?)
+          AND s.date <= ?
         ORDER BY DATE(s.date), s.sale_id
         """
         return list(self.conn.execute(sql, (customer_id, as_of)))
@@ -80,7 +80,7 @@ class ReportingRepo:
         SELECT COALESCE(SUM(CAST(ca.amount AS REAL)), 0.0) AS credit
         FROM customer_advances ca
         WHERE ca.customer_id = ?
-          AND DATE(ca.tx_date) <= DATE(?)
+          AND ca.tx_date <= ?
         """
         row = self.conn.execute(sql, (customer_id, as_of)).fetchone()
         return float(row["credit"] if row and row["credit"] is not None else 0.0)
@@ -111,8 +111,8 @@ class ReportingRepo:
         FROM expense_categories ec
         LEFT JOIN expenses e
                ON e.category_id = ec.category_id
-              AND DATE(e.date) >= DATE(?)
-              AND DATE(e.date) <= DATE(?)
+              AND e.date >= ?
+              AND e.date <= ?
               {where_extra}
         GROUP BY ec.category_id, ec.name
         ORDER BY ec.name COLLATE NOCASE
@@ -140,8 +140,8 @@ class ReportingRepo:
             COALESCE(CAST(e.amount AS REAL), 0.0) AS amount
         FROM expenses e
         JOIN expense_categories ec ON ec.category_id = e.category_id
-        WHERE DATE(e.date) >= DATE(?)
-          AND DATE(e.date) <= DATE(?)
+        WHERE e.date >= ?
+          AND e.date <= ?
           {where_extra}
         ORDER BY DATE(e.date) DESC, e.expense_id DESC
         """
@@ -182,7 +182,7 @@ class ReportingRepo:
           SELECT svh.product_id,
                  MAX(svh.valuation_id) AS last_vid
           FROM stock_valuation_history svh
-          WHERE DATE(svh.valuation_date) <= DATE(?)
+          WHERE svh.valuation_date <= ?
           GROUP BY svh.product_id
         )
         SELECT
@@ -223,7 +223,7 @@ class ReportingRepo:
         LEFT JOIN product_uoms pu
           ON pu.product_id = it.product_id
          AND pu.uom_id     = it.uom_id
-        WHERE DATE(it.date) BETWEEN DATE(?) AND DATE(?)
+        WHERE it.date >= ? AND it.date <= ?
         {where_extra}
         ORDER BY DATE(it.date) ASC, it.transaction_id ASC
         """
@@ -265,7 +265,7 @@ class ReportingRepo:
         LEFT JOIN sale_detailed_totals sdt
           ON sdt.sale_id = s.sale_id
         WHERE s.doc_type = 'sale'
-          AND DATE(s.date) BETWEEN DATE(?) AND DATE(?)
+          AND s.date >= ? AND s.date <= ?
         """
         row = self.conn.execute(sql, (date_from, date_to)).fetchone()
         return float(row["rev"] if row and row["rev"] is not None else 0.0)
@@ -279,7 +279,7 @@ class ReportingRepo:
         FROM sales s
         JOIN sale_item_cogs c ON c.sale_id = s.sale_id
         WHERE s.doc_type = 'sale'
-          AND DATE(s.date) BETWEEN DATE(?) AND DATE(?)
+          AND s.date >= ? AND s.date <= ?
         """
         row = self.conn.execute(sql, (date_from, date_to)).fetchone()
         return float(row["cogs"] if row and row["cogs"] is not None else 0.0)
@@ -297,7 +297,7 @@ class ReportingRepo:
         FROM expense_categories ec
         LEFT JOIN expenses e
                ON e.category_id = ec.category_id
-              AND DATE(e.date) BETWEEN DATE(?) AND DATE(?)
+              AND e.date >= ? AND e.date <= ?
         GROUP BY ec.category_id, ec.name
         ORDER BY ec.name COLLATE NOCASE
         """
@@ -313,8 +313,8 @@ class ReportingRepo:
           COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0) AS amount
         FROM sale_payments sp
         WHERE sp.clearing_state = 'cleared'
-          AND DATE(sp.cleared_date) >= DATE(?)
-          AND DATE(sp.cleared_date) <= DATE(?)
+          AND sp.cleared_date >= ?
+          AND sp.cleared_date <= ?
         GROUP BY sp.cleared_date
         ORDER BY DATE(sp.cleared_date)
         """
@@ -330,8 +330,8 @@ class ReportingRepo:
           COALESCE(SUM(CAST(pp.amount AS REAL)), 0.0) AS amount
         FROM purchase_payments pp
         WHERE pp.clearing_state = 'cleared'
-          AND DATE(pp.cleared_date) >= DATE(?)
-          AND DATE(pp.cleared_date) <= DATE(?)
+          AND pp.cleared_date >= ?
+          AND pp.cleared_date <= ?
         GROUP BY pp.cleared_date
         ORDER BY DATE(pp.cleared_date)
         """
@@ -415,7 +415,7 @@ class ReportingRepo:
         }.get(granularity, "%Y-%m-%d")
 
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         # optional filters
         sw, sp = self._statuses_where(statuses)
@@ -458,7 +458,7 @@ class ReportingRepo:
         category: Optional[str],
     ) -> list[sqlite3.Row]:
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         sw, sp = self._statuses_where(statuses)
         where += sw
@@ -527,7 +527,7 @@ class ReportingRepo:
         COGS via sale_item_cogs (already at product granularity)
         """
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         sw, sp = self._statuses_where(statuses)
         where += sw
@@ -571,7 +571,7 @@ class ReportingRepo:
           {" AND c.product_id = ? " if product_id is not None else ""}
           {" AND EXISTS (SELECT 1 FROM products p3 WHERE p3.product_id = c.product_id AND COALESCE(p3.category,'') = ?) " if category else ""}
           AND s.doc_type = 'sale'
-          AND DATE(s.date) BETWEEN DATE(?) AND DATE(?)
+          AND s.date >= ? AND s.date <= ?
           GROUP BY c.product_id
         )
         SELECT
@@ -616,7 +616,7 @@ class ReportingRepo:
         Use products.category free-text.
         """
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         sw, sp = self._statuses_where(statuses)
         where += sw
@@ -660,7 +660,7 @@ class ReportingRepo:
           {" AND c.product_id = ? " if product_id is not None else ""}
           {" AND COALESCE(p2.category,'') = ? " if category else ""}
           AND s.doc_type = 'sale'
-          AND DATE(s.date) BETWEEN DATE(?) AND DATE(?)
+          AND s.date >= ? AND s.date <= ?
           GROUP BY COALESCE(p2.category, '(Uncategorized)')
         )
         SELECT
@@ -708,7 +708,7 @@ class ReportingRepo:
         }.get(granularity, "%Y-%m-%d")
 
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         sw, sp = self._statuses_where(statuses)
         where += sw
@@ -811,7 +811,7 @@ class ReportingRepo:
         limit_n: int,
     ) -> list[sqlite3.Row]:
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         sw, sp = self._statuses_where(statuses)
         where += sw
@@ -845,7 +845,7 @@ class ReportingRepo:
         Rank by revenue from line items; also return qty_base.
         """
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         sw, sp = self._statuses_where(statuses)
         where += sw
@@ -881,7 +881,7 @@ class ReportingRepo:
         sql_refunds = """
         SELECT COALESCE(SUM(CASE WHEN CAST(sp.amount AS REAL) < 0 THEN CAST(sp.amount AS REAL) ELSE 0 END), 0.0) AS refunds_sum
         FROM sale_payments sp
-        WHERE DATE(sp.date) BETWEEN DATE(?) AND DATE(?)
+        WHERE sp.date >= ? AND sp.date <= ?
         """
         refunds = self.conn.execute(sql_refunds, (date_from, date_to)).fetchone()
         refunds_sum = float(refunds["refunds_sum"] if refunds and refunds["refunds_sum"] is not None else 0.0)
@@ -893,7 +893,7 @@ class ReportingRepo:
         LEFT JOIN product_uoms pu
                ON pu.product_id = it.product_id AND pu.uom_id = it.uom_id
         WHERE it.transaction_type = 'sale_return'
-          AND DATE(it.date) BETWEEN DATE(?) AND DATE(?)
+          AND it.date >= ? AND it.date <= ?
         """
         qty = self.conn.execute(sql_qty, (date_from, date_to)).fetchone()
         qty_base = float(qty["qty_base"] if qty and qty["qty_base"] is not None else 0.0)
@@ -917,7 +917,7 @@ class ReportingRepo:
         category: Optional[str],
     ) -> list[sqlite3.Row]:
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         cw, cp = self._customer_where(customer_id)
         where += cw
@@ -959,7 +959,7 @@ class ReportingRepo:
         with customer name and amounts. Remaining = total - paid - advance.
         """
         params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND DATE(s.date) BETWEEN DATE(?) AND DATE(?) "
+        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
         sw, sp = self._statuses_where(statuses)
         where += sw

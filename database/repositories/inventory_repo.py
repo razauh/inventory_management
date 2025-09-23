@@ -51,7 +51,7 @@ class InventoryRepo:
         Return most recent inventory transactions limited by `limit`.
         Aliases match TransactionsTableModel headers:
            ID | Date | Type | Product | Qty | UoM | Notes
-        Ordered by DATE(date) DESC, transaction_id DESC.
+        Ordered by t.date DESC, transaction_id DESC.
 
         IMPORTANT: Column aliases are chosen to match the *model*:
           transaction_id, date, transaction_type, product, quantity, unit_name, notes
@@ -69,7 +69,7 @@ class InventoryRepo:
             FROM inventory_transactions t
             LEFT JOIN products p ON p.product_id = t.product_id
             LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
-            ORDER BY DATE(t.date) DESC, t.transaction_id DESC
+            ORDER BY t.date DESC, t.transaction_id DESC
             LIMIT ?
         """
         rows = self.conn.execute(sql, (lim,)).fetchall()
@@ -91,7 +91,7 @@ class InventoryRepo:
         Aliases match TransactionsTableModel headers:
            ID | Date | Type | Product | Qty | UoM | Notes
 
-        Ordering: DATE(t.date) DESC, t.transaction_id DESC
+        Ordering: t.date DESC, t.transaction_id DESC
         Only applies WHERE fragments when corresponding filters are provided.
 
         IMPORTANT: Column aliases are chosen to match the *model*:
@@ -103,10 +103,10 @@ class InventoryRepo:
         params: List = []
 
         if date_from:
-            where.append("DATE(t.date) >= DATE(?)")
+            where.append("t.date >= ?")
             params.append(date_from)
         if date_to:
-            where.append("DATE(t.date) <= DATE(?)")
+            where.append("t.date <= ?")
             params.append(date_to)
         if product_id is not None:
             where.append("t.product_id = ?")
@@ -128,7 +128,7 @@ class InventoryRepo:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += """
-            ORDER BY DATE(t.date) DESC, t.transaction_id DESC
+            ORDER BY t.date DESC, t.transaction_id DESC
             LIMIT ?
         """
         params.append(lim)

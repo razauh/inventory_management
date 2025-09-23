@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import traceback
 from dataclasses import dataclass
 from datetime import datetime
@@ -263,6 +264,29 @@ class RestoreJob(QObject):
             _safe_call(cb.phase, "Post-restore checks")
             if not sqlite_ops.quick_check(str(db_path)):
                 raise RuntimeError("Restored database failed integrity check (PRAGMA quick_check != 'ok').")
+
+            # NEW: Foreign key integrity check (fail if any violations are present)
+            _safe_call(cb.phase, "Checking foreign keys")
+            violations = self._foreign_key_violations(str(db_path))
+            if violations:
+                # Show a concise sample to aid debugging
+                lines = []
+                for v in violations[:10]:
+                    if hasattr(v, "keys"):
+                        table = v.get("table")
+                        rowid = v.get("rowid")
+                        parent = v.get("parent")
+                        fkid = v.get("fkid")
+                    else:
+                        # tuple order: table, rowid, parent, fkid
+                        table, rowid, parent, fkid = (v + (None, None, None, None))[:4]
+                    lines.append(f"- table={table}, rowid={rowid}, parent={parent}, fkid={fkid}")
+                detail = "\n".join(lines) if lines else "(no detail rows)"
+                raise RuntimeError(
+                    f"Foreign key check failed: {len(violations)} violation(s) detected.\n"
+                    f"{detail}"
+                )
+
             _safe_call(cb.progress, 100)
             _safe_call(cb.log, "Restore completed successfully.")
             _safe_call(cb.finished, True, "Restore completed successfully.", str(imsdb))
@@ -295,6 +319,20 @@ class RestoreJob(QObject):
                     _safe_call(cb.log, _fmt_err("Rollback failed.", rollback_exc))
 
             _safe_call(cb.finished, False, _fmt_err("Restore failed.", exc), None)
+
+    @staticmethod
+    def _foreign_key_violations(db_path: str) -> list:
+        """
+        Run PRAGMA foreign_key_check on the given database path and return any violations.
+        Each row is (table, rowid, parent, fkid). Empty list means no violations.
+        """
+        with sqlite3.connect(db_path) as con:
+            try:
+                con.row_factory = sqlite3.Row
+            except Exception:
+                pass
+            cur = con.execute("PRAGMA foreign_key_check")
+            return cur.fetchall()
 
     @staticmethod
     def _import_sqlite_ops():

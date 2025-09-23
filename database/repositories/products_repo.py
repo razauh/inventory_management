@@ -52,7 +52,7 @@ class ProductsRepo:
             "FROM products "
             "ORDER BY product_id DESC"
         ).fetchall()
-        return [Product(**r) for r in rows]
+        return [Product(**dict(r)) for r in rows]
 
     def get(self, product_id: int) -> Product | None:
         r = self.conn.execute(
@@ -60,7 +60,7 @@ class ProductsRepo:
             "FROM products WHERE product_id=?",
             (product_id,),
         ).fetchone()
-        return Product(**r) if r else None
+        return Product(**dict(r)) if r else None
 
     def create(
         self,
@@ -99,12 +99,12 @@ class ProductsRepo:
         If any reference exists, deletion would either fail or orphan business data.
         """
         checks = [
-            ("SELECT 1 FROM product_uoms          WHERE product_id=? LIMIT 1",),
-            ("SELECT 1 FROM purchase_items        WHERE product_id=? LIMIT 1",),
-            ("SELECT 1 FROM sale_items            WHERE product_id=? LIMIT 1",),
-            ("SELECT 1 FROM inventory_transactions WHERE product_id=? LIMIT 1",),
+            "SELECT 1 FROM product_uoms           WHERE product_id=? LIMIT 1",
+            "SELECT 1 FROM purchase_items         WHERE product_id=? LIMIT 1",
+            "SELECT 1 FROM sale_items             WHERE product_id=? LIMIT 1",
+            "SELECT 1 FROM inventory_transactions WHERE product_id=? LIMIT 1",
         ]
-        for (sql,) in checks:
+        for sql in checks:
             if self.conn.execute(sql, (product_id,)).fetchone():
                 return True
         return False
@@ -115,8 +115,13 @@ class ProductsRepo:
         raise a clear DomainError so the caller can advise to run migrations.
         """
         # Detect column presence once per call (cheap, pragma is fast for SQLite)
-        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(products)").fetchall()}
-        if "is_active" not in cols:
+        cols_rows = self.conn.execute("PRAGMA table_info(products)").fetchall()
+        # Prefer named access; fall back to tuple index 1 if needed
+        try:
+            col_names = {row["name"] for row in cols_rows}
+        except Exception:
+            col_names = {row[1] for row in cols_rows}
+        if "is_active" not in col_names:
             raise DomainError(
                 "Soft delete not available: products.is_active is missing in schema. "
                 "Add the column or use safe hard delete on unused products."

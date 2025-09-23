@@ -1962,6 +1962,7 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         # Apply (idempotent) schema
         conn.executescript(SQL)

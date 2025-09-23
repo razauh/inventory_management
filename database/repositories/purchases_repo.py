@@ -36,6 +36,8 @@ class PurchaseItem:
 
 class PurchasesRepo:
     def __init__(self, conn: sqlite3.Connection):
+        # ensure rows behave like dicts/tuples
+        conn.row_factory = sqlite3.Row
         self.conn = conn
 
     # ---------- Query ----------

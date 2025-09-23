@@ -70,6 +70,8 @@ class ExpensesRepo:
     """
 
     def __init__(self, conn: sqlite3.Connection):
+        # ensure rows behave like dicts/tuples
+        conn.row_factory = sqlite3.Row
         self.conn = conn
 
     # ------------------------------------------------------------------
@@ -81,7 +83,7 @@ class ExpensesRepo:
         rows = self.conn.execute(
             "SELECT category_id, name FROM expense_categories ORDER BY name"
         ).fetchall()
-        return [ExpenseCategory(**r) for r in rows]
+        return [ExpenseCategory(**dict(r)) for r in rows]
 
     def create_category(self, name: str) -> int:
         """

@@ -5,6 +5,8 @@ from typing import Optional
 
 class PurchasePaymentsRepo:
     def __init__(self, conn: sqlite3.Connection):
+        # ensure rows behave like dicts/tuples
+        conn.row_factory = sqlite3.Row
         self.conn = conn
 
     def record_payment(

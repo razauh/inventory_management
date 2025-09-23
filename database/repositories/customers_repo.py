@@ -18,6 +18,8 @@ class Customer:
 
 class CustomersRepo:
     def __init__(self, conn: sqlite3.Connection):
+        # ensure rows behave like dicts/tuples
+        conn.row_factory = sqlite3.Row
         self.conn = conn
 
     # ---- Internal helpers -------------------------------------------------
@@ -54,7 +56,7 @@ class CustomersRepo:
                 "FROM customers "
                 "ORDER BY customer_id DESC"
             ).fetchall()
-        return [Customer(**r) for r in rows]
+        return [Customer(**dict(r)) for r in rows]
 
     def search(self, term: str, active_only: bool = True) -> list[Customer]:
         """
@@ -91,7 +93,7 @@ class CustomersRepo:
                 "ORDER BY customer_id DESC",
                 (pattern, pattern, pattern, pattern),
             ).fetchall()
-        return [Customer(**r) for r in rows]
+        return [Customer(**dict(r)) for r in rows]
 
     def get(self, customer_id: int) -> Customer | None:
         r = self.conn.execute(
@@ -99,7 +101,7 @@ class CustomersRepo:
             "FROM customers WHERE customer_id=?",
             (customer_id,),
         ).fetchone()
-        return Customer(**r) if r else None
+        return Customer(**dict(r)) if r else None
 
     # ---- Mutations --------------------------------------------------------
 

@@ -12,15 +12,30 @@ Public Interface
 - get_db_path() -> str
 - get_db_size_bytes(path: Optional[str] = None) -> int
 - is_wal_mode(path: Optional[str] = None) -> bool
-- create_consistent_snapshot(dest_path: str, progress_step: Optional[Callable[[int], None]] = None) -> None
+- get_journal_mode(path: Optional[str] = None) -> str
+- create_consistent_snapshot(
+      dest_path: str,
+      progress_step: Optional[Callable[[int], None]] = None,
+      log: Optional[Callable[[str], None]] = None,
+      verify_mode: Optional[str] = None,           # 'quick' (default behavior if None), 'integrity'
+      fk_check: bool = False,
+      limit_errors: int = 3
+  ) -> None
 - quick_check(db_path: str) -> bool
 - integrity_check(db_path: str, limit_errors: int = 3) -> Tuple[bool, List[str]]
+- foreign_key_check(db_path: str) -> List[sqlite3.Row]
+- verify_database(db_path: str, mode: str = "quick", fk_check: bool = False, limit_errors: int = 3) -> Tuple[bool, List[str]]
 
 Notes
 -----
 - Prefers the SQLite Online Backup API. Falls back to VACUUM INTO when backup API
   is not available or if the underlying SQLite version lacks features.
 - Never copies -wal/-shm files. The snapshot is a single standalone .sqlite file.
+- New optional operability features:
+    * Logs the current journal_mode (WAL/DELETE/etc.) at snapshot time if a log callback is provided.
+    * Optional post-snapshot verification: 'quick' (PRAGMA quick_check) or 'integrity'
+      (PRAGMA integrity_check) and optional PRAGMA foreign_key_check. Disabled by default
+      to preserve prior behavior/perf.
 """
 
 from __future__ import annotations
@@ -34,9 +49,12 @@ __all__ = [
     "get_db_path",
     "get_db_size_bytes",
     "is_wal_mode",
+    "get_journal_mode",
     "create_consistent_snapshot",
     "quick_check",
     "integrity_check",
+    "foreign_key_check",
+    "verify_database",
     "set_db_path",  # optional helper
 ]
 
@@ -120,16 +138,22 @@ def _connect_ro(db_path: str) -> sqlite3.Connection:
     safe for integrity checks.
     """
     uri = f"file:{Path(db_path).as_posix()}?mode=ro"
-    return sqlite3.connect(uri, uri=True, isolation_level=None, check_same_thread=False)
+    con = sqlite3.connect(uri, uri=True, isolation_level=None, check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    return con
 
 
 def is_wal_mode(path: Optional[str] = None) -> bool:
     """Return True if the database journal mode is WAL."""
+    return get_journal_mode(path).lower() == "wal"
+
+
+def get_journal_mode(path: Optional[str] = None) -> str:
+    """Return the current journal_mode string (e.g., 'wal', 'delete', 'off')."""
     db_path = path or get_db_path()
     with _connect_ro(db_path) as con:
         row = con.execute("PRAGMA journal_mode;").fetchone()
-    # sqlite returns ('wal',) or similar
-    return (row[0] if row else "").lower() == "wal"
+    return (row[0] if row else "") or ""
 
 
 # ----------------------------
@@ -139,6 +163,10 @@ def is_wal_mode(path: Optional[str] = None) -> bool:
 def create_consistent_snapshot(
     dest_path: str,
     progress_step: Optional[Callable[[int], None]] = None,
+    log: Optional[Callable[[str], None]] = None,
+    verify_mode: Optional[str] = None,  # None (default, no verify), 'quick', or 'integrity'
+    fk_check: bool = False,
+    limit_errors: int = 3,
 ) -> None:
     """
     Create a consistent snapshot of the live database into `dest_path`.
@@ -148,19 +176,49 @@ def create_consistent_snapshot(
       2) VACUUM INTO '<dest_path>' as a fallback (requires short exclusive lock).
 
     The resulting file at `dest_path` is a complete standalone SQLite database.
+
+    Operability/diagnostics:
+      - If `log` is provided, logs journal_mode at start and verification steps/results.
+      - If `verify_mode` is provided:
+          * 'quick'     -> PRAGMA quick_check; raise on failure
+          * 'integrity' -> PRAGMA integrity_check (slower); raise on failure (up to `limit_errors` details)
+      - If `fk_check` is True, runs PRAGMA foreign_key_check and raises on any violations.
     """
     src_path = get_db_path()
-    dest_path = str(Path(dest_path).with_suffix(".imsdb"))  # ensure extension if omitted
+    # ensure extension if omitted, but preserve caller's provided suffix if already .imsdb
+    dest_path = str(Path(dest_path).with_suffix(".imsdb"))
+
+    # Log journal mode (if requested)
+    try:
+        jm = get_journal_mode(src_path)
+        if log:
+            log(f"Journal mode: {jm.upper() or '(unknown)'}")
+    except Exception:
+        # Best-effort diagnostics; don't fail snapshot if this query fails.
+        pass
 
     # Attempt Online Backup API first
     if _try_backup_api(src_path, dest_path, progress_step):
-        return
+        if progress_step:
+            progress_step(97)
+    else:
+        # Fallback to VACUUM INTO (SQLite >= 3.27). This may require a brief exclusive lock.
+        _vacuum_into(src_path, dest_path)
+        if progress_step:
+            progress_step(100)
 
-    # Fallback to VACUUM INTO (SQLite >= 3.27). This may require a brief exclusive lock.
-    _vacuum_into(src_path, dest_path)
-    if progress_step:
-        progress_step(100)
-
+    # Optional verification on the produced snapshot
+    if verify_mode:
+        mode = (verify_mode or "").strip().lower()
+        if log:
+            log(f"Verifying snapshot using: {mode}{' + FK check' if fk_check else ''}")
+        ok, details = verify_database(dest_path, mode=mode, fk_check=fk_check, limit_errors=limit_errors)
+        if not ok:
+            # Include a few diagnostic lines
+            snippet = "\n".join(details[:max(1, limit_errors)]) if details else "(no details)"
+            raise RuntimeError(f"Snapshot verification failed [{mode}]:\n{snippet}")
+        if log:
+            log("Verification passed.")
 
 def _try_backup_api(
     src_path: str,
@@ -175,20 +233,17 @@ def _try_backup_api(
         # Open live DB normally (rw), and destination as a new file
         with sqlite3.connect(src_path, isolation_level=None, check_same_thread=False) as src, \
              sqlite3.connect(dest_path, isolation_level=None, check_same_thread=False) as dst:
+            src.row_factory = sqlite3.Row
+            dst.row_factory = sqlite3.Row
 
-            # Try to estimate total pages for progress reporting
             # total_pages is provided in the progress callback for Python 3.11+
-            # We'll use that if available; otherwise, we keep progress_step best-effort.
             def _progress(status: int, remaining: int, total: int) -> None:
-                # status: SQLITE_OK/ERROR, remaining/total pages
                 if progress_step and total > 0:
                     done = max(0, total - remaining)
                     pct = int((done / total) * 100)
                     progress_step(min(95, max(0, pct)))  # reserve a little headroom
             # Copy in chunks to allow UI updates
             src.backup(dst, pages=1024, progress=_progress)
-        if progress_step:
-            progress_step(97)
         return True
     except Exception:
         # Returning False triggers fallback.
@@ -205,6 +260,7 @@ def _vacuum_into(src_path: str, dest_path: str) -> None:
 
     # VACUUM INTO must run on a connection to the source DB
     with sqlite3.connect(src_path, isolation_level=None, check_same_thread=False) as con:
+        con.row_factory = sqlite3.Row
         # Ensure no pending transaction
         con.execute("PRAGMA wal_checkpoint(PASSIVE);")
         # Surround with a try to provide clearer error if SQLite is too old
@@ -259,3 +315,74 @@ def integrity_check(db_path: str, limit_errors: int = 3) -> Tuple[bool, List[str
         errors.append(f"exception: {exc!r}")
 
     return (len(errors) == 0), errors
+
+
+def foreign_key_check(db_path: str) -> List[sqlite3.Row]:
+    """
+    Run PRAGMA foreign_key_check and return any violations.
+    Each row has columns: table, rowid, parent, fkid. Empty list => no violations.
+    """
+    p = Path(db_path)
+    if not p.exists() or not p.is_file():
+        return []
+    try:
+        with _connect_ro(str(p)) as con:
+            cur = con.execute("PRAGMA foreign_key_check;")
+            return cur.fetchall()
+    except Exception:
+        return []
+
+
+def verify_database(
+    db_path: str,
+    mode: str = "quick",
+    fk_check: bool = False,
+    limit_errors: int = 3,
+) -> Tuple[bool, List[str]]:
+    """
+    Unified verification helper.
+
+    Args:
+        db_path: Path to the database to verify.
+        mode: 'quick' (PRAGMA quick_check) or 'integrity' (PRAGMA integrity_check).
+        fk_check: If True, also run PRAGMA foreign_key_check and include a summary if violations exist.
+        limit_errors: Max number of integrity_check error messages to return.
+
+    Returns:
+        (ok, details) where `ok` is True iff all requested checks passed.
+        `details` contains a small set of human-readable strings when failures occur.
+    """
+    mode = (mode or "quick").strip().lower()
+    details: List[str] = []
+
+    ok = True
+    if mode == "integrity":
+        ok_int, errs = integrity_check(db_path, limit_errors=limit_errors)
+        ok = ok and ok_int
+        if not ok_int:
+            details.append("integrity_check failed:")
+            details.extend(errs)
+    elif mode == "quick":
+        if not quick_check(db_path):
+            ok = False
+            details.append("quick_check failed (result != 'ok').")
+    else:
+        details.append(f"Unknown verify mode: {mode!r}. Expected 'quick' or 'integrity'.")
+        ok = False
+
+    if fk_check:
+        fkv = foreign_key_check(db_path)
+        if fkv:
+            ok = False
+            details.append(f"foreign_key_check violations: {len(fkv)}")
+            # include a few for readability
+            for r in fkv[:min(5, len(fkv))]:
+                if hasattr(r, "keys"):
+                    details.append(
+                        f"- table={r.get('table')}, rowid={r.get('rowid')}, parent={r.get('parent')}, fkid={r.get('fkid')}"
+                    )
+                else:
+                    t, rowid, parent, fkid = (r + (None, None, None, None))[:4]
+                    details.append(f"- table={t}, rowid={rowid}, parent={parent}, fkid={fkid}")
+
+    return ok, details

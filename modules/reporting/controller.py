@@ -1,6 +1,7 @@
 # inventory_management/modules/reporting/controller.py
 from __future__ import annotations
 
+import logging
 import sqlite3
 from importlib import import_module
 from typing import Dict, Optional
@@ -127,7 +128,7 @@ class ReportingController(BaseModule):
         )
         payments_widget = _safe_import_widget(
             "inventory_management.modules.reporting.payment_reports",
-            "PaymentReportsTab",
+            "Payment ReportsTab",
             self.conn,
             "Payment Reports tab not available yet.",
         )
@@ -171,9 +172,21 @@ class ReportingController(BaseModule):
         if callable(fn):
             try:
                 fn()
-            except Exception:
-                # keep silent in UI; errors are printed in _safe_import_widget on load failure
-                pass
+            except Exception as exc:
+                # Keep UI quiet, but emit a structured warning for easier debugging.
+                # We avoid any heavy imports; use stdlib logging.
+                logger = logging.getLogger(__name__)
+                try:
+                    obj_name = widget.objectName()  # may be empty
+                except Exception:
+                    obj_name = ""
+                logger.warning(
+                    "Reporting.refresh_failed widget=%s objectName=%s exc=%s",
+                    type(widget).__name__,
+                    obj_name,
+                    exc,
+                    exc_info=True,
+                )
 
     # Optional helper to jump to a tab by key from elsewhere in the app
     def open_sub(self, key: str) -> None:
