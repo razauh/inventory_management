@@ -1,5 +1,0 @@
-{"id": "flow:MAIN:database/schema.py", "feature": "feat:MAIN:database/schema.py", "trace": [{"at": "main", "node": "mod:database/schema.py"}], "preconditions": null, "postconditions": null, "errors": null}
-{"id": "flow:MAIN:database/seeders/bulk_seed.py", "feature": "feat:MAIN:database/seeders/bulk_seed.py", "trace": [{"at": "main", "node": "mod:database/seeders/bulk_seed.py"}], "preconditions": null, "postconditions": null, "errors": null}
-{"id": "flow:MAIN:getfilescode.py", "feature": "feat:MAIN:getfilescode.py", "trace": [{"at": "main", "node": "mod:getfilescode.py"}], "preconditions": null, "postconditions": null, "errors": null}
-{"id": "flow:MAIN:main.py", "feature": "feat:MAIN:main.py", "trace": [{"at": "main", "node": "mod:main.py"}], "preconditions": null, "postconditions": null, "errors": null}
-{"id": "flow:MAIN:tests/database.py", "feature": "feat:MAIN:tests/database.py", "trace": [{"at": "main", "node": "mod:tests/database.py"}], "preconditions": null, "postconditions": null, "errors": null}
