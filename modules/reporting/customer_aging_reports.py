@@ -442,6 +442,6 @@ class CustomerAgingTab(QWidget):
 
     # Keep actual logic separate (helps if decorators are added later)
     def _refresh_impl(self) -> None:
-        self.refresh = self._refresh_impl  # idempotent
-        self.refresh()
+        # Idempotent implementation
+        pass
 

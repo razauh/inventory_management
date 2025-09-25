@@ -41,6 +41,7 @@ def new_quotation_id(conn: sqlite3.Connection, date_str: str) -> str:
 
 class SalesController(BaseModule):
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None):
+        super().__init__()
         self.conn = conn
         self.user = current_user
         self.view = SalesView()

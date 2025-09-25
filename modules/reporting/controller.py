@@ -128,7 +128,7 @@ class ReportingController(BaseModule):
         )
         payments_widget = _safe_import_widget(
             "inventory_management.modules.reporting.payment_reports",
-            "Payment ReportsTab",
+            "PaymentReportsTab",
             self.conn,
             "Payment Reports tab not available yet.",
         )

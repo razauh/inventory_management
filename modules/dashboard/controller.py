@@ -7,6 +7,9 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtWidgets import QWidget
+
+from ..base_module import BaseModule
 
 # Repo (implemented in database/repositories/dashboard_repo.py)
 from ...database.repositories.dashboard_repo import DashboardRepo
@@ -25,7 +28,7 @@ class DateRange:
 
 # ---------------------------- Controller ----------------------------
 
-class DashboardController(QObject):
+class DashboardController(BaseModule):
     """
     Owns the date context, coordinates repo <-> view, and emits navigation intents.
 
@@ -44,8 +47,8 @@ class DashboardController(QObject):
     open_add_expense = Signal()
     navigate_to_report = Signal(str, dict)
 
-    def __init__(self, conn: sqlite3.Connection, parent: Optional[QObject] = None) -> None:
-        super().__init__(parent)
+    def __init__(self, conn: sqlite3.Connection, current_user: dict | None = None) -> None:
+        super().__init__()
         self.conn = conn
         self.repo = DashboardRepo(conn)
 
@@ -243,6 +246,10 @@ class DashboardController(QObject):
         self.navigate_to_report.emit(target, p)
 
     # ---------------------------- Utilities ----------------------------
+
+    def get_widget(self) -> QWidget:
+        """Return the main QWidget to embed in your window (required by BaseModule)."""
+        return self.view
 
     def widget(self) -> DashboardView:
         """Return the main QWidget to embed in your window."""

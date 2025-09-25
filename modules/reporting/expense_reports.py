@@ -345,5 +345,5 @@ class ExpenseReportsTab(QWidget):
         self.refresh.__wrapped__(self) if hasattr(self.refresh, "__wrapped__") else self._refresh_impl()
 
     def _refresh_impl(self) -> None:
-        self.refresh = self._refresh_impl  # idempotent swap
-        self.refresh()
+        # Idempotent implementation
+        pass

@@ -113,8 +113,14 @@ class MainWindow(QMainWindow):
         # nav wiring
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        # Dashboard -> placeholder only (no import/constructor)
-        self.add_placeholder("Dashboard")
+        # Dashboard
+        self._add_module_safe(
+            "Dashboard",
+            "inventory_management.modules.dashboard.controller",
+            "DashboardController",
+            self.conn,
+            fallback_placeholder=True,
+        )
 
         # Products
         self._add_module_safe(
@@ -310,9 +316,9 @@ class MainWindow(QMainWindow):
             self.add_module(title, controller)
         except Exception as e:
             # === DEBUG Reporting only ===
-            if title == "Reporting":
+            if title in ["Sales", "Dashboard"]:
                 import traceback as _tb, sys as _sys
-                print("[Reporting] failed to load:", e, file=_sys.stderr)
+                print(f"[{title}] failed to load:", e, file=_sys.stderr)
                 _tb.print_exc()
             # ============================
             if fallback_placeholder:
