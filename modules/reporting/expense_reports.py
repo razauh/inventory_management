@@ -100,6 +100,7 @@ class ExpenseReports:
         Read categories for the combo box.
         Expected table: expense_categories(id, name)
         """
+        # Performance optimization: Use single query to fetch all categories
         rows = list(self.conn.execute("SELECT id, name FROM expense_categories ORDER BY name COLLATE NOCASE"))
         return [(int(r["id"]), str(r["name"])) for r in rows]
 

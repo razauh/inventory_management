@@ -30,6 +30,20 @@ class ReportingRepo:
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
 
+    def __enter__(self):
+        """Context manager entry for proper resource management."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit to ensure proper cleanup."""
+        # Connection is typically managed by the caller, but we can ensure cleanup here
+        pass
+    
+    def close(self):
+        """Explicitly close the database connection."""
+        if hasattr(self, 'conn') and self.conn:
+            self.conn.close()
+
     # ----------------------------------------------------------------------
     # -------------------------- AGING (AP / AR) ---------------------------
     # ----------------------------------------------------------------------
@@ -52,6 +66,56 @@ class ReportingRepo:
         ORDER BY p.date, p.purchase_id
         """
         return list(self.conn.execute(sql, (vendor_id, as_of)))
+    
+    def vendor_headers_as_of_batch(self, vendor_ids: list[int], as_of: str) -> list[sqlite3.Row]:
+        """
+        Purchase headers for remaining due calc as of a cutoff for multiple vendors.
+        This method addresses N+1 query pattern by fetching all vendor headers in a single query.
+        remaining = total_amount - paid_amount - advance_payment_applied
+        """
+        if not vendor_ids:
+            return []
+            
+        placeholders = ','.join(['?' for _ in vendor_ids])
+        sql = f"""
+        SELECT
+            p.vendor_id,
+            p.purchase_id AS doc_no,
+            p.date        AS date,
+            COALESCE(p.total_amount, 0.0)             AS total_amount,
+            COALESCE(p.paid_amount, 0.0)              AS paid_amount,
+            COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied
+        FROM purchases p
+        WHERE p.vendor_id IN ({placeholders})
+          AND p.date <= ?
+        ORDER BY p.vendor_id, p.date, p.purchase_id
+        """
+        params = vendor_ids + [as_of]
+        return list(self.conn.execute(sql, params))
+
+    def vendor_credit_as_of_batch(self, vendor_ids: list[int], as_of: str) -> dict[int, float]:
+        """
+        Get vendor credit for multiple vendor IDs as of a specific date.
+        This method addresses N+1 query pattern by fetching all vendor credits in a single query.
+        """
+        if not vendor_ids:
+            return {}
+            
+        placeholders = ','.join(['?' for _ in vendor_ids])
+        sql = f"""
+        SELECT 
+            va.vendor_id,
+            COALESCE(SUM(CAST(va.amount AS REAL)), 0.0) AS credit
+        FROM vendor_advances va
+        WHERE va.vendor_id IN ({placeholders})
+          AND va.tx_date <= ?
+        GROUP BY va.vendor_id
+        """
+        params = vendor_ids + [as_of]
+        result = {}
+        for row in self.conn.execute(sql, params):
+            result[int(row["vendor_id"])] = float(row["credit"])
+        return result
 
     def vendor_credit_as_of(self, vendor_id: int, as_of: str) -> float:
         sql = """
@@ -81,6 +145,57 @@ class ReportingRepo:
         ORDER BY s.date, s.sale_id
         """
         return list(self.conn.execute(sql, (customer_id, as_of)))
+    
+    def customer_headers_as_of_batch(self, customer_ids: list[int], as_of: str) -> list[sqlite3.Row]:
+        """
+        Sales headers (doc_type='sale') for remaining due calc as of cutoff for multiple customers.
+        This method addresses N+1 query pattern by fetching all customer headers in a single query.
+        """
+        if not customer_ids:
+            return []
+        
+        # Create placeholders for IN clause
+        placeholders = ','.join(['?' for _ in customer_ids])
+        sql = f"""
+        SELECT
+            s.customer_id,
+            s.sale_id     AS doc_no,
+            s.date        AS date,
+            COALESCE(s.total_amount, 0.0)             AS total_amount,
+            COALESCE(s.paid_amount, 0.0)              AS paid_amount,
+            COALESCE(s.advance_payment_applied, 0.0)  AS advance_payment_applied
+        FROM sales s
+        WHERE s.customer_id IN ({placeholders})
+          AND s.doc_type = 'sale'
+          AND s.date <= ?
+        ORDER BY s.customer_id, s.date, s.sale_id
+        """
+        params = customer_ids + [as_of]
+        return list(self.conn.execute(sql, params))
+
+    def customer_credit_as_of_batch(self, customer_ids: list[int], as_of: str) -> dict[int, float]:
+        """
+        Get customer credit for multiple customer IDs as of a specific date.
+        This method addresses N+1 query pattern by fetching all customer credits in a single query.
+        """
+        if not customer_ids:
+            return {}
+            
+        placeholders = ','.join(['?' for _ in customer_ids])
+        sql = f"""
+        SELECT 
+            ca.customer_id,
+            COALESCE(SUM(CAST(ca.amount AS REAL)), 0.0) AS credit
+        FROM customer_advances ca
+        WHERE ca.customer_id IN ({placeholders})
+          AND ca.tx_date <= ?
+        GROUP BY ca.customer_id
+        """
+        params = customer_ids + [as_of]
+        result = {}
+        for row in self.conn.execute(sql, params):
+            result[int(row["customer_id"])] = float(row["credit"])
+        return result
 
     def customer_credit_as_of(self, customer_id: int, as_of: str) -> float:
         sql = """
@@ -124,7 +239,39 @@ class ReportingRepo:
         GROUP BY ec.category_id, ec.name
         ORDER BY ec.name COLLATE NOCASE
         """
+        # Return list for API compatibility, but consider using iterators for large datasets
         return list(self.conn.execute(sql, params))
+
+    def expense_summary_by_category_iter(
+        self, date_from: str, date_to: str, category_id: Optional[int]
+    ) -> Iterable[sqlite3.Row]:
+        """
+        Generator version of expense_summary_by_category that yields rows one at a time.
+        This prevents loading all results into memory at once for large datasets.
+        """
+        params: list[object] = [date_from, date_to]
+        where_extra = ""
+        if category_id is not None:
+            where_extra = " AND e.category_id = ? "
+            params.append(category_id)
+
+        sql = f"""
+        SELECT
+            ec.category_id                     AS category_id,
+            ec.name                            AS category_name,
+            COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+        FROM expense_categories ec
+        LEFT JOIN expenses e
+               ON e.category_id = ec.category_id
+              AND e.date >= ?
+              AND e.date <= ?
+              {where_extra}
+        GROUP BY ec.category_id, ec.name
+        ORDER BY ec.name COLLATE NOCASE
+        """
+        cursor = self.conn.execute(sql, params)
+        for row in cursor:
+            yield row
 
     def expense_lines(
         self, date_from: str, date_to: str, category_id: Optional[int]
@@ -152,7 +299,39 @@ class ReportingRepo:
           {where_extra}
         ORDER BY e.date DESC, e.expense_id DESC
         """
+        # Return list for API compatibility, but consider using iterators for large datasets
         return list(self.conn.execute(sql, params))
+
+    def expense_lines_iter(
+        self, date_from: str, date_to: str, category_id: Optional[int]
+    ) -> Iterable[sqlite3.Row]:
+        """
+        Generator version of expense_lines that yields rows one at a time.
+        This prevents loading all results into memory at once for large datasets.
+        """
+        params: list[object] = [date_from, date_to]
+        where_extra = ""
+        if category_id is not None:
+            where_extra = " AND e.category_id = ? "
+            params.append(category_id)
+
+        sql = f"""
+        SELECT
+            e.expense_id                 AS expense_id,
+            e.date                       AS date,
+            ec.name                      AS category_name,
+            e.description                AS description,
+            COALESCE(CAST(e.amount AS REAL), 0.0) AS amount
+        FROM expenses e
+        JOIN expense_categories ec ON ec.category_id = e.category_id
+        WHERE e.date >= ?
+          AND e.date <= ?
+          {where_extra}
+        ORDER BY e.date DESC, e.expense_id DESC
+        """
+        cursor = self.conn.execute(sql, params)
+        for row in cursor:
+            yield row
 
     # ----------------------------------------------------------------------
     # ------------------------------ INVENTORY -----------------------------
@@ -178,6 +357,27 @@ class ReportingRepo:
         ORDER BY p.name COLLATE NOCASE
         """
         return list(self.conn.execute(sql))
+
+    def stock_on_hand_current_iter(self) -> Iterable[sqlite3.Row]:
+        """
+        Generator version of stock_on_hand_current that yields rows one at a time.
+        This prevents loading all results into memory at once for large datasets.
+        """
+        sql = """
+        SELECT
+          v.product_id,
+          p.name AS product_name,
+          v.qty_in_base AS qty_base,
+          v.unit_value,
+          v.total_value,
+          v.valuation_date
+        FROM v_stock_on_hand v
+        LEFT JOIN products p ON p.product_id = v.product_id
+        ORDER BY p.name COLLATE NOCASE
+        """
+        cursor = self.conn.execute(sql)
+        for row in cursor:
+            yield row
 
     def stock_on_hand_as_of(self, as_of: str) -> list[sqlite3.Row]:
         """
@@ -205,6 +405,35 @@ class ReportingRepo:
         ORDER BY p.name COLLATE NOCASE
         """
         return list(self.conn.execute(sql, (as_of,)))
+
+    def stock_on_hand_as_of_iter(self, as_of: str) -> Iterable[sqlite3.Row]:
+        """
+        Generator version of stock_on_hand_as_of that yields rows one at a time.
+        This prevents loading all results into memory at once for large datasets.
+        """
+        sql = """
+        WITH latest AS (
+          SELECT svh.product_id,
+                 MAX(svh.valuation_id) AS last_vid
+          FROM stock_valuation_history svh
+          WHERE svh.valuation_date <= ?
+          GROUP BY svh.product_id
+        )
+        SELECT
+          svh.product_id,
+          p.name AS product_name,
+          svh.quantity     AS qty_base,
+          svh.unit_value   AS unit_value,
+          svh.total_value  AS total_value,
+          svh.valuation_date
+        FROM latest l
+        JOIN stock_valuation_history svh ON svh.valuation_id = l.last_vid
+        LEFT JOIN products p ON p.product_id = svh.product_id
+        ORDER BY p.name COLLATE NOCASE
+        """
+        cursor = self.conn.execute(sql, (as_of,))
+        for row in cursor:
+            yield row
 
     def inventory_transactions(self, date_from: str, date_to: str, product_id: int | None) -> list[sqlite3.Row]:
         """
@@ -234,7 +463,40 @@ class ReportingRepo:
         {where_extra}
         ORDER BY it.date ASC, it.transaction_id ASC
         """
+        # Return list for API compatibility, but consider using iterators for large datasets
         return list(self.conn.execute(sql, params))
+
+    def inventory_transactions_iter(self, date_from: str, date_to: str, product_id: int | None) -> Iterable[sqlite3.Row]:
+        """
+        Generator version of inventory_transactions that yields rows one at a time.
+        This prevents loading all results into memory at once for large datasets.
+        """
+        params: list[object] = [date_from, date_to]
+        where_extra = ""
+        if isinstance(product_id, int):
+            where_extra = " AND it.product_id = ? "
+            params.append(product_id)
+
+        sql = f"""
+        SELECT
+          it.date AS date,
+          it.product_id AS product_id,
+          it.transaction_type AS type,
+          (CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base,
+          it.reference_table AS ref_table,
+          it.reference_id    AS ref_id,
+          it.notes           AS notes
+        FROM inventory_transactions it
+        LEFT JOIN product_uoms pu
+          ON pu.product_id = it.product_id
+         AND pu.uom_id     = it.uom_id
+        WHERE it.date >= ? AND it.date <= ?
+        {where_extra}
+        ORDER BY it.date ASC, it.transaction_id ASC
+        """
+        cursor = self.conn.execute(sql, params)
+        for row in cursor:
+            yield row
 
     def valuation_history(self, product_id: int, limit: int) -> list[sqlite3.Row]:
         """
@@ -400,6 +662,30 @@ class ReportingRepo:
         WHERE p.category IS NOT NULL
           AND TRIM(p.category) <> ''
         ORDER BY p.category COLLATE NOCASE
+        """
+        return list(self.conn.execute(sql))
+    
+    def get_all_customers(self) -> list[sqlite3.Row]:
+        """
+        Get all customers with id and name for batch operations.
+        This replaces individual customer queries and addresses N+1 pattern.
+        """
+        sql = """
+        SELECT customer_id, name
+        FROM customers
+        ORDER BY name COLLATE NOCASE
+        """
+        return list(self.conn.execute(sql))
+    
+    def get_all_vendors(self) -> list[sqlite3.Row]:
+        """
+        Get all vendors with id and name for batch operations.
+        This replaces individual vendor queries and addresses N+1 pattern.
+        """
+        sql = """
+        SELECT vendor_id, name
+        FROM vendors
+        ORDER BY name COLLATE NOCASE
         """
         return list(self.conn.execute(sql))
 

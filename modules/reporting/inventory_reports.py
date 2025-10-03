@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot, QAbstractTableModel
@@ -51,6 +52,11 @@ class InventoryReports:
     """
     Thin logic layer built on ReportingRepo for inventory reporting.
     """
+
+    # Module-level cache for static reference data with thread-safe access
+    _product_cache: dict[int, str] = {}
+    _cache_lock = threading.Lock()
+    _cache_initialized = False
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
@@ -198,8 +204,30 @@ class InventoryReports:
         ))
         return [(int(r["product_id"]), str(r["name"])) for r in rows]
 
+    @classmethod
+    def _ensure_product_cache(cls, conn: sqlite3.Connection) -> None:
+        """
+        Ensure the product cache is initialized in a thread-safe manner.
+        This prevents repeated database queries for product names in large datasets.
+        """
+        with cls._cache_lock:
+            if not cls._cache_initialized:
+                # Fetch all products in a single query for the cache
+                rows = list(conn.execute(
+                    "SELECT product_id, name FROM products ORDER BY name COLLATE NOCASE"
+                ))
+                cls._product_cache = {int(r["product_id"]): str(r["name"]) for r in rows}
+                cls._cache_initialized = True
+
     def _product_name_map(self) -> dict[int, str]:
-        return {pid: name for pid, name in self.list_products()}
+        """
+        Return a mapping of product_id to product name for efficient lookups.
+        This prevents repeated database queries for product names in large datasets.
+        """
+        # Initialize cache if needed (thread-safe)
+        self._ensure_product_cache(self.conn)
+        # Return a copy of the cached data to avoid external modifications
+        return self._product_cache.copy()
 
 
 # ------------------------------ Local model (Valuation History) -------------

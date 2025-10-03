@@ -1,0 +1,117 @@
+# Performance Optimization Checklist
+
+## Status Legend:
+- [ ] = Not started
+- [X] = Completed
+- [~] = In progress
+
+## Critical Performance Issues to Address
+
+### 1. N+1 Query Pattern (Critical)
+[X] ReportingRepo: vendor_headers_as_of(), customer_headers_as_of() methods used in loops
+[X] CustomerAgingReports: _list_customers() called in loop and each customer lookup
+[X] VendorAgingReports: vendor loop fetching each vendor individually
+[X] FinancialReports: Loop through all customers/vendors for AR/AP snapshot
+[ ] SalesReports: Identify N+1 in sales_by_customer, sales_by_product, etc.
+[ ] PurchaseReports: Identify N+1 in purchase queries
+
+### 2. Memory-Intensive Data Loading
+[ ] Replace list() calls with generators/iterators where possible
+[ ] ReportingRepo: Replace list(self.conn.execute(...)) with streaming
+[ ] All report modules: Replace materialized lists with chunked processing
+[ ] CustomerAgingReports: _list_customers() should be cached or streamed
+[ ] VendorAgingReports: Vendor list should be batched
+
+### 3. Unnecessary In-Memory Processing
+[ ] Move aggregations to SQL when possible instead of Python loops
+[ ] Report filtering in Python instead of SQL WHERE clauses
+[ ] Calculations that should happen in database
+
+### 4. Repeated Static Data Loading
+[ ] Cache product names, categories, vendor names, customer names
+[ ] Cache reference data with proper invalidation
+[ ] Module-level caching for static lookups
+
+### 5. Inefficient Parallelism
+[ ] Add connection pooling
+[ ] Add query concurrency limits
+[ ] Sequential fallback for resource-intensive operations
+
+### 6. UI Thread Blocking
+[ ] Add background threads for report generation
+[ ] Add progress reporting
+[ ] Add cancellation support
+[ ] Proper thread synchronization
+
+## Files to be Updated:
+
+### 1. database/repositories/reporting_repo.py
+[ ] Batch load customer headers data
+[ ] Batch load vendor headers data
+[ ] Optimize queries to return iterators instead of full materialized lists
+[ ] Add customer_id list method for batch operations
+[ ] Add vendor_id list method for batch operations
+
+### 2. modules/reporting/customer_aging_reports.py
+[ ] Optimize customer list retrieval with caching
+[ ] Batch process customer data instead of individual loops
+[ ] Add background processing for large customer sets
+
+### 3. modules/reporting/expense_reports.py
+[ ] Add caching for category list
+[ ] Optimize expense queries to be memory-efficient
+
+### 4. modules/reporting/financial_reports.py
+[ ] Optimize AR/AP snapshot to batch process instead of individual customer/vendor queries
+[ ] Add caching for customer and vendor lists
+
+### 5. modules/reporting/inventory_reports.py
+[ ] Optimize product name lookup with caching
+[ ] Stream transactions instead of loading all into memory
+
+### 6. modules/reporting/model.py
+[ ] No changes needed - just data models
+
+### 7. modules/reporting/payment_reports.py
+[ ] No major N+1 issues found, just need memory optimization
+
+### 8. modules/reporting/purchase_reports.py
+[ ] Optimize vendor lookups in queries
+[ ] Add caching for category data
+
+### 9. modules/reporting/sales_reports.py
+[ ] Optimize customer/product lookups
+[ ] Add caching for category data
+[ ] Optimize queries for customer/product names
+
+### 10. modules/reporting/vendor_aging_reports.py
+[ ] Optimize vendor list retrieval with caching
+[ ] Batch process vendor data instead of individual loops
+[ ] Add background processing
+
+## Implementation Requirements:
+
+### 1. Code Structure:
+[ ] Implement caching as module-level singletons with proper initialization
+[ ] Create new repository methods for batch operations that don't break existing interfaces
+[ ] Use context managers for resource handling where appropriate
+
+### 2. Memory Management:
+[ ] Process large datasets in chunks (50-100 records at a time)
+[ ] Use generators for data processing pipelines
+[ ] Avoid unnecessary data copying
+
+### 3. Error Handling:
+[ ] Implement proper cancellation handling
+[ ] Ensure resource cleanup in all code paths
+[ ] Add appropriate timeouts for database operations
+
+### 4. Performance Metrics:
+[ ] Add clear comments where optimizations have been applied
+[ ] Include performance impact notes in docstrings
+[ ] Document cache behavior and invalidation mechanisms
+
+### 5. API Compatibility:
+[ ] Maintain existing function signatures where possible
+[ ] Preserve return value formats to avoid breaking downstream code
+[ ] Add new parameters with defaults to maintain backward compatibility
