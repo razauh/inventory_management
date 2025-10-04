@@ -66,25 +66,25 @@ class DashboardController(BaseModule):
         """
         Connect view events to controller actions.
         The DashboardView is expected to expose these signals:
-          - periodChanged(period_key: str, date_from: Optional[str], date_to: Optional[str])
-          - createSaleClicked()
-          - addExpenseClicked()
-          - kpiCardClicked(target: str)  # e.g., "sales_total", "gross_profit", etc.
-          - requestDrilldown(target: str, params: dict) from child widgets (optional)
+          - period_changed(period_key: str, date_from: Optional[str], date_to: Optional[str])
+          - create_sale_requested()
+          - add_expense_requested()
+          - kpi_drilldown(target: str)  # e.g., "sales_total", "gross_profit", etc.
+          - request_drilldown(target: str, params: dict) from child widgets (optional)
         """
         # Period switch (Today / MTD / Last 7 / Custom)
-        if hasattr(self.view, "periodChanged"):
-            self.view.periodChanged.connect(self.on_period_changed)  # type: ignore
+        if hasattr(self.view, "period_changed"):
+            self.view.period_changed.connect(self.on_period_changed)  # type: ignore
 
         # Top bar buttons
-        if hasattr(self.view, "createSaleClicked"):
-            self.view.createSaleClicked.connect(self._on_create_sale)  # type: ignore
-        if hasattr(self.view, "addExpenseClicked"):
-            self.view.addExpenseClicked.connect(self._on_add_expense)  # type: ignore
+        if hasattr(self.view, "create_sale_requested"):
+            self.view.create_sale_requested.connect(self._on_create_sale)  # type: ignore
+        if hasattr(self.view, "add_expense_requested"):
+            self.view.add_expense_requested.connect(self._on_add_expense)  # type: ignore
 
         # KPI cards click
-        if hasattr(self.view, "kpiCardClicked"):
-            self.view.kpiCardClicked.connect(self._on_kpi_clicked)  # type: ignore
+        if hasattr(self.view, "kpi_drilldown"):
+            self.view.kpi_drilldown.connect(lambda key, df, dt: self._on_kpi_clicked(key))  # type: ignore
 
         # Composite widgets may bubble drilldown requests via the view
         if hasattr(self.view, "requestDrilldown"):
@@ -159,41 +159,29 @@ class DashboardController(BaseModule):
         quotes_exp = self.safe_repo_call(lambda: self.repo.quotations_expiring(df_q, dt_q), [])
 
         # -------- Push to view --------
-        # KPI Cards
-        if hasattr(self.view, "setKpis"):
-            # Expected dict keys; align with your View’s card IDs
-            self.view.setKpis({
-                "sales_total": total_sales,
-                "gross_profit": gross,
-                "net_profit": net,
-                "receipts_cleared": receipts_cleared,
-                "vendor_paid_cleared": vendor_pmt_cleared,
-            }, date_from=df, date_to=dt)  # type: ignore
+        # KPI Cards – update each card value
+        self.view.set_kpi_value("sales_total", total_sales)
+        self.view.set_kpi_value("gross_profit", gross)
+        self.view.set_kpi_value("net_profit", net)
+        self.view.set_kpi_value("receipts_cleared", receipts_cleared)
+        self.view.set_kpi_value("vendor_payments_cleared", vendor_pmt_cleared)
+        self.view.set_kpi_value("open_receivables", ar_open)
+        self.view.set_kpi_value("open_payables", ap_open)
+        self.view.set_kpi_value("low_stock", int(low_stock_count))
 
-        # Financial overview (P&L + AR/AP + Low-stock)
-        if hasattr(self.view, "setFinancialOverview"):
-            self.view.setFinancialOverview(
-                sales=total_sales,
-                cogs=total_cogs,
-                expenses=total_exp,
-                net=net,
-                ar_open=ar_open,
-                ap_open=ap_open,
-                low_stock_count=int(low_stock_count),
-            )  # type: ignore
+        # Financial overview widget (P&L, AR/AP, Low stock)
+        self.view.financial_overview.set_pl(total_sales, total_cogs, total_exp, net)
+        self.view.financial_overview.set_ar_ap(ar_open, ap_open)
+        self.view.financial_overview.set_low_stock_count(int(low_stock_count))
 
-        # Payment summary (incoming/outgoing tables)
-        if hasattr(self.view, "setPaymentBreakdowns"):
-            self.view.setPaymentBreakdowns(
-                incoming_rows=incoming_rows,
-                outgoing_rows=outgoing_rows,
-            )  # type: ignore
+        # Payment summary tables (if widget is implemented)
+        if hasattr(self.view.payment_summary, "set_sales_breakdown"):
+            self.view.payment_summary.set_sales_breakdown(incoming_rows)
+            self.view.payment_summary.set_purchase_breakdown(outgoing_rows)
 
-        # Optional small tables
-        if hasattr(self.view, "setTopProducts"):
-            self.view.setTopProducts(top_products)  # type: ignore
-        if hasattr(self.view, "setQuotationsExpiring"):
-            self.view.setQuotationsExpiring(quotes_exp)  # type: ignore
+        # Update small tables
+        self.view.set_top_products(top_products)
+        self.view.set_quotations(quotes_exp)
 
         # Let the view update its header subtitle / breadcrumbs if it wants
         if hasattr(self.view, "setPeriodText"):
@@ -226,7 +214,7 @@ class DashboardController(BaseModule):
             "gross_profit": ("margin_by_day", {}),
             "net_profit": ("margin_by_day", {}),  # still the same view; net shown in FinancialOverview
             "receipts_cleared": ("status_breakdown", {"payment_side": "sales"}),
-            "vendor_paid_cleared": ("status_breakdown", {"payment_side": "purchases"}),
+            "vendor_payments_cleared": ("status_breakdown", {"payment_side": "purchases"}),
             # add others if you add more cards
         }
         target, extra = mapping.get(card_id, ("sales_by_day", {}))

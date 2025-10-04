@@ -8,6 +8,8 @@ Thumbs.db
 
 # Database files (do not commit)
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 *.sqlitedb
 
@@ -16,6 +18,16 @@ Thumbs.db
 *.tmp
 *.swp
 *~
+
+# Test and development tools
+.pytest_cache/
+.tox/
+.mypy_cache/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
 
 # Virtual environments
 venv/
