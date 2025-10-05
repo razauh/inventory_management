@@ -3,6 +3,10 @@ from dataclasses import dataclass
 import sqlite3
 from typing import Iterable, Optional
 
+# For settlements
+from .sale_payments_repo import SalePaymentsRepo
+from .customer_advances_repo import CustomerAdvancesRepo
+
 
 @dataclass
 class SaleHeader:
@@ -521,7 +525,7 @@ class SalesRepo:
             )
 
     # ---------------------------------------------------------------------
-    # RETURNS (unchanged)
+    # RETURNS (with settlement)
     # ---------------------------------------------------------------------
     def record_return(
         self,
@@ -531,9 +535,90 @@ class SalesRepo:
         created_by: int | None,
         lines: list[dict],
         notes: str | None,
+        settlement: dict | None = None,
     ):
         with self.conn:
+            # Group requested returns per item to validate batch totals
+            requested_per_item: dict[int, float] = {}
+            for ln in lines:
+                iid = int(ln["item_id"])
+                requested_per_item[iid] = requested_per_item.get(iid, 0.0) + float(ln["qty_return"])
+
+            # Validate against sold - already returned
+            for item_id, batch_qty in requested_per_item.items():
+                row = self.conn.execute(
+                    """
+                    SELECT
+                      CAST(si.quantity AS REAL) AS sold_qty,
+                      COALESCE((
+                        SELECT SUM(CAST(it.quantity AS REAL))
+                        FROM inventory_transactions it
+                        WHERE it.transaction_type = 'sale_return'
+                          AND it.reference_table = 'sales'
+                          AND it.reference_id = ?
+                          AND it.reference_item_id = si.item_id
+                      ), 0.0) AS returned_so_far
+                    FROM sale_items si
+                    WHERE si.item_id = ? AND si.sale_id = ?
+                    """,
+                    (sid, item_id, sid),
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"Invalid sale item: {item_id} for sale {sid}")
+
+                sold_qty = float(row["sold_qty"])
+                returned_so_far = float(row["returned_so_far"])
+                remaining = sold_qty - returned_so_far
+                if batch_qty > remaining + 1e-9:
+                    raise ValueError(
+                        f"Return qty exceeds remaining for item {item_id}: requested {batch_qty:g}, remaining {remaining:g}"
+                    )
+
+            # Header for customer_id
+            hdr = self.conn.execute("SELECT customer_id FROM sales WHERE sale_id=?", (sid,)).fetchone()
+            if not hdr:
+                raise ValueError(f"Unknown sale_id: {sid}")
+            customer_id = int(hdr["customer_id"])
+
+            # Calculate total return value with proration for order discount
+            return_value = 0.0
             for ln in lines:  # {item_id, product_id, uom_id, qty_return}
+                # Verify the item exists and matches the sale
+                chk = self.conn.execute(
+                    "SELECT product_id, uom_id, CAST(unit_price AS REAL) AS unit_price, CAST(item_discount AS REAL) AS item_discount FROM sale_items WHERE item_id=? AND sale_id=?",
+                    (ln["item_id"], sid),
+                ).fetchone()
+                if not chk:
+                    raise ValueError(f"Sale item mismatch for item_id {ln['item_id']}")
+
+                unit_price = float(chk["unit_price"])
+                item_discount = float(chk["item_discount"])
+                qty_return = float(ln["qty_return"])
+                
+                # Calculate line value (net of item discount)
+                line_value = (unit_price - item_discount) * qty_return
+                return_value += line_value
+
+            # Apply proration for order discount if needed
+            totals = self.get_sale_totals(sid)
+            net_subtotal = totals["net_subtotal"]  # Before order discount
+            total_after_od = totals["total_after_od"]  # After order discount
+            
+            order_factor = 1.0
+            if net_subtotal > 1e-9:  # Avoid division by zero
+                order_factor = total_after_od / net_subtotal
+            final_return_value = return_value * order_factor
+
+            # Insert inventory return rows
+            for ln in lines:  # {item_id, product_id, uom_id, qty_return}
+                # Verify the item exists and matches the sale
+                chk = self.conn.execute(
+                    "SELECT product_id, uom_id FROM sale_items WHERE item_id=? AND sale_id=?",
+                    (ln["item_id"], sid),
+                ).fetchone()
+                if not chk:
+                    raise ValueError(f"Sale item mismatch for item_id {ln['item_id']}")
+
                 self.conn.execute(
                     """
                     INSERT INTO inventory_transactions(
@@ -554,6 +639,41 @@ class SalesRepo:
                         created_by,
                     ),
                 )
+
+            # Settlement handling (if applicable)
+            if settlement and final_return_value > 0:
+                mode = (settlement.get("mode") or "").lower()
+                if mode in ("refund", "refund_now"):
+                    payments = SalePaymentsRepo(self.conn)
+                    payments.record_payment(
+                        sale_id=sid,
+                        amount=-final_return_value,  # incoming refund (negative)
+                        method=settlement.get("method") or "Cash",
+                        bank_account_id=settlement.get("bank_account_id"),
+                        customer_bank_account_id=settlement.get("customer_bank_account_id"),
+                        instrument_type=settlement.get("instrument_type"),
+                        instrument_no=settlement.get("instrument_no"),
+                        instrument_date=settlement.get("instrument_date"),
+                        deposited_date=settlement.get("deposited_date"),
+                        cleared_date=settlement.get("cleared_date"),
+                        clearing_state=settlement.get("clearing_state"),
+                        ref_no=settlement.get("ref_no"),
+                        notes=settlement.get("notes") or notes,
+                        date=date,
+                        created_by=created_by,
+                    )
+                elif mode == "credit_note":
+                    cadv = CustomerAdvancesRepo(self.conn)
+                    cadv.grant_credit(
+                        customer_id=customer_id,
+                        amount=final_return_value,
+                        date=date,
+                        notes=notes,
+                        created_by=created_by,
+                        source_id=sid,
+                        # Keep return credits explicitly labeled
+                        source_type="return_credit",
+                    )
 
     def sale_return_totals(self, sale_id: str) -> dict:
         row = self.conn.execute(

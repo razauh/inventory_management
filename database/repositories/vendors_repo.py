@@ -42,6 +42,6 @@ class VendorsRepo:
         )
         self.conn.commit()
 
-    def delete(self, vendor_id: int):
-        self.conn.execute("DELETE FROM vendors WHERE vendor_id=?", (vendor_id,))
-        self.conn.commit()
+    # def delete(self, vendor_id: int):
+    #     self.conn.execute("DELETE FROM vendors WHERE vendor_id=?", (vendor_id,))
+    #     self.conn.commit()

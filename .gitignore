@@ -29,6 +29,9 @@ build/
 dist/
 *.egg-info/
 
+# Repository mapping output
+_repo_map_out/
+
 # Virtual environments
 venv/
 env/

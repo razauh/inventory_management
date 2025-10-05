@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS product_uoms (
     is_base        INTEGER NOT NULL DEFAULT 0 CHECK (is_base IN (0,1)),
     factor_to_base NUMERIC NOT NULL,
     UNIQUE(product_id, uom_id),
-    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE RESTRICT,
     FOREIGN KEY (uom_id)     REFERENCES uoms(uom_id)
 );
 /* at most one base UoM per product */

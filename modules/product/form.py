@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView
 )
 from PySide6.QtCore import Qt
-from ...utils.validators import non_empty, is_positive_number
+from ...utils.validators import non_empty, is_positive_number, try_parse_float
 from ...utils.ui_helpers import info  # optional: to show a friendly message
 
 class UomPicker(QComboBox):
@@ -329,11 +329,19 @@ class ProductForm(QDialog):
             self.name.setFocus()
             return None
             
-        # Validate min stock
-        if not is_positive_number(self.min_stock.text()):
-            self.min_stock_error.setText("Enter a valid number")
-            self.min_stock.setFocus()
-            return None
+        # Validate min stock - allow empty values (treat as 0) or non-negative numbers
+        min_stock_text = self.min_stock.text().strip()
+        if min_stock_text == "":
+            # Empty value is acceptable, will default to 0
+            min_stock_value = 0.0
+        else:
+            # Validate that the entered value is a non-negative number
+            ok, parsed_value = try_parse_float(min_stock_text)
+            if not (ok and parsed_value is not None and parsed_value >= 0):
+                self.min_stock_error.setText("Enter a valid non-negative number")
+                self.min_stock.setFocus()
+                return None
+            min_stock_value = parsed_value
             
         sales_on = self.chk_sales.isChecked()
         # BASE: always required/available
@@ -351,7 +359,7 @@ class ProductForm(QDialog):
                 "name": self.name.text().strip(),
                 "description": self.desc.text().strip() or None,
                 "category": self.category.text().strip() or None,
-                "min_stock_level": float(self.min_stock.text()),
+                "min_stock_level": min_stock_value,
             },
             "uoms": {
                 # 'enabled' indicates whether alternates are used (base is always present)

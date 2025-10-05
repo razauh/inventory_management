@@ -466,6 +466,21 @@ class PurchasesRepo:
                     source_type="return_credit",
                 )
 
+        # Audit logging for the return
+        self.conn.execute(
+            """
+            INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                created_by,
+                "return",
+                "purchases",
+                pid,
+                f"Returned items with total value of {return_value:g}. Lines: {len(lines)}",
+            ),
+        )
+
     # ---------- Hard delete ----------
     def _delete_purchase_content(self, pid: str):
         # remove inventory rows first (FK safety)

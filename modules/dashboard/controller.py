@@ -33,8 +33,6 @@ class DashboardController(BaseModule):
     Owns the date context, coordinates repo <-> view, and emits navigation intents.
 
     Signals you can hook in your MainWindow/App:
-      - open_create_sale(): ask the app to open the sales entry screen
-      - open_add_expense(): ask the app to open the expense dialog
       - navigate_to_report(target: str, params: dict): route to an existing module (e.g. Sales Reports)
          Examples of `target`:
            "sales_by_day", "sales_by_product", "sales_by_customer",
@@ -43,8 +41,6 @@ class DashboardController(BaseModule):
          `params` should include at least {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}.
     """
 
-    open_create_sale = Signal()
-    open_add_expense = Signal()
     navigate_to_report = Signal(str, dict)
 
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None = None) -> None:
@@ -67,8 +63,6 @@ class DashboardController(BaseModule):
         Connect view events to controller actions.
         The DashboardView is expected to expose these signals:
           - period_changed(period_key: str, date_from: Optional[str], date_to: Optional[str])
-          - create_sale_requested()
-          - add_expense_requested()
           - kpi_drilldown(target: str)  # e.g., "sales_total", "gross_profit", etc.
           - request_drilldown(target: str, params: dict) from child widgets (optional)
         """
@@ -76,11 +70,7 @@ class DashboardController(BaseModule):
         if hasattr(self.view, "period_changed"):
             self.view.period_changed.connect(self.on_period_changed)  # type: ignore
 
-        # Top bar buttons
-        if hasattr(self.view, "create_sale_requested"):
-            self.view.create_sale_requested.connect(self._on_create_sale)  # type: ignore
-        if hasattr(self.view, "add_expense_requested"):
-            self.view.add_expense_requested.connect(self._on_add_expense)  # type: ignore
+
 
         # KPI cards click
         if hasattr(self.view, "kpi_drilldown"):
@@ -189,15 +179,7 @@ class DashboardController(BaseModule):
 
     # ---------------------------- Button handlers ----------------------------
 
-    @Slot()
-    def _on_create_sale(self) -> None:
-        # Defer actual screen opening to the host app.
-        self.open_create_sale.emit()
 
-    @Slot()
-    def _on_add_expense(self) -> None:
-        # Defer to the host app.
-        self.open_add_expense.emit()
 
     # ---------------------------- Card clicks → navigation ----------------------------
 

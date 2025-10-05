@@ -2,6 +2,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
+from .vendor_advances_repo import VendorAdvancesRepo
+
 
 class PurchasePaymentsRepo:
     def __init__(self, conn: sqlite3.Connection):
@@ -39,7 +41,58 @@ class PurchasePaymentsRepo:
               states do NOT affect the header totals/status until they become 'cleared'.
           - DB triggers enforce the above rollup and method-specific requirements.
           - No commit here; caller controls the transaction.
+          - If amount exceeds the due amount (for positive amounts), the excess is converted to vendor credit.
         """
+        # Check if this is an overpayment for a positive amount and convert excess to vendor credit
+        if amount > 0:  # Only check for overpayments on positive payments (not refunds)
+            # Get purchase information to determine what's due
+            purchase_info = self.conn.execute(
+                """
+                SELECT 
+                    p.total_amount, 
+                    p.paid_amount, 
+                    p.advance_payment_applied,
+                    p.vendor_id
+                FROM purchases p
+                WHERE p.purchase_id = ?
+                """,
+                (purchase_id,),
+            ).fetchone()
+            
+            if not purchase_info:
+                raise ValueError(f"Purchase not found: {purchase_id}")
+            
+            total_amount = float(purchase_info["total_amount"])
+            current_paid = float(purchase_info["paid_amount"])
+            current_advance = float(purchase_info["advance_payment_applied"]) if purchase_info["advance_payment_applied"] else 0.0
+            vendor_id = int(purchase_info["vendor_id"])
+            
+            # Calculate amount due (what's left to pay)
+            amount_due = total_amount - current_paid - current_advance
+            
+            # If payment exceeds the amount due, split the payment
+            if amount > amount_due + 1e-9:  # Handle overpayment
+                # Calculate the excess that needs to be converted to vendor credit
+                excess_amount = amount - amount_due
+                # Adjust the payment amount to only cover the due amount
+                adjusted_amount = amount_due
+                
+                # Record the excess as a vendor advance (credit)
+                if excess_amount > 1e-9:  # Only if there's a meaningful excess
+                    vadv = VendorAdvancesRepo(self.conn)
+                    vadv.grant_credit(
+                        vendor_id=vendor_id,
+                        amount=excess_amount,
+                        date=date,
+                        notes=f"Excess payment converted to credit on {purchase_id}",
+                        created_by=created_by,
+                        source_id=purchase_id,
+                        source_type="overpayment_credit",
+                    )
+                
+                # Use the adjusted amount for the payment (the due amount)
+                amount = adjusted_amount
+
         state = clearing_state or "posted"
         cur = self.conn.execute(
             """
@@ -80,7 +133,23 @@ class PurchasePaymentsRepo:
                 created_by,
             ),
         )
-        return int(cur.lastrowid)
+        payment_id = int(cur.lastrowid)
+        
+        # Audit logging for the payment
+        self.conn.execute(
+            """
+            INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                created_by,
+                "payment",
+                "purchase_payments",
+                payment_id,
+                f"Recorded payment of {amount:g} using {method}. Purchase ID: {purchase_id}",
+            ),
+        )
+        return payment_id
 
     def update_clearing_state(
         self,

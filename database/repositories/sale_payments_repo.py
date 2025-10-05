@@ -4,6 +4,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from .customer_advances_repo import CustomerAdvancesRepo
+
 
 class SalePaymentsRepo:
     """
@@ -183,6 +185,7 @@ class SalePaymentsRepo:
         Notes:
           • Negative 'amount' is allowed ONLY for method='Cash' (cash refunds).
           • DB triggers roll up paid_amount/payment_status on the sales header.
+          • If amount exceeds the due amount, the excess is converted to customer credit.
         """
 
         # Normalize & validate fields
@@ -202,6 +205,56 @@ class SalePaymentsRepo:
             raise ValueError("clearing_state must be one of: posted, pending, cleared, bounced")
 
         with self._connect() as con:
+            # Check if this is an overpayment and convert excess to customer credit
+            # Get sale information to determine what's due
+            sale_info = con.execute(
+                """
+                SELECT 
+                    s.total_amount, 
+                    s.paid_amount, 
+                    s.advance_payment_applied,
+                    c.customer_id
+                FROM sales s
+                JOIN customers c ON c.customer_id = s.customer_id
+                WHERE s.sale_id = ?
+                """,
+                (sale_id,),
+            ).fetchone()
+            
+            if not sale_info:
+                raise ValueError(f"Sale not found: {sale_id}")
+            
+            total_amount = float(sale_info["total_amount"])
+            current_paid = float(sale_info["paid_amount"])
+            current_advance = float(sale_info["advance_payment_applied"]) if sale_info["advance_payment_applied"] else 0.0
+            customer_id = int(sale_info["customer_id"])
+            
+            # Calculate amount due (what's left to pay)
+            amount_due = total_amount - current_paid - current_advance
+            
+            # If payment exceeds the amount due, split the payment
+            if amount > amount_due + 1e-9:  # Handle overpayment
+                # Calculate the excess that needs to be converted to customer credit
+                excess_amount = amount - amount_due
+                # Adjust the payment amount to only cover the due amount
+                adjusted_amount = amount_due
+                
+                # Record the excess as a customer advance (credit)
+                if excess_amount > 1e-9:  # Only if there's a meaningful excess
+                    cadv = CustomerAdvancesRepo(con)
+                    cadv.grant_credit(
+                        customer_id=customer_id,
+                        amount=excess_amount,
+                        date=date or "CURRENT_DATE",
+                        notes=f"Excess payment converted to credit on {sale_id}",
+                        created_by=created_by,
+                        source_id=sale_id,
+                        source_type="overpayment_credit",
+                    )
+                
+                # Use the adjusted amount for the payment (the due amount)
+                amount = adjusted_amount
+
             cur = con.cursor()
             cur.execute(
                 """

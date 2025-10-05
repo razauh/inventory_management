@@ -110,17 +110,11 @@ class DashboardView(QWidget):
         self.btn_apply_period = QPushButton("Apply")
         self._toggle_custom_dates(False)
 
-        self.btn_new_sale = QPushButton("Create Sale")
-        self.btn_new_expense = QPushButton("Add Expense")
-
         top.addWidget(QLabel("Period:"))
         top.addWidget(self.cmb_period)
         top.addWidget(self.ed_from)
         top.addWidget(self.ed_to)
         top.addWidget(self.btn_apply_period)
-        top.addSpacing(8)
-        top.addWidget(self.btn_new_sale)
-        top.addWidget(self.btn_new_expense)
 
         root.addLayout(top)
 
@@ -193,8 +187,7 @@ class DashboardView(QWidget):
         root.addItem(QSpacerItem(0, 6, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
     def _wire(self) -> None:
-        self.btn_new_sale.clicked.connect(self.create_sale_requested)
-        self.btn_new_expense.clicked.connect(self.add_expense_requested)
+
 
         self.cmb_period.currentIndexChanged.connect(self._on_period_combo)
         self.btn_apply_period.clicked.connect(self._apply_period)
