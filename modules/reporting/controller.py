@@ -113,7 +113,7 @@ class ReportingController(BaseModule):
             "Financial Reports tab failed to load.",
         )
 
-        # ---- New tabs to implement (show placeholder until ready) ----
+        # ---- Individual tabs for proper sub-tab structure ----
         sales_widget = _safe_import_widget(
             "inventory_management.modules.reporting.sales_reports",
             "SalesReportsTab",
@@ -132,6 +132,97 @@ class ReportingController(BaseModule):
             self.conn,
             "Payment Reports tab not available yet.",
         )
+        
+
+        
+        # Create a combined Payments tab with all individual sub-tabs
+        combined_payments_widget = QWidget()
+        combined_payments_layout = QVBoxLayout(combined_payments_widget)
+        
+        # Create a tab widget for all payment-related reports as direct sub-tabs
+        payments_sub_tabs = QTabWidget()
+        payments_sub_tabs.addTab(payments_widget, "Summary")
+        
+        # Since we cannot move widgets between parents in Qt, we'll need a different approach.
+        # The proper way is to create a custom combined payment tab that has all the functionality
+        # But for now, let's work with the existing system differently by creating new instances
+        
+        # For enhanced payments, we need to think differently about the approach
+        # Let's create a proper implementation that creates individual tabs
+        # This is complex, so we'll implement a simpler approach
+        
+        # Create individual report widgets to add as separate tabs
+        # This approach avoids the complexities of widget reparenting while still achieving the goal
+        try:
+            # Summary tab (from original payment_reports.py) - this shows cleared payments only
+            from inventory_management.modules.reporting.payment_reports import PaymentReportsTab
+            summary_widget = PaymentReportsTab(self.conn)
+            summary_widget.refresh()  # Ensure data is loaded
+            payments_sub_tabs.addTab(summary_widget, "Summary")
+            
+            # Enhanced payment report tabs (from enhanced_payment_reports.py)
+            from inventory_management.modules.reporting.enhanced_payment_reports import EnhancedPaymentReportsTab
+            enhanced_instance = EnhancedPaymentReportsTab(self.conn)
+            enhanced_instance.refresh()  # Ensure data is loaded
+            # Add each sub-tab from EnhancedPaymentReportsTab individually
+            for i in range(enhanced_instance.tabs.count()):
+                sub_widget = enhanced_instance.tabs.widget(i)
+                sub_title = enhanced_instance.tabs.tabText(i)
+                # Create unique names to avoid conflicts
+                if sub_title == "All Payments":
+                    unique_title = "All Payment Records"  
+                elif sub_title == "By Status":
+                    unique_title = "All Payments by Status"
+                elif sub_title == "Uncleared":
+                    unique_title = "Uncleared Payment Records"
+                else:
+                    unique_title = sub_title
+                payments_sub_tabs.addTab(sub_widget, unique_title)
+            
+            # Comprehensive payment report tabs (from comprehensive_payments_reports.py)
+            from inventory_management.modules.reporting.comprehensive_payments_reports import ComprehensivePaymentReportsTab
+            comp_instance = ComprehensivePaymentReportsTab(self.conn)
+            comp_instance.refresh()  # Ensure data is loaded
+            # Add each sub-tab from ComprehensivePaymentReportsTab individually
+            for i in range(comp_instance.tabs.count()):
+                sub_widget = comp_instance.tabs.widget(i)
+                sub_title = comp_instance.tabs.tabText(i)
+                # Create unique names to avoid conflicts
+                if sub_title == "By Status":
+                    unique_title = "Payment Summary by Status"
+                elif sub_title == "Unprocessed":
+                    unique_title = "Unprocessed Payment Records"
+                elif sub_title == "All Payments":
+                    unique_title = "Detailed Payment Records"
+                else:
+                    unique_title = sub_title
+                payments_sub_tabs.addTab(sub_widget, unique_title)
+                
+        except Exception as e:
+            # If individual sub-tab extraction fails, add fallback tabs
+            summary_widget = _safe_import_widget(
+                "inventory_management.modules.reporting.payment_reports",
+                "PaymentReportsTab",
+                self.conn,
+                "Payment Reports tab not available yet.",
+            )
+            enhanced_payments_widget = _safe_import_widget(
+                "inventory_management.modules.reporting.enhanced_payment_reports",
+                "EnhancedPaymentReportsTab",
+                self.conn,
+                "Enhanced Payment Reports tab not available yet.",
+            )
+            comprehensive_payments_widget = _safe_import_widget(
+                "inventory_management.modules.reporting.comprehensive_payments_reports",
+                "ComprehensivePaymentReportsTab",
+                self.conn,
+                "Comprehensive Payment Reports tab not available yet.",
+            )
+            payments_sub_tabs.addTab(summary_widget, "Summary")
+            payments_sub_tabs.addTab(enhanced_payments_widget, "Enhanced Payments")
+            payments_sub_tabs.addTab(comprehensive_payments_widget, "Comprehensive Payments")
+        
+        combined_payments_layout.addWidget(payments_sub_tabs)
 
         # ---- Add tabs in the desired order ----
         self.tabs.addTab(vendor_widget, "Vendor Aging")
@@ -141,7 +232,7 @@ class ReportingController(BaseModule):
         self.tabs.addTab(financials_widget, "Financials")
         self.tabs.addTab(sales_widget, "Sales")
         self.tabs.addTab(purchases_widget, "Purchases")
-        self.tabs.addTab(payments_widget, "Payments")
+        self.tabs.addTab(combined_payments_widget, "Payments")  # Payments with sub-tabs
 
         # Map for programmatic navigation if other modules need to open a specific tab
         self._key_to_index: Dict[str, int] = {
@@ -152,7 +243,7 @@ class ReportingController(BaseModule):
             "financials": 4,
             "sales": 5,
             "purchases": 6,
-            "payments": 7,
+            "payments": 7,  # Now refers to the combined payments tab
         }
 
         self.tabs.currentChanged.connect(self._on_tab_changed)

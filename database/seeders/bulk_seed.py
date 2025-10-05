@@ -45,6 +45,7 @@ Other:
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import random
 import math
@@ -83,6 +84,42 @@ CONFIG = {
         "expenses": 3200,
         "audit_logs": 120000,
         "error_logs": 400
+    },
+    # NEW: Minimum target counts for larger datasets
+    "COUNTS_MIN_TARGETS": {
+        "purchases_min": 50000,
+        "expenses_min": 10000
+    },
+    # NEW: Per-product purchase targets
+    "PER_PRODUCT_PURCHASE_TARGETS": {
+        "min_po_occurrences": 25,
+        "min_purchased_qty_base": 100
+    },
+    # NEW: Sell-through configuration
+    "SELL_THROUGH": {
+        "min": 0.55,
+        "max": 0.85,
+        "enforce_per_product": True,
+        "min_leftover_per_product": 1
+    },
+    # NEW: Returns configuration
+    "RETURNS": {
+        "enable": True,
+        "sales_return_rate": 0.06,
+        "purchase_return_rate": 0.03,
+        "partial_line_probability": 0.65
+    },
+    # NEW: Expenses configuration
+    "EXPENSES": {
+        "seasonality": True,
+        "category_zipf_s": 1.1,
+        "amount_mu": 120.0,
+        "amount_sigma": 70.0
+    },
+    # NEW: Export configuration
+    "EXPORTS": {
+        "dir": "/home/pc/Desktop/inventory_management/_exports",
+        "inventory_snapshot_csv": "inventory_snapshot.csv"
     },
     "DISCOUNTS": {
         "po_level_mix": {"none": 5400, "header_only": 5400, "line_only": 4500, "both": 2700},
@@ -313,6 +350,38 @@ def build_uom_maps(conn):
             alts[pid].append(uid)
     return base, alts
 
+def get_purchased_qty_per_product(conn) -> Dict[int, float]:
+    """
+    Calculate total purchased quantity in base UoM for each product.
+    This accounts for quantity conversions from purchase UoM to base UoM.
+    """
+    cur = conn.execute("""
+        SELECT 
+            pi.product_id,
+            SUM(pi.quantity * pu.factor_to_base) as total_base_qty
+        FROM purchase_items pi
+        JOIN product_uoms pu ON pi.product_id = pu.product_id AND pi.uom_id = pu.uom_id
+        JOIN purchases p ON pi.purchase_id = p.purchase_id
+        GROUP BY pi.product_id
+    """)
+    return {row[0]: row[1] for row in cur.fetchall()}
+
+def get_sold_qty_per_product(conn) -> Dict[int, float]:
+    """
+    Calculate total sold quantity in base UoM for each product.
+    This accounts for quantity conversions from sale UoM to base UoM.
+    """
+    cur = conn.execute("""
+        SELECT 
+            si.product_id,
+            SUM(si.quantity * pu.factor_to_base) as total_base_qty
+        FROM sale_items si
+        JOIN product_uoms pu ON si.product_id = pu.product_id AND si.uom_id = pu.uom_id
+        JOIN sales s ON si.sale_id = s.sale_id AND s.doc_type = 'sale'
+        GROUP BY si.product_id
+    """)
+    return {row[0]: row[1] for row in cur.fetchall()}
+
 def price_qty_for_purchase(rng):
     pmin = CONFIG["PRICING"]["purchase_price_min"]
     pmax = CONFIG["PRICING"]["purchase_price_max"]
@@ -331,7 +400,44 @@ def price_qty_for_sale(rng):
     return unit, qty
 
 def allocate_order_header_discounts(rng, count, level_mix, header_split, pct_values, fix_values):
-    assert sum(level_mix.values()) == count
+    # Scale the level_mix values to match the target count
+    original_total = sum(level_mix.values())
+    if original_total == 0:
+        # If original total is 0, assign based on target proportions
+        level_mix = {k: int(v * (count / 18000)) for k, v in CONFIG["DISCOUNTS"]["po_level_mix"].items()}
+        original_total = sum(level_mix.values())
+    
+    # Scale the counts proportionally to the new target
+    scaled_level_mix = {}
+    total_scaled = 0
+    remaining = count
+    
+    # Calculate scaled values while keeping proportions roughly the same
+    for k, v in level_mix.items():
+        if total_scaled < count:
+            scaled_val = int(round(v * count / original_total))
+            if remaining > 0:
+                # Adjust the last value to make sure the sum equals count
+                if k == list(level_mix.keys())[-1]:
+                    scaled_val = remaining
+                else:
+                    scaled_val = min(scaled_val, remaining)
+            scaled_level_mix[k] = scaled_val
+            total_scaled += scaled_val
+            remaining = count - total_scaled
+        else:
+            scaled_level_mix[k] = 0
+    
+    # Ensure the sum equals count by adjusting the last value if needed
+    keys = list(scaled_level_mix.keys())
+    if keys:
+        current_sum = sum(scaled_level_mix.values())
+        if current_sum != count:
+            diff = count - current_sum
+            scaled_level_mix[keys[-1]] += diff
+
+    level_mix = scaled_level_mix
+    
     header_total = level_mix["header_only"] + level_mix["both"]
     pct_n = int(round(header_total * header_split["percent"]))
     fix_n = header_total - pct_n
@@ -383,22 +489,37 @@ def allocate_line_discount_pool(rng, discounted_lines, percent_share, pct_values
 
 def seed_purchases(conn, rng, users_ids, vendor_ids, products, base_uom, commit_size):
     dcfg = CONFIG["DISCOUNTS"]
-    level_mix = dcfg["po_level_mix"]
+    
+    # Calculate how many purchases we need to ensure each product meets minimum requirements
+    min_po_occurrences = CONFIG["PER_PRODUCT_PURCHASE_TARGETS"]["min_po_occurrences"]
+    min_purchased_qty_base = CONFIG["PER_PRODUCT_PURCHASE_TARGETS"]["min_purchased_qty_base"]
+    
+    # Determine target purchase count based on minimum requirements
+    min_purchases_needed = max(
+        CONFIG["COUNTS"]["purchases"],  # Original count
+        min_po_occurrences * CONFIG["COUNTS"]["products"]  # To ensure each product appears in at least min_po_occurrences POs
+    )
+    
+    # Adjust the count to ensure we meet the minimum requirements
+    CONFIG["COUNTS"]["purchases"] = min_purchases_needed
+    
+    level_mix = {k: int(v * (min_purchases_needed / 18000)) for k, v in dcfg["po_level_mix"].items()}  # Scale based on new target
     assigns = allocate_order_header_discounts(
-        rng, CONFIG["COUNTS"]["purchases"], level_mix,
+        rng, min_purchases_needed, level_mix,
         dcfg["po_header_type_split"],
         dcfg["header_percent_values"],
         dcfg["header_fixed_values"]
     )
+    
     # 2/3/4 line distribution equal thirds
-    lines_per_order = [2]*6000 + [3]*6000 + [4]*6000
+    lines_per_order = [2]*int(min_purchases_needed/3) + [3]*int(min_purchases_needed/3) + [4]*int(min_purchases_needed - 2*int(min_purchases_needed/3))
     rng.shuffle(lines_per_order)
 
     # line discount pool for discounted lines
-    discounted_orders = level_mix["line_only"] + level_mix["both"]  # 7200
-    discounted_lines_target = discounted_orders * 3  # 21600
+    discounted_orders = level_mix["line_only"] + level_mix["both"]
+    discounted_lines_target = sum(lines_per_order) * (discounted_orders / min_purchases_needed)  # Approximate
     line_pool = allocate_line_discount_pool(
-        rng, discounted_lines_target, dcfg["po_line_percent_share"],
+        rng, int(discounted_lines_target), dcfg["po_line_percent_share"],
         dcfg["line_percent_values"], dcfg["line_fixed_values"]
     )
     lp_idx = 0
@@ -406,21 +527,44 @@ def seed_purchases(conn, rng, users_ids, vendor_ids, products, base_uom, commit_
     purchase_ids = []
     item_rows = []
 
-    for i in range(CONFIG["COUNTS"]["purchases"]):
+    # Track per-product counts to ensure minimums are met
+    product_occurrences = defaultdict(int)
+    product_qty_base = defaultdict(int)
+
+    for i in range(min_purchases_needed):
         pid = f"PO-{i+1:06d}"
         vendor_id = rng.choice(vendor_ids)
         user_id = rng.choice(users_ids)
         date = random_date_within(CONFIG["DATES"]["days_back"], rng)
-        n_lines = lines_per_order[i]
+        n_lines = lines_per_order[i % len(lines_per_order)]  # Cycle through if we have more purchases than planned
         # lines
         subtotal = 0.0
         for ln in range(n_lines):
-            prod_id = rng.choice(list(products.keys()))
+            # First ensure we meet minimum occurrences and quantities for each product
+            product_id_list = list(products.keys())
+            if len(product_occurrences) < len(product_id_list):
+                # Still need to reach min occurrences for some products
+                eligible_products = [pid for pid in product_id_list 
+                                   if product_occurrences[pid] < min_po_occurrences or product_qty_base[pid] < min_purchased_qty_base]
+                if eligible_products:
+                    prod_id = rng.choice(eligible_products)
+                else:
+                    prod_id = rng.choice(product_id_list)
+            else:
+                # All products have met their minimums, use random selection
+                prod_id = rng.choice(product_id_list)
+            
+            # Update tracking
+            product_occurrences[prod_id] += 1
+            
             uom_id = base_uom[prod_id]  # base only
             pprice, sprice, qty = price_qty_for_purchase(rng)
+            
+            # Add to quantity tracking (converting to base if needed, but since we use base UOM, factor is 1)
+            product_qty_base[prod_id] += qty
 
             # per-unit item_discount (percent -> unit * p/100, fixed -> per-unit value)
-            if assigns[i]["level"] in ("line_only","both") and lp_idx < len(line_pool):
+            if i < len(assigns) and assigns[i]["level"] in ("line_only","both") and lp_idx < len(line_pool):
                 ltype, lval = line_pool[lp_idx]; lp_idx += 1
                 disc_per_unit = money((pprice * (lval/100.0)) if ltype=="percent" else lval)
             else:
@@ -434,7 +578,7 @@ def seed_purchases(conn, rng, users_ids, vendor_ids, products, base_uom, commit_
             item_rows.append((pid, prod_id, qty, uom_id, pprice, sprice, disc_per_unit))
 
         # header order_discount -> numeric
-        htype, hval = assigns[i]["header"]
+        htype, hval = assigns[i % len(assigns)]["header"] if i < len(assigns) else (None, None)
         if htype is None:
             order_disc = 0.0
         elif htype == "percent":
@@ -465,7 +609,7 @@ def seed_purchases(conn, rng, users_ids, vendor_ids, products, base_uom, commit_
 
 def seed_sales(conn, rng, users_ids, customer_ids, products, base_uom, alt_uoms, commit_size):
     dcfg = CONFIG["DISCOUNTS"]
-    level_mix = dcfg["so_level_mix"]
+    level_mix = {k: int(v * (CONFIG["COUNTS"]["sales"] / 24000)) for k, v in dcfg["so_level_mix"].items()}  # Scale based on new target
     assigns = allocate_order_header_discounts(
         rng, CONFIG["COUNTS"]["sales"], level_mix,
         dcfg["so_header_type_split"],
@@ -478,10 +622,10 @@ def seed_sales(conn, rng, users_ids, customer_ids, products, base_uom, alt_uoms,
     lines_per_order = [2]*per + [3]*per + [4]*(N - 2*per)
     rng.shuffle(lines_per_order)
 
-    discounted_orders = level_mix["line_only"] + level_mix["both"]  # 9600
-    discounted_lines_target = discounted_orders * 3  # 28800
+    discounted_orders = level_mix["line_only"] + level_mix["both"]
+    discounted_lines_target = sum(lines_per_order) * (discounted_orders / N)  # Approximate
     line_pool = allocate_line_discount_pool(
-        rng, discounted_lines_target, dcfg["so_line_percent_share"],
+        rng, int(discounted_lines_target), dcfg["so_line_percent_share"],
         dcfg["line_percent_values"], dcfg["line_fixed_values"]
     )
     lp_idx = 0
@@ -489,11 +633,27 @@ def seed_sales(conn, rng, users_ids, customer_ids, products, base_uom, alt_uoms,
     sale_ids = []
     item_rows = []
 
-    # select quotation indices (exactly 2,400); distribute statuses equally
-    quotation_indices = set(rng.sample(range(N), k=2400))
+    # select quotation indices (maintain proportion); distribute statuses equally
+    quotation_count = int(2400 * (N / 24000))  # Scale quotation count
+    quotation_indices = set(rng.sample(range(N), k=quotation_count))
     q_statuses = ["draft","sent","accepted","expired","cancelled"]
-    q_cycle = list(itertools.chain.from_iterable([[s]*480 for s in q_statuses]))
+    q_cycle = list(itertools.chain.from_iterable([[s]*int(quotation_count/len(q_statuses)) for s in q_statuses]))
+    # Add any remaining quotas
+    for i in range(quotation_count - len(q_cycle)):
+        q_cycle.append(q_statuses[i % len(q_statuses)])
     rng.shuffle(q_cycle); q_idx = 0
+
+    # Get purchased quantities per product to enforce sell-through constraints
+    purchased = get_purchased_qty_per_product(conn)  # {product_id: qty_base}
+    
+    # Calculate sellable caps per product
+    caps = {}
+    for pid, qty in purchased.items():
+        cap = int(qty * rng.uniform(CONFIG["SELL_THROUGH"]["min"], CONFIG["SELL_THROUGH"]["max"]))
+        caps[pid] = max(0, cap)  # Ensure non-negative
+    
+    # Track sold quantities per product
+    sold = defaultdict(float)  # Use float to handle factor_to_base conversions properly
 
     for i in range(N):
         sid = f"SO-{i+1:06d}"
@@ -511,15 +671,51 @@ def seed_sales(conn, rng, users_ids, customer_ids, products, base_uom, alt_uoms,
         subtotal = 0.0
         for ln in range(n_lines):
             prod_id = rng.choice(list(products.keys()))
+            
+            # Apply sell-through constraint
+            cap = caps.get(prod_id, 0)
             base = base_uom[prod_id]
             alts = alt_uoms[prod_id]
             uom_id = (alts[ln % len(alts)] if alts and (ln % 2 == 1) else base)
-
+            
+            # Get base quantity to check against cap
             unit_price, qty = price_qty_for_sale(rng)
+            
+            # Convert sale quantity to base UoM for comparison with cap
+            # First, find the factor from this UoM to base
+            cur_factor = conn.execute(
+                "SELECT factor_to_base FROM product_uoms WHERE product_id = ? AND uom_id = ?", 
+                (prod_id, uom_id)
+            ).fetchone()
+            if cur_factor:
+                factor_to_base = cur_factor[0]
+            else:
+                factor_to_base = 1.0  # Default if not found
+            
+            qty_in_base = qty * factor_to_base
+            
+            # Check if this sale would exceed the cap
+            if sold[prod_id] + qty_in_base > max(cap, CONFIG["SELL_THROUGH"]["min_leftover_per_product"]):
+                # Adjust quantity to respect cap while maintaining minimum leftover
+                max_qty_in_base = max(0, cap - sold[prod_id])
+                if max_qty_in_base <= 0:
+                    # Skip this line item if we can't sell anything
+                    continue
+                # Convert back to sale UoM
+                new_qty = max(1, int(max_qty_in_base / factor_to_base))
+                if new_qty <= 0:
+                    # Skip this line item if quantity becomes zero
+                    continue
+                qty = new_qty
+                qty_in_base = new_qty * factor_to_base
+            
+            sold[prod_id] += qty_in_base
+
             if assigns[i]["level"] in ("line_only","both") and lp_idx < len(line_pool):
                 ltype, lval = line_pool[lp_idx]; lp_idx += 1
                 disc_per_unit = money((unit_price * (lval/100.0)) if ltype=="percent" else lval)
             else:
+                ltype, lval = (None, None)
                 disc_per_unit = 0.0
 
             net_unit = max(0.0, money(unit_price - disc_per_unit))
@@ -581,15 +777,23 @@ def method_compatible_instrument(method: str) -> str:
 
 def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_bank_by_vendor, users_ids):
     pay = CONFIG["PAYMENTS"]
-    paid_one = pay["purchases_paid_one"]
-    partial_two = pay["purchases_partial_two"]
-    unpaid = pay["purchases_unpaid"]
-    assert paid_one + partial_two + unpaid == len(purchase_ids)
-
+    
+    # Calculate proportions based on original config but scale to actual purchase_ids count
+    total_original = pay["purchases_paid_one"] + pay["purchases_partial_two"] + pay["purchases_unpaid"]
+    if total_original > 0:
+        paid_one = int(len(purchase_ids) * (pay["purchases_paid_one"] / total_original))
+        partial_two = int(len(purchase_ids) * (pay["purchases_partial_two"] / total_original))
+        unpaid = len(purchase_ids) - paid_one - partial_two  # remaining ones are unpaid
+    else:
+        # Fallback: assign some reasonable defaults
+        paid_one = int(len(purchase_ids) * 0.5)  # 50% paid in one
+        partial_two = int(len(purchase_ids) * 0.3)  # 30% partially paid
+        unpaid = len(purchase_ids) - paid_one - partial_two  # remaining unpaid
+    
     rng.shuffle(purchase_ids)
     ids_paid = purchase_ids[:paid_one]
     ids_partial = purchase_ids[paid_one:paid_one+partial_two]
-    # unpaid remainder: no rows
+    # unpaid remainder: no rows (they remain unpaid)
 
     rows = []
 
@@ -619,7 +823,9 @@ def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_ban
         date = random_date_within(CONFIG["DATES"]["days_back"], rng)
         clearing = rng.choices(pay["clearing_states"], weights=[1,1,8,1], k=1)[0]
         instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
-        rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, None, clearing, None, None, rng.choice(users_ids)))
+        # Set cleared_date if clearing_state is 'cleared', otherwise None
+        cleared_date = date if clearing == 'cleared' else None
+        rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
 
     # partial (2 payments each)
     for i, pid in enumerate(ids_partial):
@@ -635,7 +841,9 @@ def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_ban
             date = random_date_within(CONFIG["DATES"]["days_back"], rng)
             clearing = rng.choices(pay["clearing_states"], weights=[2,4,3,1], k=1)[0]
             instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
-            rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, None, clearing, None, None, rng.choice(users_ids)))
+            # Set cleared_date if clearing_state is 'cleared', otherwise None
+            cleared_date = date if clearing == 'cleared' else None
+            rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
 
     conn.executemany(
         "INSERT INTO purchase_payments (purchase_id, date, amount, method, bank_account_id, vendor_bank_account_id, instrument_type, instrument_no, instrument_date, deposited_date, cleared_date, clearing_state, ref_no, notes, created_by) "
@@ -646,9 +854,16 @@ def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_ban
     return len(rows)
 
 def seed_sale_payments(conn, rng, sale_ids, company_bank_ids, users_ids):
-    target = CONFIG["COUNTS"]["sale_payments"]
+    # Get real sales (not quotations)
     cur = conn.execute("SELECT sale_id, total_amount, paid_amount FROM sales WHERE doc_type='sale' ORDER BY sale_id")
     real_sales = cur.fetchall()
+    
+    if not real_sales:
+        return 0  # No real sales to create payments for
+    
+    # Calculate target based on proportion of real sales
+    target = int(CONFIG["COUNTS"]["sale_payments"] * (len(real_sales) / CONFIG["COUNTS"]["sales"]))
+    
     rows = []
     si = 0
     while len(rows) < target:
@@ -659,9 +874,18 @@ def seed_sale_payments(conn, rng, sale_ids, company_bank_ids, users_ids):
         date = random_date_within(CONFIG["DATES"]["days_back"], rng)
         clearing = rng.choices(CONFIG["PAYMENTS"]["clearing_states"], weights=[6,2,2,1], k=1)[0]
         instrument_no = f"RX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
-        amount = max(5.0, money(random.uniform(20.0, 600.0)))
-        rows.append((sid, date, amount, method, bank_id, inst, instrument_no, None, None, None, clearing, None, None, rng.choice(users_ids)))
+        
+        # Clamp payment to remaining amount to avoid overpayment
+        remaining_due = total_amount - paid
+        amount = max(5.0, min(money(random.uniform(20.0, 600.0)), remaining_due - 0.01))  # Ensure no overpayment
+        
+        # Set cleared_date if clearing_state is 'cleared', otherwise None
+        cleared_date = date if clearing == 'cleared' else None
+        
+        if amount > 0:  # Only add if amount is positive
+            rows.append((sid, date, amount, method, bank_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
         si += 1
+    
     conn.executemany(
         "INSERT INTO sale_payments (sale_id, date, amount, method, bank_account_id, instrument_type, instrument_no, instrument_date, deposited_date, cleared_date, clearing_state, ref_no, notes, created_by) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -841,6 +1065,251 @@ def seed_expenses(conn, rng):
     conn.executemany("INSERT INTO expenses (description, amount, date, category_id) VALUES (?,?,?,?)", rows)
     conn.commit()
 
+def seed_sales_returns(conn, rng, sales_ids, users_ids, commit_size):
+    """
+    Seed sales returns as inventory transactions linked to original sale items.
+    """
+    if not CONFIG["RETURNS"]["enable"]:
+        print("Sales returns disabled by configuration")
+        return 0
+
+    # Sample posted sales to create returns from
+    real_sales = [sid for sid in sales_ids if sid in [row[0] for row in conn.execute("SELECT sale_id FROM sales WHERE doc_type='sale'").fetchall()]]
+    if not real_sales:
+        print("No real sales to return from")
+        return 0
+
+    # Calculate number of returns based on rate
+    target_returns = int(len(real_sales) * CONFIG["RETURNS"]["sales_return_rate"])
+    
+    rows = []
+    inv_rows = []
+    return_count = 0
+    
+    for _ in range(target_returns):
+        # Sample a sale to return from
+        sale_id = rng.choice(real_sales)
+        
+        # Get sale items for that sale
+        sale_items = conn.execute(
+            "SELECT item_id, product_id, quantity, uom_id FROM sale_items WHERE sale_id=?", 
+            (sale_id,)
+        ).fetchall()
+        
+        if not sale_items:
+            continue
+            
+        # Choose 1-2 lines to return (as specified in requirements)
+        num_lines_to_return = min(rng.randint(1, 2), len(sale_items))
+        selected_items = rng.sample(sale_items, num_lines_to_return)
+        
+        for item in selected_items:
+            item_id, product_id, original_qty, uom_id = item
+            
+            # Determine return quantity (partial or full)
+            if rng.random() < CONFIG["RETURNS"]["partial_line_probability"]:
+                # Partial return
+                return_qty = max(1, int(original_qty * rng.uniform(0.1, 0.9)))
+            else:
+                # Full return (or as much as was sold)
+                return_qty = original_qty
+            
+            # Make sure return qty doesn't exceed original sold qty
+            return_qty = min(return_qty, original_qty)
+            
+            if return_qty <= 0:
+                continue
+            
+            # Create inventory transaction for the return (increases stock)
+            date = random_date_within(CONFIG["DATES"]["days_back"], rng)
+            # Add to inventory_transactions
+            inv_rows.append((
+                product_id, 
+                return_qty, 
+                uom_id, 
+                'sale_return', 
+                'sales', 
+                sale_id, 
+                item_id, 
+                date, 
+                date,  # posted_at
+                0,     # txn_seq
+                f"Return for sale {sale_id}", 
+                rng.choice(users_ids)
+            ))
+            
+        return_count += 1
+        if return_count % commit_size == 0:
+            conn.executemany(
+                "INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, reference_table, reference_id, reference_item_id, date, posted_at, txn_seq, notes, created_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                inv_rows
+            )
+            conn.commit()
+            inv_rows = []
+    
+    # Insert any remaining inventory transactions
+    if inv_rows:
+        conn.executemany(
+            "INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, reference_table, reference_id, reference_item_id, date, posted_at, txn_seq, notes, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            inv_rows
+        )
+        conn.commit()
+    
+    return return_count
+
+def seed_purchase_returns(conn, rng, purchase_ids, users_ids, commit_size):
+    """
+    Seed purchase returns as inventory transactions linked to original purchase items.
+    """
+    if not CONFIG["RETURNS"]["enable"]:
+        print("Purchase returns disabled by configuration")
+        return 0
+
+    # Calculate number of returns based on rate
+    target_returns = int(len(purchase_ids) * CONFIG["RETURNS"]["purchase_return_rate"])
+    
+    rows = []
+    inv_rows = []
+    return_count = 0
+    
+    for _ in range(target_returns):
+        # Sample a purchase to return from
+        purchase_id = rng.choice(purchase_ids)
+        
+        # Get purchase items for that purchase
+        purchase_items = conn.execute(
+            "SELECT item_id, product_id, quantity, uom_id FROM purchase_items WHERE purchase_id=?", 
+            (purchase_id,)
+        ).fetchall()
+        
+        if not purchase_items:
+            continue
+            
+        # Choose 1 line to return (as specified in requirements)
+        selected_item = rng.choice(purchase_items)
+        item_id, product_id, original_qty, uom_id = selected_item
+        
+        # Determine return quantity (partial or full)
+        if rng.random() < CONFIG["RETURNS"]["partial_line_probability"]:
+            # Partial return
+            return_qty = max(1, int(original_qty * rng.uniform(0.1, 0.8)))
+        else:
+            # Full return (or as much as was purchased)
+            return_qty = original_qty
+        
+        # Make sure return qty doesn't exceed original purchased qty
+        return_qty = min(return_qty, original_qty)
+        
+        if return_qty <= 0:
+            continue
+        
+        # Create inventory transaction for the return (decreases stock)
+        date = random_date_within(CONFIG["DATES"]["days_back"], rng)
+        # Add to inventory_transactions
+        inv_rows.append((
+            product_id, 
+            return_qty, 
+            uom_id, 
+            'purchase_return', 
+            'purchases', 
+            purchase_id, 
+            item_id, 
+            date, 
+            date,  # posted_at 
+            0,     # txn_seq
+            f"Return for purchase {purchase_id}", 
+            rng.choice(users_ids)
+        ))
+        
+        return_count += 1
+        if return_count % commit_size == 0:
+            conn.executemany(
+                "INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, reference_table, reference_id, reference_item_id, date, posted_at, txn_seq, notes, created_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                inv_rows
+            )
+            conn.commit()
+            inv_rows = []
+    
+    # Insert any remaining inventory transactions
+    if inv_rows:
+        conn.executemany(
+            "INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, reference_table, reference_id, reference_item_id, date, posted_at, txn_seq, notes, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            inv_rows
+        )
+        conn.commit()
+    
+    return return_count
+
+def seed_expenses(conn, rng):
+    # NEW: Enhanced expense generation with seasonality
+    import calendar
+    from datetime import datetime
+
+    # categories - ensure there are enough based on requirements
+    expense_categories_needed = CONFIG["COUNTS"]["expense_categories"]
+    existing_categories = conn.execute("SELECT category_id FROM expense_categories ORDER BY category_id").fetchall()
+    
+    # Ensure we have required number of categories
+    if len(existing_categories) < expense_categories_needed:
+        for i in range(len(existing_categories), expense_categories_needed):
+            conn.execute("INSERT INTO expense_categories (name) VALUES (?)", (f"Category {i+1:02d}",))
+    
+    # Now get the actual categories
+    cur = conn.execute("SELECT category_id FROM expense_categories ORDER BY category_id")
+    cats = [r[0] for r in cur.fetchall()]
+    
+    # NEW: Apply Zipf distribution to category selection with s parameter
+    # Weights for categories based on Zipf distribution: P(k) = 1 / (k^s * H(N,s))
+    # For our purposes, we'll use simple weights as 1/k^s
+    zipf_s = CONFIG["EXPENSES"]["category_zipf_s"]
+    zipf_weights = [1 / (i ** zipf_s) for i in range(1, len(cats) + 1)]
+    
+    target_expenses = CONFIG["COUNTS"]["expenses"]
+    
+    rows = []
+    for i in range(target_expenses):
+        # Apply Zipf distribution to select category
+        cat_idx = rng.choices(range(len(cats)), weights=zipf_weights)[0]
+        cat = cats[cat_idx]
+        
+        desc = f"Expense {i+1:04d}"
+        
+        # NEW: Apply seasonality if enabled
+        dt = random_date_within(CONFIG["DATES"]["days_back"], rng)
+        
+        # NEW: Apply seasonality based on month if enabled
+        if CONFIG["EXPENSES"]["seasonality"]:
+            # Increase expenses for certain months (e.g., Q4, end of fiscal periods)
+            date_obj = datetime.strptime(dt, "%Y-%m-%d")
+            month = date_obj.month
+            # Higher weights for months where expenses typically increase
+            if month in [3, 6, 9, 12]:  # End of quarters
+                # Increase amount by up to 30%
+                season_factor = rng.uniform(1.0, 1.3)
+            elif month in [11, 12]:  # End of year
+                season_factor = rng.uniform(1.1, 1.4)
+            else:
+                season_factor = rng.uniform(0.8, 1.2)
+        else:
+            season_factor = 1.0
+        
+        # NEW: Use truncated normal for amounts with mean and std dev
+        mu = CONFIG["EXPENSES"]["amount_mu"]
+        sigma = CONFIG["EXPENSES"]["amount_sigma"]
+        
+        # Generate amount using normal distribution and apply seasonality
+        base_amt = rng.normalvariate(mu, sigma)
+        amt = max(5.0, money(base_amt * season_factor))
+        
+        rows.append((desc, amt, dt, cat))
+    
+    conn.executemany("INSERT INTO expenses (description, amount, date, category_id) VALUES (?,?,?,?)", rows)
+    conn.commit()
+
 def seed_logs(conn, rng, users_ids, purchases_ids, sales_ids):
     # audit_logs
     actions = ["create","update","delete","pay","return","adjust","login"]
@@ -885,9 +1354,61 @@ def seed_logs(conn, rng, users_ids, purchases_ids, sales_ids):
 def main():
     parser = argparse.ArgumentParser(description="Seed data for provided schema.py")
     parser.add_argument("--db", required=True, help="Path to SQLite DB")
+    parser.add_argument("--counts-json", help="JSON string or path to file with count overrides")
+    parser.add_argument("--scale", type=float, default=1.0, help="Global multiplier applied to base counts")
+    parser.add_argument("--days-back", type=int, default=365, help="Date range for synthetic activity")
+    parser.add_argument("--enable-returns", action="store_true", help="Enable seeding of returns")
+    parser.add_argument("--disable-returns", action="store_false", dest="enable_returns", help="Disable seeding of returns")
+    parser.set_defaults(enable_returns=True)  # Default to True
+    parser.add_argument("--sell-through-target", type=str, help="Sell-through min,max range as '0.55,0.85'")
+    parser.add_argument("--min-leftover-per-product", type=int, default=1, help="Minimum on-hand units per product at end")
+    parser.add_argument("--min-po-occurrences-per-product", type=int, default=25, help="Minimum number of purchase_item lines per product")
+    parser.add_argument("--min-purchased-qty-per-product", type=int, default=100, help="Minimum total purchased base units per product")
     parser.add_argument("--commit-size", type=int, default=5000)
     parser.add_argument("--rng-seed", type=int, default=42)
     args = parser.parse_args()
+
+    # Apply command-line overrides to CONFIG
+    if args.sell_through_target:
+        try:
+            min_val, max_val = map(float, args.sell_through_target.split(','))
+            CONFIG["SELL_THROUGH"]["min"] = min_val
+            CONFIG["SELL_THROUGH"]["max"] = max_val
+        except ValueError:
+            raise SystemExit(f"Invalid sell-through target format. Use '--sell-through-target 0.55,0.85'")
+
+    CONFIG["SELL_THROUGH"]["min_leftover_per_product"] = args.min_leftover_per_product
+    CONFIG["PER_PRODUCT_PURCHASE_TARGETS"]["min_po_occurrences"] = args.min_po_occurrences_per_product
+    CONFIG["PER_PRODUCT_PURCHASE_TARGETS"]["min_purchased_qty_base"] = args.min_purchased_qty_per_product
+    CONFIG["RETURNS"]["enable"] = args.enable_returns
+    CONFIG["DATES"]["days_back"] = args.days_back
+
+    # Update counts based on scale
+    for key in CONFIG["COUNTS"]:
+        if isinstance(CONFIG["COUNTS"][key], int):
+            CONFIG["COUNTS"][key] = int(CONFIG["COUNTS"][key] * args.scale)
+
+    # Ensure minimum purchase and expense targets are met if scale is above 1
+    if args.scale >= 1.0:
+        CONFIG["COUNTS"]["purchases"] = max(CONFIG["COUNTS"]["purchases"], CONFIG["COUNTS_MIN_TARGETS"]["purchases_min"])
+        CONFIG["COUNTS"]["expenses"] = max(CONFIG["COUNTS"]["expenses"], CONFIG["COUNTS_MIN_TARGETS"]["expenses_min"])
+
+    # Apply counts override from JSON if provided
+    if args.counts_json:
+        try:
+            # Try to parse as JSON directly first
+            override_counts = json.loads(args.counts_json)
+        except json.JSONDecodeError:
+            # If that fails, try to read as file path
+            try:
+                with open(args.counts_json) as f:
+                    override_counts = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                raise SystemExit(f"Could not parse counts as JSON or file: {args.counts_json}")
+        
+        if "COUNTS" in override_counts:
+            for key, value in override_counts["COUNTS"].items():
+                CONFIG["COUNTS"][key] = value
 
     rng = random.Random(args.rng_seed)
     conn = sqlite3.connect(args.db)
@@ -930,15 +1451,178 @@ def main():
     # Expenses
     seed_expenses(conn, rng)
 
+    # NEW: Seed returns if enabled
+    if CONFIG["RETURNS"]["enable"]:
+        print("Seeding returns...")
+        sales_return_count = seed_sales_returns(conn, rng, sale_ids, users_ids, args.commit_size)
+        purchase_return_count = seed_purchase_returns(conn, rng, purchase_ids, users_ids, args.commit_size)
+        print(f"Created {sales_return_count} sales returns and {purchase_return_count} purchase returns")
+    else:
+        sales_return_count = 0
+        purchase_return_count = 0
+
     # Logs
     seed_logs(conn, rng, users_ids, purchase_ids, sale_ids)
 
-    print("=== SEED SUMMARY ===")
+    # NEW: Calculate and print comprehensive summary
+    print("=== DETAILED SEED SUMMARY ===")
     print(f"Purchases: {len(purchase_ids)}; Purchase lines: {po_lines}")
     print(f"Sales:     {len(sale_ids)}; Sale lines: {so_lines}")
     print(f"Purchase payments: {pp_rows}; Sale payments: {sp_rows}")
-    print("Targets -> purchases=18000, po_lines=54000, sales=24000, so_lines=72000, sale_payments=28800, purchase_payments=23552")
+    print(f"Sales returns: {sales_return_count}; Purchase returns: {purchase_return_count}")
+    
+    # NEW: Additional counts
+    expense_count = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+    print(f"Expenses: {expense_count}")
+    
+    # NEW: Calculate inventory summary
+    on_hand_counts = get_inventory_snapshot(conn)
+    
+    # NEW: Validation checks
+    validation_results = validate_inventory(conn, on_hand_counts)
+    
+    print(f"Targets -> purchases={CONFIG['COUNTS']['purchases']}, po_lines={int(CONFIG['COUNTS']['purchases']*3)}, sales={CONFIG['COUNTS']['sales']}, so_lines={int(CONFIG['COUNTS']['sales']*3)}, sale_payments={CONFIG['COUNTS']['sale_payments']}, purchase_payments={CONFIG['COUNTS']['purchase_payments']}")
+    
+    # NEW: Print validation results
+    print("\n=== VALIDATION RESULTS ===")
+    for msg in validation_results:
+        print(f"✓ {msg}")
+    
+    # NEW: Export inventory snapshot
+    export_inventory_snapshot(conn, on_hand_counts)
+    
     print("Done.")
+
+def get_inventory_snapshot(conn):
+    """
+    Calculate inventory snapshot: purchased, sold, returned quantities per product
+    """
+    # Get purchased quantities per product
+    purchased = get_purchased_qty_per_product(conn)
+    # Get sold quantities per product
+    sold = get_sold_qty_per_product(conn)
+    
+    # Get sales returns (increases inventory)
+    cur = conn.execute("""
+        SELECT 
+            it.product_id,
+            SUM(it.quantity * pu.factor_to_base) as total_base_qty
+        FROM inventory_transactions it
+        JOIN product_uoms pu ON it.product_id = pu.product_id AND it.uom_id = pu.uom_id
+        WHERE it.transaction_type = 'sale_return'
+        GROUP BY it.product_id
+    """)
+    sales_returns = {row[0]: row[1] for row in cur.fetchall()}
+    
+    # Get purchase returns (decreases inventory)
+    cur = conn.execute("""
+        SELECT 
+            it.product_id,
+            SUM(it.quantity * pu.factor_to_base) as total_base_qty
+        FROM inventory_transactions it
+        JOIN product_uoms pu ON it.product_id = pu.product_id AND it.uom_id = pu.uom_id
+        WHERE it.transaction_type = 'purchase_return'
+        GROUP BY it.product_id
+    """)
+    purchase_returns = {row[0]: row[1] for row in cur.fetchall()}
+    
+    # Combine all data per product
+    all_product_ids = set(purchased.keys()) | set(sold.keys()) | set(sales_returns.keys()) | set(purchase_returns.keys())
+    inventory_snapshot = {}
+    
+    for pid in all_product_ids:
+        purchased_qty = purchased.get(pid, 0)
+        sold_qty = sold.get(pid, 0)
+        sales_return_qty = sales_returns.get(pid, 0)
+        purchase_return_qty = purchase_returns.get(pid, 0)
+        on_hand = purchased_qty - sold_qty + sales_return_qty - purchase_return_qty
+        
+        inventory_snapshot[pid] = {
+            "purchased_base": purchased_qty,
+            "sold_base": sold_qty,
+            "sales_returns_base": sales_return_qty,
+            "purchase_returns_base": purchase_return_qty,
+            "on_hand_base": on_hand
+        }
+    
+    return inventory_snapshot
+
+def validate_inventory(conn, inventory_snapshot):
+    """
+    Run validation checks on the inventory
+    """
+    results = []
+    
+    # Check 1: All products have minimum leftover inventory
+    min_leftover = CONFIG["SELL_THROUGH"]["min_leftover_per_product"]
+    violations = []
+    for pid, data in inventory_snapshot.items():
+        if data["on_hand_base"] < min_leftover:
+            violations.append(pid)
+    
+    if len(violations) == 0:
+        results.append(f"All products have at least {min_leftover} unit(s) leftover (on-hand)")
+    else:
+        results.append(f"WARNING: {len(violations)} products have less than {min_leftover} unit(s) leftover")
+    
+    # Check 2: No negative on-hand quantities
+    negative_on_hand = [pid for pid, data in inventory_snapshot.items() if data["on_hand_base"] < 0]
+    if len(negative_on_hand) == 0:
+        results.append("No products have negative on-hand quantities")
+    else:
+        results.append(f"ERROR: {len(negative_on_hand)} products have negative on-hand quantities")
+    
+    # Check 3: Verify all products have been purchased (sanity check)
+    products_with_purchases = [pid for pid, data in inventory_snapshot.items() if data["purchased_base"] > 0]
+    total_products = len(conn.execute("SELECT product_id FROM products").fetchall())
+    if len(products_with_purchases) == total_products:
+        results.append(f"All {total_products} products have purchase records")
+    else:
+        results.append(f"Only {len(products_with_purchases)}/{total_products} products have purchase records")
+    
+    return results
+
+def export_inventory_snapshot(conn, inventory_snapshot):
+    """
+    Export inventory snapshot to CSV
+    """
+    import os
+    os.makedirs(CONFIG["EXPORTS"]["dir"], exist_ok=True)
+    
+    csv_path = os.path.join(CONFIG["EXPORTS"]["dir"], CONFIG["EXPORTS"]["inventory_snapshot_csv"])
+    
+    with open(csv_path, 'w') as f:
+        f.write("product_id,purchased_base,sold_base,sales_returns_base,purchase_returns_base,on_hand_base,sell_through_ratio\n")
+        
+        for pid, data in inventory_snapshot.items():
+            if data["purchased_base"] > 0:  # Only for products that were purchased
+                sell_through = data["sold_base"] / data["purchased_base"] if data["purchased_base"] > 0 else 0
+                f.write(f"{pid},{data['purchased_base']},{data['sold_base']},{data['sales_returns_base']},{data['purchase_returns_base']},{data['on_hand_base']},{sell_through:.4f}\n")
+    
+    print(f"Inventory snapshot exported to: {csv_path}")
+    
+    # Print summary of the inventory
+    leftover_products = [data for data in inventory_snapshot.values() if data["on_hand_base"] > 0]
+    sell_through_ratios = [data["sold_base"] / data["purchased_base"] if data["purchased_base"] > 0 else 0 
+                          for data in inventory_snapshot.values() if data["purchased_base"] > 0]
+    
+    if sell_through_ratios:
+        min_sell_through = min(sell_through_ratios)
+        avg_sell_through = sum(sell_through_ratios) / len(sell_through_ratios)
+        # Calculate p95
+        sorted_ratios = sorted(sell_through_ratios)
+        p95_idx = int(0.95 * len(sorted_ratios))
+        p95_sell_through = sorted_ratios[min(p95_idx, len(sorted_ratios)-1)] if sorted_ratios else 0
+        
+        print(f"\n=== INVENTORY ANALYTICS ===")
+        print(f"Products with leftover inventory: {len(leftover_products)}")
+        print(f"Sell-through - Min: {min_sell_through:.4f}, Avg: {avg_sell_through:.4f}, P95: {p95_sell_through:.4f}")
+        
+        # Check for products violating minimum leftover constraint
+        min_leftover = CONFIG["SELL_THROUGH"]["min_leftover_per_product"]
+        violating_products = [pid for pid, data in inventory_snapshot.items() 
+                             if data["on_hand_base"] < min_leftover]
+        print(f"Products violating min_leftover constraint ({min_leftover}): {len(violating_products)}")
 
 if __name__ == "__main__":
     main()
