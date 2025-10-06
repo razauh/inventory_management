@@ -5,7 +5,7 @@ from ..base_module import BaseModule
 from .view import ProductView
 from .form import ProductForm
 from .model import ProductsTableModel
-from ...database.repositories.products_repo import ProductsRepo
+from ...database.repositories.products_repo import ProductsRepo, DomainError
 from ...utils.ui_helpers import info, error
 
 
@@ -26,7 +26,7 @@ class ProductController(BaseModule):
         if self._wired:
             return
         self.view.btn_add.clicked.connect(self._add)
-        self.view.btn_edit.clicked.connect(self._edit)
+        self.view.btn_edit.clicked.connect(self._delete)
         # self.view.btn_del.clicked.connect(self._delete)
         self.view.search.textChanged.connect(self._apply_filter)
         self._wired = True
@@ -118,10 +118,20 @@ class ProductController(BaseModule):
         self._reload()
 
     def _delete(self):
+        """
+        Delete the selected product if and only if it is not referenced by any transactions or UoM mappings.
+        Shows an error dialog (DomainError message) if deletion is blocked.
+        """
         pid = self._selected_id()
         if not pid:
             info(self.view, "Select", "Please select a product to delete.")
             return
-        self.repo.delete(pid)
-        info(self.view, "Deleted", f"Product #{pid} removed.")
+        try:
+            # products_repo.delete() already blocks deletion when referenced (transactions/mappings)
+            self.repo.delete(pid)
+        except DomainError as de:
+            # Exact domain message, e.g. "Cannot delete product: it is referenced by transactions or mappings..."
+            error(self.view, "Blocked", str(de))
+            return
+        info(self.view, "Deleted", f"Product #{pid} deleted.")
         self._reload()

@@ -2,7 +2,7 @@ from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
 from ...database.repositories.products_repo import Product
 
 class ProductsTableModel(QAbstractTableModel):
-    HEADERS = ["ID", "Name", "Category", "Min Stock", "Description"]
+    HEADERS = ["ID", "Name", "Category", "Min Stock", "Description", "Base UOM", "Alt UOM"]
     
     def __init__(self, rows: list[Product]):
         super().__init__()
@@ -21,7 +21,15 @@ class ProductsTableModel(QAbstractTableModel):
         p = self._rows[index.row()]
         if role in (Qt.DisplayRole, Qt.EditRole):
             c = index.column()
-            return [p.product_id, p.name, p.category or "", f"{p.min_stock_level:g}", p.description or ""][c]
+            return [
+                p.product_id,
+                p.name,
+                p.category or "",
+                f"{p.min_stock_level:g}",
+                p.description or "",
+                p.base_uom_name or "",
+                p.alt_uom_names or "",
+            ][c]
         return None
         
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -40,7 +48,7 @@ class ProductsTableModel(QAbstractTableModel):
     # helper for proxy filtering
     def row_as_text(self, row: int) -> str:
         p = self._rows[row]
-        return f"{p.product_id} {p.name or ''} {p.category or ''} {p.description or ''}"
+        return f"{p.product_id} {p.name or ''} {p.category or ''} {p.description or ''} {p.base_uom_name or ''} {p.alt_uom_names or ''}"
 
 # --- Add a custom proxy that searches across columns ---
 from PySide6.QtCore import QSortFilterProxyModel

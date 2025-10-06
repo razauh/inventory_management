@@ -17,6 +17,9 @@ class Product:
     description: str | None
     category: str | None
     min_stock_level: float
+    # New optional fields populated by list_products(); kept defaulted for other getters
+    base_uom_name: str | None = None
+    alt_uom_names: str | None = None
 
 
 class ProductsRepo:
@@ -48,9 +51,17 @@ class ProductsRepo:
 
     def list_products(self) -> list[Product]:
         rows = self.conn.execute(
-            "SELECT product_id, name, description, category, min_stock_level "
-            "FROM products "
-            "ORDER BY product_id DESC"
+            "SELECT "
+            "  p.product_id, p.name, p.description, p.category, p.min_stock_level, "
+            "  (SELECT u.unit_name "
+            "     FROM product_uoms pu JOIN uoms u ON u.uom_id = pu.uom_id "
+            "    WHERE pu.product_id = p.product_id AND pu.is_base = 1 "
+            "    LIMIT 1) AS base_uom_name, "
+            "  (SELECT GROUP_CONCAT(u.unit_name, ', ') "
+            "     FROM product_uoms pu JOIN uoms u ON u.uom_id = pu.uom_id "
+            "    WHERE pu.product_id = p.product_id AND pu.is_base = 0) AS alt_uom_names "
+            "FROM products p "
+            "ORDER BY p.product_id DESC"
         ).fetchall()
         return [Product(**dict(r)) for r in rows]
 
@@ -99,7 +110,6 @@ class ProductsRepo:
         If any reference exists, deletion would either fail or orphan business data.
         """
         checks = [
-            "SELECT 1 FROM product_uoms           WHERE product_id=? LIMIT 1",
             "SELECT 1 FROM purchase_items         WHERE product_id=? LIMIT 1",
             "SELECT 1 FROM sale_items             WHERE product_id=? LIMIT 1",
             "SELECT 1 FROM inventory_transactions WHERE product_id=? LIMIT 1",
@@ -136,10 +146,14 @@ class ProductsRepo:
         """
         if self._product_is_referenced(product_id):
             raise DomainError(
-                "Cannot delete product: it is referenced by transactions or mappings. "
+                "Cannot delete product: it has transaction history (purchases, sales, or inventory). "
                 "Consider archiving (soft delete) instead."
             )
         with self._immediate_tx():
+            # Remove UoM mappings first to satisfy ON DELETE RESTRICT on product_uoms.product_id.
+            # Safe because transaction-backed mappings are already blocked by the guard above
+            # and by schema triggers on product_uoms when transactions exist.
+            self.conn.execute("DELETE FROM product_uoms WHERE product_id=?", (product_id,))
             self.conn.execute("DELETE FROM products WHERE product_id=?", (product_id,))
 
     # ---------------------------- UOMs & product_uoms ----------------------------
@@ -299,3 +313,30 @@ class ProductsRepo:
             (product_id,),
         ).fetchone()
         return float(r["q"]) if r else 0.0
+
+    # ---------------------------- UoM Roles (optional persistence) ----------------------------
+    def _ensure_roles_table(self) -> None:
+        # Reverted: no roles table; kept as a no-op for backward compatibility.
+        return
+
+    def roles_map(self, product_id: int) -> dict[int, dict[str, int]]:
+        """
+        ALL-UoMs-ALLOWED policy (reverted persistence):
+        Return {uom_id: {"for_sales": 1, "for_purchases": 1}} for every UoM attached to the product.
+        No persistence is consulted.
+        """
+        out: dict[int, dict[str, int]] = {}
+        cur = self.conn.execute(
+            "SELECT uom_id FROM product_uoms WHERE product_id=?",
+            (int(product_id),),
+        )
+        for row in cur.fetchall():
+            uid = int(row["uom_id"])
+            out[uid] = {"for_sales": 1, "for_purchases": 1}
+        return out
+
+    def upsert_roles(self, product_id: int, roles: dict[int, tuple[bool, bool]]) -> None:
+        """
+        No-op under ALL-UoMs-ALLOWED policy (reverted persistence).
+        """
+        return

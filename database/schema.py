@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS product_uoms (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_product_uoms_one_base
 ON product_uoms(product_id) WHERE is_base = 1;
 
+        -- (reverted) product_uom_roles removed; all UoMs are implicitly allowed for sales & purchases.
+
 /* -------- docs: headers -------- */
 CREATE TABLE IF NOT EXISTS purchases (
     purchase_id TEXT PRIMARY KEY,
