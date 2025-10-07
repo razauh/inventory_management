@@ -1,3 +1,4 @@
+# ⚠️ VENDOR MODULE ONLY: VendorBankAccountsTableModel header/field mapping + minimal helpers.
 from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
 
 # Keep import for typed access when VendorsRepo returns dataclasses
@@ -67,18 +68,18 @@ class VendorsTableModel(QAbstractTableModel):
 
 
 class VendorBankAccountsTableModel(QAbstractTableModel):
-    """
-    Mirrors rows returned by VendorBankAccountsRepo.list(vendor_id, active_only=True).
+    HEADERS = [
+        "ID", "Label", "Bank", "Account #", "IBAN", "Routing #", "Primary", "Active"
+    ]
 
-    Expected fields per row:
-      vendor_bank_account_id, bank_name, branch, account_number, ifsc_swift,
-      account_type, is_primary, is_active
-    """
-    HEADERS = ["ID", "Bank", "Branch", "Account #", "IFSC/SWIFT", "Type", "Primary", "Active"]
+    def __init__(self, rows=None, parent=None):
+        super().__init__(parent)
+        self._rows = rows or []
 
-    def __init__(self, rows):
-        super().__init__()
-        self._rows = list(rows or [])
+    def set_rows(self, rows):
+        self.beginResetModel()
+        self._rows = rows or []
+        self.endResetModel()
 
     def rowCount(self, parent=QModelIndex()):  # noqa: N802
         return len(self._rows)
@@ -89,34 +90,37 @@ class VendorBankAccountsTableModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):  # noqa: N802
         if not index.isValid():
             return None
-        r = self._rows[index.row()]
-        if role in (Qt.DisplayRole, Qt.EditRole):
-            c = index.column()
-            is_primary = _get(r, "is_primary", 0)
-            is_active = _get(r, "is_active", 1)
-            values = [
-                _get(r, "vendor_bank_account_id", ""),
-                _get(r, "bank_name", ""),
-                _get(r, "branch", ""),
-                _get(r, "account_number", ""),
-                _get(r, "ifsc_swift", ""),
-                _get(r, "account_type", ""),
-                "Yes" if int(is_primary or 0) == 1 else "No",
-                "Yes" if int(is_active or 0) == 1 else "No",
+        row = self._rows[index.row()]
+        col = index.column()
+        if role == Qt.DisplayRole:
+            key_map = [
+                "vendor_bank_account_id",
+                "label",
+                "bank_name",
+                "account_no",
+                "iban",
+                "routing_no",
+                "is_primary",
+                "is_active",
             ]
-            return values[c]
+            val = row.get(key_map[col])
+            if key_map[col] in ("is_primary", "is_active"):
+                return "Yes" if bool(val) else "No"
+            return "" if val is None else str(val)
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):  # noqa: N802
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
             return self.HEADERS[section]
         return super().headerData(section, orientation, role)
 
-    def at(self, row: int) -> dict:
-        """Return the underlying row dict/sqlite3.Row for the given index."""
-        return self._rows[row]
+    def row_at(self, row_idx: int):
+        if 0 <= row_idx < len(self._rows):
+            return self._rows[row_idx]
+        return None
 
-    def replace(self, rows):
-        self.beginResetModel()
-        self._rows = list(rows or [])
-        self.endResetModel()
+    def find_row_by_id(self, account_id: int):
+        for i, r in enumerate(self._rows):
+            if int(r.get("vendor_bank_account_id", -1)) == int(account_id):
+                return i
+        return None

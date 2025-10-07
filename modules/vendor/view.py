@@ -1,5 +1,6 @@
+# ⚠️ VENDOR MODULE ONLY: Adds read-only Account Details box under the accounts table. Do not modify other modules.
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QSplitter, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QSplitter, QFrame, QFormLayout
 )
 from PySide6.QtCore import Qt
 from ...widgets.table_view import TableView
@@ -71,6 +72,48 @@ class VendorView(QWidget):
         # Accounts table
         self.accounts_table = TableView()
         accounts_layout.addWidget(self.accounts_table, 1)
+
+        # Create a fixed-height frame under the table
+        self.account_details_box = QFrame(self)
+        self.account_details_box.setObjectName("account_details_box")
+        self.account_details_box.setFrameShape(QFrame.StyledPanel)
+        self.account_details_box.setFrameShadow(QFrame.Sunken)
+        self.account_details_box.setMinimumHeight(120)
+        self.account_details_box.setMaximumHeight(160)
+
+        # Form layout for labels
+        self.account_details_form = QFormLayout(self.account_details_box)
+        self.account_details_form.setContentsMargins(8, 6, 8, 6)
+        self.account_details_form.setSpacing(6)
+
+        # Helper to create a right-aligned, selectable QLabel
+        def _ro_label(name):
+            lbl = QLabel("-", self.account_details_box)
+            lbl.setObjectName(name)
+            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            return lbl
+
+        # Create read-only value labels and keep as attributes for controller updates
+        self.lblAccLabel    = _ro_label("lblAccLabel")
+        self.lblAccBank     = _ro_label("lblAccBank")
+        self.lblAccNumber   = _ro_label("lblAccNumber")
+        self.lblAccIBAN     = _ro_label("lblAccIBAN")
+        self.lblAccRouting  = _ro_label("lblAccRouting")
+        self.lblAccPrimary  = _ro_label("lblAccPrimary")
+        self.lblAccActive   = _ro_label("lblAccActive")
+
+        # Add rows to form (keys/labels exactly as specified)
+        self.account_details_form.addRow("Label",       self.lblAccLabel)
+        self.account_details_form.addRow("Bank",        self.lblAccBank)
+        self.account_details_form.addRow("Account #",   self.lblAccNumber)
+        self.account_details_form.addRow("IBAN",        self.lblAccIBAN)
+        self.account_details_form.addRow("Routing #",   self.lblAccRouting)
+        self.account_details_form.addRow("Primary",     self.lblAccPrimary)
+        self.account_details_form.addRow("Active",      self.lblAccActive)
+
+        # Add the frame below the accounts table without altering existing splitters
+        accounts_layout.addWidget(self.account_details_box)
 
         right.addWidget(accounts_panel)
 

@@ -1,4 +1,6 @@
+# ⚠️ VENDOR MODULE ONLY: Do not modify other modules or shared components. Credit label addition only.
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout
+from PySide6.QtCore import Qt
 
 class VendorDetails(QWidget):
     def __init__(self, parent=None):
@@ -10,10 +12,14 @@ class VendorDetails(QWidget):
         self.lab_contact = QLabel("-")
         self.lab_address = QLabel("-")
         self.lab_address.setWordWrap(True)
+        self.lblCreditValue = QLabel("0.00")
+        self.lblCreditValue.setObjectName("lblAvailableCredit")
+        self.lblCreditValue.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         f.addRow("ID:", self.lab_id)
         f.addRow("Name:", self.lab_name)
         f.addRow("Contact:", self.lab_contact)
         f.addRow("Address:", self.lab_address)
+        f.addRow("Available Credit:", self.lblCreditValue)
 
         root = QVBoxLayout(self)
         root.addWidget(box, 1)
@@ -31,3 +37,12 @@ class VendorDetails(QWidget):
         self.lab_name.setText(vendor["name"] or "")
         self.lab_contact.setText(vendor["contact_info"] or "")
         self.lab_address.setText(vendor.get("address") or "")
+
+    def set_credit(self, amount: float) -> None:
+        # Defensive: normalize None/invalid to 0.00
+        try:
+            val = 0.0 if amount is None else float(amount)
+        except Exception:
+            val = 0.0
+        # Two-decimal formatting (thousands separators if you prefer)
+        self.lblCreditValue.setText(f"{val:,.2f}")

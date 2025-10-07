@@ -1,3 +1,4 @@
+# ⚠️ VENDOR MODULE ONLY: Do not modify other modules or shared components. Selection-behavior crash fix only.
 from __future__ import annotations
 import sqlite3
 from typing import Optional
@@ -5,7 +6,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton,
-    QMessageBox, QDialogButtonBox, QFormLayout, QLineEdit, QCheckBox
+    QMessageBox, QDialogButtonBox, QFormLayout, QLineEdit, QCheckBox, QAbstractItemView
 )
 
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
@@ -90,8 +91,9 @@ class VendorBankAccountsDialog(QDialog):
         self.tbl = QTableWidget(0, len(self.COLS))
         self.tbl.setHorizontalHeaderLabels(self.COLS)
         self.tbl.verticalHeader().setVisible(False)
-        self.tbl.setSelectionBehavior(self.tbl.SelectRows)
-        self.tbl.setEditTriggers(self.tbl.NoEditTriggers)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.setColumnWidth(0, 40)
         self.tbl.setColumnWidth(1, 220)
         self.tbl.setColumnWidth(2, 140)
