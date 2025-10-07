@@ -12,6 +12,8 @@ Thumbs.db
 *.db-wal
 *.sqlite3
 *.sqlitedb
+# Ignore the database file
+data/myshop.db
 
 # Logs and temp files
 *.log
