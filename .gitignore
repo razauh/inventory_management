@@ -50,3 +50,6 @@ virtualenv/
 # Environment variables
 .env
 .env.local
+
+# Text files
+*.txt
