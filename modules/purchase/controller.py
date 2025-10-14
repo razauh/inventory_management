@@ -2,6 +2,7 @@ from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
 import sqlite3, datetime
 from typing import Optional
+import logging
 
 from ..base_module import BaseModule
 from .view import PurchaseView
@@ -27,6 +28,13 @@ except Exception:
     OverpayPurchaseError = None
 
 _EPS = 1e-9
+
+_log = logging.getLogger(__name__)
+if not _log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[%(asctime)s] %(name)s:%(lineno)d %(levelname)s: %(message)s"))
+    _log.addHandler(_h)
+    _log.setLevel(logging.INFO)
 
 
 def new_purchase_id(conn: sqlite3.Connection, date_str: str) -> str:
@@ -89,6 +97,10 @@ class PurchaseController(BaseModule):
         else:
             self.view.details.set_data(None)
             self.view.items.set_rows([])
+            try:
+                self.view.details.clear_payment_summary()
+            except Exception:
+                pass
 
     def _apply_filter(self, text: str):
         self.proxy.setFilterRegularExpression(QRegularExpression(text))
@@ -111,6 +123,10 @@ class PurchaseController(BaseModule):
             self.view.items.set_rows(self.repo.list_items(row["purchase_id"]))
         else:
             self.view.items.set_rows([])
+        try:
+            self._refresh_payment_summary(row["purchase_id"] if row else None)
+        except Exception:
+            pass
 
     def _returnable_map(self, purchase_id: str) -> dict[int, float]:
         sql = """
@@ -203,6 +219,93 @@ class PurchaseController(BaseModule):
         except Exception:
             return 0.0
 
+    def _latest_purchase_payment(self, purchase_id: str) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT payment_id,
+                   date,
+                   method,
+                   CAST(amount AS REAL) AS amount,
+                   clearing_state AS status
+              FROM purchase_payments
+             WHERE purchase_id=?
+             ORDER BY date DESC, payment_id DESC
+             LIMIT 1
+            """,
+            (purchase_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _overpayment_credited(self, purchase_id: str) -> float:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS overpay
+              FROM vendor_advances
+             WHERE source_type='deposit'
+               AND source_id=?
+               AND notes LIKE 'Excess payment converted to vendor credit%'
+            """,
+            (purchase_id,),
+        ).fetchone()
+        return float(row["overpay"] or 0.0) if row else 0.0
+
+    def _refresh_payment_summary(self, purchase_id: Optional[str]) -> None:
+        if not purchase_id:
+            try:
+                self.view.details.clear_payment_summary()
+            except Exception:
+                pass
+            return
+        last = self._latest_purchase_payment(purchase_id)
+        if not last:
+            try:
+                self.view.details.clear_payment_summary()
+            except Exception:
+                pass
+            return
+        payload = {
+            "method": last.get("method"),
+            "amount": float(last.get("amount") or 0.0),
+            "status": last.get("status") or "posted",
+            "overpayment": self._overpayment_credited(purchase_id),
+            "counterparty_label": "Vendor",
+        }
+        try:
+            self.view.details.set_payment_summary(payload)
+        except Exception:
+            pass
+
+    def _recompute_header_totals_from_rows(self, purchase_id: str) -> None:
+        r_pay = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS cleared_paid
+            FROM purchase_payments
+            WHERE purchase_id = ?
+              AND COALESCE(clearing_state, 'posted') = 'cleared'
+            """,
+            (purchase_id,),
+        ).fetchone()
+        cleared_paid = float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0)
+
+        row = self.conn.execute(
+            """
+            SELECT
+              COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+              COALESCE(p.advance_payment_applied, 0.0) AS adv_applied
+            FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+            WHERE p.purchase_id = ?
+            """,
+            (purchase_id,),
+        ).fetchone()
+        total_calc = float(row["total_calc"] if row and "total_calc" in row.keys() else 0.0)
+        adv_applied = float(row["adv_applied"] if row and "adv_applied" in row.keys() else 0.0)
+
+        self.conn.execute("UPDATE purchases SET paid_amount = ? WHERE purchase_id = ?;", (cleared_paid, purchase_id))
+        remaining = max(0.0, total_calc - cleared_paid - adv_applied)
+        if remaining <= _EPS:
+            self.conn.execute("UPDATE purchases SET payment_status = 'paid' WHERE purchase_id = ?;", (purchase_id,))
+
     def _add(self):
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products)
         if not dlg.exec():
@@ -239,71 +342,92 @@ class PurchaseController(BaseModule):
             for it in p["items"]
         ]
 
-        self.repo.create_purchase(h, items)
+        try:
+            _log.info("BEGIN PO %s (vendor_id=%s, date=%s)", pid, p["vendor_id"], p["date"])
+            self.conn.execute("BEGIN")
 
-        ip = p.get("initial_payment")
-        if isinstance(ip, dict) and float(ip.get("amount") or 0.0) > 0:
-            try:
-                self.payments.record_payment(
-                    purchase_id=pid,
-                    amount=float(ip["amount"]),
-                    method=ip["method"],
-                    bank_account_id=ip.get("bank_account_id"),
-                    vendor_bank_account_id=ip.get("vendor_bank_account_id"),
-                    instrument_type=ip.get("instrument_type"),
-                    instrument_no=ip.get("instrument_no"),
-                    instrument_date=ip.get("instrument_date"),
-                    deposited_date=ip.get("deposited_date"),
-                    cleared_date=ip.get("cleared_date"),
-                    clearing_state=ip.get("clearing_state"),
-                    ref_no=ip.get("ref_no"),
-                    notes=ip.get("notes"),
-                    date=ip.get("date") or p["date"],
-                    created_by=(self.user["user_id"] if self.user else None),
-                )
-            except Exception as e:
-                if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
-                    info(self.view, "Payment not recorded", str(e))
-                    pass
-                elif isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
-                    info(
-                        self.view,
-                        "Payment not recorded",
-                        f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
+            self.repo.create_purchase(h, items)
+            _log.info("Inserted purchase header/items for %s", pid)
+
+            ip = p.get("initial_payment")
+            if isinstance(ip, dict):
+                amt = float(ip.get("amount") or 0.0)
+                if amt < 0:
+                    self.conn.rollback()
+                    _log.info("ROLLBACK %s due to negative initial payment: %s", pid, amt)
+                    info(self.view, "Invalid amount", "Initial payment cannot be negative.")
+                    return
+                if amt > 0:
+                    method = (ip.get("method") or "Cash").strip()
+                    clearing_state = ip.get("clearing_state")
+                    cleared_date = ip.get("cleared_date")
+                    if not clearing_state:
+                        if method.lower() == "cash":
+                            clearing_state = "cleared"
+                            cleared_date = ip.get("date") or p["date"]
+                        else:
+                            clearing_state = "posted"
+                    self.payments.record_payment(
+                        purchase_id=pid,
+                        amount=amt,
+                        method=method,
+                        bank_account_id=ip.get("bank_account_id"),
+                        vendor_bank_account_id=ip.get("vendor_bank_account_id"),
+                        instrument_type=ip.get("instrument_type"),
+                        instrument_no=ip.get("instrument_no"),
+                        instrument_date=ip.get("instrument_date"),
+                        deposited_date=ip.get("deposited_date"),
+                        cleared_date=cleared_date,
+                        clearing_state=clearing_state,
+                        ref_no=ip.get("ref_no"),
+                        notes=ip.get("notes") or "Initial payment",
+                        date=ip.get("date") or p["date"],
+                        created_by=(self.user["user_id"] if self.user else None),
                     )
-                else:
-                    info(
-                        self.view,
-                        "Payment not recorded",
-                        f"Purchase {pid} was created, but recording the initial payment failed:\n{e}",
+                    _log.info(
+                        "Inserted initial payment for %s amount=%.4f method=%s state=%s",
+                        pid, amt, method, clearing_state
                     )
-        else:
-            initial_paid = float(p.get("initial_payment") or 0.0)
-            if initial_paid > 0:
-                method = p.get("initial_method") or "Cash"
-                bank_account_id = p.get("initial_bank_account_id")
-                vendor_bank_account_id = p.get("initial_vendor_bank_account_id")
+                    if clearing_state == "cleared":
+                        self._recompute_header_totals_from_rows(pid)
+            else:
+                initial_paid = float(p.get("initial_payment") or 0.0)
+                if initial_paid < 0:
+                    self.conn.rollback()
+                    _log.info("ROLLBACK %s due to negative initial payment (legacy): %s", pid, initial_paid)
+                    info(self.view, "Invalid amount", "Initial payment cannot be negative.")
+                    return
+                if initial_paid > 0:
+                    method = p.get("initial_method") or "Cash"
+                    bank_account_id = p.get("initial_bank_account_id")
+                    vendor_bank_account_id = p.get("initial_vendor_bank_account_id")
 
-                instrument_type = p.get("initial_instrument_type")
-                if not instrument_type:
-                    if method == "Bank Transfer":
-                        instrument_type = "online"
-                    elif method == "Cheque":
-                        instrument_type = "cross_cheque"
-                    elif method == "Cash Deposit":
-                        instrument_type = "cash_deposit"
-                    else:
-                        instrument_type = None
+                    instrument_type = p.get("initial_instrument_type")
+                    if not instrument_type:
+                        if method == "Bank Transfer":
+                            instrument_type = "online"
+                        elif method == "Cheque":
+                            instrument_type = "cross_cheque"
+                        elif method == "Cash Deposit":
+                            instrument_type = "cash_deposit"
+                        else:
+                            instrument_type = None
 
-                instrument_no = p.get("initial_instrument_no")
-                instrument_date = p.get("initial_instrument_date")
-                deposited_date = p.get("initial_deposited_date")
-                cleared_date = p.get("initial_cleared_date")
-                clearing_state = p.get("initial_clearing_state")
-                ref_no = p.get("initial_ref_no")
-                pay_notes = p.get("initial_payment_notes")
+                    instrument_no = p.get("initial_instrument_no")
+                    instrument_date = p.get("initial_instrument_date")
+                    deposited_date = p.get("initial_deposited_date")
+                    cleared_date = p.get("initial_cleared_date")
+                    clearing_state = p.get("initial_clearing_state")
+                    ref_no = p.get("initial_ref_no")
+                    pay_notes = p.get("initial_payment_notes")
 
-                try:
+                    if not clearing_state:
+                        if (method or "").lower() == "cash":
+                            clearing_state = "cleared"
+                            cleared_date = p.get("date")
+                        else:
+                            clearing_state = "posted"
+
                     self.payments.record_payment(
                         purchase_id=pid,
                         amount=initial_paid,
@@ -321,46 +445,60 @@ class PurchaseController(BaseModule):
                         date=p["date"],
                         created_by=(self.user["user_id"] if self.user else None),
                     )
-                except Exception as e:
-                    if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
-                        info(self.view, "Payment not recorded", str(e))
-                    elif isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
-                        info(
-                            self.view,
-                            "Payment not recorded",
-                            f"Purchase {pid} was created, but the initial payment could not be saved:\n{e}",
-                        )
-                    else:
-                        info(
-                            self.view,
-                            "Payment not recorded",
-                            f"Purchase {pid} was created, but a database error occurred while saving the initial payment:\n{e}",
-                        )
-
-        init_credit = float(p.get("initial_credit_amount") or 0.0)
-        if init_credit > 0:
-            remaining = self._remaining_due_header(pid)
-            credit_bal = self._vendor_credit_balance(int(p["vendor_id"]))
-            allowable = min(credit_bal, remaining)
-            if init_credit - allowable > _EPS:
-                info(self.view, "Credit not applied", f"Initial credit exceeds available credit or remaining due (max {allowable:.2f}).")
-            else:
-                try:
-                    self.vadv.apply_credit_to_purchase(
-                        vendor_id=p["vendor_id"],
-                        purchase_id=pid,
-                        amount=init_credit,
-                        date=p["date"],
-                        notes=p.get("initial_credit_notes"),
-                        created_by=(self.user["user_id"] if self.user else None),
+                    _log.info(
+                        "Inserted initial payment (legacy) for %s amount=%.4f method=%s state=%s",
+                        pid, initial_paid, method, clearing_state
                     )
-                except Exception as e:
-                    if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
-                        info(self.view, "Credit not applied", str(e))
-                    elif isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
-                        info(self.view, "Credit not applied", f"Purchase {pid} was created, but vendor credit could not be applied:\n{e}")
-                    else:
-                        info(self.view, "Credit not applied", f"Purchase {pid} was created, but applying vendor credit failed:\n{e}")
+                    if clearing_state == "cleared":
+                        self._recompute_header_totals_from_rows(pid)
+
+            init_credit = float(p.get("initial_credit_amount") or 0.0)
+            if init_credit > 0:
+                remaining = self._remaining_due_header(pid)
+                credit_bal = self._vendor_credit_balance(int(p["vendor_id"]))
+                allowable = min(credit_bal, remaining)
+                if init_credit - allowable > _EPS:
+                    self.conn.rollback()
+                    _log.info(
+                        "ROLLBACK %s due to invalid initial credit (%.4f > allowable %.4f; remaining=%.4f, credit_bal=%.4f)",
+                        pid, init_credit, allowable, remaining, credit_bal
+                    )
+                    info(self.view, "Credit not applied", f"Initial credit exceeds available credit or remaining due (max {allowable:.2f}).")
+                    return
+                self.vadv.apply_credit_to_purchase(
+                    vendor_id=p["vendor_id"],
+                    purchase_id=pid,
+                    amount=init_credit,
+                    date=p["date"],
+                    notes=p.get("initial_credit_notes"),
+                    created_by=(self.user["user_id"] if self.user else None),
+                )
+                _log.info("Applied initial vendor credit for %s amount=%.4f", pid, init_credit)
+                self._recompute_header_totals_from_rows(pid)
+
+            self.conn.commit()
+            _log.info("COMMIT PO %s (created + initial payment/credit if any)", pid)
+
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
+                _log.exception("ROLLBACK %s due to OverpayPurchaseError", pid)
+                info(self.view, "Payment not recorded", str(e))
+                return
+            if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
+                _log.exception("ROLLBACK %s due to OverapplyVendorAdvanceError", pid)
+                info(self.view, "Credit not applied", str(e))
+                return
+            if isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError, ValueError)):
+                _log.exception("ROLLBACK %s due to DB/Value error", pid)
+                info(self.view, "Save failed", f"Purchase could not be saved:\n{e}")
+                return
+            _log.exception("ROLLBACK %s due to unexpected error", pid)
+            info(self.view, "Unexpected error", f"Something went wrong while saving the purchase.\nDetails: {e}")
+            return
 
         info(self.view, "Saved", f"Purchase {pid} created.")
         self._reload()
@@ -438,10 +576,8 @@ class PurchaseController(BaseModule):
         if not row:
             info(self.view, "Select", "Select a purchase to return items from.")
             return
-
         pid = row["purchase_id"]
         items = self.repo.list_items(pid)
-
         returnable = self._returnable_map(pid)
         items_for_form = []
         for it in items:
@@ -472,7 +608,6 @@ class PurchaseController(BaseModule):
             )
 
         settlement = payload.get("settlement")
-
         try:
             self.repo.record_return(
                 pid=pid,
@@ -494,13 +629,11 @@ class PurchaseController(BaseModule):
         if not row:
             info(self.view, "Select", "Select a purchase to apply vendor credit.")
             return
-
         try:
             amt = float(amount)
         except (TypeError, ValueError):
             info(self.view, "Invalid amount", "Enter a valid positive amount to apply as credit.")
             return
-
         if amt <= 0:
             info(self.view, "Invalid amount", "Amount must be greater than zero.")
             return
@@ -547,7 +680,6 @@ class PurchaseController(BaseModule):
 
         try:
             from ...vendor.payment_dialog import open_vendor_money_form
-
             payload = open_vendor_money_form(
                 mode="payment",
                 vendor_id=vendor_id,

@@ -7,12 +7,12 @@ from PySide6.QtCore import Qt, QDate
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.helpers import today_str, fmt_money
+import re
 
-TRASH_ICON = None  # optional; you can drop a png into resources/icons and set the path
+TRASH_ICON = None
 
 
 class PurchaseForm(QDialog):
-    # Discount column removed
     COLS = ["#", "Product", "Qty", "Buy Price", "Sale Price", "Line Total", ""]
 
     def __init__(self, parent=None, vendors: VendorsRepo | None = None,
@@ -24,13 +24,11 @@ class PurchaseForm(QDialog):
         self.products = products
         self._payload = None
 
-        # ===== Content (inside scroll) =====
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(10)
 
-        # --- Header (two columns) ---
         self.cmb_vendor = QComboBox(); self.cmb_vendor.setEditable(True)
         for v in self.vendors.list_vendors():
             self.cmb_vendor.addItem(f"{v.name} (#{v.vendor_id})", v.vendor_id)
@@ -41,7 +39,6 @@ class PurchaseForm(QDialog):
             if initial and initial.get("date") else
             QDate.fromString(today_str(), "yyyy-MM-dd")
         )
-        # Order discount removed
         self.txt_notes = QLineEdit()
 
         header_box = QGroupBox()
@@ -60,7 +57,6 @@ class PurchaseForm(QDialog):
         hg.setColumnStretch(3, 1)
         main_layout.addWidget(header_box)
 
-        # --- Items table (expand to fill space) ---
         items_box = QGroupBox("Items")
         ib = QVBoxLayout(items_box)
         ib.setSpacing(8)
@@ -72,14 +68,13 @@ class PurchaseForm(QDialog):
         self.tbl.verticalHeader().setVisible(False)
 
         header = self.tbl.horizontalHeader()
-        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Product column grows
-        # compact widths for numeric cols (indices updated)
-        self.tbl.setColumnWidth(0, 40)   # #
-        self.tbl.setColumnWidth(2, 80)   # Qty
-        self.tbl.setColumnWidth(3, 110)  # Buy
-        self.tbl.setColumnWidth(4, 110)  # Sale
-        self.tbl.setColumnWidth(5, 120)  # Line Total
-        self.tbl.setColumnWidth(6, 48)   # Delete btn
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl.setColumnWidth(0, 40)
+        self.tbl.setColumnWidth(2, 80)
+        self.tbl.setColumnWidth(3, 110)
+        self.tbl.setColumnWidth(4, 110)
+        self.tbl.setColumnWidth(5, 120)
+        self.tbl.setColumnWidth(6, 48)
 
         ib.addWidget(self.tbl, 1)
 
@@ -91,7 +86,6 @@ class PurchaseForm(QDialog):
 
         main_layout.addWidget(items_box, 2)
 
-        # --- Totals (compact) ---
         tot = QHBoxLayout()
         self.lab_sub = QLabel("0.00")
         self.lab_total = QLabel("0.00")
@@ -101,15 +95,13 @@ class PurchaseForm(QDialog):
         tot.addWidget(QLabel("Total:"));    tot.addWidget(self.lab_total)
         main_layout.addLayout(tot)
 
-        # --- Initial Payment (two columns) ---
         ip_box = QGroupBox("Initial Payment (optional)")
         ipg = QGridLayout(ip_box)
         ipg.setHorizontalSpacing(12); ipg.setVerticalSpacing(8)
 
-        self.ip_amount = QLineEdit();    self.ip_amount.setPlaceholderText("0")
-        self.ip_date = QDateEdit();      self.ip_date.setCalendarPopup(True); self.ip_date.setDate(self.date.date())
+        self.ip_amount = QLineEdit(); self.ip_amount.setPlaceholderText("0")
+        self.ip_date = QDateEdit(); self.ip_date.setCalendarPopup(True); self.ip_date.setDate(self.date.date())
 
-        # Include Cash (top) and Other
         self.ip_method = QComboBox()
         self.ip_method.addItems(["Cash", "Bank Transfer", "Cheque", "Cash Deposit", "Other"])
 
@@ -143,12 +135,10 @@ class PurchaseForm(QDialog):
 
         main_layout.addWidget(ip_box, 0)
 
-        # ===== Buttons OUTSIDE scroll =====
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
-        # Scroll wrapper
         scroll_area = QScrollArea()
         scroll_area.setWidget(main_widget)
         scroll_area.setWidgetResizable(True)
@@ -161,7 +151,6 @@ class PurchaseForm(QDialog):
         final_layout.addWidget(scroll_area, 1)
         final_layout.addWidget(button_box, 0)
 
-        # ===== State / wiring =====
         self._rows = []
         if initial and initial.get("items"):
             self._rows = [dict(x) for x in initial["items"]]
@@ -187,13 +176,17 @@ class PurchaseForm(QDialog):
         self._refresh_ip_visibility()
         self._rebuild_table()
         self._refresh_totals()
-
-        # Sensible sizing for 1366×768 screens
         self.resize(1100, 700)
         self.setMinimumSize(860, 560)
         self.setSizeGripEnabled(True)
 
-    # ---------------- helpers for initial payment panel ----------------
+    def _to_float_safe(self, txt: str) -> float:
+        cleaned = re.sub(r"[^0-9.\-]", "", (txt or ""))
+        try:
+            return float(cleaned) if cleaned else 0.0
+        except Exception:
+            return 0.0
+
     def _reload_company_accounts(self):
         self.ip_company_acct.clear()
         try:
@@ -248,11 +241,10 @@ class PurchaseForm(QDialog):
         elif m == "Cash Deposit":
             self._ip_instrument_type = "cash_deposit";  self._ip_clearing_state = "pending"
         elif m == "Cash":
-            self._ip_instrument_type = "cash";          self._ip_clearing_state = "posted"
-        else:  # "Other"
+            self._ip_instrument_type = "cash";          self._ip_clearing_state = "cleared"
+        else:
             self._ip_instrument_type = "other";         self._ip_clearing_state = "pending"
 
-    # ---------------- table helpers ----------------
     def _all_products(self):
         return self.products.list_products()
 
@@ -264,7 +256,7 @@ class PurchaseForm(QDialog):
 
     def _delete_row_for_button(self, btn: QPushButton):
         for r in range(self.tbl.rowCount()):
-            if self.tbl.cellWidget(r, 6) is btn:  # column index updated
+            if self.tbl.cellWidget(r, 6) is btn:
                 self.tbl.removeRow(r)
                 self._reindex_rows()
                 self._refresh_totals()
@@ -284,19 +276,16 @@ class PurchaseForm(QDialog):
             cmb_prod.addItem(f"{p.name} (#{p.product_id})", p.product_id)
         self.tbl.setCellWidget(r, 1, cmb_prod)
 
-        # Fill editable numeric cells (no discount column now)
         for c in (2, 3, 4):
             it = QTableWidgetItem("0")
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.tbl.setItem(r, c, it)
 
-        # Line total
         it_total = QTableWidgetItem("0.00")
         it_total.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         it_total.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         self.tbl.setItem(r, 5, it_total)
 
-        # Delete button
         btn_del = QPushButton("✕")
         btn_del.clicked.connect(lambda _=False, b=btn_del: self._delete_row_for_button(b))
         self.tbl.setCellWidget(r, 6, btn_del)
@@ -340,7 +329,7 @@ class PurchaseForm(QDialog):
     def _cell_changed(self, row: int, col: int):
         if row < 0 or row >= self.tbl.rowCount():
             return
-        for c in (2, 3, 4, 5):  # ensure cells exist
+        for c in (2, 3, 4, 5):
             if self.tbl.item(row, c) is None and self.tbl.cellWidget(row, c) is None:
                 return
         self._recalc_row(row)
@@ -349,13 +338,10 @@ class PurchaseForm(QDialog):
     def _recalc_row(self, r: int):
         def num(c):
             it = self.tbl.item(r, c)
-            try:
-                return float(it.text()) if it and it.text() else 0.0
-            except Exception:
-                return 0.0
+            return self._to_float_safe(it.text()) if it and it.text() else 0.0
 
-        qty  = num(2)
-        buy  = num(3)
+        qty = num(2)
+        buy = num(3)
         sale = num(4)
 
         def mark(col, bad):
@@ -363,7 +349,7 @@ class PurchaseForm(QDialog):
             if it:
                 it.setBackground(Qt.red if bad else Qt.white)
 
-        bad_buy  = buy <= 0
+        bad_buy = buy <= 0
         bad_sale = not (sale >= buy > 0)
         mark(3, bad_buy)
         mark(4, bad_sale or bad_buy)
@@ -377,8 +363,8 @@ class PurchaseForm(QDialog):
         s = 0.0
         for r in range(self.tbl.rowCount()):
             try:
-                qty  = float(self.tbl.item(r, 2).text() or 0)
-                buy  = float(self.tbl.item(r, 3).text() or 0)
+                qty = self._to_float_safe(self.tbl.item(r, 2).text() or "0")
+                buy = self._to_float_safe(self.tbl.item(r, 3).text() or "0")
             except Exception:
                 continue
             s += max(0.0, qty * buy)
@@ -386,11 +372,10 @@ class PurchaseForm(QDialog):
 
     def _refresh_totals(self):
         sub = self._calc_subtotal()
-        tot = sub  # no order discount
+        tot = sub
         self.lab_sub.setText(fmt_money(sub))
         self.lab_total.setText(fmt_money(tot))
 
-    # ------------- payload -------------
     def _row_payload(self, r: int) -> dict | None:
         cmb_prod: QComboBox = self.tbl.cellWidget(r, 1)
         if not cmb_prod: return None
@@ -399,12 +384,9 @@ class PurchaseForm(QDialog):
 
         def num(c):
             it = self.tbl.item(r, c)
-            try:
-                return float(it.text()) if it and it.text() else 0.0
-            except Exception:
-                return 0.0
+            return self._to_float_safe(it.text()) if it and it.text() else 0.0
 
-        qty  = num(2); buy = num(3); sale = num(4)
+        qty = num(2); buy = num(3); sale = num(4)
         if qty <= 0 or buy <= 0 or not (sale >= buy):
             return None
         uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
@@ -416,7 +398,7 @@ class PurchaseForm(QDialog):
             "quantity": qty,
             "purchase_price": buy,
             "sale_price": sale,
-            "item_discount": 0.0,  # kept for compatibility
+            "item_discount": 0.0,
         }
 
     def get_payload(self) -> dict | None:
@@ -431,16 +413,17 @@ class PurchaseForm(QDialog):
             if not cmb_prod: continue
             product_id = cmb_prod.currentData()
             if product_id in (None, ""): continue
-            qty_it  = self.tbl.item(r, 2)
-            buy_it  = self.tbl.item(r, 3)
+            qty_it = self.tbl.item(r, 2)
+            buy_it = self.tbl.item(r, 3)
             sale_it = self.tbl.item(r, 4)
             try:
-                qty  = float((qty_it.text()  or "0").strip())
-                buy  = float((buy_it.text()  or "0").strip())
-                sale = float((sale_it.text() or "0").strip())
+                qty = self._to_float_safe((qty_it.text() or "0").strip())
+                buy = self._to_float_safe((buy_it.text() or "0").strip())
+                sale = self._to_float_safe((sale_it.text() or "0").strip())
             except Exception:
                 return None
-            if qty <= 0 or buy <= 0: return None
+            if qty <= 0 or buy <= 0 or not (sale >= buy):
+                return None
             uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
             if uom_id is None:
                 try:
@@ -454,29 +437,28 @@ class PurchaseForm(QDialog):
                 "quantity": qty,
                 "purchase_price": buy,
                 "sale_price": sale,
-                "item_discount": 0.0,  # compatibility
+                "item_discount": 0.0,
             })
 
         if not rows: return None
 
         date_str = self.date.date().toString("yyyy-MM-dd")
-        total_amount = self._calc_subtotal()  # no order discount
+        total_amount = self._calc_subtotal()
 
         payload = {
             "vendor_id": vendor_id,
             "date": date_str,
-            "order_discount": 0.0,  # kept for compatibility
+            "order_discount": 0.0,
             "notes": (self.txt_notes.text().strip() or None),
             "items": rows,
             "total_amount": total_amount,
         }
 
-        # ----- Initial Payment payload (unchanged except for new methods) -----
         ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
-        ip_amount = 0.0
-        if ip_amount_txt:
-            try: ip_amount = float(ip_amount_txt)
-            except Exception: ip_amount = -1
+        ip_amount = self._to_float_safe(ip_amount_txt)
+
+        if ip_amount_txt and ip_amount <= 0.0:
+            return None
 
         if ip_amount > 0:
             method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
@@ -498,10 +480,11 @@ class PurchaseForm(QDialog):
                 if not vendor_bank_id or not instr_no: return None
                 instr_type = "cash_deposit";  clearing_state = "pending"; company_id = None
             elif m == "cash":
-                instr_type = "cash";          clearing_state = "posted"
-                company_id = None;            vendor_bank_id = None
-                instr_no = "";                instr_date = date_str
-            else:  # "other"
+                instr_type = None
+                clearing_state = None  # controller will default cash → 'cleared'
+                company_id = None;     vendor_bank_id = None
+                instr_no = "";         instr_date = date_str
+            else:
                 instr_type = "other";         clearing_state = "pending"
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
@@ -521,7 +504,6 @@ class PurchaseForm(QDialog):
                 "notes": notes,
                 "date": date_str,
             }
-            # legacy mirrors
             payload["initial_bank_account_id"] = payload["initial_payment"]["bank_account_id"]
             payload["initial_vendor_bank_account_id"] = payload["initial_payment"]["vendor_bank_account_id"]
             payload["initial_instrument_type"] = payload["initial_payment"]["instrument_type"]
@@ -538,7 +520,11 @@ class PurchaseForm(QDialog):
 
     def accept(self):
         p = self.get_payload()
-        if p is None: return
+        if p is None:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing/Invalid Fields",
+                                "Please enter a valid Initial Payment amount and required details.")
+            return
         self._payload = p
         super().accept()
 
