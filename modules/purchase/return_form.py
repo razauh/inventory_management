@@ -105,7 +105,7 @@ class PurchaseReturnForm(QDialog):
 
         self.cmb_method = QComboBox()
         # Allow the three labels test searches for
-        self.cmb_method.addItems(["Bank Transfer", "Cheque", "Cash Deposit"])
+        self.cmb_method.addItems(["Bank Transfer", "Cheque", "Cash Deposit", "Cash"])
 
         self.cmb_company_acct = QComboBox()
         self._load_company_accounts()
@@ -166,7 +166,7 @@ class PurchaseReturnForm(QDialog):
         self._poll.start()
 
         self._validate()
-        self.resize(1020, 680)
+        self.resize(1200, 680)
         self.setSizeGripEnabled(True)
 
     # ---------- account loaders ----------
@@ -448,6 +448,8 @@ class PurchaseReturnForm(QDialog):
                 instr_type = "online"
             elif "cheque" in m:
                 instr_type = "cross_cheque"
+            elif "cash" in m:
+                instr_type = "cash"
             else:
                 instr_type = "cash_deposit_slip"
 

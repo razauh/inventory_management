@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QScrollArea, QWidget, QHeaderView, QGridLayout
 )
 from PySide6.QtCore import Qt, QDate
+from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.helpers import today_str, fmt_money
@@ -244,7 +245,7 @@ class PurchaseForm(QDialog):
 
     def _refresh_ip_visibility(self):
         method = self.ip_method.currentText()
-        need_company = method in ("Bank Transfer", "Cheque")
+        need_company = method in ("Bank Transfer", "Cheque", "Cash Deposit")
         need_vendor  = method in ("Bank Transfer", "Cheque", "Cash Deposit")
         need_instr   = method in ("Bank Transfer", "Cheque", "Cash Deposit")
         need_idate   = method in ("Bank Transfer", "Cheque", "Cash Deposit")
@@ -327,6 +328,13 @@ class PurchaseForm(QDialog):
         self.tbl.setItem(r, 0, num)
 
         cmb_prod = QComboBox()
+        cmb_prod.setEditable(True)
+        product_names = [p.name for p in self._all_products()]
+        completer = QCompleter(product_names, self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        cmb_prod.setCompleter(completer)
+        
+        # Add items to combo
         for p in self._all_products():
             cmb_prod.addItem(f"{p.name} (#{p.product_id})", p.product_id)
         self.tbl.setCellWidget(r, 1, cmb_prod)

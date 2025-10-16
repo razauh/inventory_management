@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QComboBox, QLineEdit
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QCompleter
 from ...utils.validators import is_positive_number, non_empty
 from ...database.repositories.products_repo import ProductsRepo
 
@@ -11,6 +12,11 @@ class PurchaseItemForm(QDialog):
         self.repo = repo
         self.cmb_product = QComboBox()
         self.cmb_product.setEditable(True)
+        product_names = [p.name for p in self.repo.list_products()]
+        completer = QCompleter(product_names, self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.cmb_product.setCompleter(completer)
+        
         for p in self.repo.list_products():
             self.cmb_product.addItem(f"{p.name} (#{p.product_id})", p.product_id)
         self._base_uom_id = None
