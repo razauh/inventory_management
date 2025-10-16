@@ -41,18 +41,29 @@ class PurchaseForm(QDialog):
         )
         self.txt_notes = QLineEdit()
 
+        def create_required_label(text):
+            """Helper function to create a label with a red asterisk for required fields"""
+            label = QLabel()
+            label.setText(text + "*")
+            label.setStyleSheet("color: red; font-weight: bold;")
+            return label
+
         header_box = QGroupBox()
         hg = QGridLayout(header_box)
         hg.setHorizontalSpacing(12); hg.setVerticalSpacing(8)
 
-        def add_pair(row, col, text, widget):
+        def add_pair(row, col, text, widget, required=False):
+            """Modified function to optionally add red asterisks to required fields"""
             c = col * 2
-            hg.addWidget(QLabel(text), row, c)
+            if required:
+                hg.addWidget(create_required_label(text), row, c)
+            else:
+                hg.addWidget(QLabel(text), row, c)
             hg.addWidget(widget, row, c + 1)
 
-        add_pair(0, 0, "Vendor*", self.cmb_vendor)
-        add_pair(0, 1, "Date*", self.date)
-        add_pair(1, 0, "Notes", self.txt_notes)
+        add_pair(0, 0, "Vendor", self.cmb_vendor, required=True)
+        add_pair(0, 1, "Date", self.date, required=True)
+        add_pair(1, 0, "Notes", self.txt_notes, required=False)
         hg.setColumnStretch(1, 1)
         hg.setColumnStretch(3, 1)
         main_layout.addWidget(header_box)
@@ -112,19 +123,29 @@ class PurchaseForm(QDialog):
         self.ip_ref_no     = QLineEdit(); self.ip_ref_no.setPlaceholderText("Reference (optional)")
         self.ip_notes      = QLineEdit(); self.ip_notes.setPlaceholderText("Notes (optional)")
 
-        def add_ip(row, col, text, widget):
+        def add_ip(row, col, text, widget, required=False):
+            """Modified function for payment section with optional required field indicators"""
             c = col * 2
-            ipg.addWidget(QLabel(text), row, c)
+            if required:
+                label = create_required_label(text)
+                ipg.addWidget(label, row, c)
+            else:
+                label = QLabel(text)
+                ipg.addWidget(label, row, c)
             ipg.addWidget(widget, row, c + 1)
+            return label  # Return the label widget so it can be modified dynamically
 
-        add_ip(0, 0, "Amount", self.ip_amount)
-        add_ip(0, 1, "Payment Date", self.ip_date)
-        add_ip(1, 0, "Method", self.ip_method)
-        add_ip(1, 1, "Company Bank Account", self.ip_company_acct)
-        add_ip(2, 0, "Vendor Bank Account", self.ip_vendor_acct)
-        add_ip(2, 1, "Instrument No", self.ip_instr_no)
-        add_ip(3, 0, "Instrument Date", self.ip_instr_date)
-        add_ip(3, 1, "Ref No", self.ip_ref_no)
+        # Create labels for payment section and store references for dynamic updates
+        self._ip_labels = {}
+        
+        add_ip(0, 0, "Amount", self.ip_amount, required=False)
+        add_ip(0, 1, "Payment Date", self.ip_date, required=False)
+        add_ip(1, 0, "Method", self.ip_method, required=False)
+        self._ip_labels['company_acct'] = add_ip(1, 1, "Company Bank Account", self.ip_company_acct, required=False)
+        self._ip_labels['vendor_acct'] = add_ip(2, 0, "Vendor Bank Account", self.ip_vendor_acct, required=False)
+        self._ip_labels['instr_no'] = add_ip(2, 1, "Instrument No", self.ip_instr_no, required=False)
+        add_ip(3, 0, "Instrument Date", self.ip_instr_date, required=False)
+        add_ip(3, 1, "Ref No", self.ip_ref_no, required=False)
         ipg.addWidget(QLabel("Payment Notes"), 4, 0)
         ipg.addWidget(self.ip_notes, 4, 1, 1, 3)
         ipg.setColumnStretch(1, 1)
@@ -232,6 +253,40 @@ class PurchaseForm(QDialog):
         self.ip_vendor_acct.setEnabled(need_vendor);   self.ip_vendor_acct.setVisible(need_vendor)
         self.ip_instr_no.setEnabled(need_instr);       self.ip_instr_no.setVisible(need_instr)
         self.ip_instr_date.setEnabled(need_idate);     self.ip_instr_date.setVisible(need_idate)
+
+        # Update the payment section labels dynamically based on required fields
+        if hasattr(self, '_ip_labels'):
+            # Reset all labels to normal first
+            for label_key, label_widget in self._ip_labels.items():
+                # Remove any existing required styling
+                if label_widget.styleSheet() != "":
+                    # Reset to normal label
+                    plain_text = label_widget.text().rstrip('*')
+                    plain_label = QLabel(plain_text)
+                    label_widget.setText(plain_text)
+                    label_widget.setStyleSheet("")
+            
+            # Now apply required styling to the appropriate labels based on method
+            if need_company and 'company_acct' in self._ip_labels:
+                company_label = self._ip_labels['company_acct']
+                current_text = company_label.text()
+                if not current_text.endswith("*"):
+                    company_label.setText(current_text + "*")
+                    company_label.setStyleSheet("color: red; font-weight: bold;")
+            
+            if need_vendor and 'vendor_acct' in self._ip_labels:
+                vendor_label = self._ip_labels['vendor_acct']
+                current_text = vendor_label.text()
+                if not current_text.endswith("*"):
+                    vendor_label.setText(current_text + "*")
+                    vendor_label.setStyleSheet("color: red; font-weight: bold;")
+            
+            if need_instr and 'instr_no' in self._ip_labels:
+                instr_label = self._ip_labels['instr_no']
+                current_text = instr_label.text()
+                if not current_text.endswith("*"):
+                    instr_label.setText(current_text + "*")
+                    instr_label.setStyleSheet("color: red; font-weight: bold;")
 
         m = method
         if m == "Bank Transfer":
