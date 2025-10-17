@@ -233,14 +233,23 @@ class PurchaseForm(QDialog):
                 
             # Update method-specific visibility when amount changes
             if enable_fields:
+                # Also reload vendor accounts if current payment method requires them
+                method = self.ip_method.currentText()
+                need_vendor = method in ("Bank Transfer", "Cheque", "Cash Deposit")
+                if need_vendor and self.cmb_vendor.currentData():
+                    self._reload_vendor_accounts()
                 self._refresh_ip_visibility()
             else:
                 # For disabled fields, ensure method-specific fields are also disabled
                 self.ip_company_acct.setEnabled(False)
                 self.ip_vendor_acct.setEnabled(False)
+                self.ip_vendor_acct.clear()  # Clear dropdown when disabling
                 self.ip_instr_no.setEnabled(False)
                 self.ip_instr_date.setEnabled(False)
-        except:
+        except Exception as e:
+            # Show specific error message instead of silently failing
+            import logging
+            logging.exception("Error in _toggle_ip_fields_by_amount")
             # If parsing fails, disable fields except amount
             self.ip_date.setEnabled(False)
             self.ip_method.setEnabled(False)
@@ -260,8 +269,18 @@ class PurchaseForm(QDialog):
             ).fetchall()
             for r in rows:
                 self.ip_company_acct.addItem(r["label"], int(r["account_id"]))
-        except Exception:
-            pass
+        except ValueError:
+            # Handle issues with converting account_id to int
+            print("Error: Invalid company account ID")
+            import logging
+            logging.exception("Invalid account ID in _reload_company_accounts")
+        except Exception as e:
+            # Show specific error message instead of silently failing
+            print(f"Error loading company bank accounts: {e}")
+            import logging
+            logging.exception("Error in _reload_company_accounts")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Error", f"Could not load company bank accounts: {str(e)}")
 
     def _reload_vendor_accounts(self):
         self.ip_vendor_acct.clear()
@@ -280,10 +299,21 @@ class PurchaseForm(QDialog):
                 (int(vid),),
             ).fetchall()
             for r in rows:
-                label = r["label"] + (" (Primary)" if str(r.get("is_primary", 0)) in ("1","True","true") else "")
+                label = r["label"] + (" (Primary)" if str(r["is_primary"]) in ("1","True","true") else "")
                 self.ip_vendor_acct.addItem(label, int(r["vba_id"]))
-        except Exception:
-            pass
+        except ValueError:
+            # Handle issues with converting vid to int
+            print(f"Error: Invalid vendor ID: {vid}")
+            import logging
+            logging.exception("Invalid vendor ID in _reload_vendor_accounts")
+        except Exception as e:
+            # Show specific error message instead of silently failing
+            print(f"Error loading vendor bank accounts: {e}")
+            import logging
+            logging.exception("Error in _reload_vendor_accounts")
+            # Optionally show an error to the user if there's a GUI error reporting mechanism
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")
 
     def _refresh_ip_visibility(self):
         # Only apply method-specific field activation if amount > 0
@@ -296,7 +326,10 @@ class PurchaseForm(QDialog):
                 self.ip_instr_no.setEnabled(False)
                 self.ip_instr_date.setEnabled(False)
                 return
-        except:
+        except Exception as e:
+            # Show specific error message instead of silently failing
+            import logging
+            logging.exception("Error in _refresh_ip_visibility")
             # If parsing fails, disable method-specific fields
             self.ip_company_acct.setEnabled(False)
             self.ip_vendor_acct.setEnabled(False)
@@ -314,6 +347,10 @@ class PurchaseForm(QDialog):
         if amount > 0:
             self.ip_company_acct.setEnabled(need_company)
             self.ip_vendor_acct.setEnabled(need_vendor)
+            # When vendor bank account is enabled for certain payment methods,
+            # make sure to reload the vendor accounts for the currently selected vendor
+            if need_vendor:
+                self._reload_vendor_accounts()  # This will populate the dropdown with accounts for the selected vendor
             self.ip_instr_no.setEnabled(need_instr)
             self.ip_instr_date.setEnabled(need_idate)
         else:
@@ -592,8 +629,58 @@ class PurchaseForm(QDialog):
 
         if ip_amount > 0:
             method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
+            
+            # Handle editable comboboxes: if currentData() is None, try to find the ID by looking up the text
+            # First ensure vendor_id is available as it's needed for vendor bank account lookup
+            try:
+                resolved_vendor_id = int(self.cmb_vendor.currentData())
+            except Exception:
+                return None  # vendor selection is required
+            
+            company_acct_text = self.ip_company_acct.currentText().strip() if hasattr(self, "ip_company_acct") and self.ip_company_acct.currentText() else ""
             company_id = self.ip_company_acct.currentData() if hasattr(self, "ip_company_acct") else None
+            if company_id is None and company_acct_text:
+                # Look up company account ID by label/text (with case-insensitive matching)
+                try:
+                    conn = self.vendors.conn
+                    # First try exact match
+                    row = conn.execute(
+                        "SELECT account_id FROM company_bank_accounts WHERE label = ? AND is_active=1",
+                        (company_acct_text,)
+                    ).fetchone()
+                    if not row:
+                        # Try case-insensitive match
+                        row = conn.execute(
+                            "SELECT account_id FROM company_bank_accounts WHERE LOWER(label) = LOWER(?) AND is_active=1",
+                            (company_acct_text,)
+                        ).fetchone()
+                    if row:
+                        company_id = int(row["account_id"])
+                except Exception:
+                    company_id = None
+            
+            vendor_acct_text = self.ip_vendor_acct.currentText().strip() if hasattr(self, "ip_vendor_acct") and self.ip_vendor_acct.currentText() else ""
             vendor_bank_id = self.ip_vendor_acct.currentData() if hasattr(self, "ip_vendor_acct") else None
+            if vendor_bank_id is None and vendor_acct_text:
+                # Look up vendor account ID by label/text (with case-insensitive matching)
+                try:
+                    conn = self.vendors.conn
+                    # First try exact match
+                    row = conn.execute(
+                        "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = ? AND vendor_id = ? AND is_active=1",
+                        (vendor_acct_text, resolved_vendor_id)
+                    ).fetchone()
+                    if not row:
+                        # Try case-insensitive match
+                        row = conn.execute(
+                            "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE LOWER(label) = LOWER(?) AND vendor_id = ? AND is_active=1",
+                            (vendor_acct_text, resolved_vendor_id)
+                        ).fetchone()
+                    if row:
+                        vendor_bank_id = int(row["vendor_bank_account_id"])
+                except Exception:
+                    vendor_bank_id = None
+            
             instr_no = self.ip_instr_no.text().strip() if hasattr(self, "ip_instr_no") else ""
             instr_date = self.ip_instr_date.date().toString("yyyy-MM-dd") if hasattr(self, "ip_instr_date") else date_str
             ref_no = self.ip_ref_no.text().strip() if hasattr(self, "ip_ref_no") else None
@@ -648,9 +735,104 @@ class PurchaseForm(QDialog):
 
         return payload
 
+    def validate_form(self) -> tuple[bool, list[str]]:  # (is_valid, list_of_error_messages)
+        """Validate form and return detailed error messages"""
+        errors = []
+        
+        # Validate vendor
+        vendor_id = self.cmb_vendor.currentData()
+        if vendor_id is None or vendor_id == "":
+            errors.append("Please select a vendor from the dropdown list.")
+
+        # Validate date
+        try:
+            date_str = self.date.date().toString("yyyy-MM-dd")
+            import datetime
+            datetime.datetime.strptime(date_str, "%Y-%m-%d")  # Basic date validation
+        except:
+            errors.append("Please select a valid date.")
+
+        # Validate items
+        valid_rows = []
+        for r in range(self.tbl.rowCount()):
+            cmb_prod = self.tbl.cellWidget(r, 1)
+            if not cmb_prod:
+                continue
+            product_id = cmb_prod.currentData()
+            if product_id in (None, ""):
+                errors.append(f"Row {r+1}: Please select a product.")
+                continue
+
+            # Validate quantity
+            qty_it = self.tbl.item(r, 2)
+            try:
+                qty = self._to_float_safe((qty_it.text() or "0").strip())
+                if qty <= 0:
+                    errors.append(f"Row {r+1}: Quantity must be greater than 0.")
+            except:
+                errors.append(f"Row {r+1}: Please enter a valid numeric quantity.")
+
+            # Validate purchase price
+            buy_it = self.tbl.item(r, 3)
+            try:
+                buy = self._to_float_safe((buy_it.text() or "0").strip())
+                if buy <= 0:
+                    errors.append(f"Row {r+1}: Purchase price must be greater than 0.")
+            except:
+                errors.append(f"Row {r+1}: Please enter a valid numeric purchase price.")
+
+            # Validate sale price
+            sale_it = self.tbl.item(r, 4)
+            try:
+                sale = self._to_float_safe((sale_it.text() or "0").strip())
+                if sale < buy:
+                    errors.append(f"Row {r+1}: Sale price must be greater than or equal to purchase price ({buy}).")
+            except:
+                errors.append(f"Row {r+1}: Please enter a valid numeric sale price.")
+
+        # If no valid rows were found
+        if not any(cmb_prod.currentData() for r in range(self.tbl.rowCount()) if (cmb_prod := self.tbl.cellWidget(r, 1))):
+            errors.append("Please add at least one valid purchase item.")
+
+        # Validate initial payment if amount is specified
+        try:
+            ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
+            ip_amount = self._to_float_safe(ip_amount_txt)
+
+            if ip_amount < 0:
+                errors.append("Initial payment amount cannot be negative.")
+            elif ip_amount > 0:
+                method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
+                m = (method or "").strip().lower()
+
+                if m in ["bank transfer", "cheque"]:
+                    if self.ip_company_acct.currentData() is None:
+                        errors.append(f"For {method}, please select a company bank account.")
+                    if self.ip_vendor_acct.currentData() is None:
+                        errors.append(f"For {method}, please select a vendor bank account.")
+                    if not self.ip_instr_no.text().strip():
+                        errors.append(f"For {method}, please enter the instrument/cheque number.")
+                elif m == "cash deposit":
+                    if self.ip_vendor_acct.currentData() is None:
+                        errors.append(f"For {method}, please select a vendor bank account.")
+                    if not self.ip_instr_no.text().strip():
+                        errors.append(f"For {method}, please enter the deposit slip number.")
+
+        except Exception as e:
+            errors.append("Error validating initial payment: " + str(e))
+
+        return len(errors) == 0, errors
+
     def accept(self):
+        is_valid, errors = self.validate_form()
+        if not is_valid:
+            from PySide6.QtWidgets import QMessageBox
+            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
+            QMessageBox.warning(self, "Validation Errors", error_message)
+            return
         p = self.get_payload()
         if p is None:
+            # Fallback for any remaining validation issues
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Missing/Invalid Fields",
                                 "Please enter valid purchase details (all required fields must be filled).")
