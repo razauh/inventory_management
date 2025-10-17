@@ -182,6 +182,7 @@ class PurchaseForm(QDialog):
 
         self.cmb_vendor.currentIndexChanged.connect(self._reload_vendor_accounts)
         self.ip_method.currentIndexChanged.connect(self._refresh_ip_visibility)
+        self.ip_amount.textChanged.connect(self._toggle_ip_fields_by_amount)
         self.ip_date.dateChanged.connect(lambda _d: self.ip_instr_date.setDate(self.ip_date.date()))
         self.date.dateChanged.connect(
             lambda _d: (self.ip_date.setDate(self.date.date())
@@ -198,6 +199,8 @@ class PurchaseForm(QDialog):
         self._refresh_ip_visibility()
         self._rebuild_table()
         self._refresh_totals()
+        # Set initial state for payment fields based on amount
+        self._toggle_ip_fields_by_amount()
         self.resize(1100, 700)
         self.setMinimumSize(860, 560)
         self.setSizeGripEnabled(True)
@@ -208,6 +211,45 @@ class PurchaseForm(QDialog):
             return float(cleaned) if cleaned else 0.0
         except Exception:
             return 0.0
+
+    def _toggle_ip_fields_by_amount(self):
+        try:
+            amount = float(self._to_float_safe(self.ip_amount.text()))
+            enable_fields = amount > 0
+
+            # Set enable state for all initial payment fields except amount
+            self.ip_date.setEnabled(enable_fields)
+            self.ip_method.setEnabled(enable_fields)
+            self.ip_company_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
+            self.ip_vendor_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
+            self.ip_instr_no.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
+            self.ip_instr_date.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
+            self.ip_ref_no.setEnabled(enable_fields)
+            self.ip_notes.setEnabled(enable_fields)
+
+            # If amount is 0, reset method to Cash to avoid confusion
+            if not enable_fields and self.ip_method.currentText() != "Cash":
+                self.ip_method.setCurrentText("Cash")
+                
+            # Update method-specific visibility when amount changes
+            if enable_fields:
+                self._refresh_ip_visibility()
+            else:
+                # For disabled fields, ensure method-specific fields are also disabled
+                self.ip_company_acct.setEnabled(False)
+                self.ip_vendor_acct.setEnabled(False)
+                self.ip_instr_no.setEnabled(False)
+                self.ip_instr_date.setEnabled(False)
+        except:
+            # If parsing fails, disable fields except amount
+            self.ip_date.setEnabled(False)
+            self.ip_method.setEnabled(False)
+            self.ip_company_acct.setEnabled(False)
+            self.ip_vendor_acct.setEnabled(False)
+            self.ip_instr_no.setEnabled(False)
+            self.ip_instr_date.setEnabled(False)
+            self.ip_ref_no.setEnabled(False)
+            self.ip_notes.setEnabled(False)
 
     def _reload_company_accounts(self):
         self.ip_company_acct.clear()
@@ -244,16 +286,42 @@ class PurchaseForm(QDialog):
             pass
 
     def _refresh_ip_visibility(self):
+        # Only apply method-specific field activation if amount > 0
+        try:
+            amount = float(self._to_float_safe(self.ip_amount.text()))
+            if amount <= 0:
+                # If amount is 0 or less, disable method-specific fields
+                self.ip_company_acct.setEnabled(False)
+                self.ip_vendor_acct.setEnabled(False)
+                self.ip_instr_no.setEnabled(False)
+                self.ip_instr_date.setEnabled(False)
+                return
+        except:
+            # If parsing fails, disable method-specific fields
+            self.ip_company_acct.setEnabled(False)
+            self.ip_vendor_acct.setEnabled(False)
+            self.ip_instr_no.setEnabled(False)
+            self.ip_instr_date.setEnabled(False)
+            return
+
         method = self.ip_method.currentText()
         need_company = method in ("Bank Transfer", "Cheque", "Cash Deposit")
         need_vendor  = method in ("Bank Transfer", "Cheque", "Cash Deposit")
         need_instr   = method in ("Bank Transfer", "Cheque", "Cash Deposit")
         need_idate   = method in ("Bank Transfer", "Cheque", "Cash Deposit")
 
-        self.ip_company_acct.setEnabled(need_company); self.ip_company_acct.setVisible(need_company)
-        self.ip_vendor_acct.setEnabled(need_vendor);   self.ip_vendor_acct.setVisible(need_vendor)
-        self.ip_instr_no.setEnabled(need_instr);       self.ip_instr_no.setVisible(need_instr)
-        self.ip_instr_date.setEnabled(need_idate);     self.ip_instr_date.setVisible(need_idate)
+        # Only update if amount > 0 (fields should be enabled)
+        if amount > 0:
+            self.ip_company_acct.setEnabled(need_company)
+            self.ip_vendor_acct.setEnabled(need_vendor)
+            self.ip_instr_no.setEnabled(need_instr)
+            self.ip_instr_date.setEnabled(need_idate)
+        else:
+            # Double-check: if amount <= 0, disable these fields
+            self.ip_company_acct.setEnabled(False)
+            self.ip_vendor_acct.setEnabled(False)
+            self.ip_instr_no.setEnabled(False)
+            self.ip_instr_date.setEnabled(False)
 
         # Update the payment section labels dynamically based on required fields
         if hasattr(self, '_ip_labels'):
@@ -263,7 +331,6 @@ class PurchaseForm(QDialog):
                 if label_widget.styleSheet() != "":
                     # Reset to normal label
                     plain_text = label_widget.text().rstrip('*')
-                    plain_label = QLabel(plain_text)
                     label_widget.setText(plain_text)
                     label_widget.setStyleSheet("")
             
@@ -520,7 +587,7 @@ class PurchaseForm(QDialog):
         ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
         ip_amount = self._to_float_safe(ip_amount_txt)
 
-        if ip_amount_txt and ip_amount <= 0.0:
+        if ip_amount_txt and ip_amount < 0.0:
             return None
 
         if ip_amount > 0:
@@ -586,7 +653,7 @@ class PurchaseForm(QDialog):
         if p is None:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Missing/Invalid Fields",
-                                "Please enter a valid Initial Payment amount and required details.")
+                                "Please enter valid purchase details (all required fields must be filled).")
             return
         self._payload = p
         super().accept()
