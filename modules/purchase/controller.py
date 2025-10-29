@@ -314,6 +314,10 @@ class PurchaseController(BaseModule):
         if not p:
             return
 
+        # Check if this was called from print or PDF export button
+        should_print_after_save = p.get('_should_print', False)
+        should_export_pdf_after_save = p.get('_should_export_pdf', False)
+
         pid = new_purchase_id(self.conn, p["date"])
 
         h = PurchaseHeader(
@@ -502,6 +506,321 @@ class PurchaseController(BaseModule):
 
         info(self.view, "Saved", f"Purchase {pid} created.")
         self._reload()
+        
+        # Handle print or PDF export request after saving
+        if should_print_after_save:
+            self._print_purchase_invoice(pid)
+        elif should_export_pdf_after_save:
+            self._export_purchase_invoice_to_pdf(pid)
+
+    def _print_purchase_invoice(self, purchase_id: str):
+        """Print the purchase invoice directly"""
+        try:
+            import os
+            import tempfile
+            from jinja2 import Template
+            from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+            from PySide6.QtGui import QTextDocument
+            
+            # Load the template file
+            template_path = "resources/templates/invoices/purchase_invoice.html"
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            full_template_path = os.path.join(project_root, template_path)
+            
+            with open(full_template_path, 'r', encoding='utf-8') as f:
+                template_content = f.read()
+            
+            # Prepare data for the template (mimicking the invoice preview widget's _prepare_invoice_data)
+            enriched_data = {"purchase_id": purchase_id}
+            
+            # Fetch purchase header data
+            header_query = """
+            SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info, v.address AS vendor_address
+            FROM purchases p
+            JOIN vendors v ON p.vendor_id = v.vendor_id
+            WHERE p.purchase_id = ?
+            """
+            header_row = self.conn.execute(header_query, (purchase_id,)).fetchone()
+            
+            if header_row:
+                doc_data = dict(header_row)
+                enriched_data['doc'] = doc_data
+                enriched_data['vendor'] = {
+                    'name': doc_data.get('vendor_name', ''),
+                    'contact_info': doc_data.get('vendor_contact_info', ''),
+                    'address': doc_data.get('vendor_address', '')
+                }
+                
+                # Fetch purchase items
+                items_query = """
+                SELECT 
+                    pi.item_id,
+                    pi.product_id,
+                    p.name AS product_name,
+                    pi.quantity,
+                    u.unit_name AS uom_name,
+                    pi.purchase_price AS unit_price,
+                    pi.sale_price,
+                    pi.item_discount,
+                    (pi.quantity * pi.purchase_price) AS line_total,
+                    ROW_NUMBER() OVER (ORDER BY pi.item_id) AS idx
+                FROM purchase_items pi
+                JOIN products p ON pi.product_id = p.product_id
+                JOIN uoms u ON pi.uom_id = u.uom_id
+                WHERE pi.purchase_id = ?
+                ORDER BY pi.item_id
+                """
+                items_rows = self.conn.execute(items_query, (purchase_id,)).fetchall()
+                
+                items = []
+                for row in items_rows:
+                    item_dict = dict(row)
+                    items.append(item_dict)
+                
+                enriched_data['items'] = items
+                
+                # Calculate totals
+                subtotal = sum(item['line_total'] for item in items)
+                total = subtotal  # For purchases, total = subtotal (no discount for now)
+                
+                enriched_data['totals'] = {
+                    'subtotal_before_order_discount': subtotal,
+                    'line_discount_total': 0,  # No line discounts in purchase for now
+                    'order_discount': 0,  # No order discount in purchase for now
+                    'total': total
+                }
+                
+                # Get initial payment details if exists
+                payment_query = """
+                SELECT 
+                    pp.amount,
+                    pp.method,
+                    pp.date,
+                    pp.bank_account_id,
+                    pp.vendor_bank_account_id,
+                    pp.instrument_type,
+                    pp.instrument_no,
+                    pp.instrument_date,
+                    pp.deposited_date,
+                    pp.cleared_date,
+                    pp.ref_no,
+                    pp.notes,
+                    pp.clearing_state,
+                    ca.label AS bank_account_label,
+                    va.label AS vendor_bank_account_label
+                FROM purchase_payments pp
+                LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
+                LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
+                WHERE pp.purchase_id = ?
+                ORDER BY pp.payment_id DESC
+                LIMIT 1
+                """
+                payment_row = self.conn.execute(payment_query, (purchase_id,)).fetchone()
+                
+                if payment_row:
+                    enriched_data['initial_payment'] = dict(payment_row)
+                else:
+                    enriched_data['initial_payment'] = None
+                
+                # Add company info
+                enriched_data['company'] = {
+                    'name': 'Your Company Name',  # This would come from a company settings table
+                    'logo_path': None  # This would come from company settings
+                }
+                
+                # Add payment status
+                enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
+            
+            # Create Jinja2 template and render
+            template = Template(template_content, autoescape=True)
+            html_content = template.render(**enriched_data)
+            
+            # Create a QTextDocument from the HTML content
+            doc = QTextDocument()
+            doc.setHtml(html_content)
+            
+            # Create a printer object
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setDocName(f"Purchase_Invoice_{purchase_id}")
+            
+            # Show the print dialog to allow user to select printer and options
+            print_dialog = QPrintDialog(printer, self.view)
+            if print_dialog.exec() == QPrintDialog.Accepted:
+                # Print the document using painter method if direct print not available
+                from PySide6.QtGui import QPainter
+                painter = QPainter()
+                if painter.begin(printer):
+                    doc.drawContents(painter)
+                    painter.end()
+                else:
+                    info(self.view, "Print Failed", f"Could not start printing process.")
+                
+        except ImportError as e:
+            info(self.view, "Error", f"Required library not available: {e}")
+        except Exception as e:
+            info(self.view, "Error", f"Could not print invoice: {e}")
+    
+    def _export_purchase_invoice_to_pdf(self, purchase_id: str):
+        """Export the purchase invoice to PDF"""
+        try:
+            import os
+            from jinja2 import Template
+            from PySide6.QtPrintSupport import QPrinter
+            from PySide6.QtGui import QTextDocument
+            from PySide6.QtWidgets import QFileDialog
+            
+            # Load the template file
+            template_path = "resources/templates/invoices/purchase_invoice.html"
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            full_template_path = os.path.join(project_root, template_path)
+            
+            with open(full_template_path, 'r', encoding='utf-8') as f:
+                template_content = f.read()
+            
+            # Prepare data for the template (same as print method)
+            enriched_data = {"purchase_id": purchase_id}
+            
+            # Fetch purchase header data
+            header_query = """
+            SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info, v.address AS vendor_address
+            FROM purchases p
+            JOIN vendors v ON p.vendor_id = v.vendor_id
+            WHERE p.purchase_id = ?
+            """
+            header_row = self.conn.execute(header_query, (purchase_id,)).fetchone()
+            
+            if header_row:
+                doc_data = dict(header_row)
+                enriched_data['doc'] = doc_data
+                enriched_data['vendor'] = {
+                    'name': doc_data.get('vendor_name', ''),
+                    'contact_info': doc_data.get('vendor_contact_info', ''),
+                    'address': doc_data.get('vendor_address', '')
+                }
+                
+                # Fetch purchase items
+                items_query = """
+                SELECT 
+                    pi.item_id,
+                    pi.product_id,
+                    p.name AS product_name,
+                    pi.quantity,
+                    u.unit_name AS uom_name,
+                    pi.purchase_price AS unit_price,
+                    pi.sale_price,
+                    pi.item_discount,
+                    (pi.quantity * pi.purchase_price) AS line_total,
+                    ROW_NUMBER() OVER (ORDER BY pi.item_id) AS idx
+                FROM purchase_items pi
+                JOIN products p ON pi.product_id = p.product_id
+                JOIN uoms u ON pi.uom_id = u.uom_id
+                WHERE pi.purchase_id = ?
+                ORDER BY pi.item_id
+                """
+                items_rows = self.conn.execute(items_query, (purchase_id,)).fetchall()
+                
+                items = []
+                for row in items_rows:
+                    item_dict = dict(row)
+                    items.append(item_dict)
+                
+                enriched_data['items'] = items
+                
+                # Calculate totals
+                subtotal = sum(item['line_total'] for item in items)
+                total = subtotal  # For purchases, total = subtotal (no discount for now)
+                
+                enriched_data['totals'] = {
+                    'subtotal_before_order_discount': subtotal,
+                    'line_discount_total': 0,  # No line discounts in purchase for now
+                    'order_discount': 0,  # No order discount in purchase for now
+                    'total': total
+                }
+                
+                # Get initial payment details if exists
+                payment_query = """
+                SELECT 
+                    pp.amount,
+                    pp.method,
+                    pp.date,
+                    pp.bank_account_id,
+                    pp.vendor_bank_account_id,
+                    pp.instrument_type,
+                    pp.instrument_no,
+                    pp.instrument_date,
+                    pp.deposited_date,
+                    pp.cleared_date,
+                    pp.ref_no,
+                    pp.notes,
+                    pp.clearing_state,
+                    ca.label AS bank_account_label,
+                    va.label AS vendor_bank_account_label
+                FROM purchase_payments pp
+                LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
+                LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
+                WHERE pp.purchase_id = ?
+                ORDER BY pp.payment_id DESC
+                LIMIT 1
+                """
+                payment_row = self.conn.execute(payment_query, (purchase_id,)).fetchone()
+                
+                if payment_row:
+                    enriched_data['initial_payment'] = dict(payment_row)
+                else:
+                    enriched_data['initial_payment'] = None
+                
+                # Add company info
+                enriched_data['company'] = {
+                    'name': 'Your Company Name',  # This would come from a company settings table
+                    'logo_path': None  # This would come from company settings
+                }
+                
+                # Add payment status
+                enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
+            
+            # Create Jinja2 template and render
+            template = Template(template_content, autoescape=True)
+            html_content = template.render(**enriched_data)
+            
+            # Create a QTextDocument from the HTML content
+            doc = QTextDocument()
+            doc.setHtml(html_content)
+            
+            import os
+            from PySide6.QtCore import QStandardPaths
+            
+            # Determine the desktop path and create PIs subdirectory
+            desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+            pdfs_dir = os.path.join(desktop_path, "PIs")
+            
+            # Create the directory if it doesn't exist
+            os.makedirs(pdfs_dir, exist_ok=True)
+            
+            # Construct the file path
+            file_name = f"Purchase_Invoice_{purchase_id}.pdf"
+            file_path = os.path.join(pdfs_dir, file_name)
+            
+            # Create a printer object configured for PDF output
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(file_path)
+            printer.setDocName(f"Purchase_Invoice_{purchase_id}")
+            
+            # Print the document to PDF using painter method
+            from PySide6.QtGui import QPainter
+            painter = QPainter()
+            if painter.begin(printer):
+                doc.drawContents(painter)
+                painter.end()
+                
+                info(self.view, "Export Successful", f"Invoice exported to: {file_path}")
+            else:
+                info(self.view, "Export Failed", f"Could not start PDF creation process.")
+            
+        except ImportError as e:
+            info(self.view, "Error", f"Required library not available: {e}")
+        except Exception as e:
+            info(self.view, "Error", f"Could not export invoice to PDF: {e}")
 
     def _edit(self):
         row = self._selected_row_dict()

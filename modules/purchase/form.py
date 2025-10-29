@@ -157,8 +157,19 @@ class PurchaseForm(QDialog):
 
         main_layout.addWidget(ip_box, 0)
 
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
+        # Create custom button box to have Save and Print buttons instead of default OK
+        button_box = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.save_button = QPushButton("Save")
+        self.print_button = QPushButton("Print")
+        self.pdf_export_button = QPushButton("Export to PDF")
+        button_box.addButton(self.save_button, QDialogButtonBox.AcceptRole)
+        button_box.addButton(self.print_button, QDialogButtonBox.ActionRole)
+        button_box.addButton(self.pdf_export_button, QDialogButtonBox.ActionRole)
+        
+        # Connect buttons to specific methods
+        self.save_button.clicked.connect(self._save_clicked)
+        self.print_button.clicked.connect(self._print_clicked)
+        self.pdf_export_button.clicked.connect(self._pdf_export_clicked)
         button_box.rejected.connect(self.reject)
 
         scroll_area = QScrollArea()
@@ -842,3 +853,203 @@ class PurchaseForm(QDialog):
 
     def payload(self):
         return self._payload
+
+    def _save_clicked(self):
+        """Handle save button click"""
+        if not self.validate_form()[0]:
+            return
+        # Set flag to indicate this is a regular save (not print)
+        self._should_print = False
+        self._should_export_pdf = False
+        self.accept()
+
+    def _print_clicked(self):
+        """Handle print button click"""
+        if not self.validate_form()[0]:
+            return
+        # Set flag to indicate this is a print request
+        self._should_print = True
+        self._should_export_pdf = False
+        self.accept()
+
+    def _pdf_export_clicked(self):
+        """Handle PDF export button click"""
+        if not self.validate_form()[0]:
+            return
+        # Set flag to indicate this is a PDF export request
+        self._should_print = False
+        self._should_export_pdf = True
+        self.accept()
+
+    def get_payload(self) -> dict | None:
+        try:
+            vendor_id = int(self.cmb_vendor.currentData())
+        except Exception:
+            return None
+
+        rows = []
+        for r in range(self.tbl.rowCount()):
+            cmb_prod = self.tbl.cellWidget(r, 1)
+            if not cmb_prod: continue
+            product_id = cmb_prod.currentData()
+            if product_id in (None, ""): continue
+            qty_it = self.tbl.item(r, 2)
+            buy_it = self.tbl.item(r, 3)
+            sale_it = self.tbl.item(r, 4)
+            try:
+                qty = self._to_float_safe((qty_it.text() or "0").strip())
+                buy = self._to_float_safe((buy_it.text() or "0").strip())
+                sale = self._to_float_safe((sale_it.text() or "0").strip())
+            except Exception:
+                return None
+            if qty <= 0 or buy <= 0 or not (sale >= buy):
+                return None
+            uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
+            if uom_id is None:
+                try:
+                    uom_id = int(self.products.get_base_uom(product_id)["uom_id"])
+                except Exception:
+                    uom_id = self._base_uom_id(product_id)
+            if uom_id is None: return None
+            rows.append({
+                "product_id": int(product_id),
+                "uom_id": int(uom_id),
+                "quantity": qty,
+                "purchase_price": buy,
+                "sale_price": sale,
+                "item_discount": 0.0,
+            })
+
+        if not rows: return None
+
+        date_str = self.date.date().toString("yyyy-MM-dd")
+        total_amount = self._calc_subtotal()
+
+        payload = {
+            "vendor_id": vendor_id,
+            "date": date_str,
+            "order_discount": 0.0,
+            "notes": (self.txt_notes.text().strip() or None),
+            "items": rows,
+            "total_amount": total_amount,
+        }
+
+        ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
+        ip_amount = self._to_float_safe(ip_amount_txt)
+
+        if ip_amount_txt and ip_amount < 0.0:
+            return None
+
+        if ip_amount > 0:
+            method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
+            
+            # Handle editable comboboxes: if currentData() is None, try to find the ID by looking up the text
+            # First ensure vendor_id is available as it's needed for vendor bank account lookup
+            try:
+                resolved_vendor_id = int(self.cmb_vendor.currentData())
+            except Exception:
+                return None  # vendor selection is required
+            
+            company_acct_text = self.ip_company_acct.currentText().strip() if hasattr(self, "ip_company_acct") and self.ip_company_acct.currentText() else ""
+            company_id = self.ip_company_acct.currentData() if hasattr(self, "ip_company_acct") else None
+            if company_id is None and company_acct_text:
+                # Look up company account ID by label/text (with case-insensitive matching)
+                try:
+                    conn = self.vendors.conn
+                    # First try exact match
+                    row = conn.execute(
+                        "SELECT account_id FROM company_bank_accounts WHERE label = ? AND is_active=1",
+                        (company_acct_text,)
+                    ).fetchone()
+                    if not row:
+                        # Try case-insensitive match
+                        row = conn.execute(
+                            "SELECT account_id FROM company_bank_accounts WHERE LOWER(label) = LOWER(?) AND is_active=1",
+                            (company_acct_text,)
+                        ).fetchone()
+                    if row:
+                        company_id = int(row["account_id"])
+                except Exception:
+                    company_id = None
+            
+            vendor_acct_text = self.ip_vendor_acct.currentText().strip() if hasattr(self, "ip_vendor_acct") and self.ip_vendor_acct.currentText() else ""
+            vendor_bank_id = self.ip_vendor_acct.currentData() if hasattr(self, "ip_vendor_acct") else None
+            if vendor_bank_id is None and vendor_acct_text:
+                # Look up vendor account ID by label/text (with case-insensitive matching)
+                try:
+                    conn = self.vendors.conn
+                    # First try exact match
+                    row = conn.execute(
+                        "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = ? AND vendor_id = ? AND is_active=1",
+                        (vendor_acct_text, resolved_vendor_id)
+                    ).fetchone()
+                    if not row:
+                        # Try case-insensitive match
+                        row = conn.execute(
+                            "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE LOWER(label) = LOWER(?) AND vendor_id = ? AND is_active=1",
+                            (vendor_acct_text, resolved_vendor_id)
+                        ).fetchone()
+                    if row:
+                        vendor_bank_id = int(row["vendor_bank_account_id"])
+                except Exception:
+                    vendor_bank_id = None
+            
+            instr_no = self.ip_instr_no.text().strip() if hasattr(self, "ip_instr_no") else ""
+            instr_date = self.ip_instr_date.date().toString("yyyy-MM-dd") if hasattr(self, "ip_instr_date") else date_str
+            ref_no = self.ip_ref_no.text().strip() if hasattr(self, "ip_ref_no") else None
+            notes = self.ip_notes.text().strip() if hasattr(self, "ip_notes") else None
+
+            m = (method or "").strip().lower()
+            if m == "bank transfer":
+                if not company_id or not vendor_bank_id or not instr_no: return None
+                instr_type = "online";        clearing_state = "posted"
+            elif m == "cheque":
+                if not company_id or not vendor_bank_id or not instr_no: return None
+                instr_type = "cross_cheque";  clearing_state = "pending"
+            elif m == "cash deposit":
+                if not vendor_bank_id or not instr_no: return None
+                instr_type = "cash_deposit";  clearing_state = "pending"; company_id = None
+            elif m == "cash":
+                instr_type = None
+                clearing_state = None  # controller will default cash → 'cleared'
+                company_id = None;     vendor_bank_id = None
+                instr_no = "";         instr_date = date_str
+            else:
+                instr_type = "other";         clearing_state = "pending"
+                company_id = None;            vendor_bank_id = None
+                instr_no = "";                instr_date = date_str
+
+            payload["initial_payment"] = {
+                "amount": ip_amount,
+                "method": method,
+                "bank_account_id": int(company_id) if company_id else None,
+                "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id else None,
+                "instrument_type": instr_type,
+                "instrument_no": instr_no,
+                "instrument_date": instr_date,
+                "deposited_date": None,
+                "cleared_date": None,
+                "clearing_state": clearing_state,
+                "ref_no": ref_no,
+                "notes": notes,
+                "date": date_str,
+            }
+            payload["initial_bank_account_id"] = payload["initial_payment"]["bank_account_id"]
+            payload["initial_vendor_bank_account_id"] = payload["initial_payment"]["vendor_bank_account_id"]
+            payload["initial_instrument_type"] = payload["initial_payment"]["instrument_type"]
+            payload["initial_instrument_no"] = payload["initial_payment"]["instrument_no"]
+            payload["initial_instrument_date"] = payload["initial_payment"]["instrument_date"]
+            payload["initial_deposited_date"] = payload["initial_payment"]["deposited_date"]
+            payload["initial_cleared_date"] = payload["initial_payment"]["cleared_date"]
+            payload["initial_clearing_state"] = payload["initial_payment"]["clearing_state"]
+            payload["initial_ref_no"] = payload["initial_payment"]["ref_no"]
+            payload["initial_payment_notes"] = payload["initial_payment"]["notes"]
+            payload["initial_method"] = payload["initial_payment"]["method"]
+
+        # Add the print and PDF export flags to the payload
+        if hasattr(self, '_should_print'):
+            payload['_should_print'] = self._should_print
+        if hasattr(self, '_should_export_pdf'):
+            payload['_should_export_pdf'] = self._should_export_pdf
+
+        return payload

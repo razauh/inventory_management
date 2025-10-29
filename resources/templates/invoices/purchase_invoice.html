@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Purchase Invoice — {{ doc.id }}</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; }
+    .page { width: 210mm; min-height: 297mm; padding: 16mm 15mm; box-sizing: border-box; }
+    h1, h2, h3 { margin: 0; padding: 0; }
+    .header { display: grid; grid-template-columns: 65% 35%; gap: 16px; align-items: start; }
+    .company-block { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
+    .logo { width: 36mm; max-height: 18mm; object-fit: contain; }
+    .company-name { font-size: 22px; font-weight: 700; line-height: 1.1; }
+    .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-wrap; }
+    .meta { text-align: right; }
+    .doc-title { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
+    .meta small { color: #555; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+    .badge.paid { background: #e7f6ec; color: #137333; }
+    .badge.partial { background: #fff7e6; color: #b36b00; }
+    .badge.unpaid { background: #fdeaea; color: #b3261e; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 6px; padding: 10px; }
+    .card h3 { font-size: 12px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .4px; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { text-align: left; background: #fafafa; font-weight: 700; }
+    .t-right { text-align: right; }
+    .totals { width: 50%; margin-left: auto; margin-top: 6px; }
+    .totals table { margin-top: 0; }
+    .totals .rule { border-top: 1px solid #ccc; }
+    .muted { color: #666; }
+    .footer { margin-top: 18px; font-size: 11px; color: #444; display: grid; grid-template-columns: 1fr; gap: 6px; }
+    .payment-details { margin-top: 16px; }
+    .payment-card { border: 1px solid #ddd; border-radius: 6px; padding: 10px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <!-- Header -->
+    <div class="header">
+      <div class="company-block">
+        {% if company.logo_path %}
+          <img class="logo" src="{{ company.logo_path }}" alt="Logo" />
+        {% endif %}
+        <div>
+          <div class="company-name">{{ company.name }}</div>
+          <div class="company-lines">
+            Address: XXXX
+            XXXXX: XXXXXX
+            XXXXXX: XXXXXX
+          </div>
+        </div>
+      </div>
+      <div class="meta">
+        <div class="doc-title">PURCHASE INVOICE</div>
+        <div><small>Document No:</small> <strong>{{ doc.id }}</strong></div>
+        <div><small>Date:</small> <strong>{{ doc.date }}</strong></div>
+        {% if doc.payment_status %}
+          {% set ps = (doc.payment_status|string).lower() %}
+          <div style="margin-top:6px;">
+            <span class="badge {{ 'paid' if ps=='paid' else ('partial' if ps=='partial' else 'unpaid') }}">
+              {{ doc.payment_status|upper }}
+            </span>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Parties & Bank -->
+    <div class="two-col">
+      <div class="card">
+        <h3>Purchase From</h3>
+        <div><strong>{{ vendor.name }}</strong></div>
+        <div class="muted">{{ vendor.contact_info }}</div>
+        {% if vendor.address %}
+          <div style="white-space: pre-wrap; margin-top: 4px;">{{ vendor.address }}</div>
+        {% endif %}
+      </div>
+      <div class="card">
+        <h3>Bank Details</h3>
+        <!-- Fixed bank blocks as requested -->
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+          <div>
+            <div><strong>XXXXX Bank</strong></div>
+            <div>Account Title: XXXX</div>
+            <div>Account No: XXXX</div>
+          </div>
+          <div>
+            <div><strong>XXXX XXXX Bank</strong></div>
+            <div>Account Title: XXXXX</div>
+            <div>Account No: XXXX</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Items -->
+    <table aria-label="Line items">
+      <thead>
+        <tr>
+          <th style="width:36px;">#</th>
+          <th>Product</th>
+          <th class="t-right" style="width:70px;">Qty</th>
+          <th style="width:70px;">UoM</th>
+          <th class="t-right" style="width:90px;">Unit Price</th>
+          <th class="t-right" style="width:110px;">Line Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for it in items %}
+        <tr>
+          <td class="t-right">{{ it.idx }}</td>
+          <td>{{ it.product_name }}</td>
+          <td class="t-right">{{ '%.2f' % it.quantity }}</td>
+          <td>{{ it.uom_name }}</td>
+          <td class="t-right">{{ '%.2f' % it.unit_price }}</td>
+          <td class="t-right">{{ '%.2f' % it.line_total }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- Totals -->
+    <div class="totals">
+      <table>
+        <tr class="rule">
+          <td class="t-right"><strong>Total</strong></td>
+          <td class="t-right"><strong>{{ '%.2f' % totals.total }}</strong></td>
+        </tr>
+        {% if initial_payment %}
+        <tr>
+          <td class="t-right">Initial Payment</td>
+          <td class="t-right">{{ '%.2f' % initial_payment.amount }}</td>
+        </tr>
+        <tr>
+          <td class="t-right">Remaining Amount</td>
+          <td class="t-right">{{ '%.2f' % (totals.total - initial_payment.amount) }}</td>
+        </tr>
+        {% endif %}
+      </table>
+    </div>
+
+    <!-- Initial Payment Details -->
+    {% if initial_payment %}
+    <div class="payment-details">
+      <div class="payment-card">
+        <h3>Initial Payment Details</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div><strong>Method:</strong> {{ initial_payment.method }}</div>
+          <div><strong>Date:</strong> {{ initial_payment.date }}</div>
+          {% if initial_payment.bank_account_id %}
+          <div><strong>Company Account:</strong> {{ initial_payment.bank_account_label or "N/A" }}</div>
+          {% endif %}
+          {% if initial_payment.vendor_bank_account_id %}
+          <div><strong>Vendor Account:</strong> {{ initial_payment.vendor_bank_account_label or "N/A" }}</div>
+          {% endif %}
+          {% if initial_payment.instrument_no %}
+          <div><strong>Instrument No:</strong> {{ initial_payment.instrument_no }}</div>
+          {% endif %}
+          {% if initial_payment.instrument_date %}
+          <div><strong>Instrument Date:</strong> {{ initial_payment.instrument_date }}</div>
+          {% endif %}
+          {% if initial_payment.ref_no %}
+          <div><strong>Reference No:</strong> {{ initial_payment.ref_no }}</div>
+          {% endif %}
+          {% if initial_payment.notes %}
+          <div><strong>Notes:</strong> {{ initial_payment.notes }}</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Footer -->
+    <div class="footer">
+      <div>Thank you for your business!</div>
+      <!-- Optional slim contact strip could go here -->
+    </div>
+  </div>
+</body>
+</html>

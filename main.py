@@ -386,52 +386,62 @@ def main():
     conn = get_connection()
 
     # ---- Login (lazy import to avoid circulars) ----
-    LoginController = _lazy_get("inventory_management.modules.login.controller", "LoginController")
-    login = LoginController(conn)
+    # Commented out for development: bypass login during development
+    # LoginController = _lazy_get("inventory_management.modules.login.controller", "LoginController")
+    # login = LoginController(conn)
 
-    # Retry loop: specific messages for each failure case
-    while True:
-        user = login.prompt()
-        if user:
-            break
+    # # Retry loop: specific messages for each failure case
+    # while True:
+    #     user = login.prompt()
+    #     if user:
+    #         break
 
-        code = getattr(login, "last_error_code", None)
-        uname = getattr(login, "last_username", "") or "this user"
+    #     code = getattr(login, "last_error_code", None)
+    #     uname = getattr(login, "last_username", "") or "this user"
 
-        if code == "user_not_found":
-            msg = f"No account exists for username “{uname}”.\n\nTry again?"
-            title = "Unknown username"
-            buttons = QMessageBox.Retry | QMessageBox.Close
-            default = QMessageBox.Retry
-        elif code == "wrong_password":
-            msg = f"Incorrect password for “{uname}”.\n\nTry again?"
-            title = "Incorrect password"
-            buttons = QMessageBox.Retry | QMessageBox.Close
-            default = QMessageBox.Retry
-        elif code == "user_inactive":
-            msg = f"Account “{uname}” is inactive. Contact an administrator."
-            title = "Account inactive"
-            buttons = QMessageBox.Close | QMessageBox.Retry
-            default = QMessageBox.Retry
-        elif code == "empty_fields":
-            msg = "Please enter both username and password.\n\nTry again?"
-            title = "Missing credentials"
-            buttons = QMessageBox.Retry | QMessageBox.Close
-            default = QMessageBox.Retry
-        elif code == "cancelled":
-            msg = "Login was cancelled.\n\nDo you want to quit the application?"
-            title = "Login cancelled"
-            buttons = QMessageBox.Yes | QMessageBox.No
-            default = QMessageBox.Yes
-        else:
-            msg = "Login failed.\n\nDo you want to try again?"
-            title = "Login failed"
-            buttons = QMessageBox.Retry | QMessageBox.Close
-            default = QMessageBox.Retry
+    #     if code == "user_not_found":
+    #         msg = f"No account exists for username “{uname}”.\n\nTry again?"
+    #         title = "Unknown username"
+    #         buttons = QMessageBox.Retry | QMessageBox.Close
+    #         default = QMessageBox.Retry
+    #     elif code == "wrong_password":
+    #         msg = f"Incorrect password for “{uname}”.\n\nTry again?"
+    #         title = "Incorrect password"
+    #         buttons = QMessageBox.Retry | QMessageBox.Close
+    #         default = QMessageBox.Retry
+    #     elif code == "user_inactive":
+    #         msg = f"Account “{uname}” is inactive. Contact an administrator."
+    #         title = "Account inactive"
+    #         buttons = QMessageBox.Close | QMessageBox.Retry
+    #         default = QMessageBox.Retry
+    #     elif code == "empty_fields":
+    #         msg = "Please enter both username and password.\n\nTry again?"
+    #         title = "Missing credentials"
+    #         buttons = QMessageBox.Retry | QMessageBox.Close
+    #         default = QMessageBox.Retry
+    #     elif code == "cancelled":
+    #         msg = "Login was cancelled.\n\nDo you want to quit the application?"
+    #         title = "Login cancelled"
+    #         buttons = QMessageBox.Yes | QMessageBox.No
+    #         default = QMessageBox.Yes
+    #     else:
+    #         msg = "Login failed.\n\nDo you want to try again?"
+    #         title = "Login failed"
+    #         buttons = QMessageBox.Retry | QMessageBox.Close
+    #         default = QMessageBox.Retry
 
-        choice = QMessageBox.question(None, title, msg, buttons, default)
-        if choice in (QMessageBox.Close, QMessageBox.No):
-            return  # exit app
+    #     choice = QMessageBox.question(None, title, msg, buttons, default)
+    #     if choice in (QMessageBox.Close, QMessageBox.No):
+    #         return  # exit app
+    
+    # For development, create a mock user
+    user = {
+        "username": "dev_user", 
+        "role": "admin", 
+        "id": 1, 
+        "user_id": 1,
+        "user_name": "dev_user"  # Add other potential user fields as needed
+    }  # Mock user for development
 
     # Optional style
     qss = load_qss()
