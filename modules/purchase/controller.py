@@ -514,13 +514,12 @@ class PurchaseController(BaseModule):
             self._export_purchase_invoice_to_pdf(pid)
 
     def _print_purchase_invoice(self, purchase_id: str):
-        """Print the purchase invoice directly"""
+        """Print the purchase invoice using WeasyPrint for better rendering"""
         try:
             import os
-            import tempfile
             from jinja2 import Template
-            from PySide6.QtPrintSupport import QPrinter, QPrintDialog
-            from PySide6.QtGui import QTextDocument
+            from PySide6.QtCore import QStandardPaths
+            import tempfile
             
             # Load the template file
             template_path = "resources/templates/invoices/purchase_invoice.html"
@@ -530,7 +529,7 @@ class PurchaseController(BaseModule):
             with open(full_template_path, 'r', encoding='utf-8') as f:
                 template_content = f.read()
             
-            # Prepare data for the template (mimicking the invoice preview widget's _prepare_invoice_data)
+            # Prepare data for the template
             enriched_data = {"purchase_id": purchase_id}
             
             # Fetch purchase header data
@@ -635,39 +634,76 @@ class PurchaseController(BaseModule):
             template = Template(template_content, autoescape=True)
             html_content = template.render(**enriched_data)
             
-            # Create a QTextDocument from the HTML content
-            doc = QTextDocument()
-            doc.setHtml(html_content)
+            # Create temporary HTML file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as temp_html_file:
+                temp_html_file.write(html_content)
+                temp_html_path = temp_html_file.name
             
-            # Create a printer object
-            printer = QPrinter(QPrinter.HighResolution)
-            printer.setDocName(f"Purchase_Invoice_{purchase_id}")
+            # Use WeasyPrint to convert HTML to PDF, then print
+            from weasyprint import HTML, CSS
+            from weasyprint.text.fonts import FontConfiguration
             
-            # Show the print dialog to allow user to select printer and options
-            print_dialog = QPrintDialog(printer, self.view)
-            if print_dialog.exec() == QPrintDialog.Accepted:
-                # Print the document using painter method if direct print not available
-                from PySide6.QtGui import QPainter
-                painter = QPainter()
-                if painter.begin(printer):
-                    doc.drawContents(painter)
-                    painter.end()
-                else:
-                    info(self.view, "Print Failed", f"Could not start printing process.")
-                
-        except ImportError as e:
-            info(self.view, "Error", f"Required library not available: {e}")
+            # Create PDF in temporary location with proper naming
+            import tempfile
+            temp_pdf_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{purchase_id}_')
+            os.close(temp_pdf_fd)  # Close the file descriptor
+            
+            # Convert HTML to PDF with custom CSS for proper margins
+            from weasyprint import CSS
+            # Define custom CSS to override default margins
+            custom_css = CSS(string='''
+                @page {
+                    margin: 10mm;
+                    size: A4;
+                }
+                body {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    width: 100% !important;
+                }
+                .page {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    width: 100% !important;
+                    box-sizing: border-box !important;
+                }
+                .header {
+                    width: 100% !important;
+                }
+                table {
+                    width: 100% !important;
+                }
+            ''')
+            
+            html_doc = HTML(string=html_content)
+            html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
+            
+            # Open the PDF in default PDF viewer (to allow printing)
+            import subprocess
+            import sys
+            
+            try:
+                if sys.platform.startswith('win'):
+                    os.startfile(temp_pdf_path)
+                elif sys.platform.startswith('darwin'):  # macOS
+                    subprocess.run(['open', temp_pdf_path])
+                else:  # Linux and others
+                    subprocess.run(['xdg-open', temp_pdf_path])
+            except Exception:
+                info(self.view, "Print", f"PDF saved to: {temp_pdf_path}. Please open it to print.")
+        
+        except ImportError:
+            info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
         except Exception as e:
             info(self.view, "Error", f"Could not print invoice: {e}")
     
     def _export_purchase_invoice_to_pdf(self, purchase_id: str):
-        """Export the purchase invoice to PDF"""
+        """Export the purchase invoice to PDF using WeasyPrint for better rendering"""
         try:
             import os
             from jinja2 import Template
-            from PySide6.QtPrintSupport import QPrinter
-            from PySide6.QtGui import QTextDocument
-            from PySide6.QtWidgets import QFileDialog
+            from PySide6.QtCore import QStandardPaths
+            from weasyprint import HTML, CSS
             
             # Load the template file
             template_path = "resources/templates/invoices/purchase_invoice.html"
@@ -677,7 +713,7 @@ class PurchaseController(BaseModule):
             with open(full_template_path, 'r', encoding='utf-8') as f:
                 template_content = f.read()
             
-            # Prepare data for the template (same as print method)
+            # Prepare data for the template
             enriched_data = {"purchase_id": purchase_id}
             
             # Fetch purchase header data
@@ -781,13 +817,6 @@ class PurchaseController(BaseModule):
             # Create Jinja2 template and render
             template = Template(template_content, autoescape=True)
             html_content = template.render(**enriched_data)
-            
-            # Create a QTextDocument from the HTML content
-            doc = QTextDocument()
-            doc.setHtml(html_content)
-            
-            import os
-            from PySide6.QtCore import QStandardPaths
             
             # Determine the desktop path and create PIs subdirectory
             desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
@@ -797,28 +826,44 @@ class PurchaseController(BaseModule):
             os.makedirs(pdfs_dir, exist_ok=True)
             
             # Construct the file path
-            file_name = f"Purchase_Invoice_{purchase_id}.pdf"
+            file_name = f"{purchase_id}.pdf"
             file_path = os.path.join(pdfs_dir, file_name)
             
-            # Create a printer object configured for PDF output
-            printer = QPrinter(QPrinter.HighResolution)
-            printer.setOutputFormat(QPrinter.PdfFormat)
-            printer.setOutputFileName(file_path)
-            printer.setDocName(f"Purchase_Invoice_{purchase_id}")
+            # Convert HTML to PDF using WeasyPrint with custom CSS for proper margins
+            from weasyprint import CSS
+            import os
+            # Define custom CSS to override default margins
+            custom_css = CSS(string='''
+                @page {
+                    margin: 10mm;
+                    size: A4;
+                }
+                body {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    width: 100% !important;
+                }
+                .page {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    width: 100% !important;
+                    box-sizing: border-box !important;
+                }
+                .header {
+                    width: 100% !important;
+                }
+                table {
+                    width: 100% !important;
+                }
+            ''')
             
-            # Print the document to PDF using painter method
-            from PySide6.QtGui import QPainter
-            painter = QPainter()
-            if painter.begin(printer):
-                doc.drawContents(painter)
-                painter.end()
+            html_doc = HTML(string=html_content)
+            html_doc.write_pdf(file_path, stylesheets=[custom_css])
                 
-                info(self.view, "Export Successful", f"Invoice exported to: {file_path}")
-            else:
-                info(self.view, "Export Failed", f"Could not start PDF creation process.")
+            info(self.view, "Export Successful", f"Invoice exported to: {file_path}")
             
-        except ImportError as e:
-            info(self.view, "Error", f"Required library not available: {e}")
+        except ImportError:
+            info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
         except Exception as e:
             info(self.view, "Error", f"Could not export invoice to PDF: {e}")
 
@@ -877,8 +922,28 @@ class PurchaseController(BaseModule):
             )
             for it in p["items"]
         ]
+        
+        # Check if this was called from print or PDF export button
+        should_print_after_save = p.get('_should_print', False)
+        should_export_pdf_after_save = p.get('_should_export_pdf', False)
+        
+        # Update the purchase header and items first
+        self.repo.update_purchase(h, items)
+        
+        # Check if this was called from print or PDF export button
+        should_print_after_save = p.get('_should_print', False)
+        should_export_pdf_after_save = p.get('_should_export_pdf', False)
+        
+        # Update purchase
         self.repo.update_purchase(h, items)
         info(self.view, "Saved", f"Purchase {pid} updated.")
+        
+        # Handle print or PDF export request after saving
+        if should_print_after_save:
+            self._print_purchase_invoice(pid)
+        elif should_export_pdf_after_save:
+            self._export_purchase_invoice_to_pdf(pid)
+        
         self._reload()
 
     def _delete(self):

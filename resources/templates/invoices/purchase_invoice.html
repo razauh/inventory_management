@@ -11,7 +11,7 @@
     .company-block { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
     .logo { width: 36mm; max-height: 18mm; object-fit: contain; }
     .company-name { font-size: 22px; font-weight: 700; line-height: 1.1; }
-    .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-wrap; }
+    .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-line; }
     .meta { text-align: right; }
     .doc-title { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
     .meta small { color: #555; }
@@ -35,6 +35,15 @@
     .footer { margin-top: 18px; font-size: 11px; color: #444; display: grid; grid-template-columns: 1fr; gap: 6px; }
     .payment-details { margin-top: 16px; }
     .payment-card { border: 1px solid #ddd; border-radius: 6px; padding: 10px; }
+    
+    /* Page number styling for WeasyPrint */
+    @page {
+      @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-size: 10px;
+        color: #666;
+      }
+    }
   </style>
 </head>
 <body>
@@ -47,16 +56,14 @@
         {% endif %}
         <div>
           <div class="company-name">{{ company.name }}</div>
-          <div class="company-lines">
-            Address: XXXX
-            XXXXX: XXXXXX
-            XXXXXX: XXXXXX
-          </div>
+          <div class="company-lines">Address: XXXX<br>
+XXXXX: XXXXXX<br>
+XXXXXX: XXXXXX</div>
         </div>
       </div>
       <div class="meta">
         <div class="doc-title">PURCHASE INVOICE</div>
-        <div><small>Document No:</small> <strong>{{ doc.id }}</strong></div>
+        <div><small>Document No:</small> <strong>{{ doc.purchase_id }}</strong></div>
         <div><small>Date:</small> <strong>{{ doc.date }}</strong></div>
         {% if doc.payment_status %}
           {% set ps = (doc.payment_status|string).lower() %}

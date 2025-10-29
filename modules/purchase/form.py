@@ -107,7 +107,16 @@ class PurchaseForm(QDialog):
         tot.addWidget(QLabel("Total:"));    tot.addWidget(self.lab_total)
         main_layout.addLayout(tot)
 
+        # Determine if this is an edit operation (has initial data)
+        is_edit_mode = bool(initial)
+        
         ip_box = QGroupBox("Initial Payment (optional)")
+        
+        # Disable the entire initial payment section if in edit mode
+        if is_edit_mode:
+            ip_box.setEnabled(False)
+            ip_box.setTitle("Initial Payment (disabled during edit - use Payments section)")
+        
         ipg = QGridLayout(ip_box)
         ipg.setHorizontalSpacing(12); ipg.setVerticalSpacing(8)
 
@@ -154,6 +163,14 @@ class PurchaseForm(QDialog):
 
         self._ip_instrument_type = None
         self._ip_clearing_state = None
+
+        # Disable all initial payment controls if in edit mode
+        if is_edit_mode:
+            for widget in [self.ip_amount, self.ip_date, self.ip_method, 
+                          self.ip_company_acct, self.ip_vendor_acct, 
+                          self.ip_instr_no, self.ip_instr_date, 
+                          self.ip_ref_no, self.ip_notes]:
+                widget.setEnabled(False)
 
         main_layout.addWidget(ip_box, 0)
 
@@ -482,6 +499,7 @@ class PurchaseForm(QDialog):
             self.tbl.item(r, 4).setText(str(pre.get("sale_price", 0)))
             if "uom_id" in pre:
                 self.tbl.item(r, 0).setData(Qt.UserRole, int(pre["uom_id"]))
+            on_prod_changed()
         else:
             on_prod_changed()
 
