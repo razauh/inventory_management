@@ -132,6 +132,10 @@ class PurchaseForm(QDialog):
         self.ip_instr_date = QDateEdit(); self.ip_instr_date.setCalendarPopup(True); self.ip_instr_date.setDate(self.ip_date.date())
         self.ip_ref_no     = QLineEdit(); self.ip_ref_no.setPlaceholderText("Reference (optional)")
         self.ip_notes      = QLineEdit(); self.ip_notes.setPlaceholderText("Notes (optional)")
+        
+        # Temporary external bank account fields (appear when "Temporary Account" is selected)
+        self.temp_bank_name = QLineEdit(); self.temp_bank_name.setPlaceholderText("Bank Name")
+        self.temp_bank_number = QLineEdit(); self.temp_bank_number.setPlaceholderText("Account Number")
 
         def add_ip(row, col, text, widget, required=False):
             """Modified function for payment section with optional required field indicators"""
@@ -156,8 +160,17 @@ class PurchaseForm(QDialog):
         self._ip_labels['instr_no'] = add_ip(2, 1, "Instrument No", self.ip_instr_no, required=False)
         add_ip(3, 0, "Instrument Date", self.ip_instr_date, required=False)
         add_ip(3, 1, "Ref No", self.ip_ref_no, required=False)
-        ipg.addWidget(QLabel("Payment Notes"), 4, 0)
-        ipg.addWidget(self.ip_notes, 4, 1, 1, 3)
+        
+        # Temporary external bank account fields
+        self._ip_labels['temp_bank_name'] = add_ip(4, 0, "Temp Bank Name", self.temp_bank_name, required=False)
+        self._ip_labels['temp_bank_number'] = add_ip(4, 1, "Temp Bank Number", self.temp_bank_number, required=False)
+        
+        # Hide temporary bank fields by default
+        self.temp_bank_name.setVisible(False)
+        self.temp_bank_number.setVisible(False)
+        
+        ipg.addWidget(QLabel("Payment Notes"), 5, 0)
+        ipg.addWidget(self.ip_notes, 5, 1, 1, 3)
         ipg.setColumnStretch(1, 1)
         ipg.setColumnStretch(3, 1)
 
@@ -213,6 +226,8 @@ class PurchaseForm(QDialog):
             lambda _d: (self.ip_date.setDate(self.date.date())
                         if (self.ip_amount.text().strip() in ("", "0", "0.0")) else None)
         )
+        # Connect the vendor bank account change to show/hide temporary fields
+        self.ip_vendor_acct.currentIndexChanged.connect(self._on_vendor_bank_account_changed)
 
         if initial:
             idx = self.cmb_vendor.findData(initial["vendor_id"])
@@ -308,10 +323,23 @@ class PurchaseForm(QDialog):
             QMessageBox.warning(self, "Error", f"Could not load company bank accounts: {str(e)}")
 
     def _reload_vendor_accounts(self):
+        # Store the current selection to restore it later
+        current_text = self.ip_vendor_acct.currentText()
+        
         self.ip_vendor_acct.clear()
         vid = self.cmb_vendor.currentData()
+        
+        # Always add the "Temporary/External Bank Account" option
+        self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+        
         if not vid:
             return
+        
+        # Restore the previous selection if it still exists
+        index = self.ip_vendor_acct.findText(current_text)
+        if index >= 0:
+            self.ip_vendor_acct.setCurrentIndex(index)
+        
         try:
             conn = self.vendors.conn
             rows = conn.execute(
@@ -417,6 +445,73 @@ class PurchaseForm(QDialog):
                 if not current_text.endswith("*"):
                     instr_label.setText(current_text + "*")
                     instr_label.setStyleSheet("color: red; font-weight: bold;")
+
+        # Update temporary bank field visibility using the shared helper method
+        method = self.ip_method.currentText()
+        need_vendor = method in ("Bank Transfer", "Cross Cheque", "Cash Deposit")  # Cheque doesn't need vendor account
+        selected_vendor_account = self.ip_vendor_acct.currentData()
+        is_temp_account = selected_vendor_account == "TEMP_BANK"
+        
+        self._update_temp_bank_visibility(is_temp_account=is_temp_account, need_vendor=need_vendor)
+
+    def _update_temp_bank_visibility(self, is_temp_account=None, need_vendor=None):
+        """
+        Helper method to update temporary bank field visibility and styling.
+        If is_temp_account or need_vendor are not provided, they will be calculated.
+        """
+        if is_temp_account is None:
+            selected_value = self.ip_vendor_acct.currentData()
+            is_temp_account = selected_value == "TEMP_BANK"
+        
+        if need_vendor is None:
+            method = self.ip_method.currentText()
+            need_vendor = method in ("Bank Transfer", "Cross Cheque", "Cash Deposit")  # Cheque doesn't need vendor account
+        
+        # Update temporary bank field styling based on vendor account selection and method requirements
+        if is_temp_account and need_vendor:
+            # Show required labels for temporary fields
+            temp_name_label = self._ip_labels.get('temp_bank_name')
+            if temp_name_label and not temp_name_label.text().endswith('*'):
+                temp_name_label.setText(temp_name_label.text() + "*")
+                temp_name_label.setStyleSheet("color: red; font-weight: bold;")
+                
+            temp_number_label = self._ip_labels.get('temp_bank_number')
+            if temp_number_label and not temp_number_label.text().endswith('*'):
+                temp_number_label.setText(temp_number_label.text() + "*")
+                temp_number_label.setStyleSheet("color: red; font-weight: bold;")
+                
+            # Make sure temporary bank fields and labels are visible
+            self.temp_bank_name.setVisible(True)
+            self.temp_bank_number.setVisible(True)
+            if 'temp_bank_name' in self._ip_labels:
+                self._ip_labels['temp_bank_name'].setVisible(True)
+            if 'temp_bank_number' in self._ip_labels:
+                self._ip_labels['temp_bank_number'].setVisible(True)
+        else:
+            # Hide required indicators for temporary fields
+            temp_name_label = self._ip_labels.get('temp_bank_name')
+            if temp_name_label:
+                temp_name_label.setText(temp_name_label.text().rstrip('*'))
+                temp_name_label.setStyleSheet("")
+                
+            temp_number_label = self._ip_labels.get('temp_bank_number')
+            if temp_number_label:
+                temp_number_label.setText(temp_number_label.text().rstrip('*'))
+                temp_number_label.setStyleSheet("")
+                
+            # Hide temporary bank fields and labels when not selected or method doesn't require vendor account
+            show_temp_fields = is_temp_account  # Show if temp account selected, regardless of need_vendor for this method
+            self.temp_bank_name.setVisible(show_temp_fields)
+            self.temp_bank_number.setVisible(show_temp_fields)
+            if 'temp_bank_name' in self._ip_labels:
+                self._ip_labels['temp_bank_name'].setVisible(show_temp_fields)
+            if 'temp_bank_number' in self._ip_labels:
+                self._ip_labels['temp_bank_number'].setVisible(show_temp_fields)
+
+    def _on_vendor_bank_account_changed(self):
+        """Show/hide temporary bank fields based on selection"""
+        # Call the shared helper method
+        self._update_temp_bank_visibility()
 
 
 
@@ -753,11 +848,15 @@ class PurchaseForm(QDialog):
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
 
+            # Check if using temporary bank account
+            selected_vendor_account = self.ip_vendor_acct.currentData()
+            is_temp_account = selected_vendor_account == "TEMP_BANK"
+            
             payload["initial_payment"] = {
                 "amount": ip_amount,
                 "method": method,
                 "bank_account_id": int(company_id) if company_id else None,
-                "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id else None,
+                "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id and not is_temp_account else None,
                 "instrument_type": instr_type,
                 "instrument_no": instr_no,
                 "instrument_date": instr_date,
@@ -767,6 +866,9 @@ class PurchaseForm(QDialog):
                 "ref_no": ref_no,
                 "notes": notes,
                 "date": date_str,
+                # Add temporary bank details to the payload when applicable
+                "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
+                "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
             }
             payload["initial_bank_account_id"] = payload["initial_payment"]["bank_account_id"]
             payload["initial_vendor_bank_account_id"] = payload["initial_payment"]["vendor_bank_account_id"]
@@ -852,11 +954,21 @@ class PurchaseForm(QDialog):
                 method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
                 m = (method or "").strip().lower()
 
+                # Check if using temporary bank account
+                selected_vendor_account = self.ip_vendor_acct.currentData()
+                is_temp_account = selected_vendor_account == "TEMP_BANK"
+
                 if m == "bank transfer":
                     if self.ip_company_acct.currentData() is None:
                         errors.append(f"For {method}, please select a company bank account.")
                     if self.ip_vendor_acct.currentData() is None:
                         errors.append(f"For {method}, please select a vendor bank account.")
+                    elif is_temp_account:
+                        # Validate temporary bank details
+                        if not self.temp_bank_name.text().strip():
+                            errors.append(f"For {method} with temporary account, please enter bank name.")
+                        if not self.temp_bank_number.text().strip():
+                            errors.append(f"For {method} with temporary account, please enter account number.")
                     if not self.ip_instr_no.text().strip():
                         errors.append(f"For {method}, please enter the instrument/cheque number.")
                 elif m == "cheque":
@@ -869,11 +981,23 @@ class PurchaseForm(QDialog):
                         errors.append(f"For {method}, please select a company bank account.")
                     if self.ip_vendor_acct.currentData() is None:
                         errors.append(f"For {method}, please select a vendor bank account.")
+                    elif is_temp_account:
+                        # Validate temporary bank details
+                        if not self.temp_bank_name.text().strip():
+                            errors.append(f"For {method} with temporary account, please enter bank name.")
+                        if not self.temp_bank_number.text().strip():
+                            errors.append(f"For {method} with temporary account, please enter account number.")
                     if not self.ip_instr_no.text().strip():
                         errors.append(f"For {method}, please enter the instrument/cheque number.")
                 elif m == "cash deposit":
                     if self.ip_vendor_acct.currentData() is None:
                         errors.append(f"For {method}, please select a vendor bank account.")
+                    elif is_temp_account:
+                        # Validate temporary bank details
+                        if not self.temp_bank_name.text().strip():
+                            errors.append(f"For {method} with temporary account, please enter bank name.")
+                        if not self.temp_bank_number.text().strip():
+                            errors.append(f"For {method} with temporary account, please enter account number.")
                     if not self.ip_instr_no.text().strip():
                         errors.append(f"For {method}, please enter the deposit slip number.")
 
@@ -1082,11 +1206,15 @@ class PurchaseForm(QDialog):
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
 
+            # Check if using temporary bank account
+            selected_vendor_account = self.ip_vendor_acct.currentData()
+            is_temp_account = selected_vendor_account == "TEMP_BANK"
+            
             payload["initial_payment"] = {
                 "amount": ip_amount,
                 "method": method,
                 "bank_account_id": int(company_id) if company_id else None,
-                "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id else None,
+                "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id and not is_temp_account else None,
                 "instrument_type": instr_type,
                 "instrument_no": instr_no,
                 "instrument_date": instr_date,
@@ -1096,6 +1224,9 @@ class PurchaseForm(QDialog):
                 "ref_no": ref_no,
                 "notes": notes,
                 "date": date_str,
+                # Add temporary bank details to the payload when applicable
+                "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
+                "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
             }
             payload["initial_bank_account_id"] = payload["initial_payment"]["bank_account_id"]
             payload["initial_vendor_bank_account_id"] = payload["initial_payment"]["vendor_bank_account_id"]

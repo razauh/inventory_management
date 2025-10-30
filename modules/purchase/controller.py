@@ -385,6 +385,8 @@ class PurchaseController(BaseModule):
                         notes=ip.get("notes") or "Initial payment",
                         date=ip.get("date") or p["date"],
                         created_by=(self.user["user_id"] if self.user else None),
+                        temp_vendor_bank_name=ip.get("temp_vendor_bank_name"),
+                        temp_vendor_bank_number=ip.get("temp_vendor_bank_number"),
                     )
 
                     if clearing_state == "cleared":
@@ -442,6 +444,8 @@ class PurchaseController(BaseModule):
                         notes=pay_notes,
                         date=p["date"],
                         created_by=(self.user["user_id"] if self.user else None),
+                        temp_vendor_bank_name=p.get("temp_vendor_bank_name"),
+                        temp_vendor_bank_number=p.get("temp_vendor_bank_number"),
                     )
                     _log.info(
                         "Inserted initial payment (legacy) for %s amount=%.4f method=%s state=%s",
@@ -1096,6 +1100,8 @@ class PurchaseController(BaseModule):
                         notes=payload.get("notes"),
                         date=payload.get("date") or today_str(),
                         created_by=(self.user["user_id"] if self.user else None),
+                        temp_vendor_bank_name=payload.get("temp_vendor_bank_name"),
+                        temp_vendor_bank_number=payload.get("temp_vendor_bank_number"),
                     )
                 except Exception as e:
                     if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
@@ -1164,6 +1170,8 @@ class PurchaseController(BaseModule):
                 notes=notes,
                 date=pay_date,
                 created_by=(self.user["user_id"] if self.user else None),
+                temp_vendor_bank_name=None,
+                temp_vendor_bank_number=None,
             )
         except Exception as e:
             if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):

@@ -338,6 +338,8 @@ CREATE TABLE IF NOT EXISTS purchase_payments (
   clearing_state  TEXT    NOT NULL DEFAULT 'posted' CHECK (clearing_state IN ('posted','pending','cleared','bounced')),
   ref_no          TEXT,
   notes           TEXT,
+  temp_vendor_bank_name     TEXT,    -- Temporary vendor bank name for one-time payments
+  temp_vendor_bank_number   TEXT,    -- Temporary vendor bank account number for one-time payments
   created_by      INTEGER,
   FOREIGN KEY (purchase_id)     REFERENCES purchases(purchase_id) ON DELETE CASCADE,
   FOREIGN KEY (bank_account_id) REFERENCES company_bank_accounts(account_id),

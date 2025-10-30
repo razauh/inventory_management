@@ -28,6 +28,8 @@ class PurchasePaymentsRepo:
         notes: Optional[str],
         date: str,
         created_by: Optional[int],
+        temp_vendor_bank_name: Optional[str] = None,
+        temp_vendor_bank_number: Optional[str] = None,
     ) -> int:
         """
         Insert one row into purchase_payments.
@@ -91,9 +93,11 @@ class PurchasePaymentsRepo:
                 clearing_state,
                 ref_no,
                 notes,
-                created_by
+                created_by,
+                temp_vendor_bank_name,
+                temp_vendor_bank_number
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 purchase_id,
@@ -111,6 +115,8 @@ class PurchasePaymentsRepo:
                 ref_no,
                 notes,
                 created_by,
+                temp_vendor_bank_name,
+                temp_vendor_bank_number,
             ),
         )
         payment_id = int(cur.lastrowid)
