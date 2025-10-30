@@ -124,7 +124,7 @@ class PurchaseForm(QDialog):
         self.ip_date = QDateEdit(); self.ip_date.setCalendarPopup(True); self.ip_date.setDate(self.date.date())
 
         self.ip_method = QComboBox()
-        self.ip_method.addItems(["Cash", "Bank Transfer", "Cheque", "Cash Deposit", "Other"])
+        self.ip_method.addItems(["Cash", "Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit", "Other"])
 
         self.ip_company_acct = QComboBox(); self.ip_company_acct.setEditable(True)
         self.ip_vendor_acct  = QComboBox(); self.ip_vendor_acct.setEditable(True)
@@ -160,9 +160,6 @@ class PurchaseForm(QDialog):
         ipg.addWidget(self.ip_notes, 4, 1, 1, 3)
         ipg.setColumnStretch(1, 1)
         ipg.setColumnStretch(3, 1)
-
-        self._ip_instrument_type = None
-        self._ip_clearing_state = None
 
         # Disable all initial payment controls if in edit mode
         if is_edit_mode:
@@ -248,10 +245,10 @@ class PurchaseForm(QDialog):
             # Set enable state for all initial payment fields except amount
             self.ip_date.setEnabled(enable_fields)
             self.ip_method.setEnabled(enable_fields)
-            self.ip_company_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
-            self.ip_vendor_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
-            self.ip_instr_no.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
-            self.ip_instr_date.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cash Deposit"))
+            self.ip_company_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"))
+            self.ip_vendor_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cross Cheque", "Cash Deposit"))
+            self.ip_instr_no.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"))
+            self.ip_instr_date.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"))
             self.ip_ref_no.setEnabled(enable_fields)
             self.ip_notes.setEnabled(enable_fields)
 
@@ -366,10 +363,10 @@ class PurchaseForm(QDialog):
             return
 
         method = self.ip_method.currentText()
-        need_company = method in ("Bank Transfer", "Cheque", "Cash Deposit")
-        need_vendor  = method in ("Bank Transfer", "Cheque", "Cash Deposit")
-        need_instr   = method in ("Bank Transfer", "Cheque", "Cash Deposit")
-        need_idate   = method in ("Bank Transfer", "Cheque", "Cash Deposit")
+        need_company = method in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit")
+        need_vendor  = method in ("Bank Transfer", "Cross Cheque", "Cash Deposit")  # Cheque doesn't need vendor account
+        need_instr   = method in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit")
+        need_idate   = method in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit")
 
         # Only update if amount > 0 (fields should be enabled)
         if amount > 0:
@@ -421,17 +418,8 @@ class PurchaseForm(QDialog):
                     instr_label.setText(current_text + "*")
                     instr_label.setStyleSheet("color: red; font-weight: bold;")
 
-        m = method
-        if m == "Bank Transfer":
-            self._ip_instrument_type = "online";        self._ip_clearing_state = "posted"
-        elif m == "Cheque":
-            self._ip_instrument_type = "cross_cheque";  self._ip_clearing_state = "pending"
-        elif m == "Cash Deposit":
-            self._ip_instrument_type = "cash_deposit";  self._ip_clearing_state = "pending"
-        elif m == "Cash":
-            self._ip_instrument_type = "cash";          self._ip_clearing_state = "cleared"
-        else:
-            self._ip_instrument_type = "other";         self._ip_clearing_state = "pending"
+
+
 
     def _all_products(self):
         return self.products.list_products()
@@ -747,7 +735,10 @@ class PurchaseForm(QDialog):
                 if not company_id or not vendor_bank_id or not instr_no: return None
                 instr_type = "online";        clearing_state = "posted"
             elif m == "cheque":
-                if not company_id or not vendor_bank_id or not instr_no: return None
+                if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
+                instr_type = "cheque";  clearing_state = "pending"
+            elif m == "cross cheque":
+                if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
                 instr_type = "cross_cheque";  clearing_state = "pending"
             elif m == "cash deposit":
                 if not vendor_bank_id or not instr_no: return None
@@ -861,7 +852,19 @@ class PurchaseForm(QDialog):
                 method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
                 m = (method or "").strip().lower()
 
-                if m in ["bank transfer", "cheque"]:
+                if m == "bank transfer":
+                    if self.ip_company_acct.currentData() is None:
+                        errors.append(f"For {method}, please select a company bank account.")
+                    if self.ip_vendor_acct.currentData() is None:
+                        errors.append(f"For {method}, please select a vendor bank account.")
+                    if not self.ip_instr_no.text().strip():
+                        errors.append(f"For {method}, please enter the instrument/cheque number.")
+                elif m == "cheque":
+                    if self.ip_company_acct.currentData() is None:
+                        errors.append(f"For {method}, please select a company bank account.")
+                    if not self.ip_instr_no.text().strip():
+                        errors.append(f"For {method}, please enter the instrument/cheque number.")
+                elif m == "cross cheque":
                     if self.ip_company_acct.currentData() is None:
                         errors.append(f"For {method}, please select a company bank account.")
                     if self.ip_vendor_acct.currentData() is None:
@@ -901,7 +904,11 @@ class PurchaseForm(QDialog):
 
     def _save_clicked(self):
         """Handle save button click"""
-        if not self.validate_form()[0]:
+        is_valid, errors = self.validate_form()
+        if not is_valid:
+            from PySide6.QtWidgets import QMessageBox
+            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
+            QMessageBox.warning(self, "Validation Errors", error_message)
             return
         # Set flag to indicate this is a regular save (not print)
         self._should_print = False
@@ -910,7 +917,11 @@ class PurchaseForm(QDialog):
 
     def _print_clicked(self):
         """Handle print button click"""
-        if not self.validate_form()[0]:
+        is_valid, errors = self.validate_form()
+        if not is_valid:
+            from PySide6.QtWidgets import QMessageBox
+            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
+            QMessageBox.warning(self, "Validation Errors", error_message)
             return
         # Set flag to indicate this is a print request
         self._should_print = True
@@ -919,7 +930,11 @@ class PurchaseForm(QDialog):
 
     def _pdf_export_clicked(self):
         """Handle PDF export button click"""
-        if not self.validate_form()[0]:
+        is_valid, errors = self.validate_form()
+        if not is_valid:
+            from PySide6.QtWidgets import QMessageBox
+            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
+            QMessageBox.warning(self, "Validation Errors", error_message)
             return
         # Set flag to indicate this is a PDF export request
         self._should_print = False
@@ -1049,7 +1064,10 @@ class PurchaseForm(QDialog):
                 if not company_id or not vendor_bank_id or not instr_no: return None
                 instr_type = "online";        clearing_state = "posted"
             elif m == "cheque":
-                if not company_id or not vendor_bank_id or not instr_no: return None
+                if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
+                instr_type = "cheque";  clearing_state = "pending"
+            elif m == "cross cheque":
+                if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
                 instr_type = "cross_cheque";  clearing_state = "pending"
             elif m == "cash deposit":
                 if not vendor_bank_id or not instr_no: return None

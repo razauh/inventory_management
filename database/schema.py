@@ -327,10 +327,10 @@ CREATE TABLE IF NOT EXISTS purchase_payments (
   purchase_id     TEXT    NOT NULL,
   date            DATE    NOT NULL DEFAULT CURRENT_DATE,
   amount          NUMERIC NOT NULL,  -- +ve = payment to vendor, -ve = refund from vendor
-  method          TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cash Deposit','Other')),
+  method          TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cross Cheque','Cash Deposit','Other')),
   bank_account_id INTEGER,
   vendor_bank_account_id INTEGER,
-  instrument_type TEXT    CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other')),
+  instrument_type TEXT    CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other','cheque')),
   instrument_no   TEXT,
   instrument_date DATE,
   deposited_date  DATE,
@@ -1319,15 +1319,25 @@ BEGIN
     THEN RAISE(ABORT, 'Bank Transfer requires company account, transaction #, instrument_type=online; vendor account required for outgoing')
     ELSE 1 END;
 
-  /* CHEQUE to vendor’s bank */
+  /* CHEQUE (regular incoming) - no vendor bank required */
   SELECT CASE
     WHEN NEW.method = 'Cheque' AND (
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cheque')
+    )
+    THEN RAISE(ABORT, 'Cheque requires company account, cheque #, instrument_type=cheque; vendor account not required')
+    ELSE 1 END;
+
+  /* CROSS CHEQUE (outgoing to vendor) - vendor bank required */
+  SELECT CASE
+    WHEN NEW.method = 'Cross Cheque' AND (
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cross_cheque') OR
          (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
     )
-    THEN RAISE(ABORT, 'Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Cross Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account required for outgoing')
     ELSE 1 END;
 
   /* CASH DEPOSIT to vendor’s bank */
@@ -1372,10 +1382,19 @@ BEGIN
     WHEN NEW.method = 'Cheque' AND (
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no IS NULL OR
+         (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cheque')
+    )
+    THEN RAISE(ABORT, 'Cheque requires company account, cheque #, instrument_type=cheque; vendor account not required')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN NEW.method = 'Cross Cheque' AND (
+         NEW.bank_account_id IS NULL OR
+         NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cross_cheque') OR
          (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
     )
-    THEN RAISE(ABORT, 'Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Cross Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account required for outgoing')
     ELSE 1 END;
 
   SELECT CASE

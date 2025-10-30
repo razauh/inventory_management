@@ -347,18 +347,16 @@ class PurchaseController(BaseModule):
         ]
 
         try:
-            _log.info("BEGIN PO %s (vendor_id=%s, date=%s)", pid, p["vendor_id"], p["date"])
+
             self.conn.execute("BEGIN")
 
             self.repo.create_purchase(h, items)
-            _log.info("Inserted purchase header/items for %s", pid)
 
             ip = p.get("initial_payment")
             if isinstance(ip, dict):
                 amt = float(ip.get("amount") or 0.0)
                 if amt < 0:
                     self.conn.rollback()
-                    _log.info("ROLLBACK %s due to negative initial payment: %s", pid, amt)
                     info(self.view, "Invalid amount", "Initial payment cannot be negative.")
                     return
                 if amt > 0:
@@ -388,17 +386,13 @@ class PurchaseController(BaseModule):
                         date=ip.get("date") or p["date"],
                         created_by=(self.user["user_id"] if self.user else None),
                     )
-                    _log.info(
-                        "Inserted initial payment for %s amount=%.4f method=%s state=%s",
-                        pid, amt, method, clearing_state
-                    )
+
                     if clearing_state == "cleared":
                         self._recompute_header_totals_from_rows(pid)
             else:
                 initial_paid = float(p.get("initial_payment") or 0.0)
                 if initial_paid < 0:
                     self.conn.rollback()
-                    _log.info("ROLLBACK %s due to negative initial payment (legacy): %s", pid, initial_paid)
                     info(self.view, "Invalid amount", "Initial payment cannot be negative.")
                     return
                 if initial_paid > 0:
@@ -463,10 +457,6 @@ class PurchaseController(BaseModule):
                 allowable = min(credit_bal, remaining)
                 if init_credit - allowable > _EPS:
                     self.conn.rollback()
-                    _log.info(
-                        "ROLLBACK %s due to invalid initial credit (%.4f > allowable %.4f; remaining=%.4f, credit_bal=%.4f)",
-                        pid, init_credit, allowable, remaining, credit_bal
-                    )
                     info(self.view, "Credit not applied", f"Initial credit exceeds available credit or remaining due (max {allowable:.2f}).")
                     return
                 self.vadv.apply_credit_to_purchase(
@@ -481,7 +471,7 @@ class PurchaseController(BaseModule):
                 self._recompute_header_totals_from_rows(pid)
 
             self.conn.commit()
-            _log.info("COMMIT PO %s (created + initial payment/credit if any)", pid)
+
 
         except Exception as e:
             try:
