@@ -329,16 +329,10 @@ class PurchaseForm(QDialog):
         self.ip_vendor_acct.clear()
         vid = self.cmb_vendor.currentData()
         
-        # Always add the "Temporary/External Bank Account" option
-        self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
-        
         if not vid:
+            # Always add the "Temporary/External Bank Account" option at the end so it's not default
+            self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
             return
-        
-        # Restore the previous selection if it still exists
-        index = self.ip_vendor_acct.findText(current_text)
-        if index >= 0:
-            self.ip_vendor_acct.setCurrentIndex(index)
         
         try:
             conn = self.vendors.conn
@@ -351,9 +345,35 @@ class PurchaseForm(QDialog):
                 """,
                 (int(vid),),
             ).fetchall()
+            
+            # Add vendor bank accounts first (so primary/default account gets selected by default)
+            primary_account_added = False
             for r in rows:
                 label = r["label"] + (" (Primary)" if str(r["is_primary"]) in ("1","True","true") else "")
                 self.ip_vendor_acct.addItem(label, int(r["vba_id"]))
+                if str(r["is_primary"]) in ("1","True","true"):
+                    primary_account_added = True
+            
+            # Add the "Temporary/External Bank Account" option at the end (not as default)
+            self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+            
+            # Restore the previous selection if it still exists and is valid
+            previous_selection_restored = False
+            if current_text and current_text != "":
+                index = self.ip_vendor_acct.findText(current_text)
+                if index >= 0:
+                    self.ip_vendor_acct.setCurrentIndex(index)
+                    previous_selection_restored = True
+            
+            # If no valid previous selection was found/restored, set primary account as default if available
+            if not previous_selection_restored and primary_account_added:
+                # Find and select the primary account (the first one added due to ORDER BY is_primary DESC)
+                for i in range(self.ip_vendor_acct.count() - 1):  # -1 to exclude temp bank option
+                    item_text = self.ip_vendor_acct.itemText(i)
+                    if "(Primary)" in item_text:
+                        self.ip_vendor_acct.setCurrentIndex(i)
+                        break
+        
         except ValueError:
             # Handle issues with converting vid to int
             print(f"Error: Invalid vendor ID: {vid}")
@@ -364,6 +384,8 @@ class PurchaseForm(QDialog):
             print(f"Error loading vendor bank accounts: {e}")
             import logging
             logging.exception("Error in _reload_vendor_accounts")
+            # Add the Temporary option as fallback and clear selection
+            self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
             # Optionally show an error to the user if there's a GUI error reporting mechanism
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")
@@ -611,10 +633,13 @@ class PurchaseForm(QDialog):
         else:
             # For new rows with no pre-data, the signal has already been connected
             on_prod_changed()
+            
+            # CRITICAL: Explicitly recalculate row totals to ensure they display correctly
+            # This addresses the issue where line totals weren't showing for new rows beyond the first
+            self._recalc_row(r)
 
-        # Remove the redundant signal unblocking that was causing issues
-        # self.tbl.blockSignals(False)  # This line was already commented out in the previous edit
-        self._recalc_row(r)
+        # The calculations have already been handled by either pre-populated data recalc
+        # or the on_prod_changed() call for new rows, plus explicit _recalc_row call above
 
     def _reindex_rows(self):
         for r in range(self.tbl.rowCount()):
@@ -635,11 +660,12 @@ class PurchaseForm(QDialog):
     def _cell_changed(self, row: int, col: int):
         if row < 0 or row >= self.tbl.rowCount():
             return
-        for c in (2, 3, 4, 5):
-            if self.tbl.item(row, c) is None and self.tbl.cellWidget(row, c) is None:
-                return
-        self._recalc_row(row)
-        self._refresh_totals()
+        # Only process changes to input columns (quantity, buy price, sale price)
+        if col in [2, 3, 4]:
+            # Make sure the QTableWidgetItem for the changed column exists
+            if self.tbl.item(row, col) is not None:
+                self._recalc_row(row)
+                self._refresh_totals()
 
     def _recalc_row(self, r: int):
         def num(c):
