@@ -890,6 +890,7 @@ class PurchaseController(BaseModule):
                 for it in items
             ],
         }
+        
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products, initial=init)
         if not dlg.exec():
             return

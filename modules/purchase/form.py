@@ -451,6 +451,11 @@ class PurchaseForm(QDialog):
                 return
 
     def _add_row(self, pre: dict | None = None):
+        def on_prod_changed():
+            pid = cmb_prod.currentData()
+            self.tbl.item(r, 0).setData(Qt.UserRole, self._base_uom_id(int(pid)) if pid else None)
+            self._recalc_row(r); self._refresh_totals()
+
         self.tbl.blockSignals(True)
         r = self.tbl.rowCount()
         self.tbl.insertRow(r)
@@ -485,25 +490,47 @@ class PurchaseForm(QDialog):
         btn_del.clicked.connect(lambda _=False, b=btn_del: self._delete_row_for_button(b))
         self.tbl.setCellWidget(r, 6, btn_del)
 
-        def on_prod_changed():
-            pid = cmb_prod.currentData()
-            self.tbl.item(r, 0).setData(Qt.UserRole, self._base_uom_id(int(pid)) if pid else None)
-            self._recalc_row(r); self._refresh_totals()
+        # Connect the signal initially to allow connection later if needed
         cmb_prod.currentIndexChanged.connect(on_prod_changed)
 
+        # Only use the signal blocking approach for pre-populated data to avoid interference
         if pre:
-            i = cmb_prod.findData(pre.get("product_id"))
-            if i >= 0: cmb_prod.setCurrentIndex(i)
+            # CRITICAL FIX: Block ALL signals during initialization
+            # This prevents row merging when same product_id appears multiple times
+            cmb_prod.blockSignals(True)
+            self.tbl.blockSignals(True)
+            
+            # Load product selection
+            product_id = pre.get("product_id")
+            i = cmb_prod.findData(product_id)
+            if i >= 0:
+                cmb_prod.setCurrentIndex(i)
+            
+            # Load quantity, prices, and discount
             self.tbl.item(r, 2).setText(str(pre.get("quantity", 0)))
             self.tbl.item(r, 3).setText(str(pre.get("purchase_price", 0)))
             self.tbl.item(r, 4).setText(str(pre.get("sale_price", 0)))
+            
+            # Load UOM data if available
             if "uom_id" in pre:
                 self.tbl.item(r, 0).setData(Qt.UserRole, int(pre["uom_id"]))
-            on_prod_changed()
+            
+            # CRITICAL STEP: Set the UOM explicitly without triggering change events
+            if product_id:
+                self.tbl.item(r, 0).setData(Qt.UserRole, self._base_uom_id(int(product_id)))
+            
+            # UNBLOCK signals only after full initialization is complete
+            cmb_prod.blockSignals(False)
+            self.tbl.blockSignals(False)
+            
+            # Manually recalculate this specific row to ensure correct totals
+            self._recalc_row(r)
         else:
+            # For new rows with no pre-data, the signal has already been connected
             on_prod_changed()
 
-        self.tbl.blockSignals(False)
+        # Remove the redundant signal unblocking that was causing issues
+        # self.tbl.blockSignals(False)  # This line was already commented out in the previous edit
         self._recalc_row(r)
 
     def _reindex_rows(self):
