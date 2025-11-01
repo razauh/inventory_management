@@ -255,25 +255,119 @@ class PurchaseController(BaseModule):
                 self.view.details.clear_payment_summary()
             except Exception:
                 pass
+            # Still load the individual payments section even if no purchase is selected
+            self.view.details.set_individual_payments([], self)
             return
         last = self._latest_purchase_payment(purchase_id)
-        if not last:
-            try:
-                self.view.details.clear_payment_summary()
-            except Exception:
-                pass
-            return
         payload = {
-            "method": last.get("method"),
-            "amount": float(last.get("amount") or 0.0),
-            "status": last.get("status") or "posted",
-            "overpayment": self._overpayment_credited(purchase_id),
+            "method": last.get("method") if last else None,
+            "amount": float(last.get("amount") or 0.0) if last else 0.0,
+            "status": last.get("status") or "—" if last else "—",
+            "overpayment": self._overpayment_credited(purchase_id) if purchase_id else 0.0,
             "counterparty_label": "Vendor",
         }
         try:
             self.view.details.set_payment_summary(payload)
+            # Load individual payments with clearing status controls (always present)
+            payments = self.payments.list_payments(purchase_id) if purchase_id else []
+            self.view.details.set_individual_payments(payments, self)
         except Exception:
-            pass
+            # Even if the main summary fails, still show the individual payments section
+            payments = []
+            if purchase_id:
+                try:
+                    payments = self.payments.list_payments(purchase_id)
+                except Exception as e:
+                    # Log the exception but continue with empty payments list
+                    import logging
+                    logging.getLogger(__name__).warning(f"Failed to load payments for purchase {purchase_id}: {e}", exc_info=True)
+                    pass  # Continue with empty payments list
+            self.view.details.set_individual_payments(payments, self)
+
+    def load_purchase_payments(self):
+        """Refresh the individual payment list for the currently selected purchase."""
+        row = self._selected_row_dict()
+        if row:
+            payments = self.payments.list_payments(row["purchase_id"])
+            self.view.details.set_individual_payments(payments, self)
+
+    def update_payment_clearing_status(self, payment_id: int, new_status: str):
+        """Update the clearing status of a payment."""
+        try:
+            # Quick pre-check to avoid transaction if likely no-op (will re-check after lock)
+            pre_check = self.conn.execute(
+                "SELECT clearing_state FROM purchase_payments WHERE payment_id = ?",
+                (payment_id,)
+            ).fetchone()
+            if pre_check and (pre_check["clearing_state"] or 'posted') == new_status:
+                info(self.view, "No change", "Payment status was not updated (no change).")
+                return False
+            
+            # Begin immediate transaction to acquire SQLite write lock up-front
+            self.conn.execute("BEGIN IMMEDIATE")
+            
+            # Re-read current state to prevent TOCTOU
+            current_payment_row = self.conn.execute(
+                "SELECT purchase_id, clearing_state FROM purchase_payments WHERE payment_id = ?",
+                (payment_id,)
+            ).fetchone()
+            
+            if not current_payment_row:
+                self.conn.rollback()
+                info(self.view, "Not found", "Payment not found.")
+                return False
+            
+            current_state = current_payment_row["clearing_state"] or 'posted'
+            
+            # No-op check: if current state equals new status, avoid unnecessary update
+            if current_state == new_status:
+                self.conn.rollback()
+                info(self.view, "No change", "Payment status was not updated (no change).")
+                return False
+            
+            # Prevent changing from 'cleared' status to any other status
+            if current_state == 'cleared' and new_status != 'cleared':
+                self.conn.rollback()
+                info(self.view, "Cannot change status", f"Cannot change status from 'cleared' to '{new_status}'. Cleared payments cannot be changed.")
+                return False
+            
+            # Only set cleared_date when transitioning into 'cleared' from a different status
+            cleared_date_value = None
+            if new_status == 'cleared' and current_state != 'cleared':
+                cleared_date_value = today_str()
+            # If transitioning from 'cleared' to 'cleared' or staying in other states, don't update cleared_date
+            
+            # Update the clearing state within the same transaction
+            result = self.conn.execute(
+                "UPDATE purchase_payments SET clearing_state = ?, cleared_date = ? WHERE payment_id = ?",
+                (new_status, cleared_date_value, payment_id)
+            ).rowcount
+            
+            if result > 0:
+                # Update the header totals if status changed to 'cleared' - within same transaction
+                if new_status == 'cleared':
+                    purchase_id = current_payment_row["purchase_id"]
+                    self._recompute_header_totals_from_rows(purchase_id)
+                
+                # Commit the transaction if all steps succeeded
+                self.conn.commit()
+                return True
+            else:
+                self.conn.rollback()
+                info(self.view, "No change", "Payment status was not updated.")
+                return False
+                
+        except Exception as e:
+            # Rollback on any exception
+            try:
+                self.conn.rollback()
+            except Exception:
+                # Log the rollback error but don't raise it
+                import logging
+                logging.getLogger(__name__).warning("Failed to rollback transaction", exc_info=True)
+                pass  # Ignore rollback errors
+            info(self.view, "Update failed", f"Could not update payment status:\n{e}")
+            return False
 
     def _recompute_header_totals_from_rows(self, purchase_id: str) -> None:
         r_pay = self.conn.execute(

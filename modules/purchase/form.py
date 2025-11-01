@@ -857,20 +857,20 @@ class PurchaseForm(QDialog):
                 instr_type = "online";        clearing_state = "posted"
             elif m == "cheque":
                 if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
-                instr_type = "cheque";  clearing_state = "pending"
+                instr_type = "cheque";  clearing_state = "posted"
             elif m == "cross cheque":
                 if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
-                instr_type = "cross_cheque";  clearing_state = "pending"
+                instr_type = "cross_cheque";  clearing_state = "posted"
             elif m == "cash deposit":
                 if not vendor_bank_id or not instr_no: return None
-                instr_type = "cash_deposit";  clearing_state = "pending"; company_id = None
+                instr_type = "cash_deposit";  clearing_state = "posted"; company_id = None
             elif m == "cash":
                 instr_type = None
                 clearing_state = None  # controller will default cash → 'cleared'
                 company_id = None;     vendor_bank_id = None
                 instr_no = "";         instr_date = date_str
             else:
-                instr_type = "other";         clearing_state = "pending"
+                instr_type = "other";         clearing_state = "posted"
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
 
@@ -1215,20 +1215,20 @@ class PurchaseForm(QDialog):
                 instr_type = "online";        clearing_state = "posted"
             elif m == "cheque":
                 if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
-                instr_type = "cheque";  clearing_state = "pending"
+                instr_type = "cheque";  clearing_state = "posted"
             elif m == "cross cheque":
                 if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
-                instr_type = "cross_cheque";  clearing_state = "pending"
+                instr_type = "cross_cheque";  clearing_state = "posted"
             elif m == "cash deposit":
                 if not vendor_bank_id or not instr_no: return None
-                instr_type = "cash_deposit";  clearing_state = "pending"; company_id = None
+                instr_type = "cash_deposit";  clearing_state = "posted"; company_id = None
             elif m == "cash":
                 instr_type = None
                 clearing_state = None  # controller will default cash → 'cleared'
                 company_id = None;     vendor_bank_id = None
                 instr_no = "";         instr_date = date_str
             else:
-                instr_type = "other";         clearing_state = "pending"
+                instr_type = "other";         clearing_state = "posted"
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
 

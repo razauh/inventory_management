@@ -511,8 +511,10 @@ def seed_purchases(conn, rng, users_ids, vendor_ids, products, base_uom, commit_
         dcfg["header_fixed_values"]
     )
     
-    # 2/3/4 line distribution equal thirds
-    lines_per_order = [2]*int(min_purchases_needed/3) + [3]*int(min_purchases_needed/3) + [4]*int(min_purchases_needed - 2*int(min_purchases_needed/3))
+    # 10-15 line distribution (to ensure 10+ products per order)
+    lines_per_order = []
+    for i in range(min_purchases_needed):
+        lines_per_order.append(rng.randint(10, 15))  # Each PO will have 10-15 lines
     rng.shuffle(lines_per_order)
 
     # line discount pool for discounted lines
@@ -616,10 +618,11 @@ def seed_sales(conn, rng, users_ids, customer_ids, products, base_uom, alt_uoms,
         dcfg["header_percent_values"],
         dcfg["header_fixed_values"]
     )
-    # lines per order ~ equal thirds
+    # 10-15 line distribution (to ensure 10+ products per order)
     N = CONFIG["COUNTS"]["sales"]
-    per = N // 3
-    lines_per_order = [2]*per + [3]*per + [4]*(N - 2*per)
+    lines_per_order = []
+    for i in range(N):
+        lines_per_order.append(rng.randint(10, 15))  # Each SO will have 10-15 lines
     rng.shuffle(lines_per_order)
 
     discounted_orders = level_mix["line_only"] + level_mix["both"]
@@ -762,11 +765,14 @@ def seed_sales(conn, rng, users_ids, customer_ids, products, base_uom, alt_uoms,
 
 # ---------------- Payments & Advances ----------------
 
-def method_compatible_instrument(method: str) -> str:
+def method_compatible_instrument(method: str, is_sale: bool = False) -> str:
     # Enforce method-specific instrument_type constraints
     if method == "Bank Transfer":
         return "online"
     if method == "Cheque":
+        # For sales: Cheque -> cross_cheque, for purchases: Cheque -> cheque
+        return "cross_cheque" if is_sale else "cheque"
+    if method == "Cross Cheque":
         return "cross_cheque"
     if method == "Cash Deposit":
         return "cash_deposit"
@@ -812,12 +818,29 @@ def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_ban
 
     # paid (1 payment, mostly 'cleared')
     for i, pid in enumerate(ids_paid):
-        method = rng.choice(pay["methods"])
-        inst = method_compatible_instrument(method)
-        bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
         vendor_id = pick_vendor_for_purchase(pid)
         vba_ids = vendor_bank_by_vendor.get(vendor_id, [])
-        vba_id = rng.choice(vba_ids) if (method in ("Bank Transfer","Cheque","Cash Deposit") and vba_ids) else None
+        
+        # Only select methods that we can properly support based on vendor bank availability
+        available_methods = pay["methods"].copy()
+        if not vba_ids and "Cross Cheque" in available_methods:
+            # If vendor has no bank accounts, don't select Cross Cheque
+            available_methods = [m for m in available_methods if m != "Cross Cheque"]
+        
+        method = rng.choice(available_methods)
+        
+        inst = method_compatible_instrument(method, is_sale=False)
+        bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
+        
+        # For Cheque method, vendor bank account should NOT be required - set to None
+        # For Cross Cheque method, vendor bank account IS required for outgoing payments (positive amounts)
+        if method == "Cheque":
+            vba_id = None  # Cheque doesn't require vendor account
+        elif method == "Cross Cheque":
+            vba_id = rng.choice(vba_ids) if vba_ids else None  # Should not be None if method is selected this way
+        else:
+            vba_id = rng.choice(vba_ids) if (method in ("Bank Transfer","Cash Deposit") and vba_ids) else None
+        
         amount = max(10.0, money(rng.uniform(50.0, 1200.0)))
         amount = min(amount, max(10.0, remaining_due(pid)))
         date = random_date_within(CONFIG["DATES"]["days_back"], rng)
@@ -825,17 +848,42 @@ def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_ban
         instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
         # Set cleared_date if clearing_state is 'cleared', otherwise None
         cleared_date = date if clearing == 'cleared' else None
+        
+        # Final validation to ensure compliance with schema constraints
+        if method == "Cross Cheque" and vba_id is None:
+            # Change to Cheque method if Cross Cheque requirement can't be met
+            method = "Cheque"
+            inst = method_compatible_instrument(method, is_sale=False)  # Will be "cheque"
+            vba_id = None
+            # instrument_no should still be valid for Cheque as both require it
+        
         rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
 
     # partial (2 payments each)
     for i, pid in enumerate(ids_partial):
         for _ in range(2):
-            method = rng.choice(pay["methods"])
-            inst = method_compatible_instrument(method)
-            bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
             vendor_id = pick_vendor_for_purchase(pid)
             vba_ids = vendor_bank_by_vendor.get(vendor_id, [])
-            vba_id = rng.choice(vba_ids) if (method in ("Bank Transfer","Cheque","Cash Deposit") and vba_ids) else None
+            
+            # Only select methods that we can properly support based on vendor bank availability
+            available_methods = pay["methods"].copy()
+            if not vba_ids and "Cross Cheque" in available_methods:
+                # If vendor has no bank accounts, don't select Cross Cheque
+                available_methods = [m for m in available_methods if m != "Cross Cheque"]
+            
+            method = rng.choice(available_methods)
+            
+            inst = method_compatible_instrument(method, is_sale=False)
+            bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
+            # For Cheque method, vendor bank account should NOT be required - set to None
+            # For Cross Cheque method, vendor bank account IS required for outgoing payments (positive amounts)
+            if method == "Cheque":
+                vba_id = None  # Cheque doesn't require vendor account
+            elif method == "Cross Cheque":
+                vba_id = rng.choice(vba_ids) if vba_ids else None  # Should not be None if method is selected this way
+            else:
+                vba_id = rng.choice(vba_ids) if (method in ("Bank Transfer","Cash Deposit") and vba_ids) else None
+            
             amount = max(5.0, money(rng.uniform(20.0, 400.0)))
             amount = min(amount, max(5.0, remaining_due(pid)))
             date = random_date_within(CONFIG["DATES"]["days_back"], rng)
@@ -843,6 +891,15 @@ def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_ban
             instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
             # Set cleared_date if clearing_state is 'cleared', otherwise None
             cleared_date = date if clearing == 'cleared' else None
+            
+            # Final validation to ensure compliance with schema constraints
+            if method == "Cross Cheque" and vba_id is None:
+                # Change to Cheque method if Cross Cheque requirement can't be met
+                method = "Cheque"
+                inst = method_compatible_instrument(method, is_sale=False)  # Will be "cheque"
+                vba_id = None
+                # instrument_no should still be valid for Cheque as both require it
+            
             rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
 
     conn.executemany(
@@ -869,7 +926,7 @@ def seed_sale_payments(conn, rng, sale_ids, company_bank_ids, users_ids):
     while len(rows) < target:
         sid, total_amount, paid = real_sales[si % len(real_sales)]
         method = rng.choice(CONFIG["PAYMENTS"]["methods"])
-        inst = method_compatible_instrument(method)
+        inst = method_compatible_instrument(method, is_sale=True)
         bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
         date = random_date_within(CONFIG["DATES"]["days_back"], rng)
         clearing = rng.choices(CONFIG["PAYMENTS"]["clearing_states"], weights=[6,2,2,1], k=1)[0]
@@ -879,11 +936,14 @@ def seed_sale_payments(conn, rng, sale_ids, company_bank_ids, users_ids):
         remaining_due = total_amount - paid
         amount = max(5.0, min(money(random.uniform(20.0, 600.0)), remaining_due - 0.01))  # Ensure no overpayment
         
+        # For sale payments, instrument type is already handled by method_compatible_instrument with is_sale=True
+        sale_inst = inst
+        
         # Set cleared_date if clearing_state is 'cleared', otherwise None
         cleared_date = date if clearing == 'cleared' else None
         
         if amount > 0:  # Only add if amount is positive
-            rows.append((sid, date, amount, method, bank_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
+            rows.append((sid, date, amount, method, bank_id, sale_inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
         si += 1
     
     conn.executemany(
