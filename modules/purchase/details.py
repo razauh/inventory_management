@@ -6,7 +6,7 @@ class PurchaseDetails(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        box = QGroupBox("Purchase Details")
+        box = QGroupBox("Purchase Summary")
         f = QFormLayout(box)
         self.lab_id = QLabel("-")
         self.lab_date = QLabel("-")
@@ -16,6 +16,13 @@ class PurchaseDetails(QWidget):
         self.lab_paid = QLabel("-")
         self.lab_remain = QLabel("-")
         self.lab_status = QLabel("-")
+        # Payment info fields added to main summary
+        self.lblPayMethod = QLabel("—")
+        self.lblPayAmount = QLabel("—")
+        self.lblPayStatus = QLabel("—")
+        self.lblOverpay = QLabel("—")
+        self.lblOverpay.setObjectName("overpayLabel")
+        self.lblOverpay.setStyleSheet("color: #0a7;")
 
         f.addRow("ID:", self.lab_id)
         f.addRow("Date:", self.lab_date)
@@ -25,25 +32,13 @@ class PurchaseDetails(QWidget):
         f.addRow("Paid:", self.lab_paid)
         f.addRow("Remaining:", self.lab_remain)
         f.addRow("Status:", self.lab_status)
-
-        # --- Payment Summary panel ---
-        self.grpPaymentSummary = QGroupBox("Payment Summary", self)
-        self.frmPaymentSummary = QFormLayout(self.grpPaymentSummary)
-        self.lblPayMethod = QLabel("—")
-        self.lblPayAmount = QLabel("—")
-        self.lblPayStatus = QLabel("—")
-        self.lblOverpay = QLabel("—")
-        self.lblOverpay.setObjectName("overpayLabel")
-        self.lblOverpay.setStyleSheet("color: #0a7;")
-
-        self.frmPaymentSummary.addRow("Method", self.lblPayMethod)
-        self.frmPaymentSummary.addRow("Amount Paid", self.lblPayAmount)
-        self.frmPaymentSummary.addRow("Payment Status", self.lblPayStatus)
-        self.frmPaymentSummary.addRow("Overpayment", self.lblOverpay)
+        f.addRow("Method:", self.lblPayMethod)
+        f.addRow("Amount Paid:", self.lblPayAmount)
+        f.addRow("Payment Status:", self.lblPayStatus)
+        f.addRow("Overpayment:", self.lblOverpay)
 
         root = QVBoxLayout(self)
         root.addWidget(box, 0)
-        root.addWidget(self.grpPaymentSummary, 0)
 
     def set_data(self, row: dict | None):
         if not row:

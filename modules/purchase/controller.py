@@ -364,11 +364,9 @@ class PurchaseController(BaseModule):
                     clearing_state = ip.get("clearing_state")
                     cleared_date = ip.get("cleared_date")
                     if not clearing_state:
-                        if method.lower() == "cash":
-                            clearing_state = "cleared"
-                            cleared_date = ip.get("date") or p["date"]
-                        else:
-                            clearing_state = "posted"
+                        # For consistency with cash, all payment methods are now cleared by default
+                        clearing_state = "cleared"
+                        cleared_date = ip.get("date") or p["date"]
                     self.payments.record_payment(
                         purchase_id=pid,
                         amount=amt,
@@ -422,11 +420,9 @@ class PurchaseController(BaseModule):
                     pay_notes = p.get("initial_payment_notes")
 
                     if not clearing_state:
-                        if (method or "").lower() == "cash":
-                            clearing_state = "cleared"
-                            cleared_date = p.get("date")
-                        else:
-                            clearing_state = "posted"
+                        # For consistency with cash, all payment methods are now cleared by default
+                        clearing_state = "cleared"
+                        cleared_date = p.get("date")
 
                     self.payments.record_payment(
                         purchase_id=pid,

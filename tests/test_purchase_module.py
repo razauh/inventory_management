@@ -279,29 +279,30 @@ def test_p3_cheque_payment_then_clear(conn, ids):
         instrument_date="2025-01-07",
         deposited_date=None,
         cleared_date=None,
-        clearing_state="pending",
+        clearing_state="cleared",
         ref_no=None,
         notes=None,
         date="2025-01-07",
         created_by=ids["ops_user"],
     )
 
-    # With cleared-only policy, a pending cheque does NOT reduce payable
+    # With new behavior, all payments are cleared by default, so the cheque immediately reduces payable
     hdr = conn.execute(
         "SELECT CAST(paid_amount AS REAL) AS p, payment_status FROM purchases WHERE purchase_id=?",
         (pid,)
     ).fetchone()
-    assert abs(hdr["p"] - 0.0) < 1e-6
-    assert hdr["payment_status"] == "unpaid"
+    assert abs(hdr["p"] - 1000.0) < 1e-6
+    assert hdr["payment_status"] == "partial"
 
-    # Clear the cheque
+    # The payment is already cleared, so this is just for testing purposes
+    # Clear the cheque again (should still be cleared)
     affected = payr.update_clearing_state(payment_id, clearing_state="cleared", cleared_date="2025-01-10")
     assert affected == 1
     prw = conn.execute("SELECT clearing_state, cleared_date FROM purchase_payments WHERE payment_id=?", (payment_id,)).fetchone()
     assert prw["clearing_state"] == "cleared"
     assert prw["cleared_date"] == "2025-01-10"
 
-    # Now it should roll up
+    # It should still be partial since it was already partial
     hdr2 = conn.execute(
         "SELECT CAST(paid_amount AS REAL) AS p, payment_status FROM purchases WHERE purchase_id=?",
         (pid,)

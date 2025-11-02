@@ -584,6 +584,8 @@ class PurchaseForm(QDialog):
         for c in (2, 3, 4):
             it = QTableWidgetItem("0")
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            # Explicitly set flags to ensure the cell is editable
+            it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled)
             self.tbl.setItem(r, c, it)
 
         it_total = QTableWidgetItem("0.00")
@@ -647,6 +649,7 @@ class PurchaseForm(QDialog):
                 self.tbl.item(r, 0).setText(str(r + 1))
 
     def _rebuild_table(self):
+        from PySide6.QtCore import QTimer
         self.tbl.blockSignals(True)
         self.tbl.setRowCount(0)
         if not self._rows:
@@ -655,6 +658,16 @@ class PurchaseForm(QDialog):
             for row in self._rows:
                 self._add_row(row)
         self.tbl.blockSignals(False)
+        self._refresh_totals()
+        
+        # Use QTimer to delay the refresh to ensure Qt properly initializes all cells
+        # This helps ensure cellChanged signals work properly for all rows
+        QTimer.singleShot(10, self._refresh_all_row_calculations)
+    
+    def _refresh_all_row_calculations(self):
+        """Recalculate all row totals to ensure proper initialization after table rebuild"""
+        for r in range(self.tbl.rowCount()):
+            self._recalc_row(r)
         self._refresh_totals()
 
     def _cell_changed(self, row: int, col: int):
@@ -854,23 +867,23 @@ class PurchaseForm(QDialog):
             m = (method or "").strip().lower()
             if m == "bank transfer":
                 if not company_id or not vendor_bank_id or not instr_no: return None
-                instr_type = "online";        clearing_state = "posted"
+                instr_type = "online";        clearing_state = "cleared"
             elif m == "cheque":
                 if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
-                instr_type = "cheque";  clearing_state = "pending"
+                instr_type = "cheque";  clearing_state = "cleared"
             elif m == "cross cheque":
                 if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
-                instr_type = "cross_cheque";  clearing_state = "pending"
+                instr_type = "cross_cheque";  clearing_state = "cleared"
             elif m == "cash deposit":
                 if not vendor_bank_id or not instr_no: return None
-                instr_type = "cash_deposit";  clearing_state = "pending"; company_id = None
+                instr_type = "cash_deposit";  clearing_state = "cleared"; company_id = None
             elif m == "cash":
                 instr_type = None
-                clearing_state = None  # controller will default cash → 'cleared'
+                clearing_state = "cleared"
                 company_id = None;     vendor_bank_id = None
                 instr_no = "";         instr_date = date_str
             else:
-                instr_type = "other";         clearing_state = "pending"
+                instr_type = "other";         clearing_state = "cleared"
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
 
@@ -1212,23 +1225,23 @@ class PurchaseForm(QDialog):
             m = (method or "").strip().lower()
             if m == "bank transfer":
                 if not company_id or not vendor_bank_id or not instr_no: return None
-                instr_type = "online";        clearing_state = "posted"
+                instr_type = "online";        clearing_state = "cleared"
             elif m == "cheque":
                 if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
-                instr_type = "cheque";  clearing_state = "pending"
+                instr_type = "cheque";  clearing_state = "cleared"
             elif m == "cross cheque":
                 if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
-                instr_type = "cross_cheque";  clearing_state = "pending"
+                instr_type = "cross_cheque";  clearing_state = "cleared"
             elif m == "cash deposit":
                 if not vendor_bank_id or not instr_no: return None
-                instr_type = "cash_deposit";  clearing_state = "pending"; company_id = None
+                instr_type = "cash_deposit";  clearing_state = "cleared"; company_id = None
             elif m == "cash":
                 instr_type = None
-                clearing_state = None  # controller will default cash → 'cleared'
+                clearing_state = "cleared"
                 company_id = None;     vendor_bank_id = None
                 instr_no = "";         instr_date = date_str
             else:
-                instr_type = "other";         clearing_state = "pending"
+                instr_type = "other";         clearing_state = "cleared"
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
 
