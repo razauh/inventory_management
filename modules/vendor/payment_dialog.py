@@ -132,6 +132,8 @@ class _VendorMoneyDialog(QDialog):
         self._prefill_notes: Optional[str] = self._defaults.get("notes")
         self._prefill_created_by: Optional[int] = self._defaults.get("created_by")
         self._vendor_display: Optional[str] = self._defaults.get("vendor_display")
+        self._prefill_temp_bank_name: Optional[str] = self._defaults.get("temp_vendor_bank_name")
+        self._prefill_temp_bank_number: Optional[str] = self._defaults.get("temp_vendor_bank_number")
 
         self._build_ui()
 
@@ -246,10 +248,10 @@ class _VendorMoneyDialog(QDialog):
         lbl_cbank.setBuddy(self.companyBankCombo)
         form.addRow(lbl_cbank, self.companyBankCombo)
 
-        # Vendor bank (optional; for reconciliation/reference)
+        # Vendor bank (for reconciliation/reference)
         self.vendorBankCombo = QComboBox()
         self.vendorBankCombo.addItem("", None)  # blank
-        lbl_vbank = QLabel(_t("Vendor Bank (optional)"))
+        lbl_vbank = QLabel(_t("Vendor Bank"))
         lbl_vbank.setBuddy(self.vendorBankCombo)
         form.addRow(lbl_vbank, self.vendorBankCombo)
         
@@ -318,6 +320,7 @@ class _VendorMoneyDialog(QDialog):
         # Track labels for required asterisks
         self._label_map = {
             self.companyBankCombo: lbl_cbank,
+            self.vendorBankCombo: lbl_vbank,
             self.instrumentNoEdit: lbl_insno,
             self.amountEdit: lbl_amount,
         }
@@ -481,8 +484,6 @@ class _VendorMoneyDialog(QDialog):
             self._apply_apply_amount_limits()
 
     def _load_company_banks(self) -> None:
-        if not hasattr(self, "companyBankCombo"):
-            return
         self.companyBankCombo.clear()
         self.companyBankCombo.addItem("", None)
         rows: list[dict] = []
@@ -502,8 +503,6 @@ class _VendorMoneyDialog(QDialog):
                     break
 
     def _load_vendor_banks(self) -> None:
-        if not hasattr(self, "vendorBankCombo"):
-            return
         current_text = self.vendorBankCombo.currentText()
         
         self.vendorBankCombo.clear()
@@ -594,6 +593,12 @@ class _VendorMoneyDialog(QDialog):
         if self._prefill_created_by is not None:
             self.createdByEdit.setText(str(self._prefill_created_by))
 
+        if self._prefill_temp_bank_name:
+            self.tempBankNameEdit.setText(str(self._prefill_temp_bank_name))
+            
+        if self._prefill_temp_bank_number:
+            self.tempBankNumberEdit.setText(str(self._prefill_temp_bank_number))
+
     # ---------- Signals / UX (payment) ----------
     def _on_method_changed(self) -> None:
         method = self.methodCombo.currentText()
@@ -605,14 +610,41 @@ class _VendorMoneyDialog(QDialog):
 
         # Bank requirement (company)
         needs_bank = method in METHODS_REQUIRE_BANK
-        self.companyBankCombo.setEnabled(needs_bank)
-        self._set_required_label(self.companyBankCombo, needs_bank)
+        # For "Other" method, enable bank accounts but don't require them
+        if method == "Other":
+            self.companyBankCombo.setEnabled(True)
+            self._set_required_label(self.companyBankCombo, False)  # Not required
+        else:
+            self.companyBankCombo.setEnabled(needs_bank)
+            self._set_required_label(self.companyBankCombo, needs_bank)
+        
         if method == "Cash":
             self.companyBankCombo.setCurrentIndex(0)  # blank
 
+        # Bank requirement (vendor)
+        needs_vendor_bank = method in METHODS_REQUIRE_BANK
+        # For "Other" method, enable vendor bank account but don't require it
+        if method == "Other":
+            self.vendorBankCombo.setEnabled(True)
+            self._set_required_label(self.vendorBankCombo, False)  # Not required
+        else:
+            # Only enable vendor bank for methods that require it
+            enable_vendor = needs_vendor_bank and method != "Cheque"  # Cheque doesn't require vendor bank
+            self.vendorBankCombo.setEnabled(enable_vendor)
+            self._set_required_label(self.vendorBankCombo, enable_vendor)
+            
+            # If switching to Cheque method, clear any temporary account selection
+            if method == "Cheque":
+                if self.vendorBankCombo.currentData() == "TEMP_BANK":
+                    self.vendorBankCombo.setCurrentIndex(0)  # Select the blank option
+
         # Instrument number required?
         req_inst = method in METHODS_REQUIRE_INSTR_NO
-        self._set_required_label(self.instrumentNoEdit, req_inst)
+        # For "Other" method, instrument is not required
+        if method == "Other":
+            self._set_required_label(self.instrumentNoEdit, False)
+        else:
+            self._set_required_label(self.instrumentNoEdit, req_inst)
 
         # UX focus
         if needs_bank:
@@ -641,19 +673,6 @@ class _VendorMoneyDialog(QDialog):
         """Show/hide temporary bank fields based on selection"""
         self._update_temp_bank_visibility()
 
-    def _set_temp_label_required(self, label, original_attr, required):
-        """Helper to update temporary bank label styling."""
-        if not label:
-            return
-        original_text = getattr(self, original_attr, label.text().rstrip(" *"))
-        if required:
-            if not label.text().endswith('*'):
-                label.setText(original_text + "*")
-            label.setStyleSheet("color: red; font-weight: bold;")
-        else:
-            label.setText(original_text)
-            label.setStyleSheet("")
-
     def _get_instrument_type_for_method(self, method: str) -> Optional[str]:
         """Derive instrument type from payment method using the established METHOD_TO_FORCED_INSTRUMENT mapping."""
         # Use the existing constant as the single source of truth
@@ -667,16 +686,17 @@ class _VendorMoneyDialog(QDialog):
         is_temp_account = selected_value == "TEMP_BANK"
         
         # Check if current method requires a vendor bank account
+        # Note: "Cheque" doesn't require vendor bank (only outgoing company bank)
         method = self.methodCombo.currentText()
-        need_vendor = method in METHODS_REQUIRE_BANK
+        need_vendor = method in METHODS_REQUIRE_BANK and method != "Cheque"
         
         # Update required indicators based on whether method requires vendor bank
         temp_name_label = getattr(self, 'temp_bank_name_label', None)
         temp_number_label = getattr(self, 'temp_bank_number_label', None)
         
         should_be_required = is_temp_account and need_vendor
-        self._set_temp_label_required(temp_name_label, '_orig_temp_bank_name_label_text', should_be_required)
-        self._set_temp_label_required(temp_number_label, '_orig_temp_bank_number_label_text', should_be_required)
+        self._set_required_label(temp_name_label, should_be_required, '_orig_temp_bank_name_label_text')
+        self._set_required_label(temp_number_label, should_be_required, '_orig_temp_bank_number_label_text')
         
         # Show temp fields whenever temp account is selected (for reference/reconciliation)
         self.tempBankNameEdit.setVisible(is_temp_account)
@@ -785,14 +805,17 @@ class _VendorMoneyDialog(QDialog):
                 return False, _t("Company bank must be empty when method is Cash.")
         elif method in METHODS_REQUIRE_BANK and cbank_id is None:
             return False, _t("Company bank account is required for this method.")
+        # For "Other" method, company bank is optional, so no validation needed
 
         inst_no = self.instrumentNoEdit.text().strip()
         if method in METHODS_REQUIRE_INSTR_NO and not inst_no:
             return False, _t("Please enter instrument/reference number.")
+        # For "Other" method, instrument is optional, so no validation needed
 
         selected_vendor_account = self.vendorBankCombo.currentData()
         is_temp_account = selected_vendor_account == "TEMP_BANK"
         need_vendor = method in METHODS_REQUIRE_BANK
+        # For "Other" method, temporary bank validation only applies if a temporary account is selected AND a vendor bank is required
         if is_temp_account and need_vendor:
             temp_bank_name = self.tempBankNameEdit.text().strip()
             temp_bank_number = self.tempBankNumberEdit.text().strip()
@@ -806,11 +829,7 @@ class _VendorMoneyDialog(QDialog):
             if not self._has_date(self.clearedDateEdit):
                 return False, _t("Please select a cleared date.")
 
-        for de in (self.dateEdit, self.instrumentDateEdit, self.depositedDateEdit, self.clearedDateEdit):
-            if self._has_date(de):
-                s = de.date().toString("yyyy-MM-dd")
-                if len(s) != 10:
-                    return False, _t("Please enter dates in YYYY-MM-DD.")
+
 
         remaining = self._remaining_from_data(p)
         if method != "Cash" and amount - remaining > 1e-9:
@@ -903,7 +922,14 @@ class _VendorMoneyDialog(QDialog):
 
     # ---------- Helpers ----------
     def _warn(self, msg: Optional[str]) -> None:
+        """
+        Show an error message both in the error label and optionally as a modal dialog.
+        
+        For validation errors, we'll use the error label to provide inline feedback
+        without interrupting the user workflow. The modal dialog is kept for critical errors.
+        """
         self.errorLabel.setText(msg or "")
+        # Show modal dialog for critical errors that require immediate attention
         QMessageBox.warning(self, _t("Cannot Save"), msg or _t("Please correct the highlighted fields."))
 
     def _handle_submit_error(self, exc: Exception) -> None:
@@ -931,33 +957,70 @@ class _VendorMoneyDialog(QDialog):
         except Exception:
             return data if data is not None else None
 
-    def _set_required_label(self, widget: QWidget, required: bool) -> None:
-        label = getattr(self, "_label_map", {}).get(widget)
+    def _set_required_label(self, widget_or_label, required: bool, original_attr: str = None) -> None:
+        """
+        Set a label as required (with asterisk and styling) or normal.
+        
+        Args:
+            widget_or_label: Either a widget from _label_map or a direct label reference
+            required: True to make the label required, False to make it normal
+            original_attr: Optional attribute name to get original text (for temporary labels)
+        """
+        # First check if widget_or_label is a key in _label_map (an actual mapped widget)
+        if hasattr(self, "_label_map") and widget_or_label in (getattr(self, "_label_map") or {}):
+            # It's a widget that maps to a label
+            label = self._label_map.get(widget_or_label)
+        else:
+            # It's a direct label reference
+            label = widget_or_label
+            
         if not label:
             return
-        base = label.text().rstrip(" *")
-        label.setText(base + (" *" if required else ""))
+            
+        if original_attr:
+            # For temporary bank labels, use stored original text
+            original_text = getattr(self, original_attr, label.text().rstrip(" *"))
+            if required:
+                if not label.text().endswith('*'):
+                    label.setText(original_text + "*")
+                label.setStyleSheet("color: red; font-weight: bold;")
+            else:
+                label.setText(original_text)
+                label.setStyleSheet("")
+        else:
+            # For regular labels, use simple asterisk approach
+            base = label.text().rstrip(" *")
+            label.setText(base + (" *" if required else ""))
+            # Clear the stylesheet when not required to remove any previous required styling
+            if not required:
+                label.setStyleSheet("")
 
     def _set_date_from_str(self, edit: QDateEdit, s: str) -> None:
         try:
-            y, m, d = map(int, s.split("-"))
-            edit.setDate(QDate(y, m, d))
-        except Exception:
+            parts = s.split("-")
+            if len(parts) != 3:
+                return  # Invalid format (not YYYY-MM-DD)
+            y, m, d = map(int, parts)
+            # QDate constructor will validate the date values
+            date_obj = QDate(y, m, d)
+            if not date_obj.isValid():
+                return  # Invalid date (e.g., Feb 30)
+            edit.setDate(date_obj)
+        except ValueError:
+            # Raised when s.split("-") doesn't have 3 parts that can be converted to int
             pass
 
     def _has_date(self, edit: QDateEdit) -> bool:
         return edit.date().isValid() and edit.date() != QDate()
 
     def _clear_date(self, edit: QDateEdit) -> None:
-        edit.setDate(QDate.currentDate())
+        edit.setDate(QDate())
 
     def _build_payload_payment(self) -> dict:
         pdata = self.purchasePicker.currentData() or {}
 
         def date_or_none(edit: QDateEdit) -> Optional[str]:
-            if edit.isEnabled():
-                return edit.date().toString("yyyy-MM-dd")
-            return None
+            return edit.date().toString("yyyy-MM-dd") if edit.date().isValid() else None
 
         selected_vendor_account = self.vendorBankCombo.currentData()
         is_temp_account = selected_vendor_account == "TEMP_BANK"
@@ -978,7 +1041,7 @@ class _VendorMoneyDialog(QDialog):
             "instrument_date": date_or_none(self.instrumentDateEdit),
             "deposited_date": date_or_none(self.depositedDateEdit),
             "clearing_state": self.clearingStateCombo.currentText() or None,
-            "cleared_date": (self.clearedDateEdit.date().toString("yyyy-MM-dd") if self.clearedDateEdit.isEnabled() else None),
+            "cleared_date": date_or_none(self.clearedDateEdit),
             "notes": (self.notesEdit.toPlainText().strip() or None),
             "created_by": (int(self.createdByEdit.text()) if self.createdByEdit.text().strip() else None),
             "temp_vendor_bank_name": self.tempBankNameEdit.text().strip() if is_temp_account else None,

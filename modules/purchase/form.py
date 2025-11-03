@@ -9,12 +9,38 @@ from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.helpers import today_str, fmt_money
 import re
-
-TRASH_ICON = None
+import datetime
+import logging
 
 
 class PurchaseForm(QDialog):
     COLS = ["#", "Product", "Qty", "Buy Price", "Sale Price", "Line Total", ""]
+    
+    
+    PAYMENT_METHODS = {
+        'CASH': 'Cash',
+        'BANK_TRANSFER': 'Bank Transfer', 
+        'CHEQUE': 'Cheque',
+        'CROSS_CHEQUE': 'Cross Cheque',
+        'CASH_DEPOSIT': 'Cash Deposit',
+        'OTHER': 'Other'
+    }
+    
+    PAYMENT_METHODS_REQUIRE_COMPANY_BANK = {'BANK_TRANSFER', 
+                                           'CHEQUE', 
+                                           'CROSS_CHEQUE', 
+                                           'CASH_DEPOSIT'}
+    PAYMENT_METHODS_REQUIRE_VENDOR_BANK = {'BANK_TRANSFER', 
+                                          'CROSS_CHEQUE', 
+                                          'CASH_DEPOSIT'}
+    PAYMENT_METHODS_REQUIRE_INSTRUMENT = {'BANK_TRANSFER', 
+                                         'CHEQUE', 
+                                         'CROSS_CHEQUE', 
+                                         'CASH_DEPOSIT'}
+
+    def _get_method_key(self, display_value: str) -> str | None:
+        """Convert a payment method display value to its corresponding key."""
+        return self._method_display_to_key.get(display_value)
 
     def __init__(self, parent=None, vendors: VendorsRepo | None = None,
                  products: ProductsRepo | None = None, initial=None):
@@ -24,6 +50,8 @@ class PurchaseForm(QDialog):
         self.vendors = vendors
         self.products = products
         self._payload = None
+        # Create reverse mapping from display values to keys for payment methods
+        self._method_display_to_key = {v: k for k, v in self.PAYMENT_METHODS.items()}
 
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
@@ -107,12 +135,12 @@ class PurchaseForm(QDialog):
         tot.addWidget(QLabel("Total:"));    tot.addWidget(self.lab_total)
         main_layout.addLayout(tot)
 
-        # Determine if this is an edit operation (has initial data)
+        
         is_edit_mode = bool(initial)
         
         ip_box = QGroupBox("Initial Payment (optional)")
         
-        # Disable the entire initial payment section if in edit mode
+        
         if is_edit_mode:
             ip_box.setEnabled(False)
             ip_box.setTitle("Initial Payment (disabled during edit - use Payments section)")
@@ -124,7 +152,7 @@ class PurchaseForm(QDialog):
         self.ip_date = QDateEdit(); self.ip_date.setCalendarPopup(True); self.ip_date.setDate(self.date.date())
 
         self.ip_method = QComboBox()
-        self.ip_method.addItems(["Cash", "Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit", "Other"])
+        self.ip_method.addItems(list(self.PAYMENT_METHODS.values()))
 
         self.ip_company_acct = QComboBox(); self.ip_company_acct.setEditable(True)
         self.ip_vendor_acct  = QComboBox(); self.ip_vendor_acct.setEditable(True)
@@ -133,7 +161,7 @@ class PurchaseForm(QDialog):
         self.ip_ref_no     = QLineEdit(); self.ip_ref_no.setPlaceholderText("Reference (optional)")
         self.ip_notes      = QLineEdit(); self.ip_notes.setPlaceholderText("Notes (optional)")
         
-        # Temporary external bank account fields (appear when "Temporary Account" is selected)
+        
         self.temp_bank_name = QLineEdit(); self.temp_bank_name.setPlaceholderText("Bank Name")
         self.temp_bank_number = QLineEdit(); self.temp_bank_number.setPlaceholderText("Account Number")
 
@@ -147,9 +175,9 @@ class PurchaseForm(QDialog):
                 label = QLabel(text)
                 ipg.addWidget(label, row, c)
             ipg.addWidget(widget, row, c + 1)
-            return label  # Return the label widget so it can be modified dynamically
+            return label  
 
-        # Create labels for payment section and store references for dynamic updates
+        
         self._ip_labels = {}
         
         add_ip(0, 0, "Amount", self.ip_amount, required=False)
@@ -161,11 +189,11 @@ class PurchaseForm(QDialog):
         add_ip(3, 0, "Instrument Date", self.ip_instr_date, required=False)
         add_ip(3, 1, "Ref No", self.ip_ref_no, required=False)
         
-        # Temporary external bank account fields
+        
         self._ip_labels['temp_bank_name'] = add_ip(4, 0, "Temp Bank Name", self.temp_bank_name, required=False)
         self._ip_labels['temp_bank_number'] = add_ip(4, 1, "Temp Bank Number", self.temp_bank_number, required=False)
         
-        # Hide temporary bank fields by default
+        
         self.temp_bank_name.setVisible(False)
         self.temp_bank_number.setVisible(False)
         
@@ -174,7 +202,7 @@ class PurchaseForm(QDialog):
         ipg.setColumnStretch(1, 1)
         ipg.setColumnStretch(3, 1)
 
-        # Disable all initial payment controls if in edit mode
+        
         if is_edit_mode:
             for widget in [self.ip_amount, self.ip_date, self.ip_method, 
                           self.ip_company_acct, self.ip_vendor_acct, 
@@ -184,7 +212,7 @@ class PurchaseForm(QDialog):
 
         main_layout.addWidget(ip_box, 0)
 
-        # Create custom button box to have Save and Print buttons instead of default OK
+        
         button_box = QDialogButtonBox(QDialogButtonBox.Cancel)
         self.save_button = QPushButton("Save")
         self.print_button = QPushButton("Print")
@@ -193,7 +221,7 @@ class PurchaseForm(QDialog):
         button_box.addButton(self.print_button, QDialogButtonBox.ActionRole)
         button_box.addButton(self.pdf_export_button, QDialogButtonBox.ActionRole)
         
-        # Connect buttons to specific methods
+        
         self.save_button.clicked.connect(self._save_clicked)
         self.print_button.clicked.connect(self._print_clicked)
         self.pdf_export_button.clicked.connect(self._pdf_export_clicked)
@@ -226,7 +254,7 @@ class PurchaseForm(QDialog):
             lambda _d: (self.ip_date.setDate(self.date.date())
                         if (self.ip_amount.text().strip() in ("", "0", "0.0")) else None)
         )
-        # Connect the vendor bank account change to show/hide temporary fields
+        
         self.ip_vendor_acct.currentIndexChanged.connect(self._on_vendor_bank_account_changed)
 
         if initial:
@@ -239,17 +267,23 @@ class PurchaseForm(QDialog):
         self._refresh_ip_visibility()
         self._rebuild_table()
         self._refresh_totals()
-        # Set initial state for payment fields based on amount
+        
         self._toggle_ip_fields_by_amount()
         self.resize(1100, 700)
         self.setMinimumSize(860, 560)
         self.setSizeGripEnabled(True)
 
     def _to_float_safe(self, txt: str) -> float:
-        cleaned = re.sub(r"[^0-9.\-]", "", (txt or ""))
+        if txt is None:
+            return 0.0
         try:
-            return float(cleaned) if cleaned else 0.0
-        except Exception:
+            cleaned = re.sub(r"[^0-9.\-]", "", txt)
+            return float(cleaned) if cleaned and cleaned not in ['-', '.', '-.'] else 0.0
+        except ValueError:
+            logging.warning(f"Could not convert '{txt}' to float, returning 0.0")
+            return 0.0
+        except Exception as e:
+            logging.error(f"Unexpected error in _to_float_safe with input '{txt}': {e}")
             return 0.0
 
     def _toggle_ip_fields_by_amount(self):
@@ -257,40 +291,45 @@ class PurchaseForm(QDialog):
             amount = float(self._to_float_safe(self.ip_amount.text()))
             enable_fields = amount > 0
 
-            # Set enable state for all initial payment fields except amount
+            
             self.ip_date.setEnabled(enable_fields)
             self.ip_method.setEnabled(enable_fields)
-            self.ip_company_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"))
-            self.ip_vendor_acct.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cross Cheque", "Cash Deposit"))
-            self.ip_instr_no.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"))
-            self.ip_instr_date.setEnabled(enable_fields and self.ip_method.currentText() in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"))
+            method = self.ip_method.currentText()
+            method_key = self._get_method_key(method)
+            enable_company = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_COMPANY_BANK or method == self.PAYMENT_METHODS['OTHER'])
+            enable_vendor = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK or method == self.PAYMENT_METHODS['OTHER'])
+            enable_instr = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_INSTRUMENT or method == self.PAYMENT_METHODS['OTHER'])
+            
+            self.ip_company_acct.setEnabled(enable_company)
+            self.ip_vendor_acct.setEnabled(enable_vendor)
+            self.ip_instr_no.setEnabled(enable_instr)
+            self.ip_instr_date.setEnabled(enable_instr)
             self.ip_ref_no.setEnabled(enable_fields)
             self.ip_notes.setEnabled(enable_fields)
 
-            # If amount is 0, reset method to Cash to avoid confusion
-            if not enable_fields and self.ip_method.currentText() != "Cash":
-                self.ip_method.setCurrentText("Cash")
+            
+            if not enable_fields and self.ip_method.currentText() != self.PAYMENT_METHODS['CASH']:
+                self.ip_method.setCurrentText(self.PAYMENT_METHODS['CASH'])
                 
-            # Update method-specific visibility when amount changes
+            
             if enable_fields:
-                # Also reload vendor accounts if current payment method requires them
+                
                 method = self.ip_method.currentText()
-                need_vendor = method in ("Bank Transfer", "Cheque", "Cash Deposit")
+                need_vendor = method in (self.PAYMENT_METHODS['BANK_TRANSFER'], 
+                                        self.PAYMENT_METHODS['CROSS_CHEQUE'], 
+                                        self.PAYMENT_METHODS['CASH_DEPOSIT'])
                 if need_vendor and self.cmb_vendor.currentData():
                     self._reload_vendor_accounts()
                 self._refresh_ip_visibility()
             else:
-                # For disabled fields, ensure method-specific fields are also disabled
+                
                 self.ip_company_acct.setEnabled(False)
                 self.ip_vendor_acct.setEnabled(False)
-                self.ip_vendor_acct.clear()  # Clear dropdown when disabling
+                self.ip_vendor_acct.clear()  
                 self.ip_instr_no.setEnabled(False)
                 self.ip_instr_date.setEnabled(False)
         except Exception as e:
-            # Show specific error message instead of silently failing
-            import logging
             logging.exception("Error in _toggle_ip_fields_by_amount")
-            # If parsing fails, disable fields except amount
             self.ip_date.setEnabled(False)
             self.ip_method.setEnabled(False)
             self.ip_company_acct.setEnabled(False)
@@ -309,28 +348,29 @@ class PurchaseForm(QDialog):
             ).fetchall()
             for r in rows:
                 self.ip_company_acct.addItem(r["label"], int(r["account_id"]))
+            
+            
+            current_method = self.ip_method.currentText()
+            if current_method == self.PAYMENT_METHODS['OTHER']:
+                self.ip_company_acct.setCurrentIndex(-1)  
         except ValueError:
-            # Handle issues with converting account_id to int
             print("Error: Invalid company account ID")
-            import logging
             logging.exception("Invalid account ID in _reload_company_accounts")
         except Exception as e:
-            # Show specific error message instead of silently failing
             print(f"Error loading company bank accounts: {e}")
-            import logging
             logging.exception("Error in _reload_company_accounts")
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load company bank accounts: {str(e)}")
 
     def _reload_vendor_accounts(self):
-        # Store the current selection to restore it later
+        
         current_text = self.ip_vendor_acct.currentText()
         
         self.ip_vendor_acct.clear()
         vid = self.cmb_vendor.currentData()
         
         if not vid:
-            # Always add the "Temporary/External Bank Account" option at the end so it's not default
+            
             self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
             return
         
@@ -346,7 +386,7 @@ class PurchaseForm(QDialog):
                 (int(vid),),
             ).fetchall()
             
-            # Add vendor bank accounts first (so primary/default account gets selected by default)
+            
             primary_account_added = False
             for r in rows:
                 label = r["label"] + (" (Primary)" if str(r["is_primary"]) in ("1","True","true") else "")
@@ -354,10 +394,10 @@ class PurchaseForm(QDialog):
                 if str(r["is_primary"]) in ("1","True","true"):
                     primary_account_added = True
             
-            # Add the "Temporary/External Bank Account" option at the end (not as default)
+            
             self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
             
-            # Restore the previous selection if it still exists and is valid
+            
             previous_selection_restored = False
             if current_text and current_text != "":
                 index = self.ip_vendor_acct.findText(current_text)
@@ -365,116 +405,145 @@ class PurchaseForm(QDialog):
                     self.ip_vendor_acct.setCurrentIndex(index)
                     previous_selection_restored = True
             
-            # If no valid previous selection was found/restored, set primary account as default if available
-            if not previous_selection_restored and primary_account_added:
-                # Find and select the primary account (the first one added due to ORDER BY is_primary DESC)
-                for i in range(self.ip_vendor_acct.count() - 1):  # -1 to exclude temp bank option
+            
+            
+            current_method = self.ip_method.currentText()
+            current_method_key = self._get_method_key(current_method)
+            needs_vendor_account = current_method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK
+            
+            if not previous_selection_restored and primary_account_added and needs_vendor_account:
+                
+                for i in range(self.ip_vendor_acct.count() - 1):  
                     item_text = self.ip_vendor_acct.itemText(i)
                     if "(Primary)" in item_text:
                         self.ip_vendor_acct.setCurrentIndex(i)
                         break
+            elif not previous_selection_restored and not needs_vendor_account:
+                
+                self.ip_vendor_acct.setCurrentIndex(-1)  
         
         except ValueError:
-            # Handle issues with converting vid to int
             print(f"Error: Invalid vendor ID: {vid}")
-            import logging
             logging.exception("Invalid vendor ID in _reload_vendor_accounts")
         except Exception as e:
-            # Show specific error message instead of silently failing
             print(f"Error loading vendor bank accounts: {e}")
-            import logging
             logging.exception("Error in _reload_vendor_accounts")
-            # Add the Temporary option as fallback and clear selection
+            
             self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
-            # Optionally show an error to the user if there's a GUI error reporting mechanism
+            
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")
 
     def _refresh_ip_visibility(self):
-        # Only apply method-specific field activation if amount > 0
+        
         try:
             amount = float(self._to_float_safe(self.ip_amount.text()))
             if amount <= 0:
-                # If amount is 0 or less, disable method-specific fields
+                
                 self.ip_company_acct.setEnabled(False)
                 self.ip_vendor_acct.setEnabled(False)
                 self.ip_instr_no.setEnabled(False)
                 self.ip_instr_date.setEnabled(False)
+                
+                self._reset_ip_labels()
                 return
         except Exception as e:
-            # Show specific error message instead of silently failing
-            import logging
             logging.exception("Error in _refresh_ip_visibility")
-            # If parsing fails, disable method-specific fields
             self.ip_company_acct.setEnabled(False)
             self.ip_vendor_acct.setEnabled(False)
             self.ip_instr_no.setEnabled(False)
             self.ip_instr_date.setEnabled(False)
+            
+            self._reset_ip_labels()
             return
 
         method = self.ip_method.currentText()
-        need_company = method in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit")
-        need_vendor  = method in ("Bank Transfer", "Cross Cheque", "Cash Deposit")  # Cheque doesn't need vendor account
-        need_instr   = method in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit")
-        need_idate   = method in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit")
+        method_key = self._get_method_key(method)
+        need_company = method_key in self.PAYMENT_METHODS_REQUIRE_COMPANY_BANK
+        need_vendor  = method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK  
+        need_instr   = method_key in self.PAYMENT_METHODS_REQUIRE_INSTRUMENT
+        need_idate   = method_key in self.PAYMENT_METHODS_REQUIRE_INSTRUMENT
 
-        # Only update if amount > 0 (fields should be enabled)
+        
         if amount > 0:
-            self.ip_company_acct.setEnabled(need_company)
-            self.ip_vendor_acct.setEnabled(need_vendor)
-            # When vendor bank account is enabled for certain payment methods,
-            # make sure to reload the vendor accounts for the currently selected vendor
-            if need_vendor:
-                self._reload_vendor_accounts()  # This will populate the dropdown with accounts for the selected vendor
-            self.ip_instr_no.setEnabled(need_instr)
-            self.ip_instr_date.setEnabled(need_idate)
+            
+            if method == self.PAYMENT_METHODS['OTHER']:
+                self.ip_company_acct.setEnabled(True)
+                self.ip_vendor_acct.setEnabled(True)
+                
+                current_vendor_id = self.cmb_vendor.currentData()
+                if current_vendor_id:
+                    self._reload_vendor_accounts()
+                
+                self.ip_company_acct.setCurrentIndex(-1)
+                self.ip_vendor_acct.setCurrentIndex(-1)
+            else:
+                self.ip_company_acct.setEnabled(need_company)
+                self.ip_vendor_acct.setEnabled(need_vendor)
+                
+                
+                
+                if need_vendor:
+                    current_vendor_id = self.cmb_vendor.currentData()
+                    if current_vendor_id:
+                        self._reload_vendor_accounts()  
+            self.ip_instr_no.setEnabled(need_instr or method == self.PAYMENT_METHODS['OTHER'])  
+            self.ip_instr_date.setEnabled(need_idate or method == self.PAYMENT_METHODS['OTHER'])  
         else:
-            # Double-check: if amount <= 0, disable these fields
+            
             self.ip_company_acct.setEnabled(False)
             self.ip_vendor_acct.setEnabled(False)
             self.ip_instr_no.setEnabled(False)
             self.ip_instr_date.setEnabled(False)
 
-        # Update the payment section labels dynamically based on required fields
+        
         if hasattr(self, '_ip_labels'):
-            # Reset all labels to normal first
-            for label_key, label_widget in self._ip_labels.items():
-                # Remove any existing required styling
-                if label_widget.styleSheet() != "":
-                    # Reset to normal label
-                    plain_text = label_widget.text().rstrip('*')
-                    label_widget.setText(plain_text)
-                    label_widget.setStyleSheet("")
-            
-            # Now apply required styling to the appropriate labels based on method
-            if need_company and 'company_acct' in self._ip_labels:
-                company_label = self._ip_labels['company_acct']
-                current_text = company_label.text()
-                if not current_text.endswith("*"):
-                    company_label.setText(current_text + "*")
-                    company_label.setStyleSheet("color: red; font-weight: bold;")
-            
-            if need_vendor and 'vendor_acct' in self._ip_labels:
-                vendor_label = self._ip_labels['vendor_acct']
-                current_text = vendor_label.text()
-                if not current_text.endswith("*"):
-                    vendor_label.setText(current_text + "*")
-                    vendor_label.setStyleSheet("color: red; font-weight: bold;")
-            
-            if need_instr and 'instr_no' in self._ip_labels:
-                instr_label = self._ip_labels['instr_no']
-                current_text = instr_label.text()
-                if not current_text.endswith("*"):
-                    instr_label.setText(current_text + "*")
-                    instr_label.setStyleSheet("color: red; font-weight: bold;")
+            self._update_ip_labels(need_company, need_vendor, need_instr)
 
-        # Update temporary bank field visibility using the shared helper method
+        
         method = self.ip_method.currentText()
-        need_vendor = method in ("Bank Transfer", "Cross Cheque", "Cash Deposit")  # Cheque doesn't need vendor account
+        method_key = self._get_method_key(method)
+        need_vendor = method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK  
         selected_vendor_account = self.ip_vendor_acct.currentData()
         is_temp_account = selected_vendor_account == "TEMP_BANK"
         
         self._update_temp_bank_visibility(is_temp_account=is_temp_account, need_vendor=need_vendor)
+        
+    def _reset_ip_labels(self):
+        """Reset all initial payment labels to normal state (non-required)"""
+        if hasattr(self, '_ip_labels'):
+            for label_key, label_widget in self._ip_labels.items():
+                
+                if label_widget.styleSheet() != "":
+                    
+                    plain_text = label_widget.text().rstrip('*')
+                    label_widget.setText(plain_text)
+                    label_widget.setStyleSheet("")
+    
+    def _update_ip_labels(self, need_company=False, need_vendor=False, need_instr=False):
+        """Update initial payment section labels based on required fields"""
+        if not hasattr(self, '_ip_labels'):
+            return
+            
+        
+        self._reset_ip_labels()
+        
+        
+        if need_company and 'company_acct' in self._ip_labels:
+            self._set_label_required(self._ip_labels['company_acct'])
+        
+        if need_vendor and 'vendor_acct' in self._ip_labels:
+            self._set_label_required(self._ip_labels['vendor_acct'])
+        
+        if need_instr and 'instr_no' in self._ip_labels:
+            self._set_label_required(self._ip_labels['instr_no'])
+
+    def _set_label_required(self, label_widget):
+        """Set a label as required (red asterisk and bold)"""
+        current_text = label_widget.text()
+        if not current_text.endswith("*"):
+            label_widget.setText(current_text + "*")
+            label_widget.setStyleSheet("color: red; font-weight: bold;")
 
     def _update_temp_bank_visibility(self, is_temp_account=None, need_vendor=None):
         """
@@ -487,11 +556,13 @@ class PurchaseForm(QDialog):
         
         if need_vendor is None:
             method = self.ip_method.currentText()
-            need_vendor = method in ("Bank Transfer", "Cross Cheque", "Cash Deposit")  # Cheque doesn't need vendor account
+            need_vendor = method in (self.PAYMENT_METHODS['BANK_TRANSFER'], 
+                                   self.PAYMENT_METHODS['CROSS_CHEQUE'], 
+                                   self.PAYMENT_METHODS['CASH_DEPOSIT'])
         
-        # Update temporary bank field styling based on vendor account selection and method requirements
+        
         if is_temp_account and need_vendor:
-            # Show required labels for temporary fields
+            
             temp_name_label = self._ip_labels.get('temp_bank_name')
             if temp_name_label and not temp_name_label.text().endswith('*'):
                 temp_name_label.setText(temp_name_label.text() + "*")
@@ -502,7 +573,7 @@ class PurchaseForm(QDialog):
                 temp_number_label.setText(temp_number_label.text() + "*")
                 temp_number_label.setStyleSheet("color: red; font-weight: bold;")
                 
-            # Make sure temporary bank fields and labels are visible
+            
             self.temp_bank_name.setVisible(True)
             self.temp_bank_number.setVisible(True)
             if 'temp_bank_name' in self._ip_labels:
@@ -510,7 +581,7 @@ class PurchaseForm(QDialog):
             if 'temp_bank_number' in self._ip_labels:
                 self._ip_labels['temp_bank_number'].setVisible(True)
         else:
-            # Hide required indicators for temporary fields
+            
             temp_name_label = self._ip_labels.get('temp_bank_name')
             if temp_name_label:
                 temp_name_label.setText(temp_name_label.text().rstrip('*'))
@@ -521,8 +592,8 @@ class PurchaseForm(QDialog):
                 temp_number_label.setText(temp_number_label.text().rstrip('*'))
                 temp_number_label.setStyleSheet("")
                 
-            # Hide temporary bank fields and labels when not selected or method doesn't require vendor account
-            show_temp_fields = is_temp_account  # Show if temp account selected, regardless of need_vendor for this method
+            
+            show_temp_fields = is_temp_account  
             self.temp_bank_name.setVisible(show_temp_fields)
             self.temp_bank_number.setVisible(show_temp_fields)
             if 'temp_bank_name' in self._ip_labels:
@@ -532,7 +603,7 @@ class PurchaseForm(QDialog):
 
     def _on_vendor_bank_account_changed(self):
         """Show/hide temporary bank fields based on selection"""
-        # Call the shared helper method
+        
         self._update_temp_bank_visibility()
 
 
@@ -541,11 +612,16 @@ class PurchaseForm(QDialog):
     def _all_products(self):
         return self.products.list_products()
 
-    def _base_uom_id(self, product_id: int) -> int:
+    def _base_uom_id(self, product_id: int) -> int | None:
         base = self.products.get_base_uom(product_id)
         if base: return int(base["uom_id"])
         u = self.products.list_uoms()
-        return int(u[0]["uom_id"]) if u else 1
+        if u:
+            return int(u[0]["uom_id"])
+        else:
+            
+            logging.error("No UOMs found in the system. Please configure at least one UOM.")
+            return None
 
     def _delete_row_for_button(self, btn: QPushButton):
         for r in range(self.tbl.rowCount()):
@@ -555,13 +631,23 @@ class PurchaseForm(QDialog):
                 self._refresh_totals()
                 return
 
+    def _with_signal_blocking(self, widget, callback):
+        """Helper to execute a callback with signal blocking."""
+        widget.blockSignals(True)
+        try:
+            return callback()
+        finally:
+            widget.blockSignals(False)
+
     def _add_row(self, pre: dict | None = None):
         def on_prod_changed():
             pid = cmb_prod.currentData()
-            self.tbl.item(r, 0).setData(Qt.UserRole, self._base_uom_id(int(pid)) if pid else None)
+            if pid:
+                uom_id = self._base_uom_id(int(pid))
+                if uom_id is not None:
+                    self.tbl.item(r, 0).setData(Qt.UserRole, uom_id)
             self._recalc_row(r); self._refresh_totals()
 
-        self.tbl.blockSignals(True)
         r = self.tbl.rowCount()
         self.tbl.insertRow(r)
 
@@ -576,7 +662,7 @@ class PurchaseForm(QDialog):
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         cmb_prod.setCompleter(completer)
         
-        # Add items to combo
+        
         for p in self._all_products():
             cmb_prod.addItem(f"{p.name} (#{p.product_id})", p.product_id)
         self.tbl.setCellWidget(r, 1, cmb_prod)
@@ -584,7 +670,7 @@ class PurchaseForm(QDialog):
         for c in (2, 3, 4):
             it = QTableWidgetItem("0")
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            # Explicitly set flags to ensure the cell is editable
+            
             it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled)
             self.tbl.setItem(r, c, it)
 
@@ -597,51 +683,50 @@ class PurchaseForm(QDialog):
         btn_del.clicked.connect(lambda _=False, b=btn_del: self._delete_row_for_button(b))
         self.tbl.setCellWidget(r, 6, btn_del)
 
-        # Connect the signal initially to allow connection later if needed
+        
         cmb_prod.currentIndexChanged.connect(on_prod_changed)
 
-        # Only use the signal blocking approach for pre-populated data to avoid interference
+        
         if pre:
-            # CRITICAL FIX: Block ALL signals during initialization
-            # This prevents row merging when same product_id appears multiple times
+            def init_pre_populated_data():
+                
+                product_id = pre.get("product_id")
+                i = cmb_prod.findData(product_id)
+                if i >= 0:
+                    cmb_prod.setCurrentIndex(i)
+                
+                
+                self.tbl.item(r, 2).setText(str(pre.get("quantity", 0)))
+                self.tbl.item(r, 3).setText(str(pre.get("purchase_price", 0)))
+                self.tbl.item(r, 4).setText(str(pre.get("sale_price", 0)))
+                
+                
+                if "uom_id" in pre:
+                    self.tbl.item(r, 0).setData(Qt.UserRole, int(pre["uom_id"]))
+                
+                
+                if product_id:
+                    uom_id = self._base_uom_id(int(product_id))
+                    if uom_id is not None:
+                        self.tbl.item(r, 0).setData(Qt.UserRole, uom_id)
+                
+                
+                self._recalc_row(r)
+            
+            
             cmb_prod.blockSignals(True)
-            self.tbl.blockSignals(True)
-            
-            # Load product selection
-            product_id = pre.get("product_id")
-            i = cmb_prod.findData(product_id)
-            if i >= 0:
-                cmb_prod.setCurrentIndex(i)
-            
-            # Load quantity, prices, and discount
-            self.tbl.item(r, 2).setText(str(pre.get("quantity", 0)))
-            self.tbl.item(r, 3).setText(str(pre.get("purchase_price", 0)))
-            self.tbl.item(r, 4).setText(str(pre.get("sale_price", 0)))
-            
-            # Load UOM data if available
-            if "uom_id" in pre:
-                self.tbl.item(r, 0).setData(Qt.UserRole, int(pre["uom_id"]))
-            
-            # CRITICAL STEP: Set the UOM explicitly without triggering change events
-            if product_id:
-                self.tbl.item(r, 0).setData(Qt.UserRole, self._base_uom_id(int(product_id)))
-            
-            # UNBLOCK signals only after full initialization is complete
+            self._with_signal_blocking(self.tbl, init_pre_populated_data)
             cmb_prod.blockSignals(False)
-            self.tbl.blockSignals(False)
-            
-            # Manually recalculate this specific row to ensure correct totals
-            self._recalc_row(r)
         else:
-            # For new rows with no pre-data, the signal has already been connected
+            
             on_prod_changed()
             
-            # CRITICAL: Explicitly recalculate row totals to ensure they display correctly
-            # This addresses the issue where line totals weren't showing for new rows beyond the first
+            
+            
             self._recalc_row(r)
 
-        # The calculations have already been handled by either pre-populated data recalc
-        # or the on_prod_changed() call for new rows, plus explicit _recalc_row call above
+        
+        
 
     def _reindex_rows(self):
         for r in range(self.tbl.rowCount()):
@@ -649,33 +734,35 @@ class PurchaseForm(QDialog):
                 self.tbl.item(r, 0).setText(str(r + 1))
 
     def _rebuild_table(self):
-        from PySide6.QtCore import QTimer
-        self.tbl.blockSignals(True)
-        self.tbl.setRowCount(0)
-        if not self._rows:
-            self._add_row({})
-        else:
-            for row in self._rows:
-                self._add_row(row)
-        self.tbl.blockSignals(False)
-        self._refresh_totals()
+        def rebuild_table_content():
+            self.tbl.setRowCount(0)
+            if not self._rows:
+                self._add_row({})
+            else:
+                for row in self._rows:
+                    self._add_row(row)
+            self._refresh_totals()
+            
+            
+            
+            for r in range(self.tbl.rowCount()):
+                for c in [2, 3, 4]:  
+                    item = self.tbl.item(r, c)
+                    if item:
+                        
+                        self._recalc_row(r)
+            
+            
+            self._refresh_totals()
         
-        # Use QTimer to delay the refresh to ensure Qt properly initializes all cells
-        # This helps ensure cellChanged signals work properly for all rows
-        QTimer.singleShot(10, self._refresh_all_row_calculations)
-    
-    def _refresh_all_row_calculations(self):
-        """Recalculate all row totals to ensure proper initialization after table rebuild"""
-        for r in range(self.tbl.rowCount()):
-            self._recalc_row(r)
-        self._refresh_totals()
+        self._with_signal_blocking(self.tbl, rebuild_table_content)
 
     def _cell_changed(self, row: int, col: int):
         if row < 0 or row >= self.tbl.rowCount():
             return
-        # Only process changes to input columns (quantity, buy price, sale price)
+        
         if col in [2, 3, 4]:
-            # Make sure the QTableWidgetItem for the changed column exists
+            
             if self.tbl.item(row, col) is not None:
                 self._recalc_row(row)
                 self._refresh_totals()
@@ -695,7 +782,7 @@ class PurchaseForm(QDialog):
                 it.setBackground(Qt.red if bad else Qt.white)
 
         bad_buy = buy <= 0
-        bad_sale = not (sale >= buy > 0)
+        bad_sale = (sale < buy) or (sale <= 0)  
         mark(3, bad_buy)
         mark(4, bad_sale or bad_buy)
 
@@ -737,6 +824,8 @@ class PurchaseForm(QDialog):
         uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
         if not uom_id:
             uom_id = self._base_uom_id(int(pid))
+        if uom_id is None:
+            return None  
         return {
             "product_id": int(pid),
             "uom_id": int(uom_id),
@@ -746,36 +835,276 @@ class PurchaseForm(QDialog):
             "item_discount": 0.0,
         }
 
-    def get_payload(self) -> dict | None:
-        try:
-            vendor_id = int(self.cmb_vendor.currentData())
-        except Exception:
-            return None
+    def _validate_vendor_selection(self) -> tuple[bool, str]:
+        """Validate vendor selection and return (is_valid, error_message)"""
+        vendor_id = self.cmb_vendor.currentData()
+        if vendor_id is None or vendor_id == "":
+            return False, "Please select a vendor from the dropdown list."
+        return True, ""
 
-        rows = []
+    def _validate_date(self) -> tuple[bool, str]:
+        """Validate date selection and return (is_valid, error_message)"""
+        try:
+            date_str = self.date.date().toString("yyyy-MM-dd")
+            datetime.datetime.strptime(date_str, "%Y-%m-%d")  
+            return True, ""
+        except Exception:
+            return False, "Please select a valid date."
+
+    def _validate_items(self) -> tuple[bool, list[str], list[dict]]:
+        """Validate purchase items and return (is_valid, error_messages, valid_rows)"""
+        errors = []
+        valid_rows = []
+        
         for r in range(self.tbl.rowCount()):
             cmb_prod = self.tbl.cellWidget(r, 1)
-            if not cmb_prod: continue
+            if not cmb_prod:
+                continue
             product_id = cmb_prod.currentData()
-            if product_id in (None, ""): continue
+            if product_id in (None, ""):
+                errors.append(f"Row {r+1}: Please select a product.")
+                continue
+
+            
             qty_it = self.tbl.item(r, 2)
-            buy_it = self.tbl.item(r, 3)
-            sale_it = self.tbl.item(r, 4)
             try:
                 qty = self._to_float_safe((qty_it.text() or "0").strip())
+                if qty <= 0:
+                    errors.append(f"Row {r+1}: Quantity must be greater than 0.")
+                    continue
+            except:
+                errors.append(f"Row {r+1}: Please enter a valid numeric quantity.")
+                continue
+
+            
+            buy_it = self.tbl.item(r, 3)
+            try:
                 buy = self._to_float_safe((buy_it.text() or "0").strip())
+                if buy <= 0:
+                    errors.append(f"Row {r+1}: Purchase price must be greater than 0.")
+                    continue
+            except:
+                errors.append(f"Row {r+1}: Please enter a valid numeric purchase price.")
+                continue
+
+            
+            sale_it = self.tbl.item(r, 4)
+            try:
                 sale = self._to_float_safe((sale_it.text() or "0").strip())
-            except Exception:
-                return None
-            if qty <= 0 or buy <= 0 or not (sale >= buy):
-                return None
+                if sale < buy:
+                    errors.append(f"Row {r+1}: Sale price must be greater than or equal to purchase price ({buy}).")
+                    continue
+            except:
+                errors.append(f"Row {r+1}: Please enter a valid numeric sale price.")
+                continue
+
+            
             uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
             if uom_id is None:
                 try:
                     uom_id = int(self.products.get_base_uom(product_id)["uom_id"])
                 except Exception:
                     uom_id = self._base_uom_id(product_id)
-            if uom_id is None: return None
+            
+            if uom_id is not None:
+                valid_rows.append({
+                    "product_id": int(product_id),
+                    "uom_id": int(uom_id),
+                    "quantity": qty,
+                    "purchase_price": buy,
+                    "sale_price": sale,
+                    "item_discount": 0.0,
+                })
+            else:
+                errors.append(f"Row {r+1}: Unable to determine UOM for product. Please configure UOM settings.")
+
+        
+        if not valid_rows:
+            errors.append("Please add at least one valid purchase item.")
+
+        return len(errors) == 0, errors, valid_rows
+
+    def _resolve_company_account_id(self) -> int | None:
+        """Resolve company bank account ID from editable combobox text"""
+        company_acct_text = self.ip_company_acct.currentText().strip()
+        company_id = self.ip_company_acct.currentData()
+        
+        if company_id is None and company_acct_text:
+            
+            try:
+                conn = self.vendors.conn
+                
+                row = conn.execute(
+                    "SELECT account_id FROM company_bank_accounts WHERE label = ? AND is_active=1",
+                    (company_acct_text,)
+                ).fetchone()
+                if not row:
+                    
+                    row = conn.execute(
+                        "SELECT account_id FROM company_bank_accounts WHERE LOWER(label) = LOWER(?) AND is_active=1",
+                        (company_acct_text,)
+                    ).fetchone()
+                if row:
+                    company_id = int(row["account_id"])
+                else:
+                    logging.warning(f"Company bank account not found for label: {company_acct_text}")
+            except Exception as e:
+                logging.error(f"Error resolving company bank account ID for '{company_acct_text}': {e}")
+                company_id = None
+        
+        return company_id
+
+    def _resolve_vendor_account_id(self) -> int | None:
+        """Resolve vendor bank account ID from editable combobox text"""
+        
+        try:
+            resolved_vendor_id = int(self.cmb_vendor.currentData())
+        except (ValueError, TypeError):
+            logging.error("Vendor selection is required to resolve vendor bank account ID")
+            return None  
+        
+        vendor_acct_text = self.ip_vendor_acct.currentText().strip()
+        vendor_bank_id = self.ip_vendor_acct.currentData()
+        
+        if vendor_bank_id is None and vendor_acct_text:
+            
+            try:
+                conn = self.vendors.conn
+                
+                row = conn.execute(
+                    "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = ? AND vendor_id = ? AND is_active=1",
+                    (vendor_acct_text, resolved_vendor_id)
+                ).fetchone()
+                if not row:
+                    
+                    row = conn.execute(
+                        "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE LOWER(label) = LOWER(?) AND vendor_id = ? AND is_active=1",
+                        (vendor_acct_text, resolved_vendor_id)
+                    ).fetchone()
+                if row:
+                    vendor_bank_id = int(row["vendor_bank_account_id"])
+                else:
+                    logging.warning(f"Vendor bank account not found for label: {vendor_acct_text} for vendor {resolved_vendor_id}")
+            except Exception as e:
+                logging.error(f"Error resolving vendor bank account ID for '{vendor_acct_text}' and vendor {resolved_vendor_id}: {e}")
+                vendor_bank_id = None
+        
+        return vendor_bank_id
+
+    def _validate_initial_payment(self, ip_amount: float) -> tuple[bool, list[str]]:
+        """Validate initial payment details and return (is_valid, errors)"""
+        errors = []
+        
+        if ip_amount < 0:
+            errors.append("Initial payment amount cannot be negative.")
+        elif ip_amount > 0:
+            method = self.ip_method.currentText()
+            
+            selected_vendor_account = self.ip_vendor_acct.currentData()
+            is_temp_account = selected_vendor_account == "TEMP_BANK"
+
+            
+            validation_rules = {
+                self.PAYMENT_METHODS['BANK_TRANSFER']: {
+                    'requires_company_acct': True,
+                    'requires_vendor_acct': True,
+                    'requires_instr_no': True,
+                    'requires_temp_details': True,
+                    'error_msg_company': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a company bank account.",
+                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a vendor bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please enter the instrument/cheque number.",
+                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter bank name.",
+                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter account number.",
+                },
+                self.PAYMENT_METHODS['CHEQUE']: {
+                    'requires_company_acct': True,
+                    'requires_vendor_acct': False,  
+                    'requires_instr_no': True,
+                    'requires_temp_details': False,
+                    'error_msg_company': f"For {self.PAYMENT_METHODS['CHEQUE']}, please select a company bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CHEQUE']}, please enter the instrument/cheque number.",
+                },
+                self.PAYMENT_METHODS['CROSS_CHEQUE']: {
+                    'requires_company_acct': True,
+                    'requires_vendor_acct': True,
+                    'requires_instr_no': True,
+                    'requires_temp_details': True,
+                    'error_msg_company': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a company bank account.",
+                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a vendor bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please enter the instrument/cheque number.",
+                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']} with temporary account, please enter bank name.",
+                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']} with temporary account, please enter account number.",
+                },
+                self.PAYMENT_METHODS['CASH_DEPOSIT']: {
+                    'requires_company_acct': False,  
+                    'requires_vendor_acct': True,
+                    'requires_instr_no': True,
+                    'requires_temp_details': True,
+                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please select a vendor bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please enter the deposit slip number.",
+                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter bank name.",
+                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter account number.",
+                },
+                self.PAYMENT_METHODS['OTHER']: {
+                    
+                    
+                }
+            }
+
+            
+            if method in validation_rules:
+                rule = validation_rules[method]
+                
+                
+                if rule.get('requires_company_acct', False) and self.ip_company_acct.currentData() is None:
+                    errors.append(rule['error_msg_company'])
+                
+                
+                if rule.get('requires_vendor_acct', False):
+                    if self.ip_vendor_acct.currentData() is None:
+                        errors.append(rule['error_msg_vendor'])
+                    elif is_temp_account and rule.get('requires_temp_details', False):
+                        
+                        if not self.temp_bank_name.text().strip():
+                            errors.append(rule['error_msg_temp_name'])
+                        if not self.temp_bank_number.text().strip():
+                            errors.append(rule['error_msg_temp_number'])
+                
+                
+                if rule.get('requires_instr_no', False) and not self.ip_instr_no.text().strip():
+                    errors.append(rule['error_msg_instr'])
+            
+
+        return len(errors) == 0, errors
+
+    def get_payload(self) -> dict | None:
+        
+        
+        
+        vendor_id = int(self.cmb_vendor.currentData())
+        date_str = self.date.date().toString("yyyy-MM-dd")
+        total_amount = self._calc_subtotal()
+
+        
+        rows = []
+        for r in range(self.tbl.rowCount()):
+            cmb_prod = self.tbl.cellWidget(r, 1)
+            if not cmb_prod: continue
+            product_id = cmb_prod.currentData()
+            if product_id in (None, ""): continue
+            
+            def num(c):
+                it = self.tbl.item(r, c)
+                return self._to_float_safe(it.text()) if it and it.text() else 0.0
+
+            qty = num(2); buy = num(3); sale = num(4)
+            uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
+            if uom_id is None:
+                try:
+                    uom_id = int(self.products.get_base_uom(product_id)["uom_id"])
+                except Exception:
+                    uom_id = self._base_uom_id(product_id)
+            
             rows.append({
                 "product_id": int(product_id),
                 "uom_id": int(uom_id),
@@ -784,11 +1113,6 @@ class PurchaseForm(QDialog):
                 "sale_price": sale,
                 "item_discount": 0.0,
             })
-
-        if not rows: return None
-
-        date_str = self.date.date().toString("yyyy-MM-dd")
-        total_amount = self._calc_subtotal()
 
         payload = {
             "vendor_id": vendor_id,
@@ -799,95 +1123,40 @@ class PurchaseForm(QDialog):
             "total_amount": total_amount,
         }
 
-        ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
+        ip_amount_txt = self.ip_amount.text().strip()
         ip_amount = self._to_float_safe(ip_amount_txt)
 
-        if ip_amount_txt and ip_amount < 0.0:
-            return None
-
         if ip_amount > 0:
-            method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
+            method = self.ip_method.currentText()
             
-            # Handle editable comboboxes: if currentData() is None, try to find the ID by looking up the text
-            # First ensure vendor_id is available as it's needed for vendor bank account lookup
-            try:
-                resolved_vendor_id = int(self.cmb_vendor.currentData())
-            except Exception:
-                return None  # vendor selection is required
             
-            company_acct_text = self.ip_company_acct.currentText().strip() if hasattr(self, "ip_company_acct") and self.ip_company_acct.currentText() else ""
-            company_id = self.ip_company_acct.currentData() if hasattr(self, "ip_company_acct") else None
-            if company_id is None and company_acct_text:
-                # Look up company account ID by label/text (with case-insensitive matching)
-                try:
-                    conn = self.vendors.conn
-                    # First try exact match
-                    row = conn.execute(
-                        "SELECT account_id FROM company_bank_accounts WHERE label = ? AND is_active=1",
-                        (company_acct_text,)
-                    ).fetchone()
-                    if not row:
-                        # Try case-insensitive match
-                        row = conn.execute(
-                            "SELECT account_id FROM company_bank_accounts WHERE LOWER(label) = LOWER(?) AND is_active=1",
-                            (company_acct_text,)
-                        ).fetchone()
-                    if row:
-                        company_id = int(row["account_id"])
-                except Exception:
-                    company_id = None
+            company_id = self._resolve_company_account_id()
+            vendor_bank_id = self._resolve_vendor_account_id()
             
-            vendor_acct_text = self.ip_vendor_acct.currentText().strip() if hasattr(self, "ip_vendor_acct") and self.ip_vendor_acct.currentText() else ""
-            vendor_bank_id = self.ip_vendor_acct.currentData() if hasattr(self, "ip_vendor_acct") else None
-            if vendor_bank_id is None and vendor_acct_text:
-                # Look up vendor account ID by label/text (with case-insensitive matching)
-                try:
-                    conn = self.vendors.conn
-                    # First try exact match
-                    row = conn.execute(
-                        "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = ? AND vendor_id = ? AND is_active=1",
-                        (vendor_acct_text, resolved_vendor_id)
-                    ).fetchone()
-                    if not row:
-                        # Try case-insensitive match
-                        row = conn.execute(
-                            "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE LOWER(label) = LOWER(?) AND vendor_id = ? AND is_active=1",
-                            (vendor_acct_text, resolved_vendor_id)
-                        ).fetchone()
-                    if row:
-                        vendor_bank_id = int(row["vendor_bank_account_id"])
-                except Exception:
-                    vendor_bank_id = None
-            
-            instr_no = self.ip_instr_no.text().strip() if hasattr(self, "ip_instr_no") else ""
-            instr_date = self.ip_instr_date.date().toString("yyyy-MM-dd") if hasattr(self, "ip_instr_date") else date_str
-            ref_no = self.ip_ref_no.text().strip() if hasattr(self, "ip_ref_no") else None
-            notes = self.ip_notes.text().strip() if hasattr(self, "ip_notes") else None
+            instr_no = self.ip_instr_no.text().strip()
+            instr_date = self.ip_instr_date.date().toString("yyyy-MM-dd")
+            ref_no = self.ip_ref_no.text().strip()
+            notes = self.ip_notes.text().strip()
 
-            m = (method or "").strip().lower()
-            if m == "bank transfer":
-                if not company_id or not vendor_bank_id or not instr_no: return None
+            if method == self.PAYMENT_METHODS['BANK_TRANSFER']:
                 instr_type = "online";        clearing_state = "cleared"
-            elif m == "cheque":
-                if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
+            elif method == self.PAYMENT_METHODS['CHEQUE']:
                 instr_type = "cheque";  clearing_state = "cleared"
-            elif m == "cross cheque":
-                if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
+            elif method == self.PAYMENT_METHODS['CROSS_CHEQUE']:
                 instr_type = "cross_cheque";  clearing_state = "cleared"
-            elif m == "cash deposit":
-                if not vendor_bank_id or not instr_no: return None
+            elif method == self.PAYMENT_METHODS['CASH_DEPOSIT']:
                 instr_type = "cash_deposit";  clearing_state = "cleared"; company_id = None
-            elif m == "cash":
+            elif method == self.PAYMENT_METHODS['CASH']:
                 instr_type = None
                 clearing_state = "cleared"
                 company_id = None;     vendor_bank_id = None
                 instr_no = "";         instr_date = date_str
-            else:
+            else:  
                 instr_type = "other";         clearing_state = "cleared"
                 company_id = None;            vendor_bank_id = None
                 instr_no = "";                instr_date = date_str
 
-            # Check if using temporary bank account
+            
             selected_vendor_account = self.ip_vendor_acct.currentData()
             is_temp_account = selected_vendor_account == "TEMP_BANK"
             
@@ -905,7 +1174,7 @@ class PurchaseForm(QDialog):
                 "ref_no": ref_no,
                 "notes": notes,
                 "date": date_str,
-                # Add temporary bank details to the payload when applicable
+                
                 "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
                 "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
             }
@@ -923,66 +1192,26 @@ class PurchaseForm(QDialog):
 
         return payload
 
-    def validate_form(self) -> tuple[bool, list[str]]:  # (is_valid, list_of_error_messages)
+    def validate_form(self) -> tuple[bool, list[str]]:  
         """Validate form and return detailed error messages"""
         errors = []
         
-        # Validate vendor
-        vendor_id = self.cmb_vendor.currentData()
-        if vendor_id is None or vendor_id == "":
-            errors.append("Please select a vendor from the dropdown list.")
+        
+        
+        is_valid, error_msg = self._validate_vendor_selection()
+        if not is_valid:
+            errors.append(error_msg)
 
-        # Validate date
-        try:
-            date_str = self.date.date().toString("yyyy-MM-dd")
-            import datetime
-            datetime.datetime.strptime(date_str, "%Y-%m-%d")  # Basic date validation
-        except:
-            errors.append("Please select a valid date.")
+        
+        is_valid, error_msg = self._validate_date()
+        if not is_valid:
+            errors.append(error_msg)
 
-        # Validate items
-        valid_rows = []
-        for r in range(self.tbl.rowCount()):
-            cmb_prod = self.tbl.cellWidget(r, 1)
-            if not cmb_prod:
-                continue
-            product_id = cmb_prod.currentData()
-            if product_id in (None, ""):
-                errors.append(f"Row {r+1}: Please select a product.")
-                continue
+        
+        is_valid, item_errors, _ = self._validate_items()
+        errors.extend(item_errors)
 
-            # Validate quantity
-            qty_it = self.tbl.item(r, 2)
-            try:
-                qty = self._to_float_safe((qty_it.text() or "0").strip())
-                if qty <= 0:
-                    errors.append(f"Row {r+1}: Quantity must be greater than 0.")
-            except:
-                errors.append(f"Row {r+1}: Please enter a valid numeric quantity.")
-
-            # Validate purchase price
-            buy_it = self.tbl.item(r, 3)
-            try:
-                buy = self._to_float_safe((buy_it.text() or "0").strip())
-                if buy <= 0:
-                    errors.append(f"Row {r+1}: Purchase price must be greater than 0.")
-            except:
-                errors.append(f"Row {r+1}: Please enter a valid numeric purchase price.")
-
-            # Validate sale price
-            sale_it = self.tbl.item(r, 4)
-            try:
-                sale = self._to_float_safe((sale_it.text() or "0").strip())
-                if sale < buy:
-                    errors.append(f"Row {r+1}: Sale price must be greater than or equal to purchase price ({buy}).")
-            except:
-                errors.append(f"Row {r+1}: Please enter a valid numeric sale price.")
-
-        # If no valid rows were found
-        if not any(cmb_prod.currentData() for r in range(self.tbl.rowCount()) if (cmb_prod := self.tbl.cellWidget(r, 1))):
-            errors.append("Please add at least one valid purchase item.")
-
-        # Validate initial payment if amount is specified
+        
         try:
             ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
             ip_amount = self._to_float_safe(ip_amount_txt)
@@ -990,55 +1219,9 @@ class PurchaseForm(QDialog):
             if ip_amount < 0:
                 errors.append("Initial payment amount cannot be negative.")
             elif ip_amount > 0:
-                method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
-                m = (method or "").strip().lower()
-
-                # Check if using temporary bank account
-                selected_vendor_account = self.ip_vendor_acct.currentData()
-                is_temp_account = selected_vendor_account == "TEMP_BANK"
-
-                if m == "bank transfer":
-                    if self.ip_company_acct.currentData() is None:
-                        errors.append(f"For {method}, please select a company bank account.")
-                    if self.ip_vendor_acct.currentData() is None:
-                        errors.append(f"For {method}, please select a vendor bank account.")
-                    elif is_temp_account:
-                        # Validate temporary bank details
-                        if not self.temp_bank_name.text().strip():
-                            errors.append(f"For {method} with temporary account, please enter bank name.")
-                        if not self.temp_bank_number.text().strip():
-                            errors.append(f"For {method} with temporary account, please enter account number.")
-                    if not self.ip_instr_no.text().strip():
-                        errors.append(f"For {method}, please enter the instrument/cheque number.")
-                elif m == "cheque":
-                    if self.ip_company_acct.currentData() is None:
-                        errors.append(f"For {method}, please select a company bank account.")
-                    if not self.ip_instr_no.text().strip():
-                        errors.append(f"For {method}, please enter the instrument/cheque number.")
-                elif m == "cross cheque":
-                    if self.ip_company_acct.currentData() is None:
-                        errors.append(f"For {method}, please select a company bank account.")
-                    if self.ip_vendor_acct.currentData() is None:
-                        errors.append(f"For {method}, please select a vendor bank account.")
-                    elif is_temp_account:
-                        # Validate temporary bank details
-                        if not self.temp_bank_name.text().strip():
-                            errors.append(f"For {method} with temporary account, please enter bank name.")
-                        if not self.temp_bank_number.text().strip():
-                            errors.append(f"For {method} with temporary account, please enter account number.")
-                    if not self.ip_instr_no.text().strip():
-                        errors.append(f"For {method}, please enter the instrument/cheque number.")
-                elif m == "cash deposit":
-                    if self.ip_vendor_acct.currentData() is None:
-                        errors.append(f"For {method}, please select a vendor bank account.")
-                    elif is_temp_account:
-                        # Validate temporary bank details
-                        if not self.temp_bank_name.text().strip():
-                            errors.append(f"For {method} with temporary account, please enter bank name.")
-                        if not self.temp_bank_number.text().strip():
-                            errors.append(f"For {method} with temporary account, please enter account number.")
-                    if not self.ip_instr_no.text().strip():
-                        errors.append(f"For {method}, please enter the deposit slip number.")
+                
+                is_valid, payment_errors = self._validate_initial_payment(ip_amount)
+                errors.extend(payment_errors)
 
         except Exception as e:
             errors.append("Error validating initial payment: " + str(e))
@@ -1049,12 +1232,12 @@ class PurchaseForm(QDialog):
         is_valid, errors = self.validate_form()
         if not is_valid:
             from PySide6.QtWidgets import QMessageBox
-            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
+            error_message = self._format_validation_errors(errors)
             QMessageBox.warning(self, "Validation Errors", error_message)
             return
         p = self.get_payload()
         if p is None:
-            # Fallback for any remaining validation issues
+            
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Missing/Invalid Fields",
                                 "Please enter valid purchase details (all required fields must be filled).")
@@ -1065,224 +1248,52 @@ class PurchaseForm(QDialog):
     def payload(self):
         return self._payload
 
-    def _save_clicked(self):
-        """Handle save button click"""
+    def _format_validation_errors(self, errors: list[str]) -> str:
+        """Format validation errors into a user-friendly message."""
+        if not errors:
+            return ""
+        return "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
+
+    def _validate_and_perform_action(self, action_func):
+        """Validate form and perform the given action if valid"""
         is_valid, errors = self.validate_form()
         if not is_valid:
             from PySide6.QtWidgets import QMessageBox
-            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
+            error_message = self._format_validation_errors(errors)
             QMessageBox.warning(self, "Validation Errors", error_message)
-            return
-        # Set flag to indicate this is a regular save (not print)
-        self._should_print = False
-        self._should_export_pdf = False
-        self.accept()
+            return False
+        
+        
+        return action_func()
+
+    def _save_clicked(self):
+        """Handle save button click"""
+        def save_action():
+            
+            self.accept()
+            return True
+        
+        self._validate_and_perform_action(save_action)
 
     def _print_clicked(self):
         """Handle print button click"""
-        is_valid, errors = self.validate_form()
-        if not is_valid:
-            from PySide6.QtWidgets import QMessageBox
-            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
-            QMessageBox.warning(self, "Validation Errors", error_message)
-            return
-        # Set flag to indicate this is a print request
-        self._should_print = True
-        self._should_export_pdf = False
-        self.accept()
+        def print_action():
+            
+            self.accept()  
+            
+            
+            return True
+            
+        self._validate_and_perform_action(print_action)
 
     def _pdf_export_clicked(self):
         """Handle PDF export button click"""
-        is_valid, errors = self.validate_form()
-        if not is_valid:
-            from PySide6.QtWidgets import QMessageBox
-            error_message = "Please correct the following errors:\n\n" + "\n".join([f"• {err}" for err in errors])
-            QMessageBox.warning(self, "Validation Errors", error_message)
-            return
-        # Set flag to indicate this is a PDF export request
-        self._should_print = False
-        self._should_export_pdf = True
-        self.accept()
-
-    def get_payload(self) -> dict | None:
-        try:
-            vendor_id = int(self.cmb_vendor.currentData())
-        except Exception:
-            return None
-
-        rows = []
-        for r in range(self.tbl.rowCount()):
-            cmb_prod = self.tbl.cellWidget(r, 1)
-            if not cmb_prod: continue
-            product_id = cmb_prod.currentData()
-            if product_id in (None, ""): continue
-            qty_it = self.tbl.item(r, 2)
-            buy_it = self.tbl.item(r, 3)
-            sale_it = self.tbl.item(r, 4)
-            try:
-                qty = self._to_float_safe((qty_it.text() or "0").strip())
-                buy = self._to_float_safe((buy_it.text() or "0").strip())
-                sale = self._to_float_safe((sale_it.text() or "0").strip())
-            except Exception:
-                return None
-            if qty <= 0 or buy <= 0 or not (sale >= buy):
-                return None
-            uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
-            if uom_id is None:
-                try:
-                    uom_id = int(self.products.get_base_uom(product_id)["uom_id"])
-                except Exception:
-                    uom_id = self._base_uom_id(product_id)
-            if uom_id is None: return None
-            rows.append({
-                "product_id": int(product_id),
-                "uom_id": int(uom_id),
-                "quantity": qty,
-                "purchase_price": buy,
-                "sale_price": sale,
-                "item_discount": 0.0,
-            })
-
-        if not rows: return None
-
-        date_str = self.date.date().toString("yyyy-MM-dd")
-        total_amount = self._calc_subtotal()
-
-        payload = {
-            "vendor_id": vendor_id,
-            "date": date_str,
-            "order_discount": 0.0,
-            "notes": (self.txt_notes.text().strip() or None),
-            "items": rows,
-            "total_amount": total_amount,
-        }
-
-        ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
-        ip_amount = self._to_float_safe(ip_amount_txt)
-
-        if ip_amount_txt and ip_amount < 0.0:
-            return None
-
-        if ip_amount > 0:
-            method = self.ip_method.currentText() if hasattr(self, "ip_method") else ""
+        def pdf_export_action():
             
-            # Handle editable comboboxes: if currentData() is None, try to find the ID by looking up the text
-            # First ensure vendor_id is available as it's needed for vendor bank account lookup
-            try:
-                resolved_vendor_id = int(self.cmb_vendor.currentData())
-            except Exception:
-                return None  # vendor selection is required
+            self.accept()
             
-            company_acct_text = self.ip_company_acct.currentText().strip() if hasattr(self, "ip_company_acct") and self.ip_company_acct.currentText() else ""
-            company_id = self.ip_company_acct.currentData() if hasattr(self, "ip_company_acct") else None
-            if company_id is None and company_acct_text:
-                # Look up company account ID by label/text (with case-insensitive matching)
-                try:
-                    conn = self.vendors.conn
-                    # First try exact match
-                    row = conn.execute(
-                        "SELECT account_id FROM company_bank_accounts WHERE label = ? AND is_active=1",
-                        (company_acct_text,)
-                    ).fetchone()
-                    if not row:
-                        # Try case-insensitive match
-                        row = conn.execute(
-                            "SELECT account_id FROM company_bank_accounts WHERE LOWER(label) = LOWER(?) AND is_active=1",
-                            (company_acct_text,)
-                        ).fetchone()
-                    if row:
-                        company_id = int(row["account_id"])
-                except Exception:
-                    company_id = None
+            return True
             
-            vendor_acct_text = self.ip_vendor_acct.currentText().strip() if hasattr(self, "ip_vendor_acct") and self.ip_vendor_acct.currentText() else ""
-            vendor_bank_id = self.ip_vendor_acct.currentData() if hasattr(self, "ip_vendor_acct") else None
-            if vendor_bank_id is None and vendor_acct_text:
-                # Look up vendor account ID by label/text (with case-insensitive matching)
-                try:
-                    conn = self.vendors.conn
-                    # First try exact match
-                    row = conn.execute(
-                        "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = ? AND vendor_id = ? AND is_active=1",
-                        (vendor_acct_text, resolved_vendor_id)
-                    ).fetchone()
-                    if not row:
-                        # Try case-insensitive match
-                        row = conn.execute(
-                            "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE LOWER(label) = LOWER(?) AND vendor_id = ? AND is_active=1",
-                            (vendor_acct_text, resolved_vendor_id)
-                        ).fetchone()
-                    if row:
-                        vendor_bank_id = int(row["vendor_bank_account_id"])
-                except Exception:
-                    vendor_bank_id = None
-            
-            instr_no = self.ip_instr_no.text().strip() if hasattr(self, "ip_instr_no") else ""
-            instr_date = self.ip_instr_date.date().toString("yyyy-MM-dd") if hasattr(self, "ip_instr_date") else date_str
-            ref_no = self.ip_ref_no.text().strip() if hasattr(self, "ip_ref_no") else None
-            notes = self.ip_notes.text().strip() if hasattr(self, "ip_notes") else None
+        self._validate_and_perform_action(pdf_export_action)
 
-            m = (method or "").strip().lower()
-            if m == "bank transfer":
-                if not company_id or not vendor_bank_id or not instr_no: return None
-                instr_type = "online";        clearing_state = "cleared"
-            elif m == "cheque":
-                if not company_id or not instr_no: return None  # vendor_bank_id is not required for regular cheque
-                instr_type = "cheque";  clearing_state = "cleared"
-            elif m == "cross cheque":
-                if not company_id or not vendor_bank_id or not instr_no: return None  # vendor_bank_id IS required for cross cheque
-                instr_type = "cross_cheque";  clearing_state = "cleared"
-            elif m == "cash deposit":
-                if not vendor_bank_id or not instr_no: return None
-                instr_type = "cash_deposit";  clearing_state = "cleared"; company_id = None
-            elif m == "cash":
-                instr_type = None
-                clearing_state = "cleared"
-                company_id = None;     vendor_bank_id = None
-                instr_no = "";         instr_date = date_str
-            else:
-                instr_type = "other";         clearing_state = "cleared"
-                company_id = None;            vendor_bank_id = None
-                instr_no = "";                instr_date = date_str
 
-            # Check if using temporary bank account
-            selected_vendor_account = self.ip_vendor_acct.currentData()
-            is_temp_account = selected_vendor_account == "TEMP_BANK"
-            
-            payload["initial_payment"] = {
-                "amount": ip_amount,
-                "method": method,
-                "bank_account_id": int(company_id) if company_id else None,
-                "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id and not is_temp_account else None,
-                "instrument_type": instr_type,
-                "instrument_no": instr_no,
-                "instrument_date": instr_date,
-                "deposited_date": None,
-                "cleared_date": None,
-                "clearing_state": clearing_state,
-                "ref_no": ref_no,
-                "notes": notes,
-                "date": date_str,
-                # Add temporary bank details to the payload when applicable
-                "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
-                "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
-            }
-            payload["initial_bank_account_id"] = payload["initial_payment"]["bank_account_id"]
-            payload["initial_vendor_bank_account_id"] = payload["initial_payment"]["vendor_bank_account_id"]
-            payload["initial_instrument_type"] = payload["initial_payment"]["instrument_type"]
-            payload["initial_instrument_no"] = payload["initial_payment"]["instrument_no"]
-            payload["initial_instrument_date"] = payload["initial_payment"]["instrument_date"]
-            payload["initial_deposited_date"] = payload["initial_payment"]["deposited_date"]
-            payload["initial_cleared_date"] = payload["initial_payment"]["cleared_date"]
-            payload["initial_clearing_state"] = payload["initial_payment"]["clearing_state"]
-            payload["initial_ref_no"] = payload["initial_payment"]["ref_no"]
-            payload["initial_payment_notes"] = payload["initial_payment"]["notes"]
-            payload["initial_method"] = payload["initial_payment"]["method"]
-
-        # Add the print and PDF export flags to the payload
-        if hasattr(self, '_should_print'):
-            payload['_should_print'] = self._should_print
-        if hasattr(self, '_should_export_pdf'):
-            payload['_should_export_pdf'] = self._should_export_pdf
-
-        return payload
