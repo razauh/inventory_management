@@ -1110,6 +1110,8 @@ class PurchaseController(BaseModule):
                     return
 
                 info(self.view, "Saved", "Payment recorded.")
+                # Update the purchase header totals to reflect the new payment
+                self._recompute_header_totals_from_rows(str(payload.get("purchase_id") or purchase_id))
                 self._reload()
                 return
         except Exception:
@@ -1180,6 +1182,8 @@ class PurchaseController(BaseModule):
             return
 
         info(self.view, "Saved", f"Transaction of {float(amount):g} recorded.")
+        # Update the purchase header totals to reflect the new payment
+        self._recompute_header_totals_from_rows(purchase_id)
         self._reload()
 
     def mark_payment_cleared(self, payment_id: int, *, cleared_date: Optional[str] = None, notes: Optional[str] = None):

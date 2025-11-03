@@ -294,11 +294,17 @@ class _VendorMoneyDialog(QDialog):
         self.depositedDateEdit.setDate(QDate.currentDate())
         form.addRow(QLabel(_t("Deposited Date")), self.depositedDateEdit)
 
-        # Clearing state
+        # Clearing state (hidden from UI, default to 'posted')
         self.clearingStateCombo = QComboBox()
         for s in CLEARING_STATES:
             self.clearingStateCombo.addItem(s)
-        form.addRow(QLabel(_t("Clearing State")), self.clearingStateCombo)
+        # Set default value to 'posted' and hide the field
+        self.clearingStateCombo.setCurrentIndex(CLEARING_STATES.index("posted"))
+        # Add the field to the form but hide it
+        clear_state_label = QLabel(_t("Clearing State"))
+        clear_state_label.setVisible(False)  # Hide the label
+        self.clearingStateCombo.setVisible(False)  # Hide the combo box
+        form.addRow(clear_state_label, self.clearingStateCombo)
 
         # Cleared date
         self.clearedDateEdit = QDateEdit()
@@ -508,10 +514,20 @@ class _VendorMoneyDialog(QDialog):
         self.vendorBankCombo.clear()
         self.vendorBankCombo.addItem("", None)
         rows: list[dict] = []
-        try:
-            if self._list_vendor_bank_accounts:
+        
+        # Try to load vendor bank accounts using the provided function
+        if self._list_vendor_bank_accounts:
+            try:
                 rows = list(self._list_vendor_bank_accounts(self._vendor_id))
-        except Exception:
+            except Exception as e:
+                # Log the error but allow loading to continue with available data
+                import logging
+                logging.error(f"Error loading vendor bank accounts for vendor {self._vendor_id}: {e}")
+                rows = []
+        else:
+            # If no function provided, log a warning and use empty rows
+            import logging
+            logging.warning("No list_vendor_bank_accounts function provided, vendor bank accounts will not be loaded")
             rows = []
         
         for a in rows:
@@ -643,13 +659,20 @@ class _VendorMoneyDialog(QDialog):
         # For "Other" method, instrument is not required
         if method == "Other":
             self._set_required_label(self.instrumentNoEdit, False)
+        elif method == "Cash":
+            # For Cash method, disable instrument fields completely
+            self.instrumentNoEdit.setEnabled(False)
+            self.instrumentDateEdit.setEnabled(False)
+            self._set_required_label(self.instrumentNoEdit, False)
         else:
+            self.instrumentNoEdit.setEnabled(req_inst)
+            self.instrumentDateEdit.setEnabled(req_inst)
             self._set_required_label(self.instrumentNoEdit, req_inst)
 
         # UX focus
         if needs_bank:
             self.companyBankCombo.setFocus()
-        elif req_inst:
+        elif req_inst and method != "Cash":
             self.instrumentNoEdit.setFocus()
         else:
             self.amountEdit.setFocus()
@@ -736,7 +759,7 @@ class _VendorMoneyDialog(QDialog):
             total = float(data.get("total", 0.0))
             paid = float(data.get("paid", 0.0))
             rem = total - paid
-            self.purchaseRemainingLabel.setText(_t(f"Remaining: ${rem:.2f}"))
+            self.purchaseRemainingLabel.setText(_t(f"Remaining: {rem:.2f}"))
         else:
             self.purchaseRemainingLabel.setText("")
 

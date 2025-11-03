@@ -3,7 +3,7 @@ import os
 import time
 from pathlib import Path
 
-# Add the project root to the Python path to handle relative imports
+
 project_root = Path(__file__).parent.resolve()
 sys.path.insert(0, str(project_root))
 
@@ -15,18 +15,15 @@ from PySide6.QtCore import Signal, QObject
 
 
 class Restarter(QObject):
-    """
-    Handles file system monitoring and application restarting.
-    Inherits from QObject to use Qt's signal and slot mechanism.
-    """
-    # A signal that will be emitted when a file change is detected
+
+
     restart_signal = Signal()
 
     def __init__(self, path_to_watch: str):
         super().__init__()
         self.path_to_watch = path_to_watch
         self.last_restart = 0
-        self.debounce_time = 1  # seconds
+        self.debounce_time = 1  
 
         self.observer = Observer()
         self.event_handler = Handler(self.restart_signal)
@@ -46,14 +43,12 @@ class Handler(FileSystemEventHandler):
         self.restart_signal = restart_signal
 
     def on_modified(self, event):
-        # We only care about Python files
+     
         if event.is_directory or not event.src_path.endswith('.py'):
             return
-        
-        # Get the absolute path of the changed file
+
         changed_file = Path(event.src_path).resolve()
-        
-        # Optional: Ignore specific files or directories
+
         if "__pycache__" in changed_file.parts or ".git" in changed_file.parts:
             return
 
@@ -62,51 +57,72 @@ class Handler(FileSystemEventHandler):
 
 
 def main():
-    # --- Setup the Restarter ---
-    # Get the directory of the current script to watch
+
+    app = QApplication(sys.argv)
+
     project_root = Path(__file__).parent.resolve()
     restarter = Restarter(path_to_watch=str(project_root))
 
-    # Create the Qt Application
-    app = QApplication(sys.argv)
-
-    # Connect the restart signal to a lambda that quits the app
-    # and then restarts it using os.execv
     def trigger_restart():
-        # Debounce to prevent multiple rapid restarts from a single save operation
+
         if time.time() - restarter.last_restart > restarter.debounce_time:
             print("Restarting application...")
             restarter.last_restart = time.time()
-            
-            # Stop the filesystem observer to prevent resource leaks and race conditions
+
             restarter.stop()
             
-            # Quit the application's event loop
             app.quit()
-            
-            # Relaunch the script
-            # sys.executable is the path to the python interpreter
-            # sys.argv are the arguments used to run the script
+
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
     restarter.restart_signal.connect(trigger_restart)
 
-    # Import and create the main window from the existing main.py
-    # This imports the actual application
+    original_exit = sys.exit
+    captured_exit_code = None
+
+    def no_exit(arg=None):
+
+        raise SystemExit(arg) if arg is not None else SystemExit()
+    
+    sys.exit = no_exit
+    
     try:
+        # Set environment variable to indicate we're running under dev_launcher
+        import os
+        os.environ['__DEV_LAUNCHER__'] = '1'
+        
         from main import main as main_app
-        # Run your original main application (we don't capture its return value)
-        main_app()
+
+        try:
+            main_app()
+        except SystemExit as e:
+            captured_exit_code = e.code if e.code is not None else 0
+            
     except ImportError:
         print("Error: Could not import main.py. Make sure main.py exists and has a main() function.")
-        sys.exit(1)
+
+        original_exit(1)
     except Exception as e:
+
+        sys.exit = original_exit
         print(f"Error running main application: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
+        original_exit(1)  # Use original_exit directly to ensure proper exit
+    finally:
+        # Always restore the original sys.exit in the finally block
+        sys.exit = original_exit
+        # Remove the environment variable after main app runs
+        if '__DEV_LAUNCHER__' in os.environ:
+            del os.environ['__DEV_LAUNCHER__']
+    
+    # If a non-zero exit code was captured after restoration, propagate the failure
+    if captured_exit_code is not None and captured_exit_code != 0:
+        print(f"Main application called sys.exit({captured_exit_code}), propagating failure")
+        original_exit(captured_exit_code)
 
-    # Run the application's event loop
+    # Run the application's event loop - the main UI should now be running
+    # and file watching is active via the connected signal
     exit_code = app.exec()
 
     # Clean up the observer thread before exiting

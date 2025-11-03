@@ -462,6 +462,60 @@ class VendorController(BaseModule):
             info(self.view, "Not saved", str(e))
             return
         info(self.view, "Saved", f"Payment #{pid} recorded.")
+        
+        try:
+            # Begin transaction for updating purchase header totals
+            self.conn.execute("BEGIN")
+            
+            # Update the purchase header totals to reflect the new payment
+            # Recompute paid amount from cleared payments
+            r_pay = self.conn.execute(
+                """
+                SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS cleared_paid
+                FROM purchase_payments
+                WHERE purchase_id = ?
+                  AND COALESCE(clearing_state, 'posted') = 'cleared'
+                """,
+                (str(purchase_id),),
+            ).fetchone()
+            cleared_paid = float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0)
+
+            # Get total amount from the purchase and any advance payments applied
+            row = self.conn.execute(
+                """
+                SELECT
+                  COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+                  COALESCE(p.advance_payment_applied, 0.0) AS adv_applied
+                FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                WHERE p.purchase_id = ?
+                """,
+                (str(purchase_id),),
+            ).fetchone()
+            
+            total_calc = float(row["total_calc"] if row and "total_calc" in row.keys() else 0.0)
+            adv_applied = float(row["adv_applied"] if row and "adv_applied" in row.keys() else 0.0)
+
+            # Update the purchase record with the new paid amount
+            self.conn.execute("UPDATE purchases SET paid_amount = ? WHERE purchase_id = ?;", (cleared_paid, str(purchase_id)))
+            
+            # Calculate remaining amount and update payment status if paid in full
+            remaining = max(0.0, total_calc - cleared_paid - adv_applied)
+            if remaining <= _EPS:
+                self.conn.execute("UPDATE purchases SET payment_status = 'paid' WHERE purchase_id = ?;", (str(purchase_id),))
+            
+            # Commit the transaction
+            self.conn.execute("COMMIT")
+            
+        except Exception as e:
+            # Rollback the transaction on error
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass  # Ignore rollback errors
+            info(self.view, "Error", f"Could not update purchase totals after payment: {e}")
+            return
+        
         self._reload()
     def _on_record_advance_dialog(self):
         vid = self._selected_id()

@@ -377,9 +377,13 @@ class MainWindow(QMainWindow):
 
 def main():
     # Make sure no test-time env disables decorations when running the app
+    import os
     os.environ.pop("QT_QPA_DISABLE_WINDOWDECORATION", None)
 
-    app = QApplication(sys.argv)
+    # Check if QApplication already exists (for dev_launcher.py compatibility)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
 
     # DB connection (ensure schema, etc.)
@@ -454,7 +458,12 @@ def main():
     # Show UI (smaller default)
     win.resize(900, 560)
     win.show()
-    sys.exit(app.exec())
+    
+    # Only call exec_ if we're running standalone (not under dev_launcher.py)
+    # When running under dev_launcher.py, just return and let it handle the event loop
+    if os.environ.get('__DEV_LAUNCHER__') != '1':
+        sys.exit(app.exec())
+    # If we're under dev_launcher.py, just return control
 
 
 if __name__ == "__main__":
