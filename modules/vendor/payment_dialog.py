@@ -1,10 +1,8 @@
-# inventory_management/modules/vendor/payment_dialog.py
 from __future__ import annotations
 
 from typing import Callable, Optional, Literal
 
 try:
-    # Project standard: PySide6
     from PySide6.QtCore import Qt, QDate
     from PySide6.QtGui import QIntValidator, QKeySequence
     from PySide6.QtWidgets import (
@@ -26,31 +24,26 @@ try:
         QStackedWidget,
         QTabBar,
     )
-except Exception:  # pragma: no cover
+except Exception:
     raise
 
 
-# -----------------------------
-# i18n shim
-# -----------------------------
 def _t(s: str) -> str:
     return s
 
 
-# -----------------------------
-# Canonical constants & matrices
-# -----------------------------
 METHODS = [
     "Cash",
     "Bank Transfer",
-    "Card",
     "Cheque",
+    "Cross Cheque",
     "Cash Deposit",
     "Other",
 ]
 
 INSTRUMENT_TYPES = [
     "online",
+    "cheque",
     "cross_cheque",
     "cash_deposit",
     "pay_order",
@@ -62,28 +55,24 @@ CLEARING_STATES = ["posted", "pending", "cleared", "bounced"]
 METHOD_TO_FORCED_INSTRUMENT = {
     "Cash": "other",
     "Bank Transfer": "online",
-    "Card": "other",
-    "Cheque": "cross_cheque",
+    "Cheque": "cheque",
+    "Cross Cheque": "cross_cheque",
     "Cash Deposit": "cash_deposit",
     "Other": "other",
 }
-
 METHOD_TO_DEFAULT_CLEARING = {
     "Cash": "posted",
     "Bank Transfer": "posted",
-    "Card": "posted",
     "Cheque": "pending",
+    "Cross Cheque": "pending",
     "Cash Deposit": "pending",
     "Other": "posted",
 }
 
-METHODS_REQUIRE_BANK = {"Bank Transfer", "Cheque", "Cash Deposit"}
-METHODS_REQUIRE_INSTR_NO = {"Bank Transfer", "Cheque", "Cash Deposit"}
+METHODS_REQUIRE_BANK = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"}
+METHODS_REQUIRE_INSTR_NO = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"}
 
 
-# -----------------------------
-# Public API
-# -----------------------------
 def open_vendor_money_form(
     *,
     mode: Literal["payment", "advance", "apply_advance"],
@@ -91,19 +80,6 @@ def open_vendor_money_form(
     purchase_id: Optional[str] = None,
     defaults: dict | None = None,
 ) -> dict | None:
-    """
-    Unified money-out dialog for vendors with three modes:
-      - "payment": capture vendor payment/refund → payload for PurchasePaymentsRepo.record_payment(...)
-      - "advance": record vendor advance (prepayment) → payload for VendorAdvancesRepo.grant_credit(...)
-      - "apply_advance": apply advance to a purchase → payload for VendorAdvancesRepo.apply_credit_to_purchase(...)
-
-    Optional submit callbacks (all optional, backward-compatible):
-      defaults['submit_payment'](payload) -> None
-      defaults['submit_advance'](payload) -> None
-      defaults['submit_apply'](payload)   -> None
-    If provided they will be invoked on Save. Any raised exception will be shown
-    to the user and the dialog will remain open.
-    """
     app = QApplication.instance()
     owns_app = app is None
     if owns_app:
@@ -118,23 +94,7 @@ def open_vendor_money_form(
     return payload
 
 
-# -----------------------------
-# Dialog implementation
-# -----------------------------
 class _VendorMoneyDialog(QDialog):
-    """
-    One dialog with three pages:
-      - Payment (enforces bank/instrument/clearing rules)
-      - Record Advance
-      - Apply Advance
-    Produces repo-shaped payloads.
-
-    Optional submit callbacks (from defaults):
-      - submit_payment(payload)
-      - submit_advance(payload)
-      - submit_apply(payload)
-    """
-
     PAGE_PAYMENT = 0
     PAGE_ADVANCE = 1
     PAGE_APPLY = 2
@@ -144,24 +104,20 @@ class _VendorMoneyDialog(QDialog):
         self.setWindowTitle(_t("Vendor Money"))
         self.setModal(True)
 
-        # Common state
         self._payload: Optional[dict] = None
         self._vendor_id = int(vendor_id)
         self._locked_purchase_id = str(purchase_id) if purchase_id is not None else None
         self._defaults = defaults or {}
 
-        # Adapters (all optional)
         self._list_company_bank_accounts: Optional[Callable[[], list]] = self._defaults.get("list_company_bank_accounts")
         self._list_vendor_bank_accounts: Optional[Callable[[int], list]] = self._defaults.get("list_vendor_bank_accounts")
         self._list_open_purchases_for_vendor: Optional[Callable[[int], list]] = self._defaults.get("list_open_purchases_for_vendor")
         self._today: Optional[Callable[[], str]] = self._defaults.get("today")
 
-        # Optional submit callbacks (graceful DB error handling)
         self._submit_payment: Optional[Callable[[dict], None]] = self._defaults.get("submit_payment")
         self._submit_advance: Optional[Callable[[dict], None]] = self._defaults.get("submit_advance")
         self._submit_apply: Optional[Callable[[dict], None]] = self._defaults.get("submit_apply")
 
-        # Prefills (payment page)
         self._prefill_method: Optional[str] = self._defaults.get("method")
         self._prefill_amount: Optional[float] = self._defaults.get("amount")
         self._prefill_date: Optional[str] = self._defaults.get("date")
@@ -188,7 +144,6 @@ class _VendorMoneyDialog(QDialog):
         self.tabBar.setCurrentIndex(initial)
         self._sync_window_title()
 
-        # Load data & prefills
         self._load_purchases()
         self._load_company_banks()
         self._load_vendor_banks()
@@ -200,11 +155,9 @@ class _VendorMoneyDialog(QDialog):
         self._validate_live_advance()
         self._validate_live_apply()
 
-    # ---------- Layout ----------
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
 
-        # Tabs + stacked pages
         self.tabBar = QTabBar()
         self.tabBar.addTab(_t("Payment"))
         self.tabBar.addTab(_t("Record Advance"))
@@ -215,22 +168,18 @@ class _VendorMoneyDialog(QDialog):
         self.pageStack = QStackedWidget()
         outer.addWidget(self.pageStack, 1)
 
-        # Payment page
         self.page_payment = QWidget()
         self._build_payment_page(self.page_payment)
         self.pageStack.addWidget(self.page_payment)
 
-        # Record advance page
         self.page_advance = QWidget()
         self._build_advance_page(self.page_advance)
         self.pageStack.addWidget(self.page_advance)
 
-        # Apply advance page
         self.page_apply = QWidget()
         self._build_apply_page(self.page_apply)
         self.pageStack.addWidget(self.page_apply)
 
-        # Hint / Error / Buttons
         self.hintLabel = QLabel("")
         self.hintLabel.setWordWrap(True)
         self.hintLabel.setStyleSheet("color:#666;")
@@ -303,12 +252,25 @@ class _VendorMoneyDialog(QDialog):
         lbl_vbank = QLabel(_t("Vendor Bank (optional)"))
         lbl_vbank.setBuddy(self.vendorBankCombo)
         form.addRow(lbl_vbank, self.vendorBankCombo)
-
-        # Instrument type
-        self.instrumentTypeCombo = QComboBox()
-        for t in INSTRUMENT_TYPES:
-            self.instrumentTypeCombo.addItem(t)
-        form.addRow(QLabel(_t("Instrument Type")), self.instrumentTypeCombo)
+        
+        # Temporary external bank account fields (appear when "Temporary Account" is selected)
+        self.tempBankNameEdit = QLineEdit()
+        self.tempBankNameEdit.setPlaceholderText("Bank Name")
+        lbl_temp_name = QLabel(_t("Temp Bank Name"))
+        lbl_temp_name.setBuddy(self.tempBankNameEdit)
+        form.addRow(lbl_temp_name, self.tempBankNameEdit)
+        
+        self.tempBankNumberEdit = QLineEdit()
+        self.tempBankNumberEdit.setPlaceholderText("Account Number")  
+        lbl_temp_number = QLabel(_t("Temp Bank Number"))
+        lbl_temp_number.setBuddy(self.tempBankNumberEdit)
+        form.addRow(lbl_temp_number, self.tempBankNumberEdit)
+        
+        # Hide temporary bank fields by default
+        self.tempBankNameEdit.setVisible(False)
+        self.tempBankNumberEdit.setVisible(False)
+        lbl_temp_name.setVisible(False)
+        lbl_temp_number.setVisible(False)
 
         # Instrument no
         self.instrumentNoEdit = QLineEdit()
@@ -359,16 +321,26 @@ class _VendorMoneyDialog(QDialog):
             self.instrumentNoEdit: lbl_insno,
             self.amountEdit: lbl_amount,
         }
+        
+        # Track temporary bank labels as well
+        self.temp_bank_name_label = lbl_temp_name
+        self.temp_bank_number_label = lbl_temp_number
+        
+        # Store original label texts to avoid corruption during asterisk manipulation
+        self._orig_temp_bank_name_label_text = lbl_temp_name.text()
+        self._orig_temp_bank_number_label_text = lbl_temp_number.text()
 
         # Wire
         self.purchasePicker.currentIndexChanged.connect(self._update_remaining)
         self.purchasePicker.currentIndexChanged.connect(self._apply_payment_amount_limits)
         self.methodCombo.currentIndexChanged.connect(self._on_method_changed)
+        self.vendorBankCombo.currentIndexChanged.connect(self._on_vendor_bank_account_changed)
         self.clearingStateCombo.currentIndexChanged.connect(self._on_clearing_changed)
         self.amountEdit.valueChanged.connect(self._validate_live_payment)
         self.companyBankCombo.currentIndexChanged.connect(self._validate_live_payment)
         self.instrumentNoEdit.textChanged.connect(self._validate_live_payment)
-        self.instrumentTypeCombo.currentIndexChanged.connect(self._validate_live_payment)
+        self.tempBankNameEdit.textChanged.connect(self._validate_live_payment)
+        self.tempBankNumberEdit.textChanged.connect(self._validate_live_payment)
         self.clearedDateEdit.dateChanged.connect(self._validate_live_payment)
 
     # ---------- Record Advance page ----------
@@ -532,6 +504,8 @@ class _VendorMoneyDialog(QDialog):
     def _load_vendor_banks(self) -> None:
         if not hasattr(self, "vendorBankCombo"):
             return
+        current_text = self.vendorBankCombo.currentText()
+        
         self.vendorBankCombo.clear()
         self.vendorBankCombo.addItem("", None)
         rows: list[dict] = []
@@ -540,19 +514,28 @@ class _VendorMoneyDialog(QDialog):
                 rows = list(self._list_vendor_bank_accounts(self._vendor_id))
         except Exception:
             rows = []
+        
         for a in rows:
-            # some adapters may not coerce id to int — try safely
             try:
                 vid = int(a.get("id"))
             except Exception:
                 vid = a.get("id")
             self.vendorBankCombo.addItem(str(a.get("name", "")), vid)
+        
+        self.vendorBankCombo.addItem(_t("Temporary/External Bank Account"), "TEMP_BANK")
+        
+        previous_selection_restored = False
+        if current_text and current_text != "":
+            index = self.vendorBankCombo.findText(current_text)
+            if index >= 0:
+                self.vendorBankCombo.setCurrentIndex(index)
+                previous_selection_restored = True
 
-        # Preselect
         if self._prefill_vendor_bank_id is not None:
             for i in range(self.vendorBankCombo.count()):
                 if self.vendorBankCombo.itemData(i) == self._prefill_vendor_bank_id:
                     self.vendorBankCombo.setCurrentIndex(i)
+                    previous_selection_restored = True
                     break
 
     def _lock_purchase_if_needed(self) -> None:
@@ -591,9 +574,6 @@ class _VendorMoneyDialog(QDialog):
         elif self._today:
             self._set_date_from_str(self.dateEdit, self._today())
 
-        if self._prefill_instrument_type in INSTRUMENT_TYPES:
-            self.instrumentTypeCombo.setCurrentIndex(INSTRUMENT_TYPES.index(self._prefill_instrument_type))
-
         if self._prefill_instrument_no:
             self.instrumentNoEdit.setText(str(self._prefill_instrument_no))
 
@@ -617,11 +597,6 @@ class _VendorMoneyDialog(QDialog):
     # ---------- Signals / UX (payment) ----------
     def _on_method_changed(self) -> None:
         method = self.methodCombo.currentText()
-
-        # Force/default instrument type
-        forced = METHOD_TO_FORCED_INSTRUMENT.get(method)
-        if forced in INSTRUMENT_TYPES:
-            self.instrumentTypeCombo.setCurrentIndex(INSTRUMENT_TYPES.index(forced))
 
         # Default clearing state
         default_clear = METHOD_TO_DEFAULT_CLEARING.get(method, "posted")
@@ -651,6 +626,8 @@ class _VendorMoneyDialog(QDialog):
         self._apply_payment_amount_limits()
         self._update_hint()
         self._validate_live_payment()
+        # Update temporary bank field visibility after method change
+        self._update_temp_bank_visibility()
 
     def _on_clearing_changed(self) -> None:
         state = self.clearingStateCombo.currentText()
@@ -658,6 +635,58 @@ class _VendorMoneyDialog(QDialog):
         self.clearedDateEdit.setEnabled(enable_cd)
         if not enable_cd:
             self._clear_date(self.clearedDateEdit)
+        self._validate_live_payment()
+
+    def _on_vendor_bank_account_changed(self):
+        """Show/hide temporary bank fields based on selection"""
+        self._update_temp_bank_visibility()
+
+    def _set_temp_label_required(self, label, original_attr, required):
+        """Helper to update temporary bank label styling."""
+        if not label:
+            return
+        original_text = getattr(self, original_attr, label.text().rstrip(" *"))
+        if required:
+            if not label.text().endswith('*'):
+                label.setText(original_text + "*")
+            label.setStyleSheet("color: red; font-weight: bold;")
+        else:
+            label.setText(original_text)
+            label.setStyleSheet("")
+
+    def _get_instrument_type_for_method(self, method: str) -> Optional[str]:
+        """Derive instrument type from payment method using the established METHOD_TO_FORCED_INSTRUMENT mapping."""
+        # Use the existing constant as the single source of truth
+        return METHOD_TO_FORCED_INSTRUMENT.get(method, "other")
+
+    def _update_temp_bank_visibility(self):
+        """
+        Helper method to update temporary bank field visibility and styling.
+        """
+        selected_value = self.vendorBankCombo.currentData()
+        is_temp_account = selected_value == "TEMP_BANK"
+        
+        # Check if current method requires a vendor bank account
+        method = self.methodCombo.currentText()
+        need_vendor = method in METHODS_REQUIRE_BANK
+        
+        # Update required indicators based on whether method requires vendor bank
+        temp_name_label = getattr(self, 'temp_bank_name_label', None)
+        temp_number_label = getattr(self, 'temp_bank_number_label', None)
+        
+        should_be_required = is_temp_account and need_vendor
+        self._set_temp_label_required(temp_name_label, '_orig_temp_bank_name_label_text', should_be_required)
+        self._set_temp_label_required(temp_number_label, '_orig_temp_bank_number_label_text', should_be_required)
+        
+        # Show temp fields whenever temp account is selected (for reference/reconciliation)
+        self.tempBankNameEdit.setVisible(is_temp_account)
+        self.tempBankNumberEdit.setVisible(is_temp_account)
+        if temp_name_label:
+            temp_name_label.setVisible(is_temp_account)
+        if temp_number_label:
+            temp_number_label.setVisible(is_temp_account)
+        
+        # Trigger validation since required fields may have changed
         self._validate_live_payment()
 
     def _update_hint(self) -> None:
@@ -715,24 +744,19 @@ class _VendorMoneyDialog(QDialog):
             return 0.0
 
     def _apply_payment_amount_limits(self) -> None:
-        """Limit payment amount to remaining due for non-Cash methods; allow refunds (negative) for Cash."""
         data = self.purchasePicker.currentData()
         remaining = self._remaining_from_data(data)
         method = self.methodCombo.currentText()
         if method == "Cash":
-            # Refunds allowed: keep a generous negative min, cap positive to remaining
             self.amountEdit.setRange(-1_000_000_000.0, max(0.0, remaining))
         else:
-            # Outgoing only: 0..remaining
             self.amountEdit.setRange(0.0, max(0.0, remaining))
 
     def _apply_apply_amount_limits(self) -> None:
-        """Limit apply-advance amount to remaining due."""
         data = self.applyPurchasePicker.currentData()
         remaining = self._remaining_from_data(data)
         self.applyAmountEdit.setRange(0.0, max(0.0, remaining))
 
-    # ---------- Validation (payment) ----------
     def _validate_live_payment(self) -> None:
         if self.pageStack.currentIndex() != self.PAGE_PAYMENT:
             return
@@ -741,24 +765,20 @@ class _VendorMoneyDialog(QDialog):
         self.saveBtn.setEnabled(ok)
 
     def _validate_payment(self) -> tuple[bool, Optional[str]]:
-        # 1) Purchase present
         p = self.purchasePicker.currentData()
         if not isinstance(p, dict) or not str(p.get("purchase_id", "")):
             return False, _t("Please select a purchase for this payment.")
 
-        # 2) Method supported
         method = self.methodCombo.currentText()
         if method not in METHODS:
             return False, _t("Payment method is not supported.")
 
-        # 3) Amount sign/zero
         amount = float(self.amountEdit.value())
         if abs(amount) < 1e-9:
             return False, _t("Amount cannot be zero.")
         if amount < 0 and method != "Cash":
             return False, _t("Refunds (negative amounts) are only allowed with the Cash method.")
 
-        # 4) Bank rules
         cbank_id = self._current_company_bank_id()
         if method == "Cash":
             if cbank_id is not None:
@@ -766,45 +786,38 @@ class _VendorMoneyDialog(QDialog):
         elif method in METHODS_REQUIRE_BANK and cbank_id is None:
             return False, _t("Company bank account is required for this method.")
 
-        # 5) Instrument type enforcement
-        instype = self.instrumentTypeCombo.currentText()
-        if instype not in INSTRUMENT_TYPES:
-            return False, _t("Payment method is not supported.")
-        forced = METHOD_TO_FORCED_INSTRUMENT.get(method)
-        if method in ("Bank Transfer", "Cheque", "Cash Deposit") and instype != forced:
-            if method == "Bank Transfer":
-                return False, _t("Instrument type must be 'online' for Bank Transfer.")
-            if method == "Cheque":
-                return False, _t("Instrument type must be 'cross_cheque' for Cheque.")
-            if method == "Cash Deposit":
-                return False, _t("Instrument type must be 'cash_deposit' for Cash Deposit.")
-
-        # 6) Instrument number requirement
         inst_no = self.instrumentNoEdit.text().strip()
         if method in METHODS_REQUIRE_INSTR_NO and not inst_no:
             return False, _t("Please enter instrument/reference number.")
 
-        # 7) Clearing state & dates
+        selected_vendor_account = self.vendorBankCombo.currentData()
+        is_temp_account = selected_vendor_account == "TEMP_BANK"
+        need_vendor = method in METHODS_REQUIRE_BANK
+        if is_temp_account and need_vendor:
+            temp_bank_name = self.tempBankNameEdit.text().strip()
+            temp_bank_number = self.tempBankNumberEdit.text().strip()
+            if not temp_bank_name:
+                return False, _t("For temporary account, please enter bank name.")
+            if not temp_bank_number:
+                return False, _t("For temporary account, please enter account number.")
+
         state = self.clearingStateCombo.currentText()
         if state == "cleared":
             if not self._has_date(self.clearedDateEdit):
                 return False, _t("Please select a cleared date.")
 
-        # 8) Date format safety
         for de in (self.dateEdit, self.instrumentDateEdit, self.depositedDateEdit, self.clearedDateEdit):
             if self._has_date(de):
                 s = de.date().toString("yyyy-MM-dd")
                 if len(s) != 10:
                     return False, _t("Please enter dates in YYYY-MM-DD.")
 
-        # 9) Client-side cap vs remaining due
         remaining = self._remaining_from_data(p)
         if method != "Cash" and amount - remaining > 1e-9:
             return False, _t("Amount exceeds remaining due for the selected purchase.")
 
         return True, None
 
-    # ---------- Validation (advance) ----------
     def _validate_live_advance(self) -> None:
         if self.pageStack.currentIndex() != self.PAGE_ADVANCE:
             return
@@ -933,12 +946,11 @@ class _VendorMoneyDialog(QDialog):
             pass
 
     def _has_date(self, edit: QDateEdit) -> bool:
-        return True  # QDateEdit always has a date unless using special values
+        return edit.date().isValid() and edit.date() != QDate()
 
     def _clear_date(self, edit: QDateEdit) -> None:
         edit.setDate(QDate.currentDate())
 
-    # ---------- Build payloads ----------
     def _build_payload_payment(self) -> dict:
         pdata = self.purchasePicker.currentData() or {}
 
@@ -947,14 +959,21 @@ class _VendorMoneyDialog(QDialog):
                 return edit.date().toString("yyyy-MM-dd")
             return None
 
+        selected_vendor_account = self.vendorBankCombo.currentData()
+        is_temp_account = selected_vendor_account == "TEMP_BANK"
+        
+        # Derive instrument type from method like in PO window
+        method = self.methodCombo.currentText()
+        instrument_type = self._get_instrument_type_for_method(method)
+        
         payload = {
             "purchase_id": str(pdata.get("purchase_id")),
             "amount": float(self.amountEdit.value()),
-            "method": self.methodCombo.currentText(),
+            "method": method,
             "date": self.dateEdit.date().toString("yyyy-MM-dd"),
             "bank_account_id": self._current_company_bank_id(),
-            "vendor_bank_account_id": self._current_vendor_bank_id(),
-            "instrument_type": self.instrumentTypeCombo.currentText() or None,
+            "vendor_bank_account_id": self._current_vendor_bank_id() if not is_temp_account else None,
+            "instrument_type": instrument_type,
             "instrument_no": (self.instrumentNoEdit.text().strip() or None),
             "instrument_date": date_or_none(self.instrumentDateEdit),
             "deposited_date": date_or_none(self.depositedDateEdit),
@@ -962,6 +981,8 @@ class _VendorMoneyDialog(QDialog):
             "cleared_date": (self.clearedDateEdit.date().toString("yyyy-MM-dd") if self.clearedDateEdit.isEnabled() else None),
             "notes": (self.notesEdit.toPlainText().strip() or None),
             "created_by": (int(self.createdByEdit.text()) if self.createdByEdit.text().strip() else None),
+            "temp_vendor_bank_name": self.tempBankNameEdit.text().strip() if is_temp_account else None,
+            "temp_vendor_bank_number": self.tempBankNumberEdit.text().strip() if is_temp_account else None,
         }
         return payload
 

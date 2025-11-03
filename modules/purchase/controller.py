@@ -1054,7 +1054,7 @@ class PurchaseController(BaseModule):
         vendor_display = str(row.get("vendor_name") or vendor_id)
 
         try:
-            from ...vendor.payment_dialog import open_vendor_money_form
+            from ..vendor.payment_dialog import open_vendor_money_form
             payload = open_vendor_money_form(
                 mode="payment",
                 vendor_id=vendor_id,
@@ -1237,27 +1237,22 @@ class PurchaseController(BaseModule):
 
     def _list_company_bank_accounts(self) -> list[dict]:
         try:
-            from ...database.repositories.bank_accounts_repo import BankAccountsRepo
-            repo = BankAccountsRepo(self.conn)
-            for attr in ("list_accounts", "list", "list_all", "all"):
-                if hasattr(repo, attr):
-                    rows = list(getattr(repo, attr)())
-                    out = []
-                    for r in rows:
-                        d = dict(r)
-                        _id = d.get("id") or d.get("account_id") or d.get("bank_account_id")
-                        _name = d.get("name") or d.get("account_name") or d.get("title")
-                        if _id is not None and _name is not None:
-                            out.append({"id": int(_id), "name": str(_name)})
-                    if out:
-                        return out
+            rows = self.conn.execute(
+                "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1 ORDER BY account_id"
+            ).fetchall()
+            out = []
+            for r in rows:
+                _id = r["account_id"]
+                _name = r["label"]
+                if _id is not None and _name is not None:
+                    out.append({"id": int(_id), "name": str(_name)})
+            return out
         except Exception:
-            pass
-        return []
+            return []
 
     def _list_vendor_bank_accounts(self, vendor_id: int) -> list[dict]:
         try:
-            from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
+            from ..database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
             repo = VendorBankAccountsRepo(self.conn)
             rows = []
             for attr in ("list_by_vendor", "list_for_vendor", "list"):
