@@ -61,12 +61,12 @@ METHOD_TO_FORCED_INSTRUMENT = {
     "Other": "other",
 }
 METHOD_TO_DEFAULT_CLEARING = {
-    "Cash": "posted",
-    "Bank Transfer": "posted",
+    "Cash": "cleared",
+    "Bank Transfer": "cleared",
     "Cheque": "pending",
     "Cross Cheque": "pending",
     "Cash Deposit": "pending",
-    "Other": "posted",
+    "Other": "cleared",
 }
 
 METHODS_REQUIRE_BANK = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"}
@@ -294,12 +294,12 @@ class _VendorMoneyDialog(QDialog):
         self.depositedDateEdit.setDate(QDate.currentDate())
         form.addRow(QLabel(_t("Deposited Date")), self.depositedDateEdit)
 
-        # Clearing state (hidden from UI, default to 'posted')
+        # Clearing state (hidden from UI, default to 'cleared' for immediate methods)
         self.clearingStateCombo = QComboBox()
         for s in CLEARING_STATES:
             self.clearingStateCombo.addItem(s)
-        # Set default value to 'posted' and hide the field
-        self.clearingStateCombo.setCurrentIndex(CLEARING_STATES.index("posted"))
+        # Set default value to 'cleared' for Cash method and hide the field
+        self.clearingStateCombo.setCurrentIndex(CLEARING_STATES.index("cleared"))
         # Add the field to the form but hide it
         clear_state_label = QLabel(_t("Clearing State"))
         clear_state_label.setVisible(False)  # Hide the label
@@ -523,6 +523,9 @@ class _VendorMoneyDialog(QDialog):
                 # Log the error but allow loading to continue with available data
                 import logging
                 logging.error(f"Error loading vendor bank accounts for vendor {self._vendor_id}: {e}")
+                # Provide user feedback about the issue
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, _t("Bank Accounts"), _t("Could not load vendor bank accounts. Using basic options only."))
                 rows = []
         else:
             # If no function provided, log a warning and use empty rows
@@ -946,13 +949,12 @@ class _VendorMoneyDialog(QDialog):
     # ---------- Helpers ----------
     def _warn(self, msg: Optional[str]) -> None:
         """
-        Show an error message both in the error label and optionally as a modal dialog.
+        Show an error message in the error label.
         
-        For validation errors, we'll use the error label to provide inline feedback
-        without interrupting the user workflow. The modal dialog is kept for critical errors.
+        Modal dialogs are now only for critical errors that require immediate attention.
         """
         self.errorLabel.setText(msg or "")
-        # Show modal dialog for critical errors that require immediate attention
+        # For this specific dialog, keep using QMessageBox for consistency with the existing approach
         QMessageBox.warning(self, _t("Cannot Save"), msg or _t("Please correct the highlighted fields."))
 
     def _handle_submit_error(self, exc: Exception) -> None:
@@ -972,9 +974,9 @@ class _VendorMoneyDialog(QDialog):
         data = self.companyBankCombo.currentData()
         return int(data) if isinstance(data, int) else None
 
-    def _current_vendor_bank_id(self) -> Optional[int]:
+    def _current_vendor_bank_id(self) -> Optional[int | str]:
         data = self.vendorBankCombo.currentData()
-        # vendor bank may not always be int-typed
+        # vendor bank may not always be int-typed (e.g., "TEMP_BANK")
         try:
             return int(data)
         except Exception:
@@ -1022,15 +1024,21 @@ class _VendorMoneyDialog(QDialog):
         try:
             parts = s.split("-")
             if len(parts) != 3:
+                import logging
+                logging.warning(f"Invalid date format: {s}. Expected YYYY-MM-DD.")
                 return  # Invalid format (not YYYY-MM-DD)
             y, m, d = map(int, parts)
             # QDate constructor will validate the date values
             date_obj = QDate(y, m, d)
             if not date_obj.isValid():
+                import logging
+                logging.warning(f"Invalid date values: {s}. Date not valid in QDate.")
                 return  # Invalid date (e.g., Feb 30)
             edit.setDate(date_obj)
         except ValueError:
             # Raised when s.split("-") doesn't have 3 parts that can be converted to int
+            import logging
+            logging.error(f"Error parsing date string: {s}")
             pass
 
     def _has_date(self, edit: QDateEdit) -> bool:
@@ -1067,8 +1075,8 @@ class _VendorMoneyDialog(QDialog):
             "cleared_date": date_or_none(self.clearedDateEdit),
             "notes": (self.notesEdit.toPlainText().strip() or None),
             "created_by": (int(self.createdByEdit.text()) if self.createdByEdit.text().strip() else None),
-            "temp_vendor_bank_name": self.tempBankNameEdit.text().strip() if is_temp_account else None,
-            "temp_vendor_bank_number": self.tempBankNumberEdit.text().strip() if is_temp_account else None,
+            "temp_vendor_bank_name": self.tempBankNameEdit.text().strip() or None if is_temp_account else None,
+            "temp_vendor_bank_number": self.tempBankNumberEdit.text().strip() or None if is_temp_account else None,
         }
         return payload
 
