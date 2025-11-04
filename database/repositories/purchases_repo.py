@@ -572,3 +572,191 @@ class PurchasesRepo:
         ORDER BY transaction_id
         """
         return self.conn.execute(sql, (purchase_id,)).fetchall()
+
+    def get_returnable_map(self, purchase_id: str) -> dict[int, float]:
+        """
+        Get the returnable quantity for each item in a purchase.
+        """
+        sql = """
+        SELECT
+          pi.item_id,
+          CAST(pi.quantity AS REAL) -
+          COALESCE((
+            SELECT SUM(CAST(it.quantity AS REAL))
+            FROM inventory_transactions it
+            WHERE it.transaction_type='purchase_return'
+              AND it.reference_table='purchases'
+              AND it.reference_id = pi.purchase_id
+              AND it.reference_item_id = pi.item_id
+          ), 0.0) AS returnable
+        FROM purchase_items pi
+        WHERE pi.purchase_id=?
+        """
+        rows = self.conn.execute(sql, (purchase_id,)).fetchall()
+        return {int(r["item_id"]): float(r["returnable"]) for r in rows}
+
+    def get_payment(self, payment_id: int, purchase_id: str) -> dict | None:
+        """
+        Get a specific payment by ID and purchase ID.
+        """
+        sql = """
+        SELECT *
+        FROM purchase_payments
+        WHERE payment_id=? AND purchase_id=?
+        """
+        return self.conn.execute(sql, (payment_id, purchase_id)).fetchone()
+
+    def fetch_purchase_financials(self, purchase_id: str) -> dict:
+        """
+        Fetch financial details for a purchase including calculated totals.
+        """
+        sql = """
+        SELECT
+          p.total_amount,
+          COALESCE(p.paid_amount, 0.0)              AS paid_amount,
+          COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
+          COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = ?;
+        """
+        row = self.conn.execute(sql, (purchase_id,)).fetchone()
+        if not row:
+            return {
+                "total_amount": 0.0,
+                "paid_amount": 0.0,
+                "advance_payment_applied": 0.0,
+                "calculated_total_amount": 0.0,
+                "remaining_due": 0.0,
+            }
+        calc = float(row["calculated_total_amount"] or 0.0)
+        paid = float(row["paid_amount"] or 0.0)
+        adv = float(row["advance_payment_applied"] or 0.0)
+        rem = max(0.0, calc - paid - adv)
+        return {
+            "total_amount": float(row["total_amount"] or 0.0),
+            "paid_amount": paid,
+            "advance_payment_applied": adv,
+            "calculated_total_amount": calc,
+            "remaining_due": rem,
+        }
+
+    def get_remaining_due_header(self, purchase_id: str) -> float:
+        """
+        Calculate the remaining amount due for a purchase.
+        Uses calculated_total_amount from purchase_detailed_totals view if available, 
+        falling back to purchases.total_amount otherwise.
+        """
+        sql = """
+        SELECT
+            COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+            COALESCE(p.paid_amount, 0.0) AS paid_amount,
+            COALESCE(p.advance_payment_applied, 0.0) AS advance_payment_applied
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = ?
+        """
+        row = self.conn.execute(sql, (purchase_id,)).fetchone()
+        if not row:
+            return 0.0
+        total = float(row["total_calc"] or 0.0)
+        paid = float(row["paid_amount"] or 0.0)
+        applied = float(row["advance_payment_applied"] or 0.0)
+        remaining = total - paid - applied
+        return max(0.0, remaining)
+
+    def update_header_totals(self, purchase_id: str) -> None:
+        """
+        Recompute and update the header totals (paid_amount and payment_status) for a purchase
+        based on cleared payments.
+        """
+        # Calculate the cleared paid amount
+        r_pay = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS cleared_paid
+            FROM purchase_payments
+            WHERE purchase_id = ?
+              AND COALESCE(clearing_state, 'posted') = 'cleared'
+            """,
+            (purchase_id,),
+        ).fetchone()
+        cleared_paid = float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0)
+
+        # Get the calculated total and advance applied
+        row = self.conn.execute(
+            """
+            SELECT
+              COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+              COALESCE(p.advance_payment_applied, 0.0) AS adv_applied
+            FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+            WHERE p.purchase_id = ?
+            """,
+            (purchase_id,),
+        ).fetchone()
+        total_calc = float(row["total_calc"] if row and "total_calc" in row.keys() else 0.0)
+        adv_applied = float(row["adv_applied"] if row and "adv_applied" in row.keys() else 0.0)
+
+        # Update the purchase record with the new paid amount
+        self.conn.execute("UPDATE purchases SET paid_amount = ? WHERE purchase_id = ?;", (cleared_paid, purchase_id))
+
+        # Calculate remaining amount and update payment status if paid in full
+        remaining = max(0.0, total_calc - cleared_paid - adv_applied)
+        if remaining <= 1e-9:  # Using the same epsilon as in the controller
+            self.conn.execute("UPDATE purchases SET payment_status = 'paid' WHERE purchase_id = ?;", (purchase_id,))
+
+    def get_open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
+        """
+        Get open purchases (purchases with remaining balance) for a vendor.
+        """
+        sql = """
+        SELECT
+            p.purchase_id,
+            p.date,
+            COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount,
+            CAST(p.total_amount AS REAL)    AS total_amount,
+            CAST(p.paid_amount AS REAL)     AS paid_amount,
+            CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
+            (COALESCE(pdt.calculated_total_amount, p.total_amount) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS balance
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.vendor_id = ?
+          AND (COALESCE(pdt.calculated_total_amount, p.total_amount) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
+        ORDER BY DATE(p.date) DESC, p.purchase_id DESC
+        """
+        return self.conn.execute(sql, (vendor_id,)).fetchall()
+
+    def get_vendor_id_for_purchase(self, purchase_id: str) -> dict | None:
+        """
+        Get the vendor_id for a given purchase_id.
+        """
+        return self.conn.execute("SELECT vendor_id FROM purchases WHERE purchase_id=?;", (purchase_id,)).fetchone()
+
+    def get_purchase_remaining_due(self, purchase_id: str) -> dict | None:
+        """
+        Get the remaining due amount for a purchase.
+        """
+        sql = """
+        SELECT
+            COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount,
+            CAST(p.paid_amount AS REAL) AS paid_amount,
+            CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
+            (COALESCE(pdt.calculated_total_amount, p.total_amount) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining_due
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = ?
+        """
+        return self.conn.execute(sql, (purchase_id,)).fetchone()
+
+    def get_header_with_vendor(self, purchase_id: str) -> dict | None:
+        """
+        Get purchase header data joined with vendor information.
+        """
+        sql = """
+        SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info, v.address AS vendor_address
+        FROM purchases p
+        JOIN vendors v ON p.vendor_id = v.vendor_id
+        WHERE p.purchase_id = ?
+        """
+        row = self.conn.execute(sql, (purchase_id,)).fetchone()
+        return dict(row) if row else None

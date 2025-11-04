@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QScrollArea, QWidget, QHeaderView, QGridLayout
 )
 from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
@@ -11,6 +12,44 @@ from ...utils.helpers import today_str, fmt_money
 import re
 import datetime
 import logging
+
+
+class TableEventFilter(QObject):
+    """Event filter to handle Tab key for adding new rows in the purchase table"""
+    
+    def __init__(self, purchase_form):
+        super().__init__()
+        self.purchase_form = purchase_form
+    
+    def eventFilter(self, obj, event):
+        # Check if this is a key press event on our table widget
+        if event.type() == QEvent.KeyPress and obj == self.purchase_form.tbl:
+            # Check if Tab key was pressed
+            if event.key() == Qt.Key_Tab:
+                # Check if we're in the last row and last editable column (column 4 - Sale Price)
+                current_row = self.purchase_form.tbl.currentRow()
+                current_col = self.purchase_form.tbl.currentColumn()
+                
+                # The editable columns are 2 (Qty), 3 (Buy Price), 4 (Sale Price)
+                # Check if we're in the last row and in the last editable column (column 4)
+                if (current_row == self.purchase_form.tbl.rowCount() - 1 and 
+                    current_col == 4 and  # Column 4 is "Sale Price" which is the last editable column
+                    self.purchase_form.tbl.item(current_row, 2) is not None and  # Qty column
+                    self.purchase_form.tbl.item(current_row, 3) is not None and  # Buy Price column
+                    self.purchase_form.tbl.item(current_row, 4) is not None):   # Sale Price column
+                    
+                    # Add a new row using the parent's method
+                    self.purchase_form._add_row()
+                    
+                    # Move focus to the first editable cell (Qty column) in the new row
+                    new_row = self.purchase_form.tbl.rowCount() - 1
+                    self.purchase_form.tbl.setCurrentCell(new_row, 2)  # Column 2 is Qty
+                    
+                    # Return True to indicate the event was handled and should not be propagated further
+                    return True
+        
+        # For all other events, return False to continue with normal event processing
+        return False
 
 
 class PurchaseForm(QDialog):
@@ -117,6 +156,10 @@ class PurchaseForm(QDialog):
         self.tbl.setColumnWidth(6, 48)
 
         ib.addWidget(self.tbl, 1)
+
+        # Install event filter to handle Tab key for adding new rows
+        self.table_event_filter = TableEventFilter(self)
+        self.tbl.installEventFilter(self.table_event_filter)
 
         row_btns = QHBoxLayout()
         self.btn_add_row = QPushButton("Add Row")
@@ -1291,5 +1334,7 @@ class PurchaseForm(QDialog):
             return True
             
         self._validate_and_perform_action(pdf_export_action)
+
+
 
 

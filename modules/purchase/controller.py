@@ -129,89 +129,20 @@ class PurchaseController(BaseModule):
             pass
 
     def _returnable_map(self, purchase_id: str) -> dict[int, float]:
-        sql = """
-        SELECT
-          pi.item_id,
-          CAST(pi.quantity AS REAL) -
-          COALESCE((
-            SELECT SUM(CAST(it.quantity AS REAL))
-            FROM inventory_transactions it
-            WHERE it.transaction_type='purchase_return'
-              AND it.reference_table='purchases'
-              AND it.reference_id = pi.purchase_id
-              AND it.reference_item_id = pi.item_id
-          ), 0.0) AS returnable
-        FROM purchase_items pi
-        WHERE pi.purchase_id=?
-        """
-        rows = self.conn.execute(sql, (purchase_id,)).fetchall()
-        return {int(r["item_id"]): float(r["returnable"]) for r in rows}
+        return self.repo.get_returnable_map(purchase_id)
 
     def _get_payment(self, payment_id: int) -> Optional[dict]:
         row = self._selected_row_dict()
         if not row:
             return None
-        sql = """
-        SELECT *
-        FROM purchase_payments
-        WHERE payment_id=? AND purchase_id=?
-        """
-        r = self.conn.execute(sql, (payment_id, row["purchase_id"])).fetchone()
+        r = self.repo.get_payment(payment_id, row["purchase_id"])
         return dict(r) if r is not None else None
 
     def _fetch_purchase_financials(self, purchase_id: str) -> dict:
-        row = self.conn.execute(
-            """
-            SELECT
-              p.total_amount,
-              COALESCE(p.paid_amount, 0.0)              AS paid_amount,
-              COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
-              COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            WHERE p.purchase_id = ?;
-            """,
-            (purchase_id,),
-        ).fetchone()
-        if not row:
-            return {
-                "total_amount": 0.0,
-                "paid_amount": 0.0,
-                "advance_payment_applied": 0.0,
-                "calculated_total_amount": 0.0,
-                "remaining_due": 0.0,
-            }
-        calc = float(row["calculated_total_amount"] or 0.0)
-        paid = float(row["paid_amount"] or 0.0)
-        adv = float(row["advance_payment_applied"] or 0.0)
-        rem = max(0.0, calc - paid - adv)
-        return {
-            "total_amount": float(row["total_amount"] or 0.0),
-            "paid_amount": paid,
-            "advance_payment_applied": adv,
-            "calculated_total_amount": calc,
-            "remaining_due": rem,
-        }
+        return self.repo.fetch_purchase_financials(purchase_id)
 
     def _remaining_due_header(self, purchase_id: str) -> float:
-        row = self.conn.execute(
-            """
-            SELECT
-                CAST(total_amount AS REAL) AS total_amount,
-                CAST(paid_amount AS REAL) AS paid_amount,
-                CAST(advance_payment_applied AS REAL) AS advance_payment_applied
-            FROM purchases
-            WHERE purchase_id = ?
-            """,
-            (purchase_id,),
-        ).fetchone()
-        if not row:
-            return 0.0
-        total = float(row["total_amount"] or 0.0)
-        paid = float(row["paid_amount"] or 0.0)
-        applied = float(row["advance_payment_applied"] or 0.0)
-        remaining = total - paid - applied
-        return max(0.0, remaining)
+        return self.repo.get_remaining_due_header(purchase_id)
 
     def _vendor_credit_balance(self, vendor_id: int) -> float:
         try:
@@ -276,35 +207,7 @@ class PurchaseController(BaseModule):
             pass
 
     def _recompute_header_totals_from_rows(self, purchase_id: str) -> None:
-        r_pay = self.conn.execute(
-            """
-            SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS cleared_paid
-            FROM purchase_payments
-            WHERE purchase_id = ?
-              AND COALESCE(clearing_state, 'posted') = 'cleared'
-            """,
-            (purchase_id,),
-        ).fetchone()
-        cleared_paid = float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0)
-
-        row = self.conn.execute(
-            """
-            SELECT
-              COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-              COALESCE(p.advance_payment_applied, 0.0) AS adv_applied
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            WHERE p.purchase_id = ?
-            """,
-            (purchase_id,),
-        ).fetchone()
-        total_calc = float(row["total_calc"] if row and "total_calc" in row.keys() else 0.0)
-        adv_applied = float(row["adv_applied"] if row and "adv_applied" in row.keys() else 0.0)
-
-        self.conn.execute("UPDATE purchases SET paid_amount = ? WHERE purchase_id = ?;", (cleared_paid, purchase_id))
-        remaining = max(0.0, total_calc - cleared_paid - adv_applied)
-        if remaining <= _EPS:
-            self.conn.execute("UPDATE purchases SET payment_status = 'paid' WHERE purchase_id = ?;", (purchase_id,))
+        self.repo.update_header_totals(purchase_id)
 
     def _add(self):
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products)
@@ -470,6 +373,38 @@ class PurchaseController(BaseModule):
                 _log.info("Applied initial vendor credit for %s amount=%.4f", pid, init_credit)
                 self._recompute_header_totals_from_rows(pid)
 
+            # Automatically apply all available vendor advances to this purchase
+            # Skip auto-apply if the user provided manual initial credit
+            initial_manual_credit = p.get("initial_credit_amount")
+            if initial_manual_credit is None:
+                initial_manual_credit = 0.0
+            else:
+                initial_manual_credit = float(initial_manual_credit)
+            
+            vendor_id = int(p["vendor_id"])
+            remaining = self._remaining_due_header(pid)
+            credit_bal = self._vendor_credit_balance(vendor_id)
+            auto_apply_amount = min(credit_bal, remaining)
+            
+            if auto_apply_amount > _EPS and initial_manual_credit <= _EPS:  # Only apply if there's a meaningful amount and no manual credit was provided
+                try:
+                    self.vadv.apply_credit_to_purchase(
+                        vendor_id=vendor_id,
+                        purchase_id=pid,
+                        amount=auto_apply_amount,
+                        date=p["date"],
+                        notes=f"Auto-applied vendor advance from available credit",
+                        created_by=(self.user["user_id"] if self.user else None),
+                    )
+                    _log.info("Auto-applied vendor credit for %s amount=%.4f", pid, auto_apply_amount)
+                    self._recompute_header_totals_from_rows(pid)
+                except Exception as e:
+                    if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
+                        _log.warning("Auto-apply skipped: %s", str(e))
+                        # It's okay to skip auto-application if it would exceed limits
+                    else:
+                        raise
+
             self.conn.commit()
 
 
@@ -507,139 +442,19 @@ class PurchaseController(BaseModule):
         """Print the purchase invoice using WeasyPrint for better rendering"""
         try:
             import os
-            from jinja2 import Template
-            from PySide6.QtCore import QStandardPaths
             import tempfile
-            
-            # Load the template file
-            template_path = "resources/templates/invoices/purchase_invoice.html"
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            full_template_path = os.path.join(project_root, template_path)
-            
-            with open(full_template_path, 'r', encoding='utf-8') as f:
-                template_content = f.read()
-            
-            # Prepare data for the template
-            enriched_data = {"purchase_id": purchase_id}
-            
-            # Fetch purchase header data
-            header_query = """
-            SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info, v.address AS vendor_address
-            FROM purchases p
-            JOIN vendors v ON p.vendor_id = v.vendor_id
-            WHERE p.purchase_id = ?
-            """
-            header_row = self.conn.execute(header_query, (purchase_id,)).fetchone()
-            
-            if header_row:
-                doc_data = dict(header_row)
-                enriched_data['doc'] = doc_data
-                enriched_data['vendor'] = {
-                    'name': doc_data.get('vendor_name', ''),
-                    'contact_info': doc_data.get('vendor_contact_info', ''),
-                    'address': doc_data.get('vendor_address', '')
-                }
-                
-                # Fetch purchase items
-                items_query = """
-                SELECT 
-                    pi.item_id,
-                    pi.product_id,
-                    p.name AS product_name,
-                    pi.quantity,
-                    u.unit_name AS uom_name,
-                    pi.purchase_price AS unit_price,
-                    pi.sale_price,
-                    pi.item_discount,
-                    (pi.quantity * pi.purchase_price) AS line_total,
-                    ROW_NUMBER() OVER (ORDER BY pi.item_id) AS idx
-                FROM purchase_items pi
-                JOIN products p ON pi.product_id = p.product_id
-                JOIN uoms u ON pi.uom_id = u.uom_id
-                WHERE pi.purchase_id = ?
-                ORDER BY pi.item_id
-                """
-                items_rows = self.conn.execute(items_query, (purchase_id,)).fetchall()
-                
-                items = []
-                for row in items_rows:
-                    item_dict = dict(row)
-                    items.append(item_dict)
-                
-                enriched_data['items'] = items
-                
-                # Calculate totals
-                subtotal = sum(item['line_total'] for item in items)
-                total = subtotal  # For purchases, total = subtotal (no discount for now)
-                
-                enriched_data['totals'] = {
-                    'subtotal_before_order_discount': subtotal,
-                    'line_discount_total': 0,  # No line discounts in purchase for now
-                    'order_discount': 0,  # No order discount in purchase for now
-                    'total': total
-                }
-                
-                # Get initial payment details if exists
-                payment_query = """
-                SELECT 
-                    pp.amount,
-                    pp.method,
-                    pp.date,
-                    pp.bank_account_id,
-                    pp.vendor_bank_account_id,
-                    pp.instrument_type,
-                    pp.instrument_no,
-                    pp.instrument_date,
-                    pp.deposited_date,
-                    pp.cleared_date,
-                    pp.ref_no,
-                    pp.notes,
-                    pp.clearing_state,
-                    ca.label AS bank_account_label,
-                    va.label AS vendor_bank_account_label
-                FROM purchase_payments pp
-                LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
-                LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
-                WHERE pp.purchase_id = ?
-                ORDER BY pp.payment_id DESC
-                LIMIT 1
-                """
-                payment_row = self.conn.execute(payment_query, (purchase_id,)).fetchone()
-                
-                if payment_row:
-                    enriched_data['initial_payment'] = dict(payment_row)
-                else:
-                    enriched_data['initial_payment'] = None
-                
-                # Add company info
-                enriched_data['company'] = {
-                    'name': 'Your Company Name',  # This would come from a company settings table
-                    'logo_path': None  # This would come from company settings
-                }
-                
-                # Add payment status
-                enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
-            
-            # Create Jinja2 template and render
-            template = Template(template_content, autoescape=True)
-            html_content = template.render(**enriched_data)
-            
-            # Create temporary HTML file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as temp_html_file:
-                temp_html_file.write(html_content)
-                temp_html_path = temp_html_file.name
-            
-            # Use WeasyPrint to convert HTML to PDF, then print
+            from PySide6.QtCore import QStandardPaths
             from weasyprint import HTML, CSS
             from weasyprint.text.fonts import FontConfiguration
             
+            # Generate HTML content using the shared helper
+            html_content = self._generate_invoice_html_content(purchase_id)
+            
             # Create PDF in temporary location with proper naming
-            import tempfile
             temp_pdf_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{purchase_id}_')
             os.close(temp_pdf_fd)  # Close the file descriptor
             
             # Convert HTML to PDF with custom CSS for proper margins
-            from weasyprint import CSS
             # Define custom CSS to override default margins
             custom_css = CSS(string='''
                 @page {
@@ -691,122 +506,11 @@ class PurchaseController(BaseModule):
         """Export the purchase invoice to PDF using WeasyPrint for better rendering"""
         try:
             import os
-            from jinja2 import Template
             from PySide6.QtCore import QStandardPaths
             from weasyprint import HTML, CSS
             
-            # Load the template file
-            template_path = "resources/templates/invoices/purchase_invoice.html"
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            full_template_path = os.path.join(project_root, template_path)
-            
-            with open(full_template_path, 'r', encoding='utf-8') as f:
-                template_content = f.read()
-            
-            # Prepare data for the template
-            enriched_data = {"purchase_id": purchase_id}
-            
-            # Fetch purchase header data
-            header_query = """
-            SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info, v.address AS vendor_address
-            FROM purchases p
-            JOIN vendors v ON p.vendor_id = v.vendor_id
-            WHERE p.purchase_id = ?
-            """
-            header_row = self.conn.execute(header_query, (purchase_id,)).fetchone()
-            
-            if header_row:
-                doc_data = dict(header_row)
-                enriched_data['doc'] = doc_data
-                enriched_data['vendor'] = {
-                    'name': doc_data.get('vendor_name', ''),
-                    'contact_info': doc_data.get('vendor_contact_info', ''),
-                    'address': doc_data.get('vendor_address', '')
-                }
-                
-                # Fetch purchase items
-                items_query = """
-                SELECT 
-                    pi.item_id,
-                    pi.product_id,
-                    p.name AS product_name,
-                    pi.quantity,
-                    u.unit_name AS uom_name,
-                    pi.purchase_price AS unit_price,
-                    pi.sale_price,
-                    pi.item_discount,
-                    (pi.quantity * pi.purchase_price) AS line_total,
-                    ROW_NUMBER() OVER (ORDER BY pi.item_id) AS idx
-                FROM purchase_items pi
-                JOIN products p ON pi.product_id = p.product_id
-                JOIN uoms u ON pi.uom_id = u.uom_id
-                WHERE pi.purchase_id = ?
-                ORDER BY pi.item_id
-                """
-                items_rows = self.conn.execute(items_query, (purchase_id,)).fetchall()
-                
-                items = []
-                for row in items_rows:
-                    item_dict = dict(row)
-                    items.append(item_dict)
-                
-                enriched_data['items'] = items
-                
-                # Calculate totals
-                subtotal = sum(item['line_total'] for item in items)
-                total = subtotal  # For purchases, total = subtotal (no discount for now)
-                
-                enriched_data['totals'] = {
-                    'subtotal_before_order_discount': subtotal,
-                    'line_discount_total': 0,  # No line discounts in purchase for now
-                    'order_discount': 0,  # No order discount in purchase for now
-                    'total': total
-                }
-                
-                # Get initial payment details if exists
-                payment_query = """
-                SELECT 
-                    pp.amount,
-                    pp.method,
-                    pp.date,
-                    pp.bank_account_id,
-                    pp.vendor_bank_account_id,
-                    pp.instrument_type,
-                    pp.instrument_no,
-                    pp.instrument_date,
-                    pp.deposited_date,
-                    pp.cleared_date,
-                    pp.ref_no,
-                    pp.notes,
-                    pp.clearing_state,
-                    ca.label AS bank_account_label,
-                    va.label AS vendor_bank_account_label
-                FROM purchase_payments pp
-                LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
-                LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
-                WHERE pp.purchase_id = ?
-                ORDER BY pp.payment_id DESC
-                LIMIT 1
-                """
-                payment_row = self.conn.execute(payment_query, (purchase_id,)).fetchone()
-                
-                if payment_row:
-                    enriched_data['initial_payment'] = dict(payment_row)
-                else:
-                    enriched_data['initial_payment'] = None
-                
-                # Add company info
-                enriched_data['company'] = {
-                    'name': 'Your Company Name',  # This would come from a company settings table
-                    'logo_path': None  # This would come from company settings
-                }
-                
-                # Add payment status
-                enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
-            
-            # Create Jinja2 template and render
-            template = Template(template_content, autoescape=True)
-            html_content = template.render(**enriched_data)
+            # Generate HTML content using the shared helper
+            html_content = self._generate_invoice_html_content(purchase_id)
             
             # Determine the desktop path and create PIs subdirectory
             desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
@@ -820,8 +524,6 @@ class PurchaseController(BaseModule):
             file_path = os.path.join(pdfs_dir, file_name)
             
             # Convert HTML to PDF using WeasyPrint with custom CSS for proper margins
-            from weasyprint import CSS
-            import os
             # Define custom CSS to override default margins
             custom_css = CSS(string='''
                 @page {
@@ -856,6 +558,87 @@ class PurchaseController(BaseModule):
             info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
         except Exception as e:
             info(self.view, "Error", f"Could not export invoice to PDF: {e}")
+
+    def _generate_invoice_html_content(self, purchase_id: str) -> str:
+        """Generate HTML content for purchase invoice - shared between print and export methods."""
+        import os
+        from jinja2 import Template
+        
+        # Load the template file
+        template_path = "resources/templates/invoices/purchase_invoice.html"
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        full_template_path = os.path.join(project_root, template_path)
+        
+        with open(full_template_path, 'r', encoding='utf-8') as f:
+            template_content = f.read()
+        
+        # Prepare data for the template
+        enriched_data = {"purchase_id": purchase_id}
+        
+        # Fetch purchase header data using repository
+        header_row = self.repo.get_header_with_vendor(purchase_id)
+        
+        if header_row:
+            doc_data = dict(header_row)
+            enriched_data['doc'] = doc_data
+            enriched_data['vendor'] = {
+                'name': doc_data.get('vendor_name', ''),
+                'contact_info': doc_data.get('vendor_contact_info', ''),
+                'address': doc_data.get('vendor_address', '')
+            }
+            
+            # Fetch purchase items using repository
+            items_rows = self.repo.list_items(purchase_id)
+            
+            items = []
+            for row in items_rows:
+                item_dict = dict(row)
+                # Calculate line_total
+                quantity = float(item_dict.get('quantity', 0.0))
+                purchase_price = float(item_dict.get('purchase_price', 0.0))
+                line_total = quantity * purchase_price
+                item_dict['line_total'] = line_total
+                
+                # Calculate idx (row number)
+                item_dict['idx'] = len(items) + 1
+                
+                items.append(item_dict)
+            
+            enriched_data['items'] = items
+            
+            # Calculate totals
+            subtotal = sum(item['line_total'] for item in items)
+            total = subtotal  # For purchases, total = subtotal (no discount for now)
+            
+            enriched_data['totals'] = {
+                'subtotal_before_order_discount': subtotal,
+                'line_discount_total': 0,  # No line discounts in purchase for now
+                'order_discount': 0,  # No order discount in purchase for now
+                'total': total
+            }
+            
+            # Get latest payment details using repository
+            latest_payment = self.payments.get_latest_payment_for_purchase(purchase_id)
+            
+            if latest_payment:
+                enriched_data['initial_payment'] = dict(latest_payment)
+            else:
+                enriched_data['initial_payment'] = None
+            
+            # Add company info
+            enriched_data['company'] = {
+                'name': 'Your Company Name',  # This would come from a company settings table
+                'logo_path': None  # This would come from company settings
+            }
+            
+            # Add payment status
+            enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
+        
+        # Create Jinja2 template and render
+        template = Template(template_content, autoescape=True)
+        html_content = template.render(**enriched_data)
+        
+        return html_content
 
     def _edit(self):
         row = self._selected_row_dict()
@@ -927,6 +710,39 @@ class PurchaseController(BaseModule):
         
         # Update purchase
         self.repo.update_purchase(h, items)
+        
+        # After updating the purchase, automatically apply any available vendor advances
+        # Skip auto-apply if the user provided manual initial credit
+        initial_manual_credit = p.get("initial_credit_amount")
+        if initial_manual_credit is None:
+            initial_manual_credit = 0.0
+        else:
+            initial_manual_credit = float(initial_manual_credit)
+            
+        vendor_id = int(p["vendor_id"])
+        credit_bal = self._vendor_credit_balance(vendor_id)
+        remaining = self._remaining_due_header(pid)
+        auto_apply_amount = min(credit_bal, remaining)
+        
+        if auto_apply_amount > _EPS and initial_manual_credit <= _EPS:  # Only apply if there's a meaningful amount and no manual credit was provided
+            try:
+                self.vadv.apply_credit_to_purchase(
+                    vendor_id=vendor_id,
+                    purchase_id=pid,
+                    amount=auto_apply_amount,
+                    date=p["date"],
+                    notes=f"Auto-applied vendor advance from available credit (after edit)",
+                    created_by=(self.user["user_id"] if self.user else None),
+                )
+                _log.info("Auto-applied vendor credit after edit for %s amount=%.4f", pid, auto_apply_amount)
+                # The apply_credit_to_purchase method should update the header totals automatically
+            except Exception as e:
+                if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
+                    _log.warning("Auto-apply after edit skipped: %s", str(e))
+                    # It's okay to skip auto-application if it would exceed limits
+                else:
+                    raise
+
         info(self.view, "Saved", f"Purchase {pid} updated.")
         
         # Handle print or PDF export request after saving
@@ -1101,12 +917,15 @@ class PurchaseController(BaseModule):
                     )
                 except Exception as e:
                     if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
+                        _log.error(f"Payment processing error: {e}")
                         info(self.view, "Payment not recorded", str(e))
                         return
                     if isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
-                        info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
+                        _log.error(f"Payment processing error: {e}")
+                        info(self.view, "Payment not recorded", "Could not record payment.")
                         return
-                    info(self.view, "Payment not recorded", str(e))
+                    _log.error(f"Payment processing error: {e}")
+                    info(self.view, "Payment not recorded", "Could not record payment.")
                     return
 
                 info(self.view, "Saved", "Payment recorded.")
@@ -1114,77 +933,10 @@ class PurchaseController(BaseModule):
                 self._recompute_header_totals_from_rows(str(payload.get("purchase_id") or purchase_id))
                 self._reload()
                 return
-        except Exception:
-            pass
-
-        dlg = PurchasePaymentDialog(
-            self.view,
-            current_paid=float(row["paid_amount"]),
-            total=float(row["total_amount"]),
-        )
-        if not dlg.exec():
-            return
-        amount = dlg.payload()
-        if not amount:
-            return
-
-        remaining = self._remaining_due_header(purchase_id)
-        try:
-            amt = float(amount)
-        except (TypeError, ValueError):
-            info(self.view, "Payment not recorded", "Invalid amount.")
-            return
-        if amt - remaining > _EPS:
-            info(self.view, "Payment not recorded", f"Amount exceeds remaining due ({remaining:.2f}).")
-            return
-
-        method = "Cash"
-        bank_account_id = None
-        vendor_bank_account_id = None
-        instrument_type = None
-        instrument_no = None
-        instrument_date = None
-        deposited_date = None
-        cleared_date = None
-        clearing_state = None
-        ref_no = None
-        notes = None
-        pay_date = today_str()
-
-        try:
-            self.payments.record_payment(
-                purchase_id=purchase_id,
-                amount=amt,
-                method=method,
-                bank_account_id=bank_account_id,
-                vendor_bank_account_id=vendor_bank_account_id,
-                instrument_type=instrument_type,
-                instrument_no=instrument_no,
-                instrument_date=instrument_date,
-                deposited_date=deposited_date,
-                cleared_date=cleared_date,
-                clearing_state=clearing_state,
-                ref_no=ref_no,
-                notes=notes,
-                date=pay_date,
-                created_by=(self.user["user_id"] if self.user else None),
-                temp_vendor_bank_name=None,
-                temp_vendor_bank_number=None,
-            )
         except Exception as e:
-            if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
-                info(self.view, "Payment not recorded", str(e))
-                return
-            if isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
-                info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
-                return
-            info(self.view, "Payment not recorded", str(e))
+            _log.exception("Error opening vendor payment dialog")
+            info(self.view, "Payment Dialog Error", "Could not open vendor payment dialog.")
             return
-
-        info(self.view, "Saved", f"Transaction of {float(amount):g} recorded.")
-        # Update the purchase header totals to reflect the new payment
-        self._recompute_header_totals_from_rows(purchase_id)
-        self._reload()
 
     def mark_payment_cleared(self, payment_id: int, *, cleared_date: Optional[str] = None, notes: Optional[str] = None):
         pay = self._get_payment(payment_id)

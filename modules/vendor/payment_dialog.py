@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional, Literal
 
 try:
@@ -30,6 +31,12 @@ except Exception:
 
 def _t(s: str) -> str:
     return s
+
+
+# Constants
+TEMP_BANK_ACCOUNT = "TEMP_BANK"
+
+
 
 
 METHODS = [
@@ -75,7 +82,7 @@ METHODS_REQUIRE_INSTR_NO = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Dep
 
 def open_vendor_money_form(
     *,
-    mode: Literal["payment", "advance", "apply_advance"],
+    mode: Literal["payment", "advance"],
     vendor_id: int,
     purchase_id: Optional[str] = None,
     defaults: dict | None = None,
@@ -97,7 +104,6 @@ def open_vendor_money_form(
 class _VendorMoneyDialog(QDialog):
     PAGE_PAYMENT = 0
     PAGE_ADVANCE = 1
-    PAGE_APPLY = 2
 
     def __init__(self, *, mode: str, vendor_id: int, purchase_id: Optional[str], defaults: dict) -> None:
         super().__init__(None)
@@ -116,7 +122,6 @@ class _VendorMoneyDialog(QDialog):
 
         self._submit_payment: Optional[Callable[[dict], None]] = self._defaults.get("submit_payment")
         self._submit_advance: Optional[Callable[[dict], None]] = self._defaults.get("submit_advance")
-        self._submit_apply: Optional[Callable[[dict], None]] = self._defaults.get("submit_apply")
 
         self._prefill_method: Optional[str] = self._defaults.get("method")
         self._prefill_amount: Optional[float] = self._defaults.get("amount")
@@ -140,7 +145,6 @@ class _VendorMoneyDialog(QDialog):
         initial = {
             "payment": self.PAGE_PAYMENT,
             "advance": self.PAGE_ADVANCE,
-            "apply_advance": self.PAGE_APPLY,
         }.get(mode, self.PAGE_PAYMENT)
         self.pageStack.setCurrentIndex(initial)
         self.tabBar.setCurrentIndex(initial)
@@ -155,7 +159,6 @@ class _VendorMoneyDialog(QDialog):
         self._update_hint()
         self._validate_live_payment()
         self._validate_live_advance()
-        self._validate_live_apply()
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -163,7 +166,6 @@ class _VendorMoneyDialog(QDialog):
         self.tabBar = QTabBar()
         self.tabBar.addTab(_t("Payment"))
         self.tabBar.addTab(_t("Record Advance"))
-        self.tabBar.addTab(_t("Apply Advance"))
         self.tabBar.currentChanged.connect(self._on_tab_changed)
         outer.addWidget(self.tabBar)
 
@@ -177,10 +179,6 @@ class _VendorMoneyDialog(QDialog):
         self.page_advance = QWidget()
         self._build_advance_page(self.page_advance)
         self.pageStack.addWidget(self.page_advance)
-
-        self.page_apply = QWidget()
-        self._build_apply_page(self.page_apply)
-        self.pageStack.addWidget(self.page_apply)
 
         self.hintLabel = QLabel("")
         self.hintLabel.setWordWrap(True)
@@ -387,48 +385,26 @@ class _VendorMoneyDialog(QDialog):
         # Wire
         self.advAmountEdit.valueChanged.connect(self._validate_live_advance)
 
-    # ---------- Apply Advance page ----------
-    def _build_apply_page(self, page: QWidget) -> None:
-        form = QFormLayout(page)
+    # ---------- Amount limit helpers ----------
+    def _remaining_from_data(self, data: Optional[dict]) -> float:
+        if not isinstance(data, dict):
+            return 0.0
+        try:
+            total = float(data.get("total", 0.0))
+            paid = float(data.get("paid", 0.0))
+            rem = total - paid
+            return max(0.0, rem)
+        except Exception:
+            return 0.0
 
-        # Purchase picker (or preselected)
-        self.applyPurchasePicker = QComboBox()
-        lbl_purchase2 = QLabel(_t("Purchase *"))
-        lbl_purchase2.setBuddy(self.applyPurchasePicker)
-        form.addRow(lbl_purchase2, self.applyPurchasePicker)
-
-        # Remaining due
-        self.applyRemainingLabel = QLabel("")
-        form.addRow(QLabel(_t("Remaining Due")), self.applyRemainingLabel)
-
-        # Amount (>0)
-        self.applyAmountEdit = QDoubleSpinBox()
-        self.applyAmountEdit.setDecimals(2)
-        self.applyAmountEdit.setRange(0.0, 1_000_000_000.0)
-        self.applyAmountEdit.setSingleStep(1.0)
-        form.addRow(QLabel(_t("Amount *")), self.applyAmountEdit)
-
-        # Date
-        self.applyDateEdit = QDateEdit()
-        self.applyDateEdit.setCalendarPopup(True)
-        self.applyDateEdit.setDisplayFormat("yyyy-MM-dd")
-        self.applyDateEdit.setDate(QDate.currentDate())
-        form.addRow(QLabel(_t("Date")), self.applyDateEdit)
-
-        # Notes / Created by
-        self.applyNotesEdit = QPlainTextEdit()
-        self.applyNotesEdit.setPlaceholderText(_t("Optional notes"))
-        self.applyNotesEdit.setFixedHeight(80)
-        form.addRow(QLabel(_t("Notes")), self.applyNotesEdit)
-
-        self.applyCreatedByEdit = QLineEdit()
-        self.applyCreatedByEdit.setValidator(QIntValidator())
-        form.addRow(QLabel(_t("Created By")), self.applyCreatedByEdit)
-
-        # Wire
-        self.applyPurchasePicker.currentIndexChanged.connect(self._update_apply_remaining)
-        self.applyPurchasePicker.currentIndexChanged.connect(self._apply_apply_amount_limits)
-        self.applyAmountEdit.valueChanged.connect(self._validate_live_apply)
+    def _apply_payment_amount_limits(self) -> None:
+        data = self.purchasePicker.currentData()
+        remaining = self._remaining_from_data(data)
+        method = self.methodCombo.currentText()
+        if method == "Cash":
+            self.amountEdit.setRange(-1_000_000_000.0, max(0.0, remaining))
+        else:
+            self.amountEdit.setRange(0.0, max(0.0, remaining))
 
     # ---------- Tab events ----------
     def _on_tab_changed(self, idx: int) -> None:
@@ -437,18 +413,14 @@ class _VendorMoneyDialog(QDialog):
         self._update_hint()
         self._validate_live_payment()
         self._validate_live_advance()
-        self._validate_live_apply()
         # Re-apply limits in case user switched tabs
         if idx == self.PAGE_PAYMENT:
             self._apply_payment_amount_limits()
-        elif idx == self.PAGE_APPLY:
-            self._apply_apply_amount_limits()
 
     def _sync_window_title(self) -> None:
         titles = {
             self.PAGE_PAYMENT: _t("Record Vendor Payment"),
             self.PAGE_ADVANCE: _t("Record Vendor Advance"),
-            self.PAGE_APPLY: _t("Apply Vendor Advance to Purchase"),
         }
         self.setWindowTitle(titles.get(self.pageStack.currentIndex(), _t("Vendor Money")))
 
@@ -474,20 +446,6 @@ class _VendorMoneyDialog(QDialog):
                 self.purchasePicker.addItem(f"{doc} — {date} — Total {total:.2f} Paid {paid:.2f} Rem {rem:.2f}", r)
             self._update_remaining()
             self._apply_payment_amount_limits()
-
-        # Apply picker
-        if hasattr(self, "applyPurchasePicker"):
-            self.applyPurchasePicker.clear()
-            for r in rows:
-                pid = str(r.get("purchase_id", ""))
-                doc = str(r.get("doc_no", pid))
-                date = str(r.get("date", ""))
-                total = float(r.get("total", 0.0))
-                paid = float(r.get("paid", 0.0))
-                rem = total - paid
-                self.applyPurchasePicker.addItem(f"{doc} — {date} — Total {total:.2f} Paid {paid:.2f} Rem {rem:.2f}", r)
-            self._update_apply_remaining()
-            self._apply_apply_amount_limits()
 
     def _load_company_banks(self) -> None:
         self.companyBankCombo.clear()
@@ -521,7 +479,6 @@ class _VendorMoneyDialog(QDialog):
                 rows = list(self._list_vendor_bank_accounts(self._vendor_id))
             except Exception as e:
                 # Log the error but allow loading to continue with available data
-                import logging
                 logging.error(f"Error loading vendor bank accounts for vendor {self._vendor_id}: {e}")
                 # Provide user feedback about the issue
                 from PySide6.QtWidgets import QMessageBox
@@ -529,7 +486,6 @@ class _VendorMoneyDialog(QDialog):
                 rows = []
         else:
             # If no function provided, log a warning and use empty rows
-            import logging
             logging.warning("No list_vendor_bank_accounts function provided, vendor bank accounts will not be loaded")
             rows = []
         
@@ -540,7 +496,7 @@ class _VendorMoneyDialog(QDialog):
                 vid = a.get("id")
             self.vendorBankCombo.addItem(str(a.get("name", "")), vid)
         
-        self.vendorBankCombo.addItem(_t("Temporary/External Bank Account"), "TEMP_BANK")
+        self.vendorBankCombo.addItem(_t("Temporary/External Bank Account"), TEMP_BANK_ACCOUNT)
         
         previous_selection_restored = False
         if current_text and current_text != "":
@@ -570,14 +526,6 @@ class _VendorMoneyDialog(QDialog):
             self.purchasePicker.addItem(self._locked_purchase_id, placeholder)
             self.purchasePicker.setCurrentIndex(self.purchasePicker.count() - 1)
         self.purchasePicker.setEnabled(False)
-
-        # Apply page
-        for i in range(self.applyPurchasePicker.count()):
-            data = self.applyPurchasePicker.itemData(i)
-            if isinstance(data, dict) and str(data.get("purchase_id", "")) == self._locked_purchase_id:
-                self.applyPurchasePicker.setCurrentIndex(i)
-                self.applyPurchasePicker.setEnabled(False)
-                break
 
     # ---------- Prefills (payment page) ----------
     def _apply_prefills_payment(self) -> None:
@@ -654,7 +602,7 @@ class _VendorMoneyDialog(QDialog):
             
             # If switching to Cheque method, clear any temporary account selection
             if method == "Cheque":
-                if self.vendorBankCombo.currentData() == "TEMP_BANK":
+                if self.vendorBankCombo.currentData() == TEMP_BANK_ACCOUNT:
                     self.vendorBankCombo.setCurrentIndex(0)  # Select the blank option
 
         # Instrument number required?
@@ -709,7 +657,7 @@ class _VendorMoneyDialog(QDialog):
         Helper method to update temporary bank field visibility and styling.
         """
         selected_value = self.vendorBankCombo.currentData()
-        is_temp_account = selected_value == "TEMP_BANK"
+        is_temp_account = selected_value == TEMP_BANK_ACCOUNT
         
         # Check if current method requires a vendor bank account
         # Note: "Cheque" doesn't require vendor bank (only outgoing company bank)
@@ -752,8 +700,6 @@ class _VendorMoneyDialog(QDialog):
                 hint = _t("Outgoing only (>0). Bank optional. Instrument no optional.")
         elif idx == self.PAGE_ADVANCE:
             hint = _t("Record a positive vendor advance (prepayment). No method or bank needed here.")
-        elif idx == self.PAGE_APPLY:
-            hint = _t("Apply available advance to an open purchase. Amount must not exceed vendor credit or remaining due.")
         self.hintLabel.setText(hint)
 
     def _update_remaining(self) -> None:
@@ -766,42 +712,9 @@ class _VendorMoneyDialog(QDialog):
         else:
             self.purchaseRemainingLabel.setText("")
 
-    # ---------- Apply page helpers ----------
-    def _update_apply_remaining(self) -> None:
-        data = self.applyPurchasePicker.currentData()
-        if isinstance(data, dict):
-            total = float(data.get("total", 0.0))
-            paid = float(data.get("paid", 0.0))
-            rem = total - paid
-            self.applyRemainingLabel.setText(f"{rem:.2f}")
-        else:
-            self.applyRemainingLabel.setText("")
 
-    # ---------- Amount limit helpers ----------
-    def _remaining_from_data(self, data: Optional[dict]) -> float:
-        if not isinstance(data, dict):
-            return 0.0
-        try:
-            total = float(data.get("total", 0.0))
-            paid = float(data.get("paid", 0.0))
-            rem = total - paid
-            return max(0.0, rem)
-        except Exception:
-            return 0.0
 
-    def _apply_payment_amount_limits(self) -> None:
-        data = self.purchasePicker.currentData()
-        remaining = self._remaining_from_data(data)
-        method = self.methodCombo.currentText()
-        if method == "Cash":
-            self.amountEdit.setRange(-1_000_000_000.0, max(0.0, remaining))
-        else:
-            self.amountEdit.setRange(0.0, max(0.0, remaining))
 
-    def _apply_apply_amount_limits(self) -> None:
-        data = self.applyPurchasePicker.currentData()
-        remaining = self._remaining_from_data(data)
-        self.applyAmountEdit.setRange(0.0, max(0.0, remaining))
 
     def _validate_live_payment(self) -> None:
         if self.pageStack.currentIndex() != self.PAGE_PAYMENT:
@@ -839,7 +752,7 @@ class _VendorMoneyDialog(QDialog):
         # For "Other" method, instrument is optional, so no validation needed
 
         selected_vendor_account = self.vendorBankCombo.currentData()
-        is_temp_account = selected_vendor_account == "TEMP_BANK"
+        is_temp_account = selected_vendor_account == TEMP_BANK_ACCOUNT
         need_vendor = method in METHODS_REQUIRE_BANK
         # For "Other" method, temporary bank validation only applies if a temporary account is selected AND a vendor bank is required
         if is_temp_account and need_vendor:
@@ -877,33 +790,9 @@ class _VendorMoneyDialog(QDialog):
         return True, None
 
     # ---------- Validation (apply) ----------
-    def _validate_live_apply(self) -> None:
-        if self.pageStack.currentIndex() != self.PAGE_APPLY:
-            return
-        ok, msg = self._validate_apply()
-        self.errorLabel.setText(msg or "")
-        self.saveBtn.setEnabled(ok)
 
-    def _validate_apply(self) -> tuple[bool, Optional[str]]:
-        data = self.applyPurchasePicker.currentData()
-        if not isinstance(data, dict) or not str(data.get("purchase_id", "")):
-            return False, _t("Please select a purchase to apply the advance.")
 
-        amt = float(self.applyAmountEdit.value())
-        if amt <= 0.0:
-            return False, _t("Amount must be greater than zero.")
 
-        # Client-side bound against remaining due if present in picker rows
-        try:
-            total = float(data.get("total", 0.0))
-            paid = float(data.get("paid", 0.0))
-            remaining = total - paid
-            if amt - remaining > 1e-9:
-                return False, _t("Amount exceeds remaining due for the selected purchase.")
-        except Exception:
-            pass
-
-        return True, None
 
     # ---------- Save ----------
     def _on_save(self) -> None:
@@ -924,13 +813,6 @@ class _VendorMoneyDialog(QDialog):
                 return
             self._payload = self._build_payload_advance()
             cb = self._submit_advance
-        elif idx == self.PAGE_APPLY:
-            ok, msg = self._validate_apply()
-            if not ok:
-                self._warn(msg)
-                return
-            self._payload = self._build_payload_apply()
-            cb = self._submit_apply
 
         # If submit callback provided, use it to persist and surface any DB constraint errors.
         if callable(cb):
@@ -1024,7 +906,6 @@ class _VendorMoneyDialog(QDialog):
         try:
             parts = s.split("-")
             if len(parts) != 3:
-                import logging
                 logging.warning(f"Invalid date format: {s}. Expected YYYY-MM-DD.")
                 return  # Invalid format (not YYYY-MM-DD)
             y, m, d = map(int, parts)
@@ -1037,7 +918,6 @@ class _VendorMoneyDialog(QDialog):
             edit.setDate(date_obj)
         except ValueError:
             # Raised when s.split("-") doesn't have 3 parts that can be converted to int
-            import logging
             logging.error(f"Error parsing date string: {s}")
             pass
 
@@ -1054,7 +934,7 @@ class _VendorMoneyDialog(QDialog):
             return edit.date().toString("yyyy-MM-dd") if edit.date().isValid() else None
 
         selected_vendor_account = self.vendorBankCombo.currentData()
-        is_temp_account = selected_vendor_account == "TEMP_BANK"
+        is_temp_account = selected_vendor_account == TEMP_BANK_ACCOUNT
         
         # Derive instrument type from method like in PO window
         method = self.methodCombo.currentText()
@@ -1090,14 +970,4 @@ class _VendorMoneyDialog(QDialog):
         }
         return payload
 
-    def _build_payload_apply(self) -> dict:
-        pdata = self.applyPurchasePicker.currentData() or {}
-        payload = {
-            "vendor_id": self._vendor_id,
-            "purchase_id": str(pdata.get("purchase_id")),
-            "amount": float(self.applyAmountEdit.value()),
-            "date": self.applyDateEdit.date().toString("yyyy-MM-dd"),
-            "notes": (self.applyNotesEdit.toPlainText().strip() or None),
-            "created_by": (int(self.applyCreatedByEdit.text()) if self.applyCreatedByEdit.text().strip() else None),
-        }
-        return payload
+

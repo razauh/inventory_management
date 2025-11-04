@@ -253,3 +253,34 @@ class PurchasePaymentsRepo:
         ORDER BY DATE(pp.date) ASC, pp.payment_id ASC
         """
         return self.conn.execute(sql, (vendor_id,)).fetchall()
+
+    def get_latest_payment_for_purchase(self, purchase_id: str) -> dict | None:
+        """
+        Get the latest payment details for a specific purchase.
+        """
+        sql = """
+        SELECT 
+            pp.amount,
+            pp.method,
+            pp.date,
+            pp.bank_account_id,
+            pp.vendor_bank_account_id,
+            pp.instrument_type,
+            pp.instrument_no,
+            pp.instrument_date,
+            pp.deposited_date,
+            pp.cleared_date,
+            pp.ref_no,
+            pp.notes,
+            pp.clearing_state,
+            ca.label AS bank_account_label,
+            va.label AS vendor_bank_account_label
+        FROM purchase_payments pp
+        LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
+        LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
+        WHERE pp.purchase_id = ?
+        ORDER BY pp.payment_id DESC
+        LIMIT 1
+        """
+        row = self.conn.execute(sql, (purchase_id,)).fetchone()
+        return dict(row) if row else None

@@ -40,26 +40,51 @@ class PurchaseDetails(QWidget):
 
     def set_data(self, row: dict | None):
         if not row:
-            for w in (
-                self.lab_id,
-                self.lab_date,
-                self.lab_vendor,
-                self.lab_total,
-                self.lab_paid,
-                self.lab_remain,
-                self.lab_status,
-            ):
-                w.setText("-")
+            self.clear_data()
             return
 
-        self.lab_id.setText(row["purchase_id"])
-        self.lab_date.setText(row["date"])
-        self.lab_vendor.setText(row["vendor_name"])
-        self.lab_total.setText(fmt_money(row["total_amount"]))
-        self.lab_paid.setText(fmt_money(row["paid_amount"]))
-        remaining = float(row["total_amount"]) - float(row["paid_amount"])
+        purchase_id = row.get("purchase_id", "-")
+        purchase_id = purchase_id if purchase_id else "-"
+        self.lab_id.setText(str(purchase_id))
+        
+        date = row.get("date", "-")
+        date = date if date else "-"
+        self.lab_date.setText(str(date))
+        
+        vendor_name = row.get("vendor_name", "-")
+        vendor_name = vendor_name if vendor_name else "-"
+        self.lab_vendor.setText(str(vendor_name))
+        
+        try:
+            total_amount = float(row.get("total_amount", 0.0))
+        except (TypeError, ValueError):
+            total_amount = 0.0
+        self.lab_total.setText(fmt_money(total_amount))
+        
+        try:
+            paid_amount = float(row.get("paid_amount", 0.0))
+        except (TypeError, ValueError):
+            paid_amount = 0.0
+        self.lab_paid.setText(fmt_money(paid_amount))
+        
+        remaining = total_amount - paid_amount
         self.lab_remain.setText(fmt_money(remaining))
-        self.lab_status.setText(row["payment_status"])
+        
+        payment_status = row.get("payment_status", "-")
+        payment_status = payment_status if payment_status else "-"
+        self.lab_status.setText(str(payment_status))
+
+    def clear_data(self):
+        for w in (
+            self.lab_id,
+            self.lab_date,
+            self.lab_vendor,
+            self.lab_total,
+            self.lab_paid,
+            self.lab_remain,
+            self.lab_status,
+        ):
+            w.setText("-")
 
     def clear_payment_summary(self):
         self.lblPayMethod.setText("—")
@@ -71,12 +96,21 @@ class PurchaseDetails(QWidget):
         if not data:
             self.clear_payment_summary()
             return
-        self.lblPayMethod.setText(data.get("method") or "—")
-        self.lblPayAmount.setText(f'{float(data.get("amount", 0.0)):.2f}')
-        self.lblPayStatus.setText(data.get("status") or "—")
+        method = data.get("method") or "—"
+        method = method if method else "—"
+        self.lblPayMethod.setText(str(method))
+        
+        amount = data.get("amount", 0.0)
+        self.lblPayAmount.setText(f'{float(amount or 0.0):.2f}')
+        
+        status = data.get("status") or "—"
+        status = status if status else "—"
+        self.lblPayStatus.setText(str(status))
+        
         over = float(data.get("overpayment", 0.0) or 0.0)
         if over > 0:
             ent = data.get("counterparty_label") or "Vendor"
-            self.lblOverpay.setText(f"{over:.2f} — Excess credited to {ent} account")
+            ent = ent if ent else "Vendor"
+            self.lblOverpay.setText(f"{over:.2f} — Excess credited to {str(ent)} account")
         else:
             self.lblOverpay.setText("—")

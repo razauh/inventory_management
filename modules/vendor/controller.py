@@ -121,16 +121,12 @@ class VendorController(BaseModule):
         self._hook_acc_selection_enablement()
         self._update_acc_buttons_enabled()
     def _list_company_bank_accounts(self) -> List[Dict[str, Any]]:
-        sql = """
-        SELECT account_id AS id,
-               COALESCE(label, bank_name || ' ' || account_no) AS name
-        FROM company_bank_accounts
-        WHERE is_active = 1
-        ORDER BY name ASC;
-        """
         try:
-            rows = self.conn.execute(sql).fetchall()
-            return [dict(r) for r in rows]
+            # Use the repository to get company bank accounts
+            from ...database.repositories.company_bank_accounts_repo import CompanyBankAccountsRepo
+            repo = CompanyBankAccountsRepo(self.conn)
+            rows = repo.list_active()
+            return [{"id": int(r["account_id"]), "name": r.get("label") or (r.get("bank_name", "") + " " + r.get("account_no", ""))} for r in rows]
         except Exception:
             return []
     def _list_vendor_bank_accounts(self, vendor_id: int) -> List[Dict[str, Any]]:
@@ -143,20 +139,7 @@ class VendorController(BaseModule):
         except Exception:
             return []
     def _open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
-        sql = """
-        SELECT
-            p.purchase_id,
-            p.date,
-            CAST(p.total_amount AS REAL)    AS total_amount,
-            CAST(p.paid_amount AS REAL)     AS paid_amount,
-            CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
-            (CAST(p.total_amount AS REAL) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS balance
-        FROM purchases p
-        WHERE p.vendor_id = ?
-          AND (CAST(p.total_amount AS REAL) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
-        ORDER BY DATE(p.date) DESC, p.purchase_id DESC
-        """
-        return self.conn.execute(sql, (vendor_id,)).fetchall()
+        return self.repo.get_open_purchases_for_vendor(vendor_id)
     def _list_open_purchases_for_vendor(self, vendor_id: int) -> List[Dict[str, Any]]:
         try:
             rows = self._open_purchases_for_vendor(vendor_id)
@@ -175,20 +158,10 @@ class VendorController(BaseModule):
             return []
         return self._open_purchases_for_vendor(vid)
     def _purchase_belongs_to_vendor(self, purchase_id: str, vendor_id: int) -> bool:
-        row = self.conn.execute("SELECT vendor_id FROM purchases WHERE purchase_id=?;", (purchase_id,)).fetchone()
+        row = self.repo.get_vendor_id_for_purchase(purchase_id)
         return bool(row) and int(row["vendor_id"]) == int(vendor_id)
     def _remaining_due_for_purchase(self, purchase_id: str) -> float:
-        row = self.conn.execute(
-            """
-            SELECT
-                CAST(total_amount AS REAL) AS total_amount,
-                CAST(paid_amount AS REAL) AS paid_amount,
-                CAST(advance_payment_applied AS REAL) AS advance_payment_applied
-            FROM purchases
-            WHERE purchase_id = ?
-            """,
-            (purchase_id,),
-        ).fetchone()
+        row = self.repo.get_purchase_remaining_due(purchase_id)
         if not row:
             return 0.0
         total = float(row["total_amount"] or 0.0)
@@ -451,71 +424,34 @@ class VendorController(BaseModule):
             info(self.view, "Too much", f"Amount exceeds remaining due ({remaining:.2f}).")
             return
         try:
+            # Begin transaction to ensure both payment and header totals are updated atomically
+            self.conn.execute("BEGIN")
+            
             pid = self.ppay.record_payment(purchase_id=str(purchase_id), amount=amount, method=method, date=payload.get("date"), bank_account_id=payload.get("bank_account_id"), vendor_bank_account_id=payload.get("vendor_bank_account_id"), instrument_type=payload.get("instrument_type"), instrument_no=payload.get("instrument_no"), instrument_date=payload.get("instrument_date"), deposited_date=payload.get("deposited_date"), cleared_date=payload.get("cleared_date"), clearing_state=payload.get("clearing_state"), notes=payload.get("notes"), created_by=payload.get("created_by"))
+            
+            # Update the purchase header totals to reflect the new payment
+            self.repo.update_header_totals(str(purchase_id))
+            
+            # Commit the transaction to persist both changes
+            self.conn.execute("COMMIT")
+            
+            info(self.view, "Saved", f"Payment #{pid} recorded.")
+            
         except Exception as e:
+            # Rollback the transaction in case of any error
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass  # Ignore rollback errors
             if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
                 info(self.view, "Not saved", str(e))
                 return
             if isinstance(e, (ValueError, sqlite3.IntegrityError)):
                 info(self.view, "Not saved", str(e))
                 return
-            info(self.view, "Not saved", str(e))
+            info(self.view, "Not saved", f"Payment recording failed: {e}")
             return
-        info(self.view, "Saved", f"Payment #{pid} recorded.")
-        
-        try:
-            # Begin transaction for updating purchase header totals
-            self.conn.execute("BEGIN")
-            
-            # Update the purchase header totals to reflect the new payment
-            # Recompute paid amount from cleared payments
-            r_pay = self.conn.execute(
-                """
-                SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS cleared_paid
-                FROM purchase_payments
-                WHERE purchase_id = ?
-                  AND COALESCE(clearing_state, 'posted') = 'cleared'
-                """,
-                (str(purchase_id),),
-            ).fetchone()
-            cleared_paid = float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0)
 
-            # Get total amount from the purchase and any advance payments applied
-            row = self.conn.execute(
-                """
-                SELECT
-                  COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-                  COALESCE(p.advance_payment_applied, 0.0) AS adv_applied
-                FROM purchases p
-                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-                WHERE p.purchase_id = ?
-                """,
-                (str(purchase_id),),
-            ).fetchone()
-            
-            total_calc = float(row["total_calc"] if row and "total_calc" in row.keys() else 0.0)
-            adv_applied = float(row["adv_applied"] if row and "adv_applied" in row.keys() else 0.0)
-
-            # Update the purchase record with the new paid amount
-            self.conn.execute("UPDATE purchases SET paid_amount = ? WHERE purchase_id = ?;", (cleared_paid, str(purchase_id)))
-            
-            # Calculate remaining amount and update payment status if paid in full
-            remaining = max(0.0, total_calc - cleared_paid - adv_applied)
-            if remaining <= _EPS:
-                self.conn.execute("UPDATE purchases SET payment_status = 'paid' WHERE purchase_id = ?;", (str(purchase_id),))
-            
-            # Commit the transaction
-            self.conn.execute("COMMIT")
-            
-        except Exception as e:
-            # Rollback the transaction on error
-            try:
-                self.conn.execute("ROLLBACK")
-            except Exception:
-                pass  # Ignore rollback errors
-            info(self.view, "Error", f"Could not update purchase totals after payment: {e}")
-            return
-        
         self._reload()
     def _on_record_advance_dialog(self):
         vid = self._selected_id()
@@ -541,47 +477,7 @@ class VendorController(BaseModule):
         info(self.view, "Saved", f"Advance #{tx_id} recorded.")
         self._reload()
     def _on_apply_advance_dialog(self):
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor first.")
-            return
-        try:
-            from .payment_dialog import open_vendor_money_form
-        except Exception as e:
-            info(self.view, "Unavailable", f"Vendor money dialog is not available:\n{e}")
-            return
-        defaults = {"list_open_purchases_for_vendor": self._list_open_purchases_for_vendor, "today": today_str, "vendor_display": str(vid)}
-        payload = open_vendor_money_form(mode="apply_advance", vendor_id=vid, purchase_id=None, defaults=defaults)
-        if not payload:
-            return
-        purchase_id = payload.get("purchase_id")
-        amt = payload.get("amount")
-        if not purchase_id or amt is None:
-            info(self.view, "Required", "Please select a purchase and enter amount.")
-            return
-        if not self._purchase_belongs_to_vendor(purchase_id, vid):
-            info(self.view, "Invalid", "Purchase does not belong to the selected vendor.")
-            return
-        amount = float(amt)
-        remaining = self._remaining_due_for_purchase(str(purchase_id))
-        credit_bal = self._vendor_credit_balance(int(vid))
-        allowable = min(credit_bal, remaining)
-        if amount - allowable > _EPS:
-            info(self.view, "Too much", f"Amount exceeds available credit or remaining due (max {allowable:.2f}).")
-            return
-        try:
-            tx_id = self.vadv.apply_credit_to_purchase(vendor_id=vid, purchase_id=str(purchase_id), amount=amount, date=payload.get("date"), notes=payload.get("notes"), created_by=payload.get("created_by"))
-        except Exception as e:
-            if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
-                info(self.view, "Not saved", str(e))
-                return
-            if isinstance(e, (ValueError, sqlite3.IntegrityError)):
-                info(self.view, "Not saved", str(e))
-                return
-            info(self.view, "Not saved", str(e))
-            return
-        info(self.view, "Saved", f"Advance application #{tx_id} recorded.")
-        self._reload()
+        info(self.view, "Feature Removed", "The Apply Advance feature has been removed as advances are now automatically applied to purchases when they are created or edited.")
     def _on_update_clearing(self):
         vid = self._selected_id()
         if not vid:
