@@ -743,14 +743,10 @@ class PurchaseForm(QDialog):
                     self._add_row(row)
             self._refresh_totals()
             
-            
-            
+            # Recalculate all visible rows to ensure all line totals are updated
+            # This is necessary because programmatic value changes may not trigger _cell_changed
             for r in range(self.tbl.rowCount()):
-                for c in [2, 3, 4]:  
-                    item = self.tbl.item(r, c)
-                    if item:
-                        
-                        self._recalc_row(r)
+                self._recalc_row(r)  # Calculate line total for each row once
             
             
             self._refresh_totals()
