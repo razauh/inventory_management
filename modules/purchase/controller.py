@@ -867,76 +867,49 @@ class PurchaseController(BaseModule):
 
         purchase_id = str(row["purchase_id"])
         vendor_id = int(row.get("vendor_id") or 0)
-        vendor_display = str(row.get("vendor_name") or vendor_id)
 
-        try:
-            from ..vendor.payment_dialog import open_vendor_money_form
-            payload = open_vendor_money_form(
-                mode="payment",
-                vendor_id=vendor_id,
-                purchase_id=purchase_id,
-                defaults={
-                    "list_company_bank_accounts": self._list_company_bank_accounts,
-                    "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
-                    "list_open_purchases_for_vendor": self._list_open_purchases_for_vendor,
-                    "vendor_display": vendor_display,
-                },
-            )
+        from .payment_form import PaymentForm
+        dlg = PaymentForm(self.view, vendors=self.vendors, purchase_id=purchase_id, vendor_id=vendor_id)
+        
+        if dlg.exec():
+            payload = dlg.payload()
             if payload:
                 try:
-                    amt = float(payload.get("amount"))
-                except (TypeError, ValueError):
-                    info(self.view, "Payment not recorded", "Incomplete form data returned from Vendor dialog.")
-                    return
-
-                method = (payload.get("method") or "").strip()
-                remaining = self._remaining_due_header(str(payload.get("purchase_id") or purchase_id))
-                if method.lower() != "cash" and amt - remaining > _EPS:
-                    info(self.view, "Payment not recorded", f"Amount exceeds remaining due ({remaining:.2f}).")
-                    return
-
-                try:
+                    self.conn.execute("BEGIN")
+                    
                     self.payments.record_payment(
-                        purchase_id=str(payload.get("purchase_id") or purchase_id),
-                        amount=amt,
-                        method=payload.get("method"),
-                        bank_account_id=payload.get("bank_account_id"),
-                        vendor_bank_account_id=payload.get("vendor_bank_account_id"),
-                        instrument_type=payload.get("instrument_type"),
-                        instrument_no=payload.get("instrument_no"),
-                        instrument_date=payload.get("instrument_date"),
-                        deposited_date=payload.get("deposited_date"),
-                        cleared_date=payload.get("cleared_date"),
-                        clearing_state=payload.get("clearing_state"),
-                        ref_no=payload.get("ref_no"),
-                        notes=payload.get("notes"),
-                        date=payload.get("date") or today_str(),
+                        purchase_id=payload["purchase_id"],
+                        amount=payload["amount"],
+                        method=payload["method"],
+                        bank_account_id=payload["bank_account_id"],
+                        vendor_bank_account_id=payload["vendor_bank_account_id"],
+                        instrument_type=payload["instrument_type"],
+                        instrument_no=payload["instrument_no"],
+                        instrument_date=payload["instrument_date"],
+                        deposited_date=payload["deposited_date"],
+                        cleared_date=payload["cleared_date"],
+                        clearing_state=payload["clearing_state"],
+                        ref_no=payload["ref_no"],
+                        notes=payload["notes"],
+                        date=payload["date"],
                         created_by=(self.user["user_id"] if self.user else None),
-                        temp_vendor_bank_name=payload.get("temp_vendor_bank_name"),
-                        temp_vendor_bank_number=payload.get("temp_vendor_bank_number"),
+                        temp_vendor_bank_name=payload["temp_vendor_bank_name"],
+                        temp_vendor_bank_number=payload["temp_vendor_bank_number"],
                     )
+                    
+                    # Update the purchase header totals to reflect the new payment
+                    self._recompute_header_totals_from_rows(purchase_id)
+                    
+                    self.conn.commit()
+                    info(self.view, "Saved", "Payment recorded successfully.")
+                    self._reload()
                 except Exception as e:
-                    if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
-                        _log.error(f"Payment processing error: {e}")
-                        info(self.view, "Payment not recorded", str(e))
-                        return
-                    if isinstance(e, (sqlite3.IntegrityError, sqlite3.OperationalError)):
-                        _log.error(f"Payment processing error: {e}")
-                        info(self.view, "Payment not recorded", "Could not record payment.")
-                        return
-                    _log.error(f"Payment processing error: {e}")
-                    info(self.view, "Payment not recorded", "Could not record payment.")
+                    try:
+                        self.conn.rollback()
+                    except Exception:
+                        pass
+                    info(self.view, "Payment not recorded", f"Could not record payment: {str(e)}")
                     return
-
-                info(self.view, "Saved", "Payment recorded.")
-                # Update the purchase header totals to reflect the new payment
-                self._recompute_header_totals_from_rows(str(payload.get("purchase_id") or purchase_id))
-                self._reload()
-                return
-        except Exception as e:
-            _log.exception("Error opening vendor payment dialog")
-            info(self.view, "Payment Dialog Error", "Could not open vendor payment dialog.")
-            return
 
     def mark_payment_cleared(self, payment_id: int, *, cleared_date: Optional[str] = None, notes: Optional[str] = None):
         pay = self._get_payment(payment_id)

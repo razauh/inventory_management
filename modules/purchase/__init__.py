@@ -31,6 +31,7 @@ try:
     from .details import PurchaseDetails  # type: ignore
     from .item_form import PurchaseItemForm  # type: ignore
     from .items import PurchaseItemsView  # type: ignore
+    from .payment_form import PaymentForm  # type: ignore
 except Exception:  # pragma: no cover
     PurchaseView = None  # type: ignore
     PurchasesTableModel = None  # type: ignore
@@ -41,6 +42,7 @@ except Exception:  # pragma: no cover
     PurchaseDetails = None  # type: ignore
     PurchaseItemForm = None  # type: ignore
     PurchaseItemsView = None  # type: ignore
+    PaymentForm = None  # type: ignore
 
 __all__ = [
     "PurchaseController",
@@ -53,4 +55,5 @@ __all__ = [
     "PurchaseDetails",
     "PurchaseItemForm",
     "PurchaseItemsView",
+    "PaymentForm",
 ]
