@@ -18,13 +18,13 @@ class VendorView(QWidget):
         self.btn_edit = QPushButton("Edit")
         # self.btn_del = QPushButton("Delete")
 
-        # New: apply credit action (from vendor profile to an open purchase)
-        self.btn_apply_credit = QPushButton("Apply Credit…")
+        # New: apply advance action (from vendor profile to an open purchase)
+        self.btn_apply_advance = QPushButton("Apply Advance…")
 
         top.addWidget(self.btn_add)
         top.addWidget(self.btn_edit)
         # top.addWidget(self.btn_del)
-        top.addWidget(self.btn_apply_credit)
+        top.addWidget(self.btn_apply_advance)
         top.addStretch(1)
 
         self.search = QLineEdit()

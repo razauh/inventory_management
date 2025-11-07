@@ -12,14 +12,14 @@ class VendorDetails(QWidget):
         self.lab_contact = QLabel("-")
         self.lab_address = QLabel("-")
         self.lab_address.setWordWrap(True)
-        self.lblCreditValue = QLabel("0.00")
-        self.lblCreditValue.setObjectName("lblAvailableCredit")
-        self.lblCreditValue.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.lblAvailableAdvanceValue = QLabel("0.00")
+        self.lblAvailableAdvanceValue.setObjectName("lblAvailableAdvance")
+        self.lblAvailableAdvanceValue.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         f.addRow("ID:", self.lab_id)
         f.addRow("Name:", self.lab_name)
         f.addRow("Contact:", self.lab_contact)
         f.addRow("Address:", self.lab_address)
-        f.addRow("Available Credit:", self.lblCreditValue)
+        f.addRow("Available Advance:", self.lblAvailableAdvanceValue)
 
         root = QVBoxLayout(self)
         root.addWidget(box, 1)
@@ -45,4 +45,4 @@ class VendorDetails(QWidget):
         except Exception:
             val = 0.0
         # Two-decimal formatting (thousands separators if you prefer)
-        self.lblCreditValue.setText(f"{val:,.2f}")
+        self.lblAvailableAdvanceValue.setText(f"{val:,.2f}")

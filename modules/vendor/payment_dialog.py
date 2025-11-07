@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable, Optional, Literal
 
 try:
@@ -8,13 +9,10 @@ try:
     from PySide6.QtGui import QIntValidator, QKeySequence
     from PySide6.QtWidgets import (
         QApplication,
-        QComboBox,
-        QDateEdit,
         QDialog,
         QDialogButtonBox,
         QDoubleSpinBox,
         QFormLayout,
-        QHBoxLayout,
         QLabel,
         QLineEdit,
         QMessageBox,
@@ -22,68 +20,28 @@ try:
         QPushButton,
         QVBoxLayout,
         QWidget,
-        QStackedWidget,
-        QTabBar,
+        QDateEdit,
+        QGroupBox,
+        QGridLayout,
+        QComboBox,
+        QScrollArea,
     )
 except Exception:
     raise
+
+from ...database.repositories.vendors_repo import VendorsRepo
+from ...utils.helpers import today_str
 
 
 def _t(s: str) -> str:
     return s
 
 
-# Constants
-TEMP_BANK_ACCOUNT = "TEMP_BANK"
-
-
-
-
-METHODS = [
-    "Cash",
-    "Bank Transfer",
-    "Cheque",
-    "Cross Cheque",
-    "Cash Deposit",
-    "Other",
-]
-
-INSTRUMENT_TYPES = [
-    "online",
-    "cheque",
-    "cross_cheque",
-    "cash_deposit",
-    "pay_order",
-    "other",
-]
-
-CLEARING_STATES = ["posted", "pending", "cleared", "bounced"]
-
-METHOD_TO_FORCED_INSTRUMENT = {
-    "Cash": "other",
-    "Bank Transfer": "online",
-    "Cheque": "cheque",
-    "Cross Cheque": "cross_cheque",
-    "Cash Deposit": "cash_deposit",
-    "Other": "other",
-}
-METHOD_TO_DEFAULT_CLEARING = {
-    "Cash": "cleared",
-    "Bank Transfer": "cleared",
-    "Cheque": "pending",
-    "Cross Cheque": "pending",
-    "Cash Deposit": "pending",
-    "Other": "cleared",
-}
-
-METHODS_REQUIRE_BANK = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"}
-METHODS_REQUIRE_INSTR_NO = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"}
-
-
 def open_vendor_money_form(
     *,
-    mode: Literal["payment", "advance"],
+    mode: Literal["payment", "advance"] = "advance",
     vendor_id: int,
+    vendors: VendorsRepo | None = None,
     purchase_id: Optional[str] = None,
     defaults: dict | None = None,
 ) -> dict | None:
@@ -92,7 +50,7 @@ def open_vendor_money_form(
     if owns_app:
         app = QApplication([])
 
-    dlg = _VendorMoneyDialog(mode=mode, vendor_id=int(vendor_id), purchase_id=purchase_id, defaults=defaults or {})
+    dlg = _VendorMoneyDialog(mode=mode, vendor_id=int(vendor_id), vendors=vendors, purchase_id=purchase_id, defaults=defaults or {})
     result = dlg.exec()
     payload = dlg.payload() if result == QDialog.Accepted else None
 
@@ -102,728 +60,791 @@ def open_vendor_money_form(
 
 
 class _VendorMoneyDialog(QDialog):
-    PAGE_PAYMENT = 0
-    PAGE_ADVANCE = 1
+    PAYMENT_METHODS = {
+        'CASH': 'Cash',
+        'BANK_TRANSFER': 'Bank Transfer', 
+        'CHEQUE': 'Cheque',
+        'CROSS_CHEQUE': 'Cross Cheque',
+        'CASH_DEPOSIT': 'Cash Deposit',
+        'OTHER': 'Other'
+    }
+    
+    PAYMENT_METHODS_REQUIRE_COMPANY_BANK = {'BANK_TRANSFER', 
+                                           'CHEQUE', 
+                                           'CROSS_CHEQUE'}
+    PAYMENT_METHODS_REQUIRE_VENDOR_BANK = {'BANK_TRANSFER', 
+                                          'CROSS_CHEQUE', 
+                                          'CASH_DEPOSIT'}
+    PAYMENT_METHODS_REQUIRE_INSTRUMENT = {'BANK_TRANSFER', 
+                                         'CHEQUE', 
+                                         'CROSS_CHEQUE', 
+                                         'CASH_DEPOSIT'}
+    TEMP_BANK_KEY = "TEMP_BANK"
 
-    def __init__(self, *, mode: str, vendor_id: int, purchase_id: Optional[str], defaults: dict) -> None:
+    def _get_method_key(self, display_value: str) -> str | None:
+        """Convert a payment method display value to its corresponding key."""
+        return self._method_display_to_key.get(display_value)
+
+    def __init__(self, *, mode: str, vendor_id: int, vendors: VendorsRepo | None = None, purchase_id: Optional[str] = None, defaults: dict) -> None:
         super().__init__(None)
-        self.setWindowTitle(_t("Vendor Money"))
+        self._mode = mode
+        self.setWindowTitle(_t("Record Vendor Payment" if self._mode == "payment" else "Record Vendor Advance"))
         self.setModal(True)
 
         self._payload: Optional[dict] = None
         self._vendor_id = int(vendor_id)
-        self._locked_purchase_id = str(purchase_id) if purchase_id is not None else None
         self._defaults = defaults or {}
-
-        self._list_company_bank_accounts: Optional[Callable[[], list]] = self._defaults.get("list_company_bank_accounts")
-        self._list_vendor_bank_accounts: Optional[Callable[[int], list]] = self._defaults.get("list_vendor_bank_accounts")
-        self._list_open_purchases_for_vendor: Optional[Callable[[int], list]] = self._defaults.get("list_open_purchases_for_vendor")
-        self._today: Optional[Callable[[], str]] = self._defaults.get("today")
+        self.vendors = vendors  # Added vendors connection
+        self._purchase_id = purchase_id
 
         self._submit_payment: Optional[Callable[[dict], None]] = self._defaults.get("submit_payment")
         self._submit_advance: Optional[Callable[[dict], None]] = self._defaults.get("submit_advance")
 
-        self._prefill_method: Optional[str] = self._defaults.get("method")
         self._prefill_amount: Optional[float] = self._defaults.get("amount")
         self._prefill_date: Optional[str] = self._defaults.get("date")
-        self._prefill_company_bank_id: Optional[int] = self._defaults.get("bank_account_id")
-        self._prefill_vendor_bank_id: Optional[int] = self._defaults.get("vendor_bank_account_id")
-        self._prefill_instrument_type: Optional[str] = self._defaults.get("instrument_type")
-        self._prefill_instrument_no: Optional[str] = self._defaults.get("instrument_no")
-        self._prefill_instrument_date: Optional[str] = self._defaults.get("instrument_date")
-        self._prefill_deposited_date: Optional[str] = self._defaults.get("deposited_date")
-        self._prefill_clearing_state: Optional[str] = self._defaults.get("clearing_state")
-        self._prefill_cleared_date: Optional[str] = self._defaults.get("cleared_date")
         self._prefill_notes: Optional[str] = self._defaults.get("notes")
         self._prefill_created_by: Optional[int] = self._defaults.get("created_by")
         self._vendor_display: Optional[str] = self._defaults.get("vendor_display")
-        self._prefill_temp_bank_name: Optional[str] = self._defaults.get("temp_vendor_bank_name")
-        self._prefill_temp_bank_number: Optional[str] = self._defaults.get("temp_vendor_bank_number")
+
+        # Create reverse mapping from display values to keys for payment methods
+        self._method_display_to_key = {v: k for k, v in self.PAYMENT_METHODS.items()}
 
         self._build_ui()
-
-        initial = {
-            "payment": self.PAGE_PAYMENT,
-            "advance": self.PAGE_ADVANCE,
-        }.get(mode, self.PAGE_PAYMENT)
-        self.pageStack.setCurrentIndex(initial)
-        self.tabBar.setCurrentIndex(initial)
-        self._sync_window_title()
-
-        self._load_purchases()
-        self._load_company_banks()
-        self._load_vendor_banks()
-        self._apply_prefills_payment()
-        self._lock_purchase_if_needed()
-        self._on_method_changed()
-        self._update_hint()
-        self._validate_live_payment()
-        self._validate_live_advance()
+        self._apply_prefills()
+        
+        # Load bank accounts after UI is built (need the widgets to exist)
+        self._reload_company_accounts()
+        self._reload_vendor_accounts()
+        self._refresh_visibility()
+        self._toggle_fields_by_amount()
+        
+        # Calculate and display remaining amount if in payment mode
+        if self._mode == "payment":
+            self._calculate_remaining_amount()
 
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self)
+        main_widget = QWidget()
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
 
-        self.tabBar = QTabBar()
-        self.tabBar.addTab(_t("Payment"))
-        self.tabBar.addTab(_t("Record Advance"))
-        self.tabBar.currentChanged.connect(self._on_tab_changed)
-        outer.addWidget(self.tabBar)
+        # Vendor information display
+        vendor_info_box = QGroupBox("Vendor Information")
+        vendor_info_layout = QVBoxLayout(vendor_info_box)
+        self.vendorLabel = QLabel(f"Vendor: {self._vendor_id if self._vendor_display is None else self._vendor_display}")
+        vendor_info_layout.addWidget(self.vendorLabel)
+        main_layout.addWidget(vendor_info_box)
 
-        self.pageStack = QStackedWidget()
-        outer.addWidget(self.pageStack, 1)
+        # Payment fields group box
+        payment_box = QGroupBox("Advance Payment Details")
+        payment_layout = QGridLayout(payment_box)
+        payment_layout.setHorizontalSpacing(10)  # Reduced horizontal spacing
+        payment_layout.setVerticalSpacing(2)   # Further reduced vertical spacing
 
-        self.page_payment = QWidget()
-        self._build_payment_page(self.page_payment)
-        self.pageStack.addWidget(self.page_payment)
+        # Use QLineEdit instead of QDoubleSpinBox to match the original payment form
+        self.amount = QLineEdit()
+        self.amount.setPlaceholderText("Enter amount")
+        self.amount.clear()  # Explicitly clear the text field to ensure it's empty
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        from datetime import date
+        self.date.setDate(QDate.fromString(date.today().isoformat(), "yyyy-MM-dd"))
 
-        self.page_advance = QWidget()
-        self._build_advance_page(self.page_advance)
-        self.pageStack.addWidget(self.page_advance)
+        self.method = QComboBox()
+        self.method.addItems(list(self.PAYMENT_METHODS.values()))
 
-        self.hintLabel = QLabel("")
-        self.hintLabel.setWordWrap(True)
-        self.hintLabel.setStyleSheet("color:#666;")
-        outer.addWidget(self.hintLabel)
+        self.company_acct = QComboBox()
+        self.company_acct.setEditable(True)
+        self.vendor_acct = QComboBox()
+        self.vendor_acct.setEditable(True)
+        self.instr_no = QLineEdit()
+        self.instr_no.setPlaceholderText("Instrument / Cheque / Slip #")
+        self.notes = QLineEdit()
+        self.notes.setPlaceholderText("Notes (optional)")
+        
+        # Temporary external bank account fields
+        self.temp_bank_name = QLineEdit()
+        self.temp_bank_name.setPlaceholderText("Bank Name")
+        self.temp_bank_number = QLineEdit()
+        self.temp_bank_number.setPlaceholderText("Account Number")
 
+        def create_required_label(text):
+            """Helper function to create a label with a red asterisk for required fields"""
+            label = QLabel()
+            label.setText(text + "*")
+            label.setStyleSheet("color: red; font-weight: bold;")
+            return label
+
+        def add_payment_field(row, col, text, widget, required=False):
+            """Helper function to add payment fields with optional required indicators"""
+            c = col * 2
+            if required:
+                label = create_required_label(text)
+                payment_layout.addWidget(label, row, c)
+            else:
+                label = QLabel(text)
+                payment_layout.addWidget(label, row, c)
+            payment_layout.addWidget(widget, row, c + 1)
+            return label  # Return the label for potential modification later
+
+        self._payment_labels = {}
+        
+        add_payment_field(0, 0, "Amount", self.amount, required=True)
+        add_payment_field(0, 1, "Payment Date", self.date, required=True)
+        add_payment_field(1, 0, "Method", self.method, required=True)
+        self._payment_labels['company_acct'] = add_payment_field(1, 1, "Company Bank Account", self.company_acct, required=False)
+        self._payment_labels['vendor_acct'] = add_payment_field(2, 0, "Vendor Bank Account", self.vendor_acct, required=False)
+        self._payment_labels['instr_no'] = add_payment_field(2, 1, "Instrument No", self.instr_no, required=False)
+        
+        # Add temporary bank fields to the layout (now at row 3)
+        payment_layout.addWidget(QLabel("Temp Bank Name"), 3, 0)
+        payment_layout.addWidget(self.temp_bank_name, 3, 1)
+        payment_layout.addWidget(QLabel("Temp Bank Number"), 3, 2)
+        payment_layout.addWidget(self.temp_bank_number, 3, 3)
+        
+        # Store temporary bank labels separately
+        temp_bank_name_item = payment_layout.itemAtPosition(3, 0)
+        temp_bank_number_item = payment_layout.itemAtPosition(3, 2)
+        self._payment_labels['temp_bank_name'] = temp_bank_name_item.widget() if temp_bank_name_item else None
+        self._payment_labels['temp_bank_number'] = temp_bank_number_item.widget() if temp_bank_number_item else None
+        
+        # Keep temporary bank fields visible but disabled by default
+        self.temp_bank_name.setVisible(True)
+        self.temp_bank_number.setVisible(True)
+        self.temp_bank_name.setEnabled(False)
+        self.temp_bank_number.setEnabled(False)
+        # Keep the labels visible but not required initially
+        # We will handle their requirement state separately
+        
+        # Purchase information display (only for payment mode)
+        purchase_info_box = None
+        remaining_info_box = None
+        if self._mode == "payment" and self._purchase_id:
+            purchase_info_box = QGroupBox("Purchase Information")
+            purchase_info_layout = QHBoxLayout(purchase_info_box)
+            self.lbl_purchase_id = QLabel(f"Purchase ID: {self._purchase_id}")
+            purchase_info_layout.addWidget(self.lbl_purchase_id)
+            main_layout.addWidget(purchase_info_box)
+
+            # Add remaining amount info
+            remaining_info_box = QGroupBox("Payment Summary")
+            remaining_info_layout = QHBoxLayout(remaining_info_box)
+            self.lbl_remaining = QLabel("Calculating...")
+            remaining_info_layout.addWidget(self.lbl_remaining)
+            main_layout.addWidget(remaining_info_box)
+        else:
+            # For advance mode, make sure we initialize the labels to avoid AttributeError
+            self.lbl_purchase_id = QLabel("")
+            self.lbl_remaining = QLabel("")
+
+        # Make purchase info fields available even if not visible for payment mode
+        if self._mode == "payment" and purchase_info_box and remaining_info_box:
+            purchase_info_box.setVisible(True)
+            remaining_info_box.setVisible(True)
+        else:
+            # For advance mode, hide purchase-related fields
+            self.lbl_purchase_id.setParent(None)
+            self.lbl_remaining.setParent(None)
+
+        # Add payment notes
+        payment_layout.addWidget(QLabel("Payment Notes"), 5, 0)
+        payment_layout.addWidget(self.notes, 5, 1, 1, 3)
+        payment_layout.setColumnStretch(1, 1)
+        payment_layout.setColumnStretch(3, 1)
+
+        main_layout.addWidget(payment_box, 1)
+
+        # Button box
+        self.buttonBox = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.saveBtn = self.buttonBox.button(QDialogButtonBox.Save)
+        self.saveBtn.setText("Record Advance")
+        self.cancelBtn = self.buttonBox.button(QDialogButtonBox.Cancel)
+        self.buttonBox.accepted.connect(self._on_save)
+        self.buttonBox.rejected.connect(self.reject)
+
+        # Add button box to layout
+        main_layout.addWidget(self.buttonBox)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(main_widget)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        final_layout = QVBoxLayout(self)
+        final_layout.setContentsMargins(12, 12, 12, 12)
+        final_layout.setSpacing(8)
+        final_layout.addWidget(scroll_area, 1)
+        final_layout.addWidget(self.buttonBox, 0)
+
+        # Connect signals
+        self.method.currentIndexChanged.connect(self._refresh_visibility)
+        self.amount.textChanged.connect(self._toggle_fields_by_amount)
+        self.vendor_acct.currentIndexChanged.connect(self._on_vendor_bank_account_changed)
+
+        # Error Label - Add it in the dialog
         self.errorLabel = QLabel("")
         self.errorLabel.setStyleSheet("color:#b00020;")
-        outer.addWidget(self.errorLabel)
+        final_layout.insertWidget(final_layout.count()-1, self.errorLabel)  # Insert before button box
 
-        self.buttonBox = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        self.saveBtn: QPushButton = self.buttonBox.button(QDialogButtonBox.Save)
-        self.cancelBtn: QPushButton = self.buttonBox.button(QDialogButtonBox.Cancel)
-        self.saveBtn.setDefault(True)
-        self.saveBtn.setShortcut(QKeySequence("Alt+S"))
-        self.cancelBtn.setShortcut(QKeySequence("Alt+C"))
-        self.saveBtn.clicked.connect(self._on_save)
-        self.cancelBtn.clicked.connect(self.reject)
-        outer.addWidget(self.buttonBox)
-
-    # ---------- Payment page ----------
-    def _build_payment_page(self, page: QWidget) -> None:
-        form = QFormLayout(page)
-
-        # Purchase picker
-        self.purchasePicker = QComboBox()
-        self.purchaseRemainingLabel = QLabel("")
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.addWidget(self.purchasePicker, 1)
-        h.addWidget(self.purchaseRemainingLabel, 0, Qt.AlignRight)
-        lbl_purchase = QLabel(_t("Purchase"))
-        lbl_purchase.setBuddy(self.purchasePicker)
-        form.addRow(lbl_purchase, row)
-
-        # Vendor label
-        self.vendorLabel = QLabel(_t("Vendor: ") + (str(self._vendor_display or self._vendor_id)))
-        form.addRow(QLabel(""), self.vendorLabel)
-
-        # Method
-        self.methodCombo = QComboBox()
-        for m in METHODS:
-            self.methodCombo.addItem(m)
-        form.addRow(QLabel(_t("Method")), self.methodCombo)
-
-        # Amount
-        self.amountEdit = QDoubleSpinBox()
-        self.amountEdit.setDecimals(2)
-        self.amountEdit.setRange(-1_000_000_000.0, 1_000_000_000.0)
-        self.amountEdit.setSingleStep(1.0)
-        lbl_amount = QLabel(_t("Amount"))
-        lbl_amount.setBuddy(self.amountEdit)
-        form.addRow(lbl_amount, self.amountEdit)
-
-        # Date
-        self.dateEdit = QDateEdit()
-        self.dateEdit.setCalendarPopup(True)
-        self.dateEdit.setDisplayFormat("yyyy-MM-dd")
-        self.dateEdit.setDate(QDate.currentDate())
-        form.addRow(QLabel(_t("Date")), self.dateEdit)
-
-        # Company bank
-        self.companyBankCombo = QComboBox()
-        lbl_cbank = QLabel(_t("Company Bank"))
-        lbl_cbank.setBuddy(self.companyBankCombo)
-        form.addRow(lbl_cbank, self.companyBankCombo)
-
-        # Vendor bank (for reconciliation/reference)
-        self.vendorBankCombo = QComboBox()
-        self.vendorBankCombo.addItem("", None)  # blank
-        lbl_vbank = QLabel(_t("Vendor Bank"))
-        lbl_vbank.setBuddy(self.vendorBankCombo)
-        form.addRow(lbl_vbank, self.vendorBankCombo)
+        # Clear the amount field after all initialization to ensure it starts empty
+        self.amount.clear()
         
-        # Temporary external bank account fields (appear when "Temporary Account" is selected)
-        self.tempBankNameEdit = QLineEdit()
-        self.tempBankNameEdit.setPlaceholderText("Bank Name")
-        lbl_temp_name = QLabel(_t("Temp Bank Name"))
-        lbl_temp_name.setBuddy(self.tempBankNameEdit)
-        form.addRow(lbl_temp_name, self.tempBankNameEdit)
-        
-        self.tempBankNumberEdit = QLineEdit()
-        self.tempBankNumberEdit.setPlaceholderText("Account Number")  
-        lbl_temp_number = QLabel(_t("Temp Bank Number"))
-        lbl_temp_number.setBuddy(self.tempBankNumberEdit)
-        form.addRow(lbl_temp_number, self.tempBankNumberEdit)
-        
-        # Hide temporary bank fields by default
-        self.tempBankNameEdit.setVisible(False)
-        self.tempBankNumberEdit.setVisible(False)
-        lbl_temp_name.setVisible(False)
-        lbl_temp_number.setVisible(False)
+        self.resize(700, 650)
+        self.setMinimumSize(600, 550)
 
-        # Instrument no
-        self.instrumentNoEdit = QLineEdit()
-        lbl_insno = QLabel(_t("Instrument No"))
-        lbl_insno.setBuddy(self.instrumentNoEdit)
-        form.addRow(lbl_insno, self.instrumentNoEdit)
-
-        # Instrument date
-        self.instrumentDateEdit = QDateEdit()
-        self.instrumentDateEdit.setCalendarPopup(True)
-        self.instrumentDateEdit.setDisplayFormat("yyyy-MM-dd")
-        self.instrumentDateEdit.setDate(QDate.currentDate())
-        form.addRow(QLabel(_t("Instrument Date")), self.instrumentDateEdit)
-
-        # Deposited date
-        self.depositedDateEdit = QDateEdit()
-        self.depositedDateEdit.setCalendarPopup(True)
-        self.depositedDateEdit.setDisplayFormat("yyyy-MM-dd")
-        self.depositedDateEdit.setDate(QDate.currentDate())
-        form.addRow(QLabel(_t("Deposited Date")), self.depositedDateEdit)
-
-        # Clearing state (hidden from UI, default to 'cleared' for immediate methods)
-        self.clearingStateCombo = QComboBox()
-        for s in CLEARING_STATES:
-            self.clearingStateCombo.addItem(s)
-        # Set default value to 'cleared' for Cash method and hide the field
-        self.clearingStateCombo.setCurrentIndex(CLEARING_STATES.index("cleared"))
-        # Add the field to the form but hide it
-        clear_state_label = QLabel(_t("Clearing State"))
-        clear_state_label.setVisible(False)  # Hide the label
-        self.clearingStateCombo.setVisible(False)  # Hide the combo box
-        form.addRow(clear_state_label, self.clearingStateCombo)
-
-        # Cleared date
-        self.clearedDateEdit = QDateEdit()
-        self.clearedDateEdit.setCalendarPopup(True)
-        self.clearedDateEdit.setDisplayFormat("yyyy-MM-dd")
-        self.clearedDateEdit.setDate(QDate.currentDate())
-        form.addRow(QLabel(_t("Cleared Date")), self.clearedDateEdit)
-
-        # Notes / Created by
-        self.notesEdit = QPlainTextEdit()
-        self.notesEdit.setPlaceholderText(_t("Optional notes"))
-        self.notesEdit.setFixedHeight(80)
-        form.addRow(QLabel(_t("Notes")), self.notesEdit)
-
-        self.createdByEdit = QLineEdit()
-        self.createdByEdit.setValidator(QIntValidator())
-        form.addRow(QLabel(_t("Created By")), self.createdByEdit)
-
-        # Track labels for required asterisks
-        self._label_map = {
-            self.companyBankCombo: lbl_cbank,
-            self.vendorBankCombo: lbl_vbank,
-            self.instrumentNoEdit: lbl_insno,
-            self.amountEdit: lbl_amount,
-        }
-        
-        # Track temporary bank labels as well
-        self.temp_bank_name_label = lbl_temp_name
-        self.temp_bank_number_label = lbl_temp_number
-        
-        # Store original label texts to avoid corruption during asterisk manipulation
-        self._orig_temp_bank_name_label_text = lbl_temp_name.text()
-        self._orig_temp_bank_number_label_text = lbl_temp_number.text()
-
-        # Wire
-        self.purchasePicker.currentIndexChanged.connect(self._update_remaining)
-        self.purchasePicker.currentIndexChanged.connect(self._apply_payment_amount_limits)
-        self.methodCombo.currentIndexChanged.connect(self._on_method_changed)
-        self.vendorBankCombo.currentIndexChanged.connect(self._on_vendor_bank_account_changed)
-        self.clearingStateCombo.currentIndexChanged.connect(self._on_clearing_changed)
-        self.amountEdit.valueChanged.connect(self._validate_live_payment)
-        self.companyBankCombo.currentIndexChanged.connect(self._validate_live_payment)
-        self.instrumentNoEdit.textChanged.connect(self._validate_live_payment)
-        self.tempBankNameEdit.textChanged.connect(self._validate_live_payment)
-        self.tempBankNumberEdit.textChanged.connect(self._validate_live_payment)
-        self.clearedDateEdit.dateChanged.connect(self._validate_live_payment)
-
-    # ---------- Record Advance page ----------
-    def _build_advance_page(self, page: QWidget) -> None:
-        form = QFormLayout(page)
-
-        # Vendor label
-        self.vendorLabel2 = QLabel(_t("Vendor: ") + (str(self._vendor_display or self._vendor_id)))
-        form.addRow(QLabel(""), self.vendorLabel2)
-
-        # Amount (>0)
-        self.advAmountEdit = QDoubleSpinBox()
-        self.advAmountEdit.setDecimals(2)
-        self.advAmountEdit.setRange(0.0, 1_000_000_000.0)
-        self.advAmountEdit.setSingleStep(1.0)
-        form.addRow(QLabel(_t("Amount *")), self.advAmountEdit)
-
-        # Date
-        self.advDateEdit = QDateEdit()
-        self.advDateEdit.setCalendarPopup(True)
-        self.advDateEdit.setDisplayFormat("yyyy-MM-dd")
-        self.advDateEdit.setDate(QDate.currentDate())
-        form.addRow(QLabel(_t("Date")), self.advDateEdit)
-
-        # Notes / Created by
-        self.advNotesEdit = QPlainTextEdit()
-        self.advNotesEdit.setPlaceholderText(_t("Optional notes"))
-        self.advNotesEdit.setFixedHeight(80)
-        form.addRow(QLabel(_t("Notes")), self.advNotesEdit)
-
-        self.advCreatedByEdit = QLineEdit()
-        self.advCreatedByEdit.setValidator(QIntValidator())
-        form.addRow(QLabel(_t("Created By")), self.advCreatedByEdit)
-
-        # Wire
-        self.advAmountEdit.valueChanged.connect(self._validate_live_advance)
-
-    # ---------- Amount limit helpers ----------
-    def _remaining_from_data(self, data: Optional[dict]) -> float:
-        if not isinstance(data, dict):
-            return 0.0
+    def _to_float_safe(self, txt: str) -> float | None:
+        if txt is None or txt == "":
+            return None
         try:
-            total = float(data.get("total", 0.0))
-            paid = float(data.get("paid", 0.0))
-            rem = total - paid
-            return max(0.0, rem)
-        except Exception:
-            return 0.0
+            cleaned = re.sub(r"[^0-9.\-]", "", txt)
+            return float(cleaned) if cleaned and cleaned not in ['-', '.', '-.'] else None
+        except ValueError:
+            logging.warning(f"Could not convert '{txt}' to float, returning None")
+            return None
+        except Exception as e:
+            logging.error(f"Unexpected error in _to_float_safe with input '{txt}': {e}")
+            return None
 
-    def _apply_payment_amount_limits(self) -> None:
-        data = self.purchasePicker.currentData()
-        remaining = self._remaining_from_data(data)
-        method = self.methodCombo.currentText()
-        if method == "Cash":
-            self.amountEdit.setRange(-1_000_000_000.0, max(0.0, remaining))
-        else:
-            self.amountEdit.setRange(0.0, max(0.0, remaining))
+    def _update_field_enablement(self, enable_company=False, enable_vendor=False, enable_instr=False, enable_temp=False):
+        """Centralize the logic for enabling/disabling payment fields."""
+        self.company_acct.setEnabled(enable_company)
+        self.vendor_acct.setEnabled(enable_vendor)
+        self.instr_no.setEnabled(enable_instr)
+        self.temp_bank_name.setEnabled(enable_temp)
+        self.temp_bank_number.setEnabled(enable_temp)
 
-    # ---------- Tab events ----------
-    def _on_tab_changed(self, idx: int) -> None:
-        self.pageStack.setCurrentIndex(idx)
-        self._sync_window_title()
-        self._update_hint()
-        self._validate_live_payment()
-        self._validate_live_advance()
-        # Re-apply limits in case user switched tabs
-        if idx == self.PAGE_PAYMENT:
-            self._apply_payment_amount_limits()
-
-    def _sync_window_title(self) -> None:
-        titles = {
-            self.PAGE_PAYMENT: _t("Record Vendor Payment"),
-            self.PAGE_ADVANCE: _t("Record Vendor Advance"),
-        }
-        self.setWindowTitle(titles.get(self.pageStack.currentIndex(), _t("Vendor Money")))
-
-    # ---------- Data loaders ----------
-    def _load_purchases(self) -> None:
-        rows: list[dict] = []
+    def _toggle_fields_by_amount(self):
         try:
-            if self._list_open_purchases_for_vendor:
-                rows = list(self._list_open_purchases_for_vendor(self._vendor_id))
-        except Exception:
-            rows = []
+            amount_result = self._to_float_safe(self.amount.text())
+            if amount_result is None:
+                # If amount is empty, disable all dependent fields
+                enable_fields = False
+            else:
+                amount = float(amount_result)
+                enable_fields = amount > 0
 
-        # Payment picker
-        if hasattr(self, "purchasePicker"):
-            self.purchasePicker.clear()
+            self.date.setEnabled(enable_fields)
+            self.method.setEnabled(enable_fields)
+            method = self.method.currentText()
+            method_key = self._get_method_key(method)
+            enable_company = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_COMPANY_BANK or method_key == 'OTHER')
+            enable_vendor = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK or method_key == 'OTHER')
+            enable_instr = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_INSTRUMENT or method_key == 'OTHER')
+            
+            self._update_field_enablement(enable_company, enable_vendor, enable_instr, False)
+            self.notes.setEnabled(enable_fields)
+
+            if not enable_fields and self._get_method_key(self.method.currentText()) != 'CASH':
+                self.method.setCurrentText(self.PAYMENT_METHODS['CASH'])
+                
+            if enable_fields:
+                method_key = self._get_method_key(self.method.currentText())
+                need_vendor = method_key in ('BANK_TRANSFER', 'CROSS_CHEQUE', 'CASH_DEPOSIT')
+                if need_vendor and self._vendor_id:
+                    self._reload_vendor_accounts()
+                self._refresh_visibility()
+            else:
+                self._update_field_enablement(False, False, False, False)
+                self.vendor_acct.clear()  
+        except Exception as e:
+            logging.exception("Error in _toggle_fields_by_amount")
+            self.date.setEnabled(False)
+            self.method.setEnabled(False)
+            self._update_field_enablement(False, False, False, False)
+            self.notes.setEnabled(False)
+
+    def _reload_company_accounts(self):
+        self.company_acct.clear()
+        try:
+            # Compliance: Check if vendors repository is available before accessing connection
+            if self.vendors is None:
+                # Skip loading if no vendors repository provided
+                return
+            
+            conn = self.vendors.conn
+            rows = conn.execute(
+                "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1 ORDER BY account_id"
+            ).fetchall()
             for r in rows:
-                pid = str(r.get("purchase_id", ""))
-                doc = str(r.get("doc_no", pid))
-                date = str(r.get("date", ""))
-                total = float(r.get("total", 0.0))
-                paid = float(r.get("paid", 0.0))
-                rem = total - paid
-                self.purchasePicker.addItem(f"{doc} — {date} — Total {total:.2f} Paid {paid:.2f} Rem {rem:.2f}", r)
-            self._update_remaining()
-            self._apply_payment_amount_limits()
+                self.company_acct.addItem(r["label"], int(r["account_id"]))
+            
+            current_method = self.method.currentText()
+            if current_method == self.PAYMENT_METHODS['OTHER']:
+                self.company_acct.setCurrentIndex(-1)  
+        except ValueError:
+            logging.error("Error: Invalid company account ID")
+            logging.exception("Invalid account ID in _reload_company_accounts")
+        except Exception as e:
+            logging.error(f"Error loading company bank accounts: {e}")
+            logging.exception("Error in _reload_company_accounts")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Error", f"Could not load company bank accounts: {str(e)}")
 
-    def _load_company_banks(self) -> None:
-        self.companyBankCombo.clear()
-        self.companyBankCombo.addItem("", None)
-        rows: list[dict] = []
-        try:
-            if self._list_company_bank_accounts:
-                rows = list(self._list_company_bank_accounts())
-        except Exception:
-            rows = []
-        for a in rows:
-            self.companyBankCombo.addItem(str(a.get("name", "")), int(a.get("id")))
-
-        # Preselect
-        if self._prefill_company_bank_id is not None:
-            for i in range(self.companyBankCombo.count()):
-                if self.companyBankCombo.itemData(i) == self._prefill_company_bank_id:
-                    self.companyBankCombo.setCurrentIndex(i)
-                    break
-
-    def _load_vendor_banks(self) -> None:
-        current_text = self.vendorBankCombo.currentText()
+    def _reload_vendor_accounts(self):
+        current_text = self.vendor_acct.currentText()
         
-        self.vendorBankCombo.clear()
-        self.vendorBankCombo.addItem("", None)
-        rows: list[dict] = []
+        self.vendor_acct.clear()
+        vid = self._vendor_id
         
-        # Try to load vendor bank accounts using the provided function
-        if self._list_vendor_bank_accounts:
-            try:
-                rows = list(self._list_vendor_bank_accounts(self._vendor_id))
-            except Exception as e:
-                # Log the error but allow loading to continue with available data
-                logging.error(f"Error loading vendor bank accounts for vendor {self._vendor_id}: {e}")
-                # Provide user feedback about the issue
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, _t("Bank Accounts"), _t("Could not load vendor bank accounts. Using basic options only."))
-                rows = []
-        else:
-            # If no function provided, log a warning and use empty rows
-            logging.warning("No list_vendor_bank_accounts function provided, vendor bank accounts will not be loaded")
-            rows = []
-        
-        for a in rows:
-            try:
-                vid = int(a.get("id"))
-            except Exception:
-                vid = a.get("id")
-            self.vendorBankCombo.addItem(str(a.get("name", "")), vid)
-        
-        self.vendorBankCombo.addItem(_t("Temporary/External Bank Account"), TEMP_BANK_ACCOUNT)
-        
-        previous_selection_restored = False
-        if current_text and current_text != "":
-            index = self.vendorBankCombo.findText(current_text)
-            if index >= 0:
-                self.vendorBankCombo.setCurrentIndex(index)
-                previous_selection_restored = True
-
-        if self._prefill_vendor_bank_id is not None:
-            for i in range(self.vendorBankCombo.count()):
-                if self.vendorBankCombo.itemData(i) == self._prefill_vendor_bank_id:
-                    self.vendorBankCombo.setCurrentIndex(i)
-                    previous_selection_restored = True
-                    break
-
-    def _lock_purchase_if_needed(self) -> None:
-        if self._locked_purchase_id is None:
+        if not vid:
+            self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
             return
-        # Payment page
-        for i in range(self.purchasePicker.count()):
-            data = self.purchasePicker.itemData(i)
-            if isinstance(data, dict) and str(data.get("purchase_id", "")) == self._locked_purchase_id:
-                self.purchasePicker.setCurrentIndex(i)
-                break
-        else:
-            placeholder = {"purchase_id": self._locked_purchase_id, "doc_no": self._locked_purchase_id, "date": "", "total": 0.0, "paid": 0.0}
-            self.purchasePicker.addItem(self._locked_purchase_id, placeholder)
-            self.purchasePicker.setCurrentIndex(self.purchasePicker.count() - 1)
-        self.purchasePicker.setEnabled(False)
-
-    # ---------- Prefills (payment page) ----------
-    def _apply_prefills_payment(self) -> None:
-        if self._prefill_method in METHODS:
-            self.methodCombo.setCurrentIndex(METHODS.index(self._prefill_method))
-
-        if isinstance(self._prefill_amount, (int, float)):
-            self.amountEdit.setValue(float(self._prefill_amount))
-
-        if self._prefill_date:
-            self._set_date_from_str(self.dateEdit, self._prefill_date)
-        elif self._today:
-            self._set_date_from_str(self.dateEdit, self._today())
-
-        if self._prefill_instrument_no:
-            self.instrumentNoEdit.setText(str(self._prefill_instrument_no))
-
-        if self._prefill_instrument_date:
-            self._set_date_from_str(self.instrumentDateEdit, self._prefill_instrument_date)
-        if self._prefill_deposited_date:
-            self._set_date_from_str(self.depositedDateEdit, self._prefill_deposited_date)
-
-        if self._prefill_clearing_state in CLEARING_STATES:
-            self.clearingStateCombo.setCurrentIndex(CLEARING_STATES.index(self._prefill_clearing_state))
-
-        if self._prefill_cleared_date:
-            self._set_date_from_str(self.clearedDateEdit, self._prefill_cleared_date)
-
-        if self._prefill_notes:
-            self.notesEdit.setPlainText(str(self._prefill_notes))
-
-        if self._prefill_created_by is not None:
-            self.createdByEdit.setText(str(self._prefill_created_by))
-
-        if self._prefill_temp_bank_name:
-            self.tempBankNameEdit.setText(str(self._prefill_temp_bank_name))
-            
-        if self._prefill_temp_bank_number:
-            self.tempBankNumberEdit.setText(str(self._prefill_temp_bank_number))
-
-    # ---------- Signals / UX (payment) ----------
-    def _on_method_changed(self) -> None:
-        method = self.methodCombo.currentText()
-
-        # Default clearing state
-        default_clear = METHOD_TO_DEFAULT_CLEARING.get(method, "posted")
-        if default_clear in CLEARING_STATES:
-            self.clearingStateCombo.setCurrentIndex(CLEARING_STATES.index(default_clear))
-
-        # Bank requirement (company)
-        needs_bank = method in METHODS_REQUIRE_BANK
-        # For "Other" method, enable bank accounts but don't require them
-        if method == "Other":
-            self.companyBankCombo.setEnabled(True)
-            self._set_required_label(self.companyBankCombo, False)  # Not required
-        else:
-            self.companyBankCombo.setEnabled(needs_bank)
-            self._set_required_label(self.companyBankCombo, needs_bank)
         
-        if method == "Cash":
-            self.companyBankCombo.setCurrentIndex(0)  # blank
-
-        # Bank requirement (vendor)
-        needs_vendor_bank = method in METHODS_REQUIRE_BANK
-        # For "Other" method, enable vendor bank account but don't require it
-        if method == "Other":
-            self.vendorBankCombo.setEnabled(True)
-            self._set_required_label(self.vendorBankCombo, False)  # Not required
-        else:
-            # Only enable vendor bank for methods that require it
-            enable_vendor = needs_vendor_bank and method != "Cheque"  # Cheque doesn't require vendor bank
-            self.vendorBankCombo.setEnabled(enable_vendor)
-            self._set_required_label(self.vendorBankCombo, enable_vendor)
+        try:
+            # Compliance: Check if vendors repository is available before accessing connection
+            if self.vendors is None:
+                # Skip loading if no vendors repository provided
+                self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+                return
             
-            # If switching to Cheque method, clear any temporary account selection
-            if method == "Cheque":
-                if self.vendorBankCombo.currentData() == TEMP_BANK_ACCOUNT:
-                    self.vendorBankCombo.setCurrentIndex(0)  # Select the blank option
+            conn = self.vendors.conn
+            rows = conn.execute(
+                """
+                SELECT vendor_bank_account_id AS vba_id, label, is_primary
+                FROM vendor_bank_accounts
+                WHERE vendor_id=? AND is_active=1
+                ORDER BY is_primary DESC, vba_id
+                """,
+                (int(vid),),
+            ).fetchall()
+            
+            primary_account_added = False
+            for r in rows:
+                label = r["label"] + (" (Primary)" if str(r["is_primary"]) in ("1","True","true") else "")
+                self.vendor_acct.addItem(label, int(r["vba_id"]))
+                if str(r["is_primary"]) in ("1","True","true"):
+                    primary_account_added = True
+            
+            self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+            
+            previous_selection_restored = False
+            if current_text and current_text != "":
+                index = self.vendor_acct.findText(current_text)
+                if index >= 0:
+                    self.vendor_acct.setCurrentIndex(index)
+                    previous_selection_restored = True
+            
+            current_method = self.method.currentText()
+            current_method_key = self._get_method_key(current_method)
+            needs_vendor_account = current_method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK
+            
+            if not previous_selection_restored and primary_account_added and needs_vendor_account:
+                for i in range(self.vendor_acct.count() - 1):  
+                    item_text = self.vendor_acct.itemText(i)
+                    if "(Primary)" in item_text:
+                        self.vendor_acct.setCurrentIndex(i)
+                        break
+            elif not previous_selection_restored and not needs_vendor_account:
+                self.vendor_acct.setCurrentIndex(-1)  
+        
+        except ValueError:
+            logging.error(f"Error: Invalid vendor ID: {vid}")
+            logging.exception("Invalid vendor ID in _reload_vendor_accounts")
+        except Exception as e:
+            logging.error(f"Error loading vendor bank accounts: {e}")
+            logging.exception("Error in _reload_vendor_accounts")
+            
+            self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+            
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")
 
-        # Instrument number required?
-        req_inst = method in METHODS_REQUIRE_INSTR_NO
-        # For "Other" method, instrument is not required
-        if method == "Other":
-            self._set_required_label(self.instrumentNoEdit, False)
-        elif method == "Cash":
-            # For Cash method, disable instrument fields completely
-            self.instrumentNoEdit.setEnabled(False)
-            self.instrumentDateEdit.setEnabled(False)
-            self._set_required_label(self.instrumentNoEdit, False)
+    def _refresh_visibility(self):
+        try:
+            amount_result = self._to_float_safe(self.amount.text())
+            if amount_result is None or amount_result <= 0:
+                self._update_field_enablement(False, False, False, False)
+                self._reset_labels()
+                return
+            amount = float(amount_result)
+        except Exception as e:
+            logging.exception("Error in _refresh_visibility")
+            self._update_field_enablement(False, False, False, False)
+            self._reset_labels()
+            return
+
+        method = self.method.currentText()
+        method_key = self._get_method_key(method)
+        need_company = method_key in self.PAYMENT_METHODS_REQUIRE_COMPANY_BANK
+        need_vendor  = method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK  
+        need_instr   = method_key in self.PAYMENT_METHODS_REQUIRE_INSTRUMENT
+
+        # Enable fields based on method and amount
+        if amount > 0:
+            if method_key == 'OTHER':
+                self._update_field_enablement(True, True, True, False)
+                
+                if self._vendor_id:
+                    self._reload_vendor_accounts()
+                
+                self.company_acct.setCurrentIndex(-1)
+                self.vendor_acct.setCurrentIndex(-1)
+            else:
+                # Determine if temp bank fields should be enabled (both temp account selected and method requires vendor)
+                selected_vendor_account = self.vendor_acct.currentData()
+                is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
+                
+                # Update temp bank visibility and enabled state
+                enable_temp = is_temp_account and need_vendor
+                self._update_field_enablement(need_company, need_vendor, need_instr, enable_temp)
+                
+                if need_vendor and self._vendor_id:
+                    self._reload_vendor_accounts()  
         else:
-            self.instrumentNoEdit.setEnabled(req_inst)
-            self.instrumentDateEdit.setEnabled(req_inst)
-            self._set_required_label(self.instrumentNoEdit, req_inst)
+            self._update_field_enablement(False, False, False, False)
 
-        # UX focus
-        if needs_bank:
-            self.companyBankCombo.setFocus()
-        elif req_inst and method != "Cash":
-            self.instrumentNoEdit.setFocus()
+        if hasattr(self, '_payment_labels'):
+            self._update_labels(need_company, need_vendor, need_instr)
+
+        # Update temp bank visibility based on account selection and method requirements
+        # Recompute the specific variables needed for temp bank visibility
+        selected_vendor_account = self.vendor_acct.currentData()
+        is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
+        
+        self._update_temp_bank_visibility(is_temp_account=is_temp_account, need_vendor=need_vendor)
+
+    def _reset_labels(self):
+        """Reset all payment labels to normal state (non-required)"""
+        if hasattr(self, '_payment_labels'):
+            for label_key, label_widget in self._payment_labels.items():
+                if label_widget.styleSheet() != "":
+                    plain_text = label_widget.text().rstrip('*')
+                    label_widget.setText(plain_text)
+                    label_widget.setStyleSheet("")
+
+    def _update_labels(self, need_company=False, need_vendor=False, need_instr=False):
+        """Update payment section labels based on required fields"""
+        if not hasattr(self, '_payment_labels'):
+            return
+            
+        self._reset_labels()
+        
+        if need_company and 'company_acct' in self._payment_labels:
+            self._set_label_required(self._payment_labels['company_acct'])
+        
+        if need_vendor and 'vendor_acct' in self._payment_labels:
+            self._set_label_required(self._payment_labels['vendor_acct'])
+        
+        if need_instr and 'instr_no' in self._payment_labels:
+            self._set_label_required(self._payment_labels['instr_no'])
+
+    def _set_label_required(self, label_widget):
+        """Set a label as required (red asterisk and bold)"""
+        current_text = label_widget.text()
+        if not current_text.endswith("*"):
+            label_widget.setText(current_text + "*")
+            label_widget.setStyleSheet("color: red; font-weight: bold;")
+
+    def _update_temp_bank_visibility(self, is_temp_account=None, need_vendor=None):
+        """
+        Helper method to update temporary bank field visibility and styling.
+        If is_temp_account or need_vendor are not provided, they will be calculated.
+        The enable/disable logic is now handled in _refresh_visibility
+        """
+        if is_temp_account is None:
+            selected_value = self.vendor_acct.currentData()
+            is_temp_account = selected_value == self.TEMP_BANK_KEY
+        
+        if need_vendor is None:
+            method_key = self._get_method_key(self.method.currentText())
+            need_vendor = method_key in ('BANK_TRANSFER', 'CROSS_CHEQUE', 'CASH_DEPOSIT')
+        
+        if is_temp_account and need_vendor:
+            temp_name_label = self._payment_labels.get('temp_bank_name')
+            if temp_name_label and not temp_name_label.text().endswith('*'):
+                temp_name_label.setText(temp_name_label.text() + "*")
+                temp_name_label.setStyleSheet("color: red; font-weight: bold;")
+                
+            temp_number_label = self._payment_labels.get('temp_bank_number')
+            if temp_number_label and not temp_number_label.text().endswith('*'):
+                temp_number_label.setText(temp_number_label.text() + "*")
+                temp_number_label.setStyleSheet("color: red; font-weight: bold;")
+                
+            self.temp_bank_name.setEnabled(True)
+            self.temp_bank_number.setEnabled(True)
         else:
-            self.amountEdit.setFocus()
-
-        # Update limits & validations
-        self._apply_payment_amount_limits()
-        self._update_hint()
-        self._validate_live_payment()
-        # Update temporary bank field visibility after method change
-        self._update_temp_bank_visibility()
-
-    def _on_clearing_changed(self) -> None:
-        state = self.clearingStateCombo.currentText()
-        enable_cd = state == "cleared"
-        self.clearedDateEdit.setEnabled(enable_cd)
-        if not enable_cd:
-            self._clear_date(self.clearedDateEdit)
-        self._validate_live_payment()
+            temp_name_label = self._payment_labels.get('temp_bank_name')
+            if temp_name_label:
+                temp_name_label.setText(temp_name_label.text().rstrip('*'))
+                temp_name_label.setStyleSheet("")
+                
+            temp_number_label = self._payment_labels.get('temp_bank_number')
+            if temp_number_label:
+                temp_number_label.setText(temp_number_label.text().rstrip('*'))
+                temp_number_label.setStyleSheet("")
+                
+            # Keep temp bank fields visible but disabled when not in temporary account mode
+            self.temp_bank_name.setEnabled(False)
+            self.temp_bank_number.setEnabled(False)
 
     def _on_vendor_bank_account_changed(self):
         """Show/hide temporary bank fields based on selection"""
         self._update_temp_bank_visibility()
 
-    def _get_instrument_type_for_method(self, method: str) -> Optional[str]:
-        """Derive instrument type from payment method using the established METHOD_TO_FORCED_INSTRUMENT mapping."""
-        # Use the existing constant as the single source of truth
-        return METHOD_TO_FORCED_INSTRUMENT.get(method, "other")
-
-    def _update_temp_bank_visibility(self):
-        """
-        Helper method to update temporary bank field visibility and styling.
-        """
-        selected_value = self.vendorBankCombo.currentData()
-        is_temp_account = selected_value == TEMP_BANK_ACCOUNT
+    def _resolve_company_account_id(self) -> int | None:
+        """Resolve company bank account ID from editable combobox text"""
+        company_acct_text = self.company_acct.currentText().strip()
+        company_id = self.company_acct.currentData()
         
-        # Check if current method requires a vendor bank account
-        # Note: "Cheque" doesn't require vendor bank (only outgoing company bank)
-        method = self.methodCombo.currentText()
-        need_vendor = method in METHODS_REQUIRE_BANK and method != "Cheque"
+        if company_id is None and company_acct_text:
+            # Check if vendors repository is available before accessing connection
+            if self.vendors is None:
+                logging.warning("Vendors repository not available for resolving company account ID")
+                return None
+                
+            try:
+                conn = self.vendors.conn
+                
+                row = conn.execute(
+                    "SELECT account_id FROM company_bank_accounts WHERE label = ? AND is_active=1",
+                    (company_acct_text,)
+                ).fetchone()
+                if not row:
+                    row = conn.execute(
+                        "SELECT account_id FROM company_bank_accounts WHERE LOWER(label) = LOWER(?) AND is_active=1",
+                        (company_acct_text,)
+                    ).fetchone()
+                if row:
+                    company_id = int(row["account_id"])
+                else:
+                    # Compliance: Only logging generic info without PII details
+                    logging.warning("Company bank account not found")
+            except Exception as e:
+                # Compliance: Only logging generic info without PII details
+                logging.error(f"Error resolving company bank account ID: {e}")
+                company_id = None
         
-        # Update required indicators based on whether method requires vendor bank
-        temp_name_label = getattr(self, 'temp_bank_name_label', None)
-        temp_number_label = getattr(self, 'temp_bank_number_label', None)
+        return company_id
+
+    def _resolve_vendor_account_id(self) -> int | None:
+        """Resolve vendor bank account ID from editable combobox text"""
+        vendor_acct_text = self.vendor_acct.currentText().strip()
+        vendor_bank_id = self.vendor_acct.currentData()
         
-        should_be_required = is_temp_account and need_vendor
-        self._set_required_label(temp_name_label, should_be_required, '_orig_temp_bank_name_label_text')
-        self._set_required_label(temp_number_label, should_be_required, '_orig_temp_bank_number_label_text')
+        if vendor_bank_id is None and vendor_acct_text:
+            # Check if vendors repository is available before accessing connection
+            if self.vendors is None:
+                logging.warning("Vendors repository not available for resolving vendor account ID")
+                return None
+                
+            try:
+                conn = self.vendors.conn
+                
+                row = conn.execute(
+                    "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = ? AND vendor_id = ? AND is_active=1",
+                    (vendor_acct_text, self._vendor_id)
+                ).fetchone()
+                if not row:
+                    row = conn.execute(
+                        "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE LOWER(label) = LOWER(?) AND vendor_id = ? AND is_active=1",
+                        (vendor_acct_text, self._vendor_id)
+                    ).fetchone()
+                if row:
+                    vendor_bank_id = int(row["vendor_bank_account_id"])
+                else:
+                    # Compliance: Only logging generic info without PII details
+                    logging.warning(f"Vendor bank account not found")
+            except Exception as e:
+                # Compliance: Only logging generic info without PII details
+                logging.error(f"Error resolving vendor bank account ID: {e}")
+                vendor_bank_id = None
         
-        # Show temp fields whenever temp account is selected (for reference/reconciliation)
-        self.tempBankNameEdit.setVisible(is_temp_account)
-        self.tempBankNumberEdit.setVisible(is_temp_account)
-        if temp_name_label:
-            temp_name_label.setVisible(is_temp_account)
-        if temp_number_label:
-            temp_number_label.setVisible(is_temp_account)
+        return vendor_bank_id
+
+    def _calculate_remaining_amount(self):
+        """Calculate and display the remaining amount for the purchase."""
+        if not self._purchase_id or self._mode != "payment":
+            if hasattr(self, 'lbl_remaining'):
+                self.lbl_remaining.setText("Purchase ID not provided" if self._mode == "payment" else "N/A for advances")
+            return
         
-        # Trigger validation since required fields may have changed
-        self._validate_live_payment()
+        # Early guard: Check if vendors repository is available before accessing connection
+        if not self.vendors or not hasattr(self.vendors, 'conn'):
+            logging.warning("Vendors repository not available for calculating remaining amount")
+            if hasattr(self, 'lbl_remaining'):
+                self.lbl_remaining.setText("Vendors repository not available")
+            return
+            
+        try:
+            # Fetch purchase header data to get total amount
+            row = self.vendors.conn.execute(
+                """
+                SELECT 
+                    COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+                    COALESCE(p.paid_amount, 0.0) AS paid_amount,
+                    COALESCE(p.advance_payment_applied, 0.0) AS advance_applied
+                FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                WHERE p.purchase_id = ?
+                """,
+                (self._purchase_id,)
+            ).fetchone()
+            
+            if row:
+                total_calc = float(row["total_calc"] or 0.0)
+                paid_amount = float(row["paid_amount"] or 0.0)
+                advance_applied = float(row["advance_payment_applied"] or 0.0)
+                
+                remaining = total_calc - paid_amount - advance_applied
+                self.lbl_remaining.setText(f"Remaining: {remaining:.2f}")
+            else:
+                self.lbl_remaining.setText("Purchase not found")
+                
+        except Exception as e:
+            logging.error(f"Error calculating remaining amount: {e}")
+            self.lbl_remaining.setText("Error calculating remaining amount")
 
-    def _update_hint(self) -> None:
-        idx = self.pageStack.currentIndex()
-        hint = ""
-        if idx == self.PAGE_PAYMENT:
-            method = self.methodCombo.currentText()
-            if method == "Cash":
-                hint = _t("Negative amounts allowed. Company bank must be blank. Instrument no optional.")
-            elif method == "Bank Transfer":
-                hint = _t("Outgoing only (>0). Company bank required. Instrument type 'online'. Instrument no required.")
-            elif method == "Cheque":
-                hint = _t("Outgoing only (>0). Company bank required. Type 'cross_cheque'. Cheque no required.")
-            elif method == "Cash Deposit":
-                hint = _t("Outgoing only (>0). Company bank required. Type 'cash_deposit'. Deposit slip no required.")
-            elif method in ("Card", "Other"):
-                hint = _t("Outgoing only (>0). Bank optional. Instrument no optional.")
-        elif idx == self.PAGE_ADVANCE:
-            hint = _t("Record a positive vendor advance (prepayment). No method or bank needed here.")
-        self.hintLabel.setText(hint)
+    def _validate_advance(self) -> tuple[bool, list[str]]:
+        """Validate advance payment details and return (is_valid, errors)"""
+        errors = []
+        
+        amount_result = self._to_float_safe(self.amount.text())
+        if amount_result is None:
+            errors.append("Please enter a numeric amount.")
+            return len(errors) == 0, errors
+        
+        try:
+            amount = float(amount_result)
+        except (ValueError, TypeError):
+            errors.append("Please enter a valid numeric amount.")
+            return len(errors) == 0, errors
 
-    def _update_remaining(self) -> None:
-        data = self.purchasePicker.currentData()
-        if isinstance(data, dict):
-            total = float(data.get("total", 0.0))
-            paid = float(data.get("paid", 0.0))
-            rem = total - paid
-            self.purchaseRemainingLabel.setText(_t(f"Remaining: {rem:.2f}"))
-        else:
-            self.purchaseRemainingLabel.setText("")
+        if amount < 0:
+            errors.append("Payment amount cannot be negative.")
+        elif amount > 0:
+            method = self.method.currentText()
+            
+            selected_vendor_account = self.vendor_acct.currentData()
+            is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
 
+            validation_rules = {
+                self.PAYMENT_METHODS['BANK_TRANSFER']: {
+                    'requires_company_acct': True,
+                    'requires_vendor_acct': True,
+                    'requires_instr_no': True,
+                    'requires_temp_details': True,
+                    'error_msg_company': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a company bank account.",
+                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a vendor bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please enter the instrument/cheque number.",
+                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter bank name.",
+                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter account number.",
+                },
+                self.PAYMENT_METHODS['CHEQUE']: {
+                    'requires_company_acct': True,
+                    'requires_vendor_acct': False,  
+                    'requires_instr_no': True,
+                    'requires_temp_details': False,
+                    'error_msg_company': f"For {self.PAYMENT_METHODS['CHEQUE']}, please select a company bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CHEQUE']}, please enter the instrument/cheque number.",
+                },
+                self.PAYMENT_METHODS['CROSS_CHEQUE']: {
+                    'requires_company_acct': True,
+                    'requires_vendor_acct': True,
+                    'requires_instr_no': True,
+                    'requires_temp_details': True,
+                    'error_msg_company': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a company bank account.",
+                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a vendor bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please enter the instrument/cheque number.",
+                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please enter bank name.",
+                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']} with temporary account, please enter account number.",
+                },
+                self.PAYMENT_METHODS['CASH_DEPOSIT']: {
+                    'requires_company_acct': False,  
+                    'requires_vendor_acct': True,
+                    'requires_instr_no': True,
+                    'requires_temp_details': True,
+                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please select a vendor bank account.",
+                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please enter the deposit slip number.",
+                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter bank name.",
+                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter account number.",
+                },
+                self.PAYMENT_METHODS['OTHER']: {
+                    # OTHER method has no specific requirements
+                }
+            }
 
+            if method in validation_rules:
+                rule = validation_rules[method]
+                
+                if rule.get('requires_company_acct', False) and self.company_acct.currentData() is None:
+                    errors.append(rule['error_msg_company'])
+                
+                if rule.get('requires_vendor_acct', False):
+                    if self.vendor_acct.currentData() is None:
+                        errors.append(rule['error_msg_vendor'])
+                    elif is_temp_account and rule.get('requires_temp_details', False):
+                        if not self.temp_bank_name.text().strip():
+                            errors.append(rule['error_msg_temp_name'])
+                        if not self.temp_bank_number.text().strip():
+                            errors.append(rule['error_msg_temp_number'])
+                
+                if rule.get('requires_instr_no', False) and not self.instr_no.text().strip():
+                    errors.append(rule['error_msg_instr'])
 
-
+        return len(errors) == 0, errors
 
     def _validate_live_payment(self) -> None:
-        if self.pageStack.currentIndex() != self.PAGE_PAYMENT:
-            return
-        ok, msg = self._validate_payment()
-        self.errorLabel.setText(msg or "")
-        self.saveBtn.setEnabled(ok)
+        ok, errors = self._validate_advance()
+        if not ok:
+            error_message = "\n".join(errors)
+            self.errorLabel.setText(error_message)
+            self.saveBtn.setEnabled(False)
+        else:
+            self.errorLabel.setText("")
+            self.saveBtn.setEnabled(True)
 
-    def _validate_payment(self) -> tuple[bool, Optional[str]]:
-        p = self.purchasePicker.currentData()
-        if not isinstance(p, dict) or not str(p.get("purchase_id", "")):
-            return False, _t("Please select a purchase for this payment.")
-
-        method = self.methodCombo.currentText()
-        if method not in METHODS:
-            return False, _t("Payment method is not supported.")
-
-        amount = float(self.amountEdit.value())
-        if abs(amount) < 1e-9:
-            return False, _t("Amount cannot be zero.")
-        if amount < 0 and method != "Cash":
-            return False, _t("Refunds (negative amounts) are only allowed with the Cash method.")
-
-        cbank_id = self._current_company_bank_id()
-        if method == "Cash":
-            if cbank_id is not None:
-                return False, _t("Company bank must be empty when method is Cash.")
-        elif method in METHODS_REQUIRE_BANK and cbank_id is None:
-            return False, _t("Company bank account is required for this method.")
-        # For "Other" method, company bank is optional, so no validation needed
-
-        inst_no = self.instrumentNoEdit.text().strip()
-        if method in METHODS_REQUIRE_INSTR_NO and not inst_no:
-            return False, _t("Please enter instrument/reference number.")
-        # For "Other" method, instrument is optional, so no validation needed
-
-        selected_vendor_account = self.vendorBankCombo.currentData()
-        is_temp_account = selected_vendor_account == TEMP_BANK_ACCOUNT
-        need_vendor = method in METHODS_REQUIRE_BANK
-        # For "Other" method, temporary bank validation only applies if a temporary account is selected AND a vendor bank is required
-        if is_temp_account and need_vendor:
-            temp_bank_name = self.tempBankNameEdit.text().strip()
-            temp_bank_number = self.tempBankNumberEdit.text().strip()
-            if not temp_bank_name:
-                return False, _t("For temporary account, please enter bank name.")
-            if not temp_bank_number:
-                return False, _t("For temporary account, please enter account number.")
-
-        state = self.clearingStateCombo.currentText()
-        if state == "cleared":
-            if not self._has_date(self.clearedDateEdit):
-                return False, _t("Please select a cleared date.")
-
-
-
-        remaining = self._remaining_from_data(p)
-        if method != "Cash" and amount - remaining > 1e-9:
-            return False, _t("Amount exceeds remaining due for the selected purchase.")
-
-        return True, None
-
-    def _validate_live_advance(self) -> None:
-        if self.pageStack.currentIndex() != self.PAGE_ADVANCE:
-            return
-        ok, msg = self._validate_advance()
-        self.errorLabel.setText(msg or "")
-        self.saveBtn.setEnabled(ok)
-
-    def _validate_advance(self) -> tuple[bool, Optional[str]]:
-        amt = float(self.advAmountEdit.value())
-        if amt <= 0.0:
-            return False, _t("Amount must be greater than zero.")
-        return True, None
-
-    # ---------- Validation (apply) ----------
-
-
-
-
-    # ---------- Save ----------
     def _on_save(self) -> None:
-        idx = self.pageStack.currentIndex()
-        cb: Optional[Callable[[dict], None]] = None
+        is_valid, errors = self._validate_advance()
+        if not is_valid:
+            error_message = "\n".join(errors)
+            self._warn(error_message)
+            return
 
-        if idx == self.PAGE_PAYMENT:
-            ok, msg = self._validate_payment()
-            if not ok:
-                self._warn(msg)
+        if self._mode == "payment":
+            # For payment mode, we use the original validation and payload building
+            payload = self._build_payload_payment()
+            if payload is None:
+                self._warn("Please enter a valid payment amount greater than 0.")
                 return
-            self._payload = self._build_payload_payment()
+
             cb = self._submit_payment
-        elif idx == self.PAGE_ADVANCE:
-            ok, msg = self._validate_advance()
-            if not ok:
-                self._warn(msg)
+        else:  # advance mode
+            payload = self._build_payload_advance()
+            if payload is None:
+                self._warn("Please enter a valid payment amount greater than 0.")
                 return
-            self._payload = self._build_payload_advance()
+
             cb = self._submit_advance
 
         # If submit callback provided, use it to persist and surface any DB constraint errors.
         if callable(cb):
             try:
-                cb(self._payload or {})
+                cb(payload)
             except Exception as e:
                 self._handle_submit_error(e)
                 self._payload = None
                 return
 
+        self._payload = payload
         self.accept()
+
+    # ---------- Prefills ----------
+    def _apply_prefills(self) -> None:
+        if isinstance(self._prefill_amount, (int, float)):
+            self.amount.setText(str(self._prefill_amount))
+
+        if self._prefill_date:
+            self._set_date_from_str(self.date, self._prefill_date)
+        else:
+            from datetime import date
+            self._set_date_from_str(self.date, date.today().isoformat())
+
+        if self._prefill_notes:
+            self.notes.setText(str(self._prefill_notes))
+
+        # Note: For the advance payment, we don't need to prefill payment method or
+        # other payment-specific fields based on defaults as they are not provided as defaults
 
     def payload(self) -> Optional[dict]:
         return self._payload
@@ -832,75 +853,14 @@ class _VendorMoneyDialog(QDialog):
     def _warn(self, msg: Optional[str]) -> None:
         """
         Show an error message in the error label.
-        
-        Modal dialogs are now only for critical errors that require immediate attention.
         """
         self.errorLabel.setText(msg or "")
-        # For this specific dialog, keep using QMessageBox for consistency with the existing approach
         QMessageBox.warning(self, _t("Cannot Save"), msg or _t("Please correct the highlighted fields."))
 
     def _handle_submit_error(self, exc: Exception) -> None:
         # Show a friendly message but preserve the DB-provided detail if available
         message = str(exc).strip() or _t("A database rule prevented saving.")
-        # Common cases (best-effort string match without importing domain exceptions)
-        lowered = message.lower()
-        if "cannot apply credit beyond remaining due" in lowered:
-            message = _t("Amount exceeds remaining due for the selected purchase.")
-        elif "insufficient vendor credit" in lowered:
-            message = _t("Insufficient vendor credit to apply.")
-        elif "payments cannot be recorded against quotations" in lowered:
-            message = _t("Payments cannot be recorded against quotations.")
         self._warn(message)
-
-    def _current_company_bank_id(self) -> Optional[int]:
-        data = self.companyBankCombo.currentData()
-        return int(data) if isinstance(data, int) else None
-
-    def _current_vendor_bank_id(self) -> Optional[int | str]:
-        data = self.vendorBankCombo.currentData()
-        # vendor bank may not always be int-typed (e.g., "TEMP_BANK")
-        try:
-            return int(data)
-        except Exception:
-            return data if data is not None else None
-
-    def _set_required_label(self, widget_or_label, required: bool, original_attr: str = None) -> None:
-        """
-        Set a label as required (with asterisk and styling) or normal.
-        
-        Args:
-            widget_or_label: Either a widget from _label_map or a direct label reference
-            required: True to make the label required, False to make it normal
-            original_attr: Optional attribute name to get original text (for temporary labels)
-        """
-        # First check if widget_or_label is a key in _label_map (an actual mapped widget)
-        if hasattr(self, "_label_map") and widget_or_label in (getattr(self, "_label_map") or {}):
-            # It's a widget that maps to a label
-            label = self._label_map.get(widget_or_label)
-        else:
-            # It's a direct label reference
-            label = widget_or_label
-            
-        if not label:
-            return
-            
-        if original_attr:
-            # For temporary bank labels, use stored original text
-            original_text = getattr(self, original_attr, label.text().rstrip(" *"))
-            if required:
-                if not label.text().endswith('*'):
-                    label.setText(original_text + "*")
-                label.setStyleSheet("color: red; font-weight: bold;")
-            else:
-                label.setText(original_text)
-                label.setStyleSheet("")
-        else:
-            # For regular labels, use simple asterisk approach
-            base = label.text().rstrip(" *")
-            label.setText(base + (" *" if required else ""))
-            # Clear the stylesheet when not required to remove any previous required styling
-            if not required:
-                label.setStyleSheet("")
 
     def _set_date_from_str(self, edit: QDateEdit, s: str) -> None:
         try:
@@ -912,7 +872,6 @@ class _VendorMoneyDialog(QDialog):
             # QDate constructor will validate the date values
             date_obj = QDate(y, m, d)
             if not date_obj.isValid():
-                import logging
                 logging.warning(f"Invalid date values: {s}. Date not valid in QDate.")
                 return  # Invalid date (e.g., Feb 30)
             edit.setDate(date_obj)
@@ -921,53 +880,112 @@ class _VendorMoneyDialog(QDialog):
             logging.error(f"Error parsing date string: {s}")
             pass
 
-    def _has_date(self, edit: QDateEdit) -> bool:
-        return edit.date().isValid() and edit.date() != QDate()
-
-    def _clear_date(self, edit: QDateEdit) -> None:
-        edit.setDate(QDate())
-
-    def _build_payload_payment(self) -> dict:
-        pdata = self.purchasePicker.currentData() or {}
-
-        def date_or_none(edit: QDateEdit) -> Optional[str]:
-            return edit.date().toString("yyyy-MM-dd") if edit.date().isValid() else None
-
-        selected_vendor_account = self.vendorBankCombo.currentData()
-        is_temp_account = selected_vendor_account == TEMP_BANK_ACCOUNT
+    def _build_payload_advance(self) -> dict | None:
+        amount, method, company_id, vendor_bank_id, instr_no, instr_date, notes, date_str, instr_type, clearing_state, is_temp_account = self._build_common_payload_parts()
         
-        # Derive instrument type from method like in PO window
-        method = self.methodCombo.currentText()
-        instrument_type = self._get_instrument_type_for_method(method)
-        
+        if amount is None:
+            return None
+
         payload = {
-            "purchase_id": str(pdata.get("purchase_id")),
-            "amount": float(self.amountEdit.value()),
+            "vendor_id": self._vendor_id,  # Changed from purchase_id to vendor_id
+            "amount": amount,
             "method": method,
-            "date": self.dateEdit.date().toString("yyyy-MM-dd"),
-            "bank_account_id": self._current_company_bank_id(),
-            "vendor_bank_account_id": self._current_vendor_bank_id() if not is_temp_account else None,
-            "instrument_type": instrument_type,
-            "instrument_no": (self.instrumentNoEdit.text().strip() or None),
-            "instrument_date": date_or_none(self.instrumentDateEdit),
-            "deposited_date": date_or_none(self.depositedDateEdit),
-            "clearing_state": self.clearingStateCombo.currentText() or None,
-            "cleared_date": date_or_none(self.clearedDateEdit),
-            "notes": (self.notesEdit.toPlainText().strip() or None),
-            "created_by": (int(self.createdByEdit.text()) if self.createdByEdit.text().strip() else None),
-            "temp_vendor_bank_name": self.tempBankNameEdit.text().strip() or None if is_temp_account else None,
-            "temp_vendor_bank_number": self.tempBankNumberEdit.text().strip() or None if is_temp_account else None,
+            "bank_account_id": int(company_id) if company_id else None,
+            "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id and not is_temp_account else None,
+            "instrument_type": instr_type,
+            "instrument_no": instr_no,
+            "instrument_date": instr_date,
+            "deposited_date": None,
+            "cleared_date": None,
+            "clearing_state": clearing_state,
+            "ref_no": None,  # ref_no field was removed from UI
+            "notes": notes,
+            "date": date_str,
+            "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
+            "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
         }
+
         return payload
 
-    def _build_payload_advance(self) -> dict:
+    def _build_common_payload_parts(self) -> tuple:
+        """Extract and process common payload parts used by both payment and advance payloads."""
+        amount_txt = self.amount.text().strip()
+        amount = self._to_float_safe(amount_txt)
+
+        if amount is None or amount <= 0:
+            return None, None, None, None, None, None, None, None, None, None, None
+
+        method = self.method.currentText()
+        
+        company_id = self._resolve_company_account_id()
+        vendor_bank_id = self._resolve_vendor_account_id()
+        
+        instr_no = self.instr_no.text().strip()
+        # Since instr_date field was removed, use the main payment date
+        instr_date = self.date.date().toString("yyyy-MM-dd")
+        # ref_no field was removed, set to None
+        ref_no = None
+        notes = self.notes.text().strip()
+        date_str = self.date.date().toString("yyyy-MM-dd")
+
+        if method == self.PAYMENT_METHODS['BANK_TRANSFER']:
+            instr_type = "online"
+            clearing_state = "cleared"
+        elif method == self.PAYMENT_METHODS['CHEQUE']:
+            instr_type = "cheque"
+            clearing_state = "cleared"
+        elif method == self.PAYMENT_METHODS['CROSS_CHEQUE']:
+            instr_type = "cross_cheque"
+            clearing_state = "cleared"
+        elif method == self.PAYMENT_METHODS['CASH_DEPOSIT']:
+            instr_type = "cash_deposit"
+            clearing_state = "cleared"
+            company_id = None
+        elif method == self.PAYMENT_METHODS['CASH']:
+            instr_type = None
+            clearing_state = "cleared"
+            company_id = None
+            vendor_bank_id = None
+            instr_no = ""
+            instr_date = date_str
+        else:  # OTHER
+            instr_type = "other"
+            clearing_state = "cleared"
+            company_id = None
+            vendor_bank_id = None
+            instr_no = ""
+            instr_date = date_str
+
+        selected_vendor_account = self.vendor_acct.currentData()
+        is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
+        
+        return amount, method, company_id, vendor_bank_id, instr_no, instr_date, notes, date_str, instr_type, clearing_state, is_temp_account
+
+    def _build_payload_payment(self) -> dict | None:
+        amount, method, company_id, vendor_bank_id, instr_no, instr_date, notes, date_str, instr_type, clearing_state, is_temp_account = self._build_common_payload_parts()
+        
+        if amount is None:
+            return None
+
         payload = {
-            "vendor_id": self._vendor_id,
-            "amount": float(self.advAmountEdit.value()),
-            "date": self.advDateEdit.date().toString("yyyy-MM-dd"),
-            "notes": (self.advNotesEdit.toPlainText().strip() or None),
-            "created_by": (int(self.advCreatedByEdit.text()) if self.advCreatedByEdit.text().strip() else None),
+            "purchase_id": self._purchase_id,  # For payment mode, this links to purchase
+            "amount": amount,
+            "method": method,
+            "bank_account_id": int(company_id) if company_id else None,
+            "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id and not is_temp_account else None,
+            "instrument_type": instr_type,
+            "instrument_no": instr_no,
+            "instrument_date": instr_date,
+            "deposited_date": None,
+            "cleared_date": None,
+            "clearing_state": clearing_state,
+            "ref_no": None,  # ref_no field was removed from UI
+            "notes": notes,
+            "date": date_str,
+            "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
+            "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
         }
+
         return payload
 
 

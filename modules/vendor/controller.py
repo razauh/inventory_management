@@ -49,10 +49,7 @@ class VendorController(BaseModule):
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_edit.clicked.connect(self._edit)
         self.view.search.textChanged.connect(self._apply_filter)
-        if hasattr(self.view, "btn_record_payment"):
-            self.view.btn_record_payment.clicked.connect(self._on_record_payment)
-        if hasattr(self.view, "btn_record_advance"):
-            self.view.btn_record_advance.clicked.connect(self._on_record_advance_dialog)
+
         if hasattr(self.view, "btn_apply_advance"):
             self.view.btn_apply_advance.clicked.connect(self._on_apply_advance_dialog)
         if hasattr(self.view, "btn_update_clearing"):
@@ -396,46 +393,106 @@ class VendorController(BaseModule):
             self._clear_account_details()
         self._hook_acc_selection_enablement()
         self._update_acc_buttons_enabled()
-    def _on_record_payment(self):
+
+
+
+    def _on_apply_advance_dialog(self):
+        # This function applies existing vendor credit/advance to a purchase
         vid = self._selected_id()
         if not vid:
             info(self.view, "Select", "Please select a vendor first.")
             return
+            
+        # Check vendor credit balance
+        credit_balance = self._vendor_credit_balance(vid)
+        if credit_balance <= 0:
+            info(self.view, "No Credit", "Vendor has no available credit/advance to apply.")
+            return
+
         try:
             from .payment_dialog import open_vendor_money_form
         except Exception as e:
             info(self.view, "Unavailable", f"Vendor payment dialog is not available:\n{e}")
             return
-        defaults = {"list_company_bank_accounts": self._list_company_bank_accounts, "list_vendor_bank_accounts": self._list_vendor_bank_accounts, "list_open_purchases_for_vendor": self._list_open_purchases_for_vendor, "today": today_str, "vendor_display": str(vid)}
-        payload = open_vendor_money_form(mode="payment", vendor_id=vid, purchase_id=None, defaults=defaults)
+
+        defaults = {
+            "list_company_bank_accounts": self._list_company_bank_accounts,
+            "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
+            "list_open_purchases_for_vendor": self._list_open_purchases_for_vendor,
+            "today": today_str,
+            "vendor_display": str(vid),
+            # Don't set default amount to allow null values in the amount field
+        }
+
+        # Use the payment form to apply credit from vendor to a specific purchase
+        payload = open_vendor_money_form(
+            mode="payment",  # Apply advance to a specific purchase
+            vendor_id=vid,
+            vendors=self.repo,
+            purchase_id=None,  # Will be selected in the form
+            defaults=defaults
+        )
+        
         if not payload:
             return
+
         purchase_id = payload.get("purchase_id")
         if not purchase_id:
-            info(self.view, "Required", "Please select a purchase.")
+            info(self.view, "Required", "Please select a purchase to apply credit to.")
             return
+
         if not self._purchase_belongs_to_vendor(purchase_id, vid):
             info(self.view, "Invalid", "Purchase does not belong to the selected vendor.")
             return
+
         amount = float(payload.get("amount", 0) or 0.0)
-        method = str(payload.get("method") or "")
-        remaining = self._remaining_due_for_purchase(str(purchase_id))
-        if method.lower() != "cash" and amount - remaining > _EPS:
-            info(self.view, "Too much", f"Amount exceeds remaining due ({remaining:.2f}).")
+        if amount <= 0:
+            info(self.view, "Invalid", "Amount must be greater than zero.")
             return
+
         try:
-            # Begin transaction to ensure both payment and header totals are updated atomically
+            # Begin transaction to ensure both operations happen atomically
             self.conn.execute("BEGIN")
             
-            pid = self.ppay.record_payment(purchase_id=str(purchase_id), amount=amount, method=method, date=payload.get("date"), bank_account_id=payload.get("bank_account_id"), vendor_bank_account_id=payload.get("vendor_bank_account_id"), instrument_type=payload.get("instrument_type"), instrument_no=payload.get("instrument_no"), instrument_date=payload.get("instrument_date"), deposited_date=payload.get("deposited_date"), cleared_date=payload.get("cleared_date"), clearing_state=payload.get("clearing_state"), notes=payload.get("notes"), created_by=payload.get("created_by"))
+            # Fetch remaining due and vendor credit balance inside the transaction
+            # to prevent TOCTOU race condition
+            remaining = self._remaining_due_for_purchase(str(purchase_id))
+            if amount - remaining > _EPS:
+                # Rollback before showing message since validation failed
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception:
+                    pass  # Ignore rollback errors
+                info(self.view, "Too much", f"Amount exceeds remaining due ({remaining:.2f}).")
+                return
+
+            # Verify that the requested amount is available as vendor credit inside the transaction
+            current_credit = self._vendor_credit_balance(vid)
+            if amount - current_credit > _EPS:
+                # Rollback before showing message since validation failed
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception:
+                    pass  # Ignore rollback errors
+                info(self.view, "Insufficient Credit", f"Amount exceeds available vendor credit ({current_credit:.2f}).")
+                return
             
-            # Update the purchase header totals to reflect the new payment
+            # Apply the vendor credit/advance to the purchase
+            tx_id = self.vadv.apply_to_purchase(
+                vendor_id=vid,
+                purchase_id=str(purchase_id),
+                amount=amount,
+                notes=payload.get("notes"),
+                created_by=payload.get("created_by")
+            )
+            
+            # Update the purchase header totals to reflect the applied advance
             self.repo.update_header_totals(str(purchase_id))
             
             # Commit the transaction to persist both changes
             self.conn.execute("COMMIT")
             
-            info(self.view, "Saved", f"Payment #{pid} recorded.")
+            info(self.view, "Applied", f"Advance of {amount:.2f} applied to purchase {purchase_id} (Tx #{tx_id}).")
             
         except Exception as e:
             # Rollback the transaction in case of any error
@@ -443,41 +500,17 @@ class VendorController(BaseModule):
                 self.conn.execute("ROLLBACK")
             except Exception:
                 pass  # Ignore rollback errors
-            if OverpayPurchaseError and isinstance(e, OverpayPurchaseError):
-                info(self.view, "Not saved", str(e))
+            if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
+                info(self.view, "Not applied", str(e))
                 return
             if isinstance(e, (ValueError, sqlite3.IntegrityError)):
-                info(self.view, "Not saved", str(e))
+                info(self.view, "Not applied", str(e))
                 return
-            info(self.view, "Not saved", f"Payment recording failed: {e}")
+            info(self.view, "Not applied", f"Advance application failed: {e}")
             return
 
         self._reload()
-    def _on_record_advance_dialog(self):
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor first.")
-            return
-        try:
-            from .payment_dialog import open_vendor_money_form
-        except Exception as e:
-            info(self.view, "Unavailable", f"Vendor money dialog is not available:\n{e}")
-            return
-        payload = open_vendor_money_form(mode="advance", vendor_id=vid, purchase_id=None, defaults={"vendor_display": str(vid), "today": today_str})
-        if not payload:
-            return
-        try:
-            tx_id = self.vadv.grant_credit(vendor_id=vid, amount=float(payload.get("amount", 0) or 0), date=payload.get("date"), notes=payload.get("notes"), created_by=payload.get("created_by"), source_id=None)
-        except Exception as e:
-            if isinstance(e, (ValueError, sqlite3.IntegrityError)):
-                info(self.view, "Not saved", str(e))
-                return
-            info(self.view, "Not saved", str(e))
-            return
-        info(self.view, "Saved", f"Advance #{tx_id} recorded.")
-        self._reload()
-    def _on_apply_advance_dialog(self):
-        info(self.view, "Feature Removed", "The Apply Advance feature has been removed as advances are now automatically applied to purchases when they are created or edited.")
+
     def _on_update_clearing(self):
         vid = self._selected_id()
         if not vid:
