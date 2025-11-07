@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS purchases (
     FOREIGN KEY (created_by) REFERENCES users(user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(date);
+CREATE INDEX IF NOT EXISTS idx_purchases_vendor_id ON purchases(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_purchases_payment_status ON purchases(payment_status);
 
 /* Unified: sales + quotations in one table via doc_type */
 CREATE TABLE IF NOT EXISTS sales (

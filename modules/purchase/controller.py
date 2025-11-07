@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QTimer
 import sqlite3, datetime
 from typing import Optional
 import logging
@@ -72,11 +72,25 @@ class PurchaseController(BaseModule):
         self.view.btn_edit.clicked.connect(self._edit)
         self.view.btn_return.clicked.connect(self._return)
         self.view.btn_pay.clicked.connect(self._payment)
-        self.view.search.textChanged.connect(self._apply_filter)
+        
+        # Create a timer for debounced search
+        self._search_timer = QTimer()
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._perform_search)
+        
+        # Connect search text changes to the debounced handler
+        self.view.search.textChanged.connect(self._on_search_text_changed)
+        
+        # Connect radio buttons to the same filter function since it handles the type
+        self.view.rb_all.toggled.connect(self._apply_filter)
+        self.view.rb_id.toggled.connect(self._apply_filter)
+        self.view.rb_vendor.toggled.connect(self._apply_filter)
+        self.view.rb_status.toggled.connect(self._apply_filter)
 
     def _build_model(self):
         rows = self.repo.list_purchases()
         self.base = PurchasesTableModel(rows)
+        self._original_rows = rows  # Cache the original data for fast searching
         self.proxy = QSortFilterProxyModel(self.view)
         self.proxy.setSourceModel(self.base)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
@@ -91,7 +105,40 @@ class PurchaseController(BaseModule):
         sel.selectionChanged.connect(self._sync_details)
 
     def _reload(self):
+        # Preserve the current search state
+        current_search = self.view.search.text()
+        current_radio_button = None
+        if self.view.rb_all.isChecked():
+            current_radio_button = "all"
+        elif self.view.rb_id.isChecked():
+            current_radio_button = "id"
+        elif self.view.rb_vendor.isChecked():
+            current_radio_button = "vendor"
+        elif self.view.rb_status.isChecked():
+            current_radio_button = "status"
+        
         self._build_model()
+        
+        # Restore the search after reloading the data
+        if current_search:
+            # Set flag to prevent double search execution
+            self._programmatically_setting_search = True
+            self.view.search.setText(current_search)
+            # Restore the radio button state
+            if current_radio_button == "all":
+                self.view.rb_all.setChecked(True)
+            elif current_radio_button == "id":
+                self.view.rb_id.setChecked(True)
+            elif current_radio_button == "vendor":
+                self.view.rb_vendor.setChecked(True)
+            elif current_radio_button == "status":
+                self.view.rb_status.setChecked(True)
+            
+            # Re-apply the search filter
+            self._perform_search()
+            # Reset the flag
+            self._programmatically_setting_search = False
+        
         if self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
         else:
@@ -102,8 +149,71 @@ class PurchaseController(BaseModule):
             except Exception:
                 pass
 
-    def _apply_filter(self, text: str):
-        self.proxy.setFilterRegularExpression(QRegularExpression(text))
+    def _on_search_text_changed(self, text):
+        """Handle search text changes with adaptive debouncing."""
+        # Skip processing if we're programmatically setting the text (avoid double search)
+        if hasattr(self, '_programmatically_setting_search') and self._programmatically_setting_search:
+            return
+        
+        # Adjust debounce time based on search text length for better performance
+        # Shorter searches get longer debounce to avoid rendering large result sets
+        # Longer/more specific queries use shorter debounce since results are fewer
+        debounce_time = 500 if len(text) < 3 else 150
+        # Restart the timer for each keystroke
+        self._search_timer.start(debounce_time)
+
+    def _perform_search(self):
+        """Actually perform the search after debounce delay."""
+        search_text = self.view.search.text()
+        
+        if not search_text.strip():
+            # If search is empty, show all rows
+            self.base.replace(self._original_rows)
+            return
+            
+        # Determine which column to search based on radio button selection
+        def safe_lower(value):
+            """Convert value to lowercase string, handling None values"""
+            if value is None:
+                return ""
+            return str(value).lower()
+        
+        if self.view.rb_all.isChecked():
+            # Search across all columns - filter in memory for better performance
+            filtered_rows = []
+            search_lower = search_text.lower()
+            for row in self._original_rows:
+                # Check each relevant field in the row
+                if (search_lower in safe_lower(row["purchase_id"]) or
+                    search_lower in safe_lower(row["date"]) or
+                    search_lower in safe_lower(row["vendor_name"]) or
+                    search_lower in safe_lower(row["total_amount"]) or
+                    search_lower in safe_lower(row["paid_amount"]) or
+                    search_lower in safe_lower(row["payment_status"])):
+                    filtered_rows.append(row)
+        elif self.view.rb_id.isChecked():
+            # Search only in PO ID column
+            search_lower = search_text.lower()
+            filtered_rows = [row for row in self._original_rows 
+                            if search_lower in safe_lower(row["purchase_id"])]
+        elif self.view.rb_vendor.isChecked():
+            # Search only in Vendor column
+            search_lower = search_text.lower()
+            filtered_rows = [row for row in self._original_rows 
+                            if search_lower in safe_lower(row["vendor_name"])]
+        elif self.view.rb_status.isChecked():
+            # Search only in Status column
+            search_lower = search_text.lower()
+            filtered_rows = [row for row in self._original_rows 
+                            if search_lower in safe_lower(row["payment_status"])]
+        
+        # Update the model with filtered results
+        self.base.replace(filtered_rows)
+
+    def _apply_filter(self, _=None):  # parameter can be text or checked state
+        """Apply filter when radio button selection changes."""
+        # Re-apply the current search with the new filter criteria
+        self._perform_search()
 
     def _selected_row_dict(self) -> dict | None:
         idxs = self.view.tbl.selectionModel().selectedRows()
@@ -776,7 +886,9 @@ class PurchaseController(BaseModule):
             it2["returnable"] = float(returnable.get(it["item_id"], 0.0))
             items_for_form.append(it2)
 
-        dlg = PurchaseReturnForm(self.view, items_for_form)
+        dlg = PurchaseReturnForm(self.view, items_for_form, vendors=self.vendors, purchases_repo=self.repo)
+        # Set the purchase ID to allow remaining calculation
+        dlg.set_purchase_id(pid)
         if not dlg.exec():
             return
         payload = dlg.payload()
@@ -808,6 +920,10 @@ class PurchaseController(BaseModule):
                 notes=payload.get("notes"),
                 settlement=settlement,
             )
+            
+            # Update the purchase header totals to reflect the return
+            # This is important for purchase balance calculations
+            self._recompute_header_totals_from_rows(pid)
         except (ValueError, sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Return not recorded", f"Could not record return:\n{e}")
             return

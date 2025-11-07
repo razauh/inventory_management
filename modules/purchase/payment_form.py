@@ -32,6 +32,7 @@ class PaymentForm(QDialog):
                                          'CHEQUE', 
                                          'CROSS_CHEQUE', 
                                          'CASH_DEPOSIT'}
+    TEMP_BANK_KEY = "TEMP_BANK"
 
     def _get_method_key(self, display_value: str) -> str | None:
         """Convert a payment method display value to its corresponding key."""
@@ -205,6 +206,14 @@ class PaymentForm(QDialog):
             logging.error(f"Unexpected error in _to_float_safe with input '{txt}': {e}")
             return 0.0
 
+    def _update_field_enablement(self, enable_company=False, enable_vendor=False, enable_instr=False, enable_temp=False):
+        """Centralize the logic for enabling/disabling payment fields."""
+        self.company_acct.setEnabled(enable_company)
+        self.vendor_acct.setEnabled(enable_vendor)
+        self.instr_no.setEnabled(enable_instr)
+        self.temp_bank_name.setEnabled(enable_temp)
+        self.temp_bank_number.setEnabled(enable_temp)
+
     def _toggle_fields_by_amount(self):
         try:
             amount = float(self._to_float_safe(self.amount.text()))
@@ -218,9 +227,7 @@ class PaymentForm(QDialog):
             enable_vendor = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK or method == self.PAYMENT_METHODS['OTHER'])
             enable_instr = enable_fields and (method_key in self.PAYMENT_METHODS_REQUIRE_INSTRUMENT or method == self.PAYMENT_METHODS['OTHER'])
             
-            self.company_acct.setEnabled(enable_company)
-            self.vendor_acct.setEnabled(enable_vendor)
-            self.instr_no.setEnabled(enable_instr)
+            self._update_field_enablement(enable_company, enable_vendor, enable_instr, False)
             self.notes.setEnabled(enable_fields)
 
             if not enable_fields and self.method.currentText() != self.PAYMENT_METHODS['CASH']:
@@ -235,22 +242,14 @@ class PaymentForm(QDialog):
                     self._reload_vendor_accounts()
                 self._refresh_visibility()
             else:
-                self.company_acct.setEnabled(False)
-                self.vendor_acct.setEnabled(False)
+                self._update_field_enablement(False, False, False, False)
                 self.vendor_acct.clear()  
-                self.instr_no.setEnabled(False)
-                self.instr_date.setEnabled(False)
         except Exception as e:
             logging.exception("Error in _toggle_fields_by_amount")
             self.date.setEnabled(False)
             self.method.setEnabled(False)
-            self.company_acct.setEnabled(False)
-            self.vendor_acct.setEnabled(False)
-            self.instr_no.setEnabled(False)
+            self._update_field_enablement(False, False, False, False)
             self.notes.setEnabled(False)
-            # Also disable temp bank fields on error
-            self.temp_bank_name.setEnabled(False)
-            self.temp_bank_number.setEnabled(False)
 
     def _calculate_remaining_amount(self):
         """Calculate and display the remaining amount for the purchase."""
@@ -301,10 +300,10 @@ class PaymentForm(QDialog):
             if current_method == self.PAYMENT_METHODS['OTHER']:
                 self.company_acct.setCurrentIndex(-1)  
         except ValueError:
-            print("Error: Invalid company account ID")
+            logging.error("Error: Invalid company account ID")
             logging.exception("Invalid account ID in _reload_company_accounts")
         except Exception as e:
-            print(f"Error loading company bank accounts: {e}")
+            logging.error(f"Error loading company bank accounts: {e}")
             logging.exception("Error in _reload_company_accounts")
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load company bank accounts: {str(e)}")
@@ -316,7 +315,7 @@ class PaymentForm(QDialog):
         vid = self.vendor_id
         
         if not vid:
-            self.vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+            self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
             return
         
         try:
@@ -338,7 +337,7 @@ class PaymentForm(QDialog):
                 if str(r["is_primary"]) in ("1","True","true"):
                     primary_account_added = True
             
-            self.vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+            self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
             
             previous_selection_restored = False
             if current_text and current_text != "":
@@ -361,13 +360,13 @@ class PaymentForm(QDialog):
                 self.vendor_acct.setCurrentIndex(-1)  
         
         except ValueError:
-            print(f"Error: Invalid vendor ID: {vid}")
+            logging.error(f"Error: Invalid vendor ID: {vid}")
             logging.exception("Invalid vendor ID in _reload_vendor_accounts")
         except Exception as e:
-            print(f"Error loading vendor bank accounts: {e}")
+            logging.error(f"Error loading vendor bank accounts: {e}")
             logging.exception("Error in _reload_vendor_accounts")
             
-            self.vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+            self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
             
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")
@@ -376,23 +375,13 @@ class PaymentForm(QDialog):
         try:
             amount = float(self._to_float_safe(self.amount.text()))
             if amount <= 0:
-                self.company_acct.setEnabled(False)
-                self.vendor_acct.setEnabled(False)
-                self.instr_no.setEnabled(False)
+                self._update_field_enablement(False, False, False, False)
                 self._reset_labels()
-                # Also disable temporary bank fields when amount is zero
-                self.temp_bank_name.setEnabled(False)
-                self.temp_bank_number.setEnabled(False)
                 return
         except Exception as e:
             logging.exception("Error in _refresh_visibility")
-            self.company_acct.setEnabled(False)
-            self.vendor_acct.setEnabled(False)
-            self.instr_no.setEnabled(False)
+            self._update_field_enablement(False, False, False, False)
             self._reset_labels()
-            # Also disable temporary bank fields on error
-            self.temp_bank_name.setEnabled(False)
-            self.temp_bank_number.setEnabled(False)
             return
 
         method = self.method.currentText()
@@ -404,8 +393,7 @@ class PaymentForm(QDialog):
         # Enable fields based on method and amount
         if amount > 0:
             if method == self.PAYMENT_METHODS['OTHER']:
-                self.company_acct.setEnabled(True)
-                self.vendor_acct.setEnabled(True)
+                self._update_field_enablement(True, True, True, False)
                 
                 if self.vendor_id:
                     self._reload_vendor_accounts()
@@ -413,16 +401,18 @@ class PaymentForm(QDialog):
                 self.company_acct.setCurrentIndex(-1)
                 self.vendor_acct.setCurrentIndex(-1)
             else:
-                self.company_acct.setEnabled(need_company)
-                self.vendor_acct.setEnabled(need_vendor)
+                # Determine if temp bank fields should be enabled (both temp account selected and method requires vendor)
+                selected_vendor_account = self.vendor_acct.currentData()
+                is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
+                
+                # Update temp bank visibility and enabled state
+                enable_temp = is_temp_account and need_vendor
+                self._update_field_enablement(need_company, need_vendor, need_instr, enable_temp)
                 
                 if need_vendor and self.vendor_id:
                     self._reload_vendor_accounts()  
-            self.instr_no.setEnabled(need_instr or method == self.PAYMENT_METHODS['OTHER'])  
         else:
-            self.company_acct.setEnabled(False)
-            self.vendor_acct.setEnabled(False)
-            self.instr_no.setEnabled(False)
+            self._update_field_enablement(False, False, False, False)
 
         if hasattr(self, '_payment_labels'):
             self._update_labels(need_company, need_vendor, need_instr)
@@ -432,17 +422,7 @@ class PaymentForm(QDialog):
         method_key = self._get_method_key(method)
         need_vendor = method_key in self.PAYMENT_METHODS_REQUIRE_VENDOR_BANK  
         selected_vendor_account = self.vendor_acct.currentData()
-        is_temp_account = selected_vendor_account == "TEMP_BANK"
-        
-        # Update temp bank visibility and enabled state
-        if is_temp_account and need_vendor:
-            # Temp account selected and method requires vendor bank
-            self.temp_bank_name.setEnabled(True)
-            self.temp_bank_number.setEnabled(True)
-        else:
-            # Either temp account is not selected, or method doesn't require vendor bank
-            self.temp_bank_name.setEnabled(False)
-            self.temp_bank_number.setEnabled(False)
+        is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
         
         self._update_temp_bank_visibility(is_temp_account=is_temp_account, need_vendor=need_vendor)
 
@@ -486,7 +466,7 @@ class PaymentForm(QDialog):
         """
         if is_temp_account is None:
             selected_value = self.vendor_acct.currentData()
-            is_temp_account = selected_value == "TEMP_BANK"
+            is_temp_account = selected_value == self.TEMP_BANK_KEY
         
         if need_vendor is None:
             method = self.method.currentText()
@@ -598,7 +578,7 @@ class PaymentForm(QDialog):
             method = self.method.currentText()
             
             selected_vendor_account = self.vendor_acct.currentData()
-            is_temp_account = selected_vendor_account == "TEMP_BANK"
+            is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
 
             validation_rules = {
                 self.PAYMENT_METHODS['BANK_TRANSFER']: {
@@ -715,7 +695,7 @@ class PaymentForm(QDialog):
             instr_date = date_str
 
         selected_vendor_account = self.vendor_acct.currentData()
-        is_temp_account = selected_vendor_account == "TEMP_BANK"
+        is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
         
         payload = {
             "purchase_id": self.purchase_id,

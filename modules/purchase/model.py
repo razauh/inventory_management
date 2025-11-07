@@ -30,6 +30,9 @@ class PurchasesTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._rows = rows
         self.endResetModel()
+    def get_rows(self) -> list[dict]:
+        """Return all rows in the model."""
+        return self._rows.copy()
 
 class PurchaseItemsModel(QAbstractTableModel):
     HEADERS = ["#", "Product", "Qty", "UoM", "Buy Price", "Sale Price", "Discount", "Line Total"]
