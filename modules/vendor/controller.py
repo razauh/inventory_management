@@ -1,7 +1,10 @@
 from PySide6.QtWidgets import QWidget, QDialog, QFormLayout, QDialogButtonBox, QLineEdit, QDateEdit, QVBoxLayout, QLabel, QComboBox
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QDate, QItemSelectionModel
 import sqlite3
+import logging
 from typing import Optional, Any, Dict, List
+
+_log = logging.getLogger(__name__)
 from ..base_module import BaseModule
 from .view import VendorView
 from .form import VendorForm
@@ -186,29 +189,7 @@ class VendorController(BaseModule):
         index = sel.currentIndex()
         row_dict = getattr(model, "row_at", lambda r: None)(index.row())
         return row_dict
-    def _reload_accounts(self, vendor_id: int, keep_account_id: int | None = None):
-        if not vendor_id:
-            if self.view.accounts_table.model():
-                self.view.accounts_table.model().set_rows([])
-            return
-        rows = self.vbank.list(int(vendor_id), active_only=False)
-        model = self.view.accounts_table.model()
-        if hasattr(model, "set_rows"):
-            model.set_rows(rows)
-        self.view.accounts_table.resizeColumnsToContents()
-        if keep_account_id:
-            m = self.view.accounts_table.model()
-            if hasattr(m, "find_row_by_id"):
-                r = m.find_row_by_id(int(keep_account_id))
-                if r is not None:
-                    idx = m.index(r, 0)
-                    sm = self.view.accounts_table.selectionModel()
-                    if sm is not None:
-                        sm.select(idx, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
-                    self.view.accounts_table.setCurrentIndex(idx)
-        elif self.view.accounts_table.model().rowCount() > 0:
-            idx0 = self.view.accounts_table.model().index(0, 0)
-            self.view.accounts_table.setCurrentIndex(idx0)
+
     def _acc_add(self):
         vendor_id = self._current_vendor_id()
         if not vendor_id:
@@ -397,16 +378,10 @@ class VendorController(BaseModule):
 
 
     def _on_apply_advance_dialog(self):
-        # This function applies existing vendor credit/advance to a purchase
+        # This function records a new vendor advance/payment (creates vendor credit)
         vid = self._selected_id()
         if not vid:
             info(self.view, "Select", "Please select a vendor first.")
-            return
-            
-        # Check vendor credit balance
-        credit_balance = self._vendor_credit_balance(vid)
-        if credit_balance <= 0:
-            info(self.view, "No Credit", "Vendor has no available credit/advance to apply.")
             return
 
         try:
@@ -415,34 +390,39 @@ class VendorController(BaseModule):
             info(self.view, "Unavailable", f"Vendor payment dialog is not available:\n{e}")
             return
 
+        def submit_advance(advance_data):
+            """Callback to record a new vendor advance/payment"""
+            # Use the VendorAdvancesRepo to record the vendor advance as a credit
+            tx_id = self.vadv.grant_credit(
+                vendor_id=advance_data["vendor_id"],
+                amount=advance_data["amount"],
+                date=advance_data["date"],
+                notes=advance_data.get("notes"),
+                created_by=advance_data.get("created_by"),
+                source_id=None,  # No specific source for direct advances
+                source_type="deposit"  # Mark as a direct deposit/advance
+            )
+            return tx_id
+
         defaults = {
             "list_company_bank_accounts": self._list_company_bank_accounts,
             "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
-            "list_open_purchases_for_vendor": self._list_open_purchases_for_vendor,
+            "submit_advance": submit_advance,  # Provide the callback to save advances
             "today": today_str,
             "vendor_display": str(vid),
             # Don't set default amount to allow null values in the amount field
         }
 
-        # Use the payment form to apply credit from vendor to a specific purchase
+        # Use the payment form to record a new vendor advance (not tied to a specific purchase)
         payload = open_vendor_money_form(
-            mode="payment",  # Apply advance to a specific purchase
+            mode="advance",  # Record a new advance (creates vendor credit)
             vendor_id=vid,
             vendors=self.repo,
-            purchase_id=None,  # Will be selected in the form
+            purchase_id=None,  # Not tied to a specific purchase
             defaults=defaults
         )
-        
+
         if not payload:
-            return
-
-        purchase_id = payload.get("purchase_id")
-        if not purchase_id:
-            info(self.view, "Required", "Please select a purchase to apply credit to.")
-            return
-
-        if not self._purchase_belongs_to_vendor(purchase_id, vid):
-            info(self.view, "Invalid", "Purchase does not belong to the selected vendor.")
             return
 
         amount = float(payload.get("amount", 0) or 0.0)
@@ -451,62 +431,28 @@ class VendorController(BaseModule):
             return
 
         try:
-            # Begin transaction to ensure both operations happen atomically
-            self.conn.execute("BEGIN")
-            
-            # Fetch remaining due and vendor credit balance inside the transaction
-            # to prevent TOCTOU race condition
-            remaining = self._remaining_due_for_purchase(str(purchase_id))
-            if amount - remaining > _EPS:
-                # Rollback before showing message since validation failed
-                try:
-                    self.conn.execute("ROLLBACK")
-                except Exception:
-                    pass  # Ignore rollback errors
-                info(self.view, "Too much", f"Amount exceeds remaining due ({remaining:.2f}).")
-                return
+            # Use a savepoint to handle potential nested transactions
+            # This allows the operation to be atomic even if there's already a transaction
+            self.conn.execute("SAVEPOINT apply_advance")
 
-            # Verify that the requested amount is available as vendor credit inside the transaction
-            current_credit = self._vendor_credit_balance(vid)
-            if amount - current_credit > _EPS:
-                # Rollback before showing message since validation failed
-                try:
-                    self.conn.execute("ROLLBACK")
-                except Exception:
-                    pass  # Ignore rollback errors
-                info(self.view, "Insufficient Credit", f"Amount exceeds available vendor credit ({current_credit:.2f}).")
-                return
-            
-            # Apply the vendor credit/advance to the purchase
-            tx_id = self.vadv.apply_to_purchase(
-                vendor_id=vid,
-                purchase_id=str(purchase_id),
-                amount=amount,
-                notes=payload.get("notes"),
-                created_by=payload.get("created_by")
-            )
-            
-            # Update the purchase header totals to reflect the applied advance
-            self.repo.update_header_totals(str(purchase_id))
-            
-            # Commit the transaction to persist both changes
-            self.conn.execute("COMMIT")
-            
-            info(self.view, "Applied", f"Advance of {amount:.2f} applied to purchase {purchase_id} (Tx #{tx_id}).")
-            
+            # Record the vendor advance using the submit_advance callback
+            tx_id = defaults["submit_advance"](payload)
+
+            # Release the savepoint to commit the changes
+            self.conn.execute("RELEASE apply_advance")
+
+            info(self.view, "Recorded", f"Advance payment of {amount:.2f} recorded successfully (Tx #{tx_id}).")
+
         except Exception as e:
-            # Rollback the transaction in case of any error
+            # Rollback to the savepoint in case of any error
             try:
-                self.conn.execute("ROLLBACK")
+                self.conn.execute("ROLLBACK TO apply_advance")
             except Exception:
                 pass  # Ignore rollback errors
-            if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
-                info(self.view, "Not applied", str(e))
-                return
             if isinstance(e, (ValueError, sqlite3.IntegrityError)):
-                info(self.view, "Not applied", str(e))
+                info(self.view, "Not recorded", str(e))
                 return
-            info(self.view, "Not applied", f"Advance application failed: {e}")
+            info(self.view, "Not recorded", f"Advance recording failed: {e}")
             return
 
         self._reload()
@@ -848,13 +794,72 @@ class VendorController(BaseModule):
             except Exception:
                 grant_date = None
             try:
-                self.vadv.grant_credit(vendor_id=vendor_id, amount=amount, date=(grant_date or (today_str() if callable(today_str) else today_str)), notes=memo, created_by=None, source_id=None)
-                uih.info(self.view, "Success", "Credit granted.")
-                if hasattr(self, "_update_details"):
-                    self._update_details()
+                # Begin transaction to ensure atomicity and prevent race conditions
+                self.conn.execute("BEGIN IMMEDIATE")
+                
+                # Grant the credit first
+                tx_id = self.vadv.grant_credit(vendor_id=vendor_id, amount=amount, date=(grant_date or (today_str() if callable(today_str) else today_str)), notes=memo, created_by=None, source_id=None)
+                
+                # Now automatically apply the credit to open purchase orders for this vendor
+                # Use row locking to prevent concurrent modifications during this operation
+                open_purchases = self.repo.get_open_purchases_for_vendor(vendor_id)
+                remaining_credit = amount  # Start with the full amount granted
+                
+                for purchase in open_purchases:
+                    if remaining_credit <= _EPS:  # Use epsilon comparison for floating point precision
+                        break  # No more credit to apply
+                    
+                    purchase_id = purchase['purchase_id']
+                    
+                    # Re-check remaining due inside the transaction to prevent race conditions
+                    # We need to ensure the purchase hasn't been modified by another process
+                    remaining_due = self._remaining_due_for_purchase(purchase_id)
+                    
+                    if remaining_due > _EPS:  # Only apply to purchases that have remaining balance (epsilon tolerance)
+                        # Apply as much as possible to this purchase (limited by remaining due and remaining credit)
+                        amount_to_apply = min(remaining_due, remaining_credit)
+                        
+                        try:
+                            self.vadv.apply_credit_to_purchase(
+                                vendor_id=vendor_id,
+                                purchase_id=purchase_id,
+                                amount=amount_to_apply,
+                                date=(grant_date or (today_str() if callable(today_str) else today_str)),
+                                notes=f"Auto-applied from vendor advance (Tx #{tx_id})",
+                                created_by=None,
+                            )
+                            remaining_credit -= amount_to_apply
+                            _log.info(f"Auto-applied {amount_to_apply:.2f} of vendor advance to purchase {purchase_id}")
+                        except Exception as apply_error:
+                            # If we can't apply to this purchase (e.g., due to business rules), continue with next
+                            # Only continue silently for known advance application errors
+                            if OverapplyVendorAdvanceError and isinstance(apply_error, OverapplyVendorAdvanceError):
+                                _log.warning(f"Could not auto-apply advance to purchase {purchase_id}: {apply_error}")
+                                continue
+                            elif isinstance(apply_error, (ValueError, sqlite3.IntegrityError)):
+                                _log.warning(f"Could not auto-apply advance to purchase {purchase_id}: {apply_error}")
+                                continue
+                            else:
+                                # Re-raise unexpected errors, which will cause transaction rollback
+                                _log.error(f"Unexpected error when auto-applying advance to purchase {purchase_id}: {apply_error}")
+                                raise
+                
+                # Commit the transaction to persist all changes
+                self.conn.execute("COMMIT")
+                
+                uih.info(self.view, "Success", f"Credit granted and {amount - remaining_credit:.2f} applied to open purchase orders.")
+                try:
+                    if hasattr(self, "_update_details"):
+                        self._update_details()
+                except Exception as ui_error:
+                    _log.error(f"Error updating UI after vendor advance grant: {ui_error}")
+                    # Continue with accepting the dialog even if UI update fails
                 dlg.accept()
             except Exception as e:
+                # Rollback the transaction in case of any error
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception:
+                    pass  # Ignore rollback errors
                 uih.info(self.view, "Error", f"Unable to grant credit: {e}")
-        btn_box.accepted.connect(_on_ok)
-        btn_box.rejected.connect(dlg.reject)
         dlg.exec()

@@ -67,7 +67,12 @@ class PurchaseDetails(QWidget):
             paid_amount = 0.0
         self.lab_paid.setText(fmt_money(paid_amount))
         
-        remaining = total_amount - paid_amount
+        try:
+            advance_payment_applied = float(row.get("advance_payment_applied", 0.0))
+        except (TypeError, ValueError):
+            advance_payment_applied = 0.0
+            
+        remaining = total_amount - paid_amount - advance_payment_applied
         self.lab_remain.setText(fmt_money(remaining))
         
         payment_status = row.get("payment_status", "-")

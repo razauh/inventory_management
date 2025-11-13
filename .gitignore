@@ -54,3 +54,6 @@ virtualenv/
 # Text files
 *.txt
 QWEN.md
+
+# Backup files
+*.bak

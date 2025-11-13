@@ -15,7 +15,7 @@ class PurchasesTableModel(QAbstractTableModel):
             c = index.column()
             mapping = [
                 r["purchase_id"], r["date"], r["vendor_name"],
-                fmt_money(r["total_amount"]), fmt_money(r["paid_amount"]),
+                fmt_money(r["total_amount"]), fmt_money(r["paid_amount"] + r["advance_payment_applied"]),
                 r["payment_status"]
             ]
             return mapping[c]

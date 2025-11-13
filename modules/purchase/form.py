@@ -8,6 +8,7 @@ from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
+from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...utils.helpers import today_str, fmt_money
 import re
 import datetime
@@ -84,7 +85,14 @@ class PurchaseForm(QDialog):
     def __init__(self, parent=None, vendors: VendorsRepo | None = None,
                  products: ProductsRepo | None = None, initial=None):
         super().__init__(parent)
-        self.setWindowTitle("Purchase")
+        
+        # Set window title to show only the PO number if available
+        if initial and initial.get("purchase_id"):
+            po_number = initial.get("purchase_id")
+            self.setWindowTitle(f"{po_number}")
+        else:
+            self.setWindowTitle("New Purchase")
+            
         self.setModal(True)
         self.vendors = vendors
         self.products = products
@@ -129,11 +137,17 @@ class PurchaseForm(QDialog):
                 hg.addWidget(QLabel(text), row, c)
             hg.addWidget(widget, row, c + 1)
 
+        # Create advance balance label
+        self.lbl_vendor_advance = QLabel("Vendor Advance: $0.00")
+        self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")
+
         add_pair(0, 0, "Vendor", self.cmb_vendor, required=True)
         add_pair(0, 1, "Date", self.date, required=True)
+        hg.addWidget(self.lbl_vendor_advance, 0, 4, 1, 2)  # Span across 2 columns
         add_pair(1, 0, "Notes", self.txt_notes, required=False)
         hg.setColumnStretch(1, 1)
         hg.setColumnStretch(3, 1)
+        hg.setColumnStretch(5, 1)  # Stretch the advance label column too
         main_layout.addWidget(header_box)
 
         items_box = QGroupBox("Items")
@@ -290,6 +304,7 @@ class PurchaseForm(QDialog):
         self.tbl.cellChanged.connect(self._cell_changed)
 
         self.cmb_vendor.currentIndexChanged.connect(self._reload_vendor_accounts)
+        self.cmb_vendor.currentIndexChanged.connect(self._update_vendor_advance_display)
         self.ip_method.currentIndexChanged.connect(self._refresh_ip_visibility)
         self.ip_amount.textChanged.connect(self._toggle_ip_fields_by_amount)
         self.ip_date.dateChanged.connect(lambda _d: self.ip_instr_date.setDate(self.ip_date.date()))
@@ -316,6 +331,49 @@ class PurchaseForm(QDialog):
         self.setMinimumSize(860, 560)
         self.setSizeGripEnabled(True)
 
+        # Initialize vendor advance balance display for both create and edit modes
+        # This ensures the display is updated even if a vendor is pre-selected
+        self._update_vendor_advance_display()
+
+    def _update_vendor_advance_display(self):
+        """Update the vendor advance balance display"""
+        # Guard: Check if vendors exists and has a connection
+        if self.vendors is None or getattr(self.vendors, "conn", None) is None:
+            self.lbl_vendor_advance.setText("Vendor Advance: System unavailable")
+            self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #666666;")  # Gray for unavailable
+            return
+        
+        vendor_id = self.cmb_vendor.currentData()
+        if vendor_id:
+            try:
+                # Create a vendor advances repo instance using the vendors' connection
+                vadv_repo = VendorAdvancesRepo(self.vendors.conn)
+                advance_balance = vadv_repo.get_balance(vendor_id)
+                
+                # Check if balance retrieval returned None
+                if advance_balance is None:
+                    self.lbl_vendor_advance.setText("Vendor Advance: Unknown")
+                    self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #666666;")  # Gray for unknown
+                    logging.warning(f"Vendor advance balance is None for vendor_id {vendor_id}")
+                    return
+
+                # Format the display (positive means we have a receivable from vendor, negative means we have a payable to vendor)
+                if advance_balance > 0:
+                    self.lbl_vendor_advance.setText(f"Vendor Advance: {fmt_money(advance_balance)} (RECEIVABLE)")
+                    self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")  # Green
+                elif advance_balance < 0:
+                    self.lbl_vendor_advance.setText(f"Vendor Advance: {fmt_money(abs(advance_balance))} (PAYABLE)")
+                    self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #cc0000;")  # Red
+                else:
+                    self.lbl_vendor_advance.setText("Vendor Advance: $0.00")
+                    self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")  # Green for zero
+            except Exception as e:
+                logging.error(f"Error retrieving vendor advance balance: {e}")
+                self.lbl_vendor_advance.setText("Vendor Advance: Error retrieving balance")
+                self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #cc0000;")  # Red for error
+        else:
+            self.lbl_vendor_advance.setText("Vendor Advance: Select a vendor")
+            self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #666666;")  # Gray for placeholder
     def _to_float_safe(self, txt: str) -> float:
         if txt is None:
             return 0.0

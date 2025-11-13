@@ -483,20 +483,13 @@ class PurchaseController(BaseModule):
                 _log.info("Applied initial vendor credit for %s amount=%.4f", pid, init_credit)
                 self._recompute_header_totals_from_rows(pid)
 
-            # Automatically apply all available vendor advances to this purchase
-            # Skip auto-apply if the user provided manual initial credit
-            initial_manual_credit = p.get("initial_credit_amount")
-            if initial_manual_credit is None:
-                initial_manual_credit = 0.0
-            else:
-                initial_manual_credit = float(initial_manual_credit)
-            
+            # After applying any manual credit, automatically apply all remaining available vendor advances to this purchase
             vendor_id = int(p["vendor_id"])
-            remaining = self._remaining_due_header(pid)
+            remaining_after_manual = self._remaining_due_header(pid)  # Recalculate after manual credit applied
             credit_bal = self._vendor_credit_balance(vendor_id)
-            auto_apply_amount = min(credit_bal, remaining)
+            auto_apply_amount = min(credit_bal, remaining_after_manual)
             
-            if auto_apply_amount > _EPS and initial_manual_credit <= _EPS:  # Only apply if there's a meaningful amount and no manual credit was provided
+            if auto_apply_amount > _EPS:  # Apply if there's a meaningful amount available
                 try:
                     self.vadv.apply_credit_to_purchase(
                         vendor_id=vendor_id,
