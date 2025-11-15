@@ -61,10 +61,12 @@ class VendorView(QWidget):
         self.btn_acc_add = QPushButton("Add Account")
         self.btn_acc_edit = QPushButton("Edit")
         self.btn_acc_deactivate = QPushButton("Deactivate")
+        self.btn_acc_activate = QPushButton("Activate")
         self.btn_acc_set_primary = QPushButton("Set Primary")
         accounts_header.addWidget(self.btn_acc_add)
         accounts_header.addWidget(self.btn_acc_edit)
         accounts_header.addWidget(self.btn_acc_deactivate)
+        accounts_header.addWidget(self.btn_acc_activate)
         accounts_header.addWidget(self.btn_acc_set_primary)
 
         accounts_layout.addLayout(accounts_header)

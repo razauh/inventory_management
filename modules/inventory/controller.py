@@ -35,6 +35,7 @@ class InventoryController(BaseModule):
     """
 
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None):
+        super().__init__()
         self.conn = conn
         self.user = current_user
 

@@ -11,6 +11,7 @@ from ...utils.ui_helpers import info, error
 
 class ProductController(BaseModule):
     def __init__(self, conn: sqlite3.Connection):
+        super().__init__()
         self.conn = conn
         self.repo = ProductsRepo(conn)
         self.view = ProductView()

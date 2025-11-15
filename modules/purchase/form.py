@@ -85,15 +85,10 @@ class PurchaseForm(QDialog):
     def __init__(self, parent=None, vendors: VendorsRepo | None = None,
                  products: ProductsRepo | None = None, initial=None):
         super().__init__(parent)
-        
-        # Set window title to show only the PO number if available
-        if initial and initial.get("purchase_id"):
-            po_number = initial.get("purchase_id")
-            self.setWindowTitle(f"{po_number}")
-        else:
-            self.setWindowTitle("New Purchase")
-            
+        self.setWindowTitle("Purchase")
         self.setModal(True)
+        # Store initial data for later use
+        self._initial_data = initial
         self.vendors = vendors
         self.products = products
         self._payload = None
@@ -141,10 +136,19 @@ class PurchaseForm(QDialog):
         self.lbl_vendor_advance = QLabel("Vendor Advance: $0.00")
         self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")
 
-        add_pair(0, 0, "Vendor", self.cmb_vendor, required=True)
-        add_pair(0, 1, "Date", self.date, required=True)
-        hg.addWidget(self.lbl_vendor_advance, 0, 4, 1, 2)  # Span across 2 columns
-        add_pair(1, 0, "Notes", self.txt_notes, required=False)
+        # Create purchase ID label - placing it above the main header fields
+        self.lbl_purchase_id = QLabel("Purchase ID: (New)")
+        self.lbl_purchase_id.setStyleSheet("font-weight: bold; font-size: 14px; color: #0000ff;")  # Blue text for visibility
+        
+        # Add purchase ID label at the top of the header box
+        hg.addWidget(self.lbl_purchase_id, 0, 0, 1, 6)  # Span across all 6 columns
+        
+        # Add the other fields starting from row 1
+        add_pair(1, 0, "Vendor", self.cmb_vendor, required=True)
+        add_pair(1, 1, "Date", self.date, required=True)
+        hg.addWidget(self.lbl_vendor_advance, 1, 4, 1, 2)  # Span across last 2 columns
+        
+        add_pair(2, 0, "Notes", self.txt_notes, required=False)
         hg.setColumnStretch(1, 1)
         hg.setColumnStretch(3, 1)
         hg.setColumnStretch(5, 1)  # Stretch the advance label column too
@@ -319,6 +323,12 @@ class PurchaseForm(QDialog):
             idx = self.cmb_vendor.findData(initial["vendor_id"])
             if idx >= 0: self.cmb_vendor.setCurrentIndex(idx)
             self.txt_notes.setText(initial.get("notes") or "")
+            
+            # Update the purchase ID label with the actual PO number
+            if initial and "purchase_id" in initial:
+                self.lbl_purchase_id.setText(f"Purchase ID: {initial['purchase_id']}")
+            else:
+                self.lbl_purchase_id.setText("Purchase ID: (New)")
 
         self._reload_company_accounts()
         self._reload_vendor_accounts()
@@ -1287,6 +1297,10 @@ class PurchaseForm(QDialog):
             payload["initial_payment_notes"] = payload["initial_payment"]["notes"]
             payload["initial_method"] = payload["initial_payment"]["method"]
 
+        # Add purchase_id to payload if in edit mode (available in initial data)
+        if hasattr(self, '_initial_data') and self._initial_data and 'purchase_id' in self._initial_data:
+            payload['purchase_id'] = self._initial_data['purchase_id']
+            
         return payload
 
     def validate_form(self) -> tuple[bool, list[str]]:  
@@ -1392,6 +1406,10 @@ class PurchaseForm(QDialog):
             return True
             
         self._validate_and_perform_action(pdf_export_action)
+
+    def update_purchase_id_label(self, purchase_id: str):
+        """Update the purchase ID label to show the actual purchase ID after saving"""
+        self.lbl_purchase_id.setText(f"Purchase ID: {purchase_id}")
 
 
 

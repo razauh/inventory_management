@@ -30,6 +30,7 @@ def info(parent, title: str, text: str):
     return uih.info(parent, title, text)
 class VendorController(BaseModule):
     def __init__(self, conn: sqlite3.Connection):
+        super().__init__()
         self.conn = conn
         self.repo = VendorsRepo(conn)
         self.vadv = VendorAdvancesRepo(conn)
@@ -73,6 +74,7 @@ class VendorController(BaseModule):
         self.view.btn_acc_edit.clicked.connect(self._acc_edit)
         self.view.btn_acc_deactivate.clicked.connect(self._acc_deactivate)
         self.view.btn_acc_set_primary.clicked.connect(self._acc_set_primary)
+        self.view.btn_acc_activate.clicked.connect(self._acc_activate)
     def _build_model(self):
         rows = self.repo.list_vendors()
         self.base_model = VendorsTableModel(rows)
@@ -233,12 +235,33 @@ class VendorController(BaseModule):
             self._reload_accounts(vendor_id)
         except Exception as e:
             uih.info(self.view, "Error", f"Unable to deactivate account: {e}")
+    
+    def _acc_activate(self):
+        vendor_id = self._current_vendor_id()
+        row = self._current_selected_account()
+        if not vendor_id or not row:
+            uih.info(self.view, "Select", "Select a bank account to activate.")
+            return
+        account_id = int(row.get("vendor_bank_account_id"))
+        try:
+            self.vbank.activate(account_id)
+            uih.info(self.view, "Activated", "Bank account activated.")
+            self._reload_accounts(vendor_id)
+        except Exception as e:
+            uih.info(self.view, "Error", f"Unable to activate account: {e}")
+
     def _acc_set_primary(self):
         vendor_id = self._current_vendor_id()
         row = self._current_selected_account()
         if not vendor_id or not row:
             uih.info(self.view, "Select", "Select a bank account to set as primary.")
             return
+            
+        # Check if the selected account is active before allowing to set it as primary
+        if not row.get("is_active", 1):
+            uih.info(self.view, "Inactive", "Cannot set an inactive account as primary. Please activate the account first.")
+            return
+            
         account_id = int(row.get("vendor_bank_account_id"))
         try:
             self.vbank.force_set_primary(int(vendor_id), account_id)
@@ -254,10 +277,35 @@ class VendorController(BaseModule):
             return False
         return table.selectionModel().hasSelection()
     def _set_acc_buttons_enabled(self, enabled: bool):
-        for name in ("btn_acc_edit", "btn_acc_deactivate", "btn_acc_set_primary"):
+        # First set all buttons to the base enabled state
+        for name in ("btn_acc_edit", "btn_acc_deactivate", "btn_acc_set_primary", "btn_acc_activate"):
             btn = getattr(self.view, name, None)
             if btn is not None:
                 btn.setEnabled(bool(enabled))
+        
+        # If not enabled or no selection, done
+        if not enabled:
+            return
+            
+        # Based on the selected account, enable/disable based on account status
+        row = self._current_selected_account()
+        if not row:
+            return
+            
+        is_active = bool(row.get("is_active", 1))  # Default to active if not specified
+        btn_deactivate = getattr(self.view, "btn_acc_deactivate", None)
+        btn_activate = getattr(self.view, "btn_acc_activate", None)
+        
+        # Only enable deactivate if the account is active, activate if inactive
+        if btn_deactivate:
+            btn_deactivate.setEnabled(is_active)
+        if btn_activate:
+            btn_activate.setEnabled(not is_active)
+            
+        # For "Set Primary", only enable if the account is active
+        btn_set_primary = getattr(self.view, "btn_acc_set_primary", None)
+        if btn_set_primary:
+            btn_set_primary.setEnabled(is_active and bool(enabled))
     def _update_acc_buttons_enabled(self, *args):
         self._set_acc_buttons_enabled(self._has_account_selection())
     def _hook_acc_selection_enablement(self):

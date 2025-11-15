@@ -162,6 +162,17 @@ class VendorBankAccountsRepo:
         )
         return int(cur.rowcount)
 
+    def activate(self, account_id: int) -> int:
+        """
+        Mark an account active (is_active = 1).
+        Returns number of affected rows.
+        """
+        cur = self.conn.execute(
+            "UPDATE vendor_bank_accounts SET is_active = 1 WHERE vendor_bank_account_id = ?",
+            (account_id,),
+        )
+        return int(cur.rowcount)
+
     def set_primary(self, vendor_id: int, vba_id: int) -> int:
         """
         Strict/naive setter: attempts to set this account as primary.

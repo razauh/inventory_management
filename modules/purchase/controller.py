@@ -53,6 +53,7 @@ def new_purchase_id(conn: sqlite3.Connection, date_str: str) -> str:
 
 class PurchaseController(BaseModule):
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None):
+        super().__init__()
         self.conn = conn
         self.user = current_user
         self.view = PurchaseView()
@@ -320,7 +321,22 @@ class PurchaseController(BaseModule):
         self.repo.update_header_totals(purchase_id)
 
     def _add(self):
-        dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products)
+        # Generate purchase ID ahead of time so it can be displayed in the form
+        from ...utils.helpers import today_str
+        temp_date = today_str()  # Use today's date for initial ID generation
+        temp_pid = new_purchase_id(self.conn, temp_date)
+
+        # Create initial data with the temp purchase ID for display
+        initial_data = {
+            "purchase_id": temp_pid,  # This will be updated after form submission
+            "vendor_id": None,
+            "date": temp_date,
+            "order_discount": 0.0,
+            "notes": "",
+            "items": [],
+        }
+        
+        dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products, initial=initial_data)
         if not dlg.exec():
             return
         p = dlg.payload()
@@ -331,6 +347,7 @@ class PurchaseController(BaseModule):
         should_print_after_save = p.get('_should_print', False)
         should_export_pdf_after_save = p.get('_should_export_pdf', False)
 
+        # Use the actual date from the form to generate the final purchase ID
         pid = new_purchase_id(self.conn, p["date"])
 
         h = PurchaseHeader(
