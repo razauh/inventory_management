@@ -25,13 +25,13 @@ class CustomerDetails(QWidget):
         f_fin = QFormLayout(box_fin)
 
         self.lab_status = QLabel("-")             # Active / Inactive
-        self.lab_credit = QLabel("-")             # v_customer_advance_balance
+        self.lab_credit = QLabel("-")             # v_customer_advance_balance (Advance Paid)
         self.lab_last_sale = QLabel("-")          # last sale date
         self.lab_last_payment = QLabel("-")       # last payment date
         self.lab_outstanding = QLabel("-")        # sum of (total - paid - applied advances), provided by caller
 
         f_fin.addRow("Status:", self.lab_status)
-        f_fin.addRow("Credit Balance:", self.lab_credit)
+        f_fin.addRow("Advance Paid:", self.lab_credit)
         f_fin.addRow("Last Sale:", self.lab_last_sale)
         f_fin.addRow("Last Payment:", self.lab_last_payment)
         f_fin.addRow("Outstanding Receivables:", self.lab_outstanding)

@@ -533,6 +533,7 @@ class CustomerController(BaseModule):
         form_defaults = {
             "sales": self._eligible_sales_for_application(cid),
             "list_sales_for_customer": self._list_sales_for_customer,
+            "get_available_advance": lambda customer_id: self._details_enrichment(customer_id).get("credit_balance", 0.0),
             "customer_display": str(cid),
         }
         result = apply_customer_advance(
@@ -542,13 +543,37 @@ class CustomerController(BaseModule):
             with_ui=True,
             form_defaults=form_defaults,
         )
-        if not result or not result.success:
-            if result and result.message:
-                info(self.view, "Not saved", result.message)
+        if not result:
+            # Log the server-side error
+            import logging
+            logging.error(f"Apply advance failed - result is None. Customer ID: {cid}, Form defaults keys: {list(form_defaults.keys()) if form_defaults else 'None'}")
+            # Show a safe error message to the user
+            info(self.view, "Error", "An unexpected error occurred while applying the advance.")
+            return
+        elif not result.success:
+            # Check if this is a simple cancellation (no actual error)
+            # When users cancel the dialog, we get result.success=False with no specific error message
+            if not result.message:  # If no specific message, likely just a cancellation
+                # Don't show an error - user simply cancelled
+                return
+            # Otherwise, it's a real error
+            # Log the server-side error with details
+            import logging
+            logging.error(f"Apply advance failed - result.success is False. Customer ID: {cid}, Result: {result}")
+            # Show the error message to the user
+            info(self.view, "Error", result.message)
             return
 
-        info(self.view, "Saved", f"Advance application #{result.id} recorded.")
-        self._reload()
+        self._reload()  # Reload the UI to reflect changes
+
+        # Show success confirmation to user
+        success_msg = f"Advance applied successfully."
+        if result and hasattr(result, 'payload') and result.payload:
+            # If the result has payload with amount info, include it in the message
+            amount_applied = result.payload.get('amount') if isinstance(result.payload, dict) else None
+            if amount_applied:
+                success_msg = f"Advance of {amount_applied} applied successfully."
+        info(self.view, "Success", success_msg)
 
     # -- Update Clearing (optional button) --
 
@@ -617,6 +642,7 @@ class CustomerController(BaseModule):
             customer_id=cid,
             with_ui=True,
         )
-        if result and result.message:
-            # Optionally surface a non-fatal message (e.g., UI fallback not available)
-            info(self.view, "Info", result.message)
+        # Removed message display to prevent popup
+        # if result and result.message:
+        #     # Optionally surface a non-fatal message (e.g., UI fallback not available)
+        #     info(self.view, "Info", result.message)

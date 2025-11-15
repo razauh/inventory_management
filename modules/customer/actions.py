@@ -87,7 +87,7 @@ def receive_payment(
         )
 
         if not form_data:
-            return ActionResult(success=False, message="Payment cancelled by user.", payload=None)
+            return ActionResult(success=False, payload=None)
     else:
         if not form_defaults:
             return ActionResult(success=False, message="Missing form_defaults while with_ui=False.")
@@ -229,7 +229,7 @@ def record_customer_advance(
             defaults=form_defaults or {},
         )
         if not form_data:
-            return ActionResult(success=False, message="Advance entry cancelled by user.", payload=None)
+            return ActionResult(success=False, payload=None)
     else:
         if not form_defaults:
             return ActionResult(success=False, message="Missing form_defaults while with_ui=False.")
@@ -293,7 +293,7 @@ def apply_customer_advance(
             defaults=form_defaults or {},
         )
         if not form_data:
-            return ActionResult(success=False, message="Apply advance cancelled by user.", payload=None)
+            return ActionResult(success=False, payload=None)
     else:
         if not form_defaults:
             return ActionResult(success=False, message="Missing form_defaults while with_ui=False.")
@@ -378,11 +378,10 @@ def open_payment_history(
             open_customer_history,
         )
         open_customer_history(customer_id=customer_id, history=history_payload)
-        return ActionResult(success=True, message="History view opened.", payload=None)
+        return ActionResult(success=True, payload=None)
     except ImportError:
         # Per update: do not open legacy UI; return payload instead.
         return ActionResult(
             success=True,
             payload=history_payload,
-            message="History view UI unavailable.",
         )

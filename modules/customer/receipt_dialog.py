@@ -159,6 +159,9 @@ class _CustomerMoneyDialog(QDialog):
         self._get_available_advance: Optional[Callable[[int], float]] = self._defaults.get("get_available_advance")
         self._get_sale_due: Optional[Callable[[str], float]] = self._defaults.get("get_sale_due")
 
+        # Store original sales data for filtering
+        self._original_sales: list[dict] = []
+
         # --- Prefills shared for receipt page ---
         self._prefill_method: Optional[str] = self._defaults.get("method")
         self._prefill_amount: Optional[float] = self._defaults.get("amount")
@@ -404,47 +407,54 @@ class _CustomerMoneyDialog(QDialog):
 
     # ---------- Apply Advance Page ----------
     def _build_apply_page(self, page: QWidget) -> None:
-        form = QFormLayout(page)
+        # Main layout
+        layout = QVBoxLayout(page)
 
-        # Sale pick (or preselected)
-        self.applySalePicker = QComboBox()
-        lbl_sale2 = QLabel(_t("Sale *"))
-        lbl_sale2.setBuddy(self.applySalePicker)
-        form.addRow(lbl_sale2, self.applySalePicker)
+        # Search bar
+        self.applySaleSearch = QLineEdit()
+        self.applySaleSearch.setPlaceholderText(_t("Search sales..."))
+        layout.addWidget(QLabel(_t("Select Sale:")))
+        layout.addWidget(self.applySaleSearch)
 
+        # Sales table
+        from inventory_management.widgets.table_view import TableView  # Import here to avoid circular imports
+        from PySide6.QtWidgets import QAbstractItemView  # Import Qt constants
+        self.applySalesTable = TableView()
+        self.applySalesTable.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.applySalesTable.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.applySalesTable.setSortingEnabled(True)
+        layout.addWidget(self.applySalesTable)
+
+        # Sale details
+        details_layout = QFormLayout()
         self.applySaleRemainingLabel = QLabel("")
-        form.addRow(QLabel(_t("Remaining Due")), self.applySaleRemainingLabel)
+        details_layout.addRow(QLabel(_t("Remaining Due")), self.applySaleRemainingLabel)
 
-        # Amount (>0)
+        # Amount (defaults to available credit)
         self.applyAmountEdit = QDoubleSpinBox()
         self.applyAmountEdit.setDecimals(2)
         self.applyAmountEdit.setRange(0.00, 1_000_000_000.00)
         self.applyAmountEdit.setSingleStep(1.00)
-        form.addRow(QLabel(_t("Amount *")), self.applyAmountEdit)
+        details_layout.addRow(QLabel(_t("Amount *")), self.applyAmountEdit)
 
         # Date
         self.applyDateEdit = QDateEdit()
         self.applyDateEdit.setCalendarPopup(True)
         self.applyDateEdit.setDisplayFormat("yyyy-MM-dd")
         self.applyDateEdit.setDate(QDate.currentDate())
-        form.addRow(QLabel(_t("Date")), self.applyDateEdit)
+        details_layout.addRow(QLabel(_t("Date")), self.applyDateEdit)
 
-        # Notes / Created by
+        # Notes
         self.applyNotesEdit = QPlainTextEdit()
         self.applyNotesEdit.setPlaceholderText(_t("Optional notes"))
         self.applyNotesEdit.setFixedHeight(80)
-        form.addRow(QLabel(_t("Notes")), self.applyNotesEdit)
+        details_layout.addRow(QLabel(_t("Notes")), self.applyNotesEdit)
 
-        self.applyCreatedByEdit = QLineEdit()
-        self.applyCreatedByEdit.setValidator(QIntValidator())
-        form.addRow(QLabel(_t("Created By")), self.applyCreatedByEdit)
+        layout.addLayout(details_layout)
 
-        # info labels (if adapters provided)
-        self.applyAvailLabel = QLabel("")
-        form.addRow(QLabel(_t("Available Credit")), self.applyAvailLabel)
-
-        # wire
-        self.applySalePicker.currentIndexChanged.connect(self._update_apply_remaining)
+        # Connect signals
+        self.applySaleSearch.textChanged.connect(self._filter_sales_table)
+        # Note: The selectionChanged signal will be connected after table is populated with data
         self.applyAmountEdit.valueChanged.connect(self._validate_live_apply)
 
     # ---------- Tab events ----------
@@ -476,6 +486,11 @@ class _CustomerMoneyDialog(QDialog):
         except Exception:
             sales = []
 
+        # Store original sales for filtering (only for apply advance page)
+        if hasattr(self, "applySalesTable"):
+            self._original_sales = sales[:]  # Make a copy of the sales list
+            self._populate_sales_table(sales)  # Populate the sales table
+
         # Receipt sale picker
         if hasattr(self, "salePicker"):
             self.salePicker.clear()
@@ -490,28 +505,14 @@ class _CustomerMoneyDialog(QDialog):
                 self.salePicker.addItem(display, row)
             self._update_remaining()
 
-        # Apply sale picker
-        if hasattr(self, "applySalePicker"):
-            self.applySalePicker.clear()
-            for row in sales:
-                sid = str(row.get("sale_id", ""))
-                doc = str(row.get("doc_no", sid))
-                date = str(row.get("date", ""))
-                total = float(row.get("total", 0.0))
-                paid = float(row.get("paid", 0.0))
-                rem = total - paid
-                display = f"{doc} — {date} — Total {total:.2f} Paid {paid:.2f} Rem {rem:.2f}"
-                self.applySalePicker.addItem(display, row)
-            self._update_apply_remaining()
-
-        # Available credit labels (if adapter)
+        # Set the amount field to available advance balance if available
         if self._get_available_advance:
             try:
                 bal = float(self._get_available_advance(self._customer_id))
                 if hasattr(self, "availableLabel"):
                     self.availableLabel.setText(f"{bal:.2f}")
-                if hasattr(self, "applyAvailLabel"):
-                    self.applyAvailLabel.setText(f"{bal:.2f}")
+
+                # For the Apply page, we'll set the amount when a sale is selected instead
             except Exception:
                 pass
 
@@ -783,10 +784,18 @@ class _CustomerMoneyDialog(QDialog):
         self.saveBtn.setEnabled(ok)
 
     def _validate_apply(self) -> tuple[bool, Optional[str]]:
-        # Sale present
-        data = self.applySalePicker.currentData()
-        if not isinstance(data, dict) or not str(data.get("sale_id", "")):
+        # Sale present - check if a row is selected in the table
+        # Check if selectionModel exists (it may not exist before table is populated)
+        selection_model = self.applySalesTable.selectionModel() if hasattr(self, 'applySalesTable') else None
+        if not selection_model or not selection_model.hasSelection():
             return False, _t("Please select a sale to apply the advance.")
+
+        selected_row = selection_model.selectedRows()[0].row()
+        if not (hasattr(self, '_sales_model_data') and 0 <= selected_row < len(self._sales_model_data)):
+            return False, _t("Please select a sale to apply the advance.")
+
+        # Get the selected sale data
+        selected_sale = self._sales_model_data[selected_row]
 
         amt = float(self.applyAmountEdit.value())
         if amt <= 0.0:
@@ -804,11 +813,12 @@ class _CustomerMoneyDialog(QDialog):
         # sale due
         try:
             rem = None
-            if self._get_sale_due and str(data.get("sale_id", "")):
-                rem = float(self._get_sale_due(str(data.get("sale_id"))))
+            sale_id = str(selected_sale.get("sale_id", ""))
+            if self._get_sale_due and sale_id:
+                rem = float(self._get_sale_due(sale_id))
             else:
-                total = float(data.get("total", 0.0))
-                paid = float(data.get("paid", 0.0))
+                total = float(selected_sale.get("total", 0.0))
+                paid = float(selected_sale.get("paid", 0.0))
                 rem = total - paid
             if amt - rem > 1e-9:
                 return False, _t("Amount exceeds remaining due for the selected sale.")
@@ -816,6 +826,114 @@ class _CustomerMoneyDialog(QDialog):
             pass
 
         return True, None
+
+    def _filter_sales_table(self, text: str) -> None:
+        """Filter sales in the table based on search text."""
+        if not hasattr(self, '_original_sales') or not self._original_sales:
+            return
+
+        # Create filtered list based on search text
+        search_lower = text.lower()
+        filtered_sales = []
+
+        for row in self._original_sales:
+            sid = str(row.get("sale_id", ""))
+            doc = str(row.get("doc_no", sid))
+            date = str(row.get("date", ""))
+            total = float(row.get("total", 0.0))
+            paid = float(row.get("paid", 0.0))
+            rem = total - paid
+
+            # Check if search text matches any part of the data
+            if (search_lower in sid.lower() or
+                search_lower in doc.lower() or
+                search_lower in date.lower() or
+                search_lower in f"{total:.2f}" or
+                search_lower in f"{paid:.2f}" or
+                search_lower in f"{rem:.2f}"):
+                filtered_sales.append(row)
+
+        # Update the table with filtered sales
+        self._populate_sales_table(filtered_sales)
+
+    def _populate_sales_table(self, sales_list: list) -> None:
+        """Populate the sales table with the provided sales list."""
+        if not hasattr(self, 'applySalesTable'):
+            return
+
+        # Create model and set it to the table
+        from PySide6.QtCore import QAbstractTableModel, Qt
+        from PySide6.QtGui import QStandardItemModel, QStandardItem
+
+        model = QStandardItemModel()
+        model.setHorizontalHeaderLabels(['Sale ID', 'Document No', 'Date', 'Total', 'Paid', 'Remaining'])
+
+        for row_data in sales_list:
+            sale_id = str(row_data.get("sale_id", ""))
+            doc_no = str(row_data.get("doc_no", sale_id))
+            date = str(row_data.get("date", ""))
+            total = float(row_data.get("total", 0.0))
+            paid = float(row_data.get("paid", 0.0))
+            rem = total - paid
+
+            items = [
+                QStandardItem(sale_id),
+                QStandardItem(doc_no),
+                QStandardItem(date),
+                QStandardItem(f"{total:.2f}"),
+                QStandardItem(f"{paid:.2f}"),
+                QStandardItem(f"{rem:.2f}")
+            ]
+
+            for item in items:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)  # Make items not editable
+
+            model.appendRow(items)
+
+        # Store the original data with the model for later reference
+        self.applySalesTable.setModel(model)
+        self._sales_model_data = sales_list  # Store the data for reference when selection changes
+
+        # Connect the selectionChanged signal after model is set
+        if hasattr(self, 'applySalesTable') and self.applySalesTable.model():
+            # Disconnect any existing connections to avoid duplicates
+            try:
+                self.applySalesTable.selectionModel().selectionChanged.disconnect()
+            except TypeError:
+                # Signal was not connected, that's fine
+                pass
+            self.applySalesTable.selectionModel().selectionChanged.connect(self._on_sale_selection_changed)
+
+    def _on_sale_selection_changed(self, selected, deselected) -> None:
+        """Handle when a sale is selected in the table."""
+        # Check if selectionModel exists (it may not exist before table is populated)
+        selection_model = self.applySalesTable.selectionModel() if hasattr(self, 'applySalesTable') else None
+        if not selection_model or not selection_model.hasSelection():
+            return
+
+        selected_row = selection_model.selectedRows()[0].row()
+
+        # Get the sale data for the selected row
+        if hasattr(self, '_sales_model_data') and 0 <= selected_row < len(self._sales_model_data):
+            selected_sale = self._sales_model_data[selected_row]
+
+            # Calculate remaining due
+            total = float(selected_sale.get("total", 0.0))
+            paid = float(selected_sale.get("paid", 0.0))
+            rem = total - paid
+
+            # Update the remaining due label
+            self.applySaleRemainingLabel.setText(f"{rem:.2f}")
+
+            # Update the default amount based on available advance and remaining due
+            if hasattr(self, '_customer_id') and self._get_available_advance:
+                try:
+                    available_balance = float(self._get_available_advance(self._customer_id))
+                    default_amount = min(available_balance, rem)
+                    self.applyAmountEdit.setValue(max(0.0, default_amount))
+                except Exception:
+                    pass
+
 
     # ---------- Save ----------
     def _on_save(self) -> None:
@@ -908,13 +1026,22 @@ class _CustomerMoneyDialog(QDialog):
         return payload
 
     def _build_payload_apply(self) -> dict:
-        sale_dict = self.applySalePicker.currentData() or {}
+        # Get the selected sale from the table
+        if not self.applySalesTable.selectionModel().hasSelection():
+            sale_id = ""
+        else:
+            selected_row = self.applySalesTable.selectionModel().selectedRows()[0].row()
+            if hasattr(self, '_sales_model_data') and 0 <= selected_row < len(self._sales_model_data):
+                selected_sale = self._sales_model_data[selected_row]
+                sale_id = str(selected_sale.get("sale_id", ""))
+            else:
+                sale_id = ""
+
         payload = {
             "customer_id": self._customer_id,
-            "sale_id": str(sale_dict.get("sale_id")),
+            "sale_id": sale_id,
             "amount": float(self.applyAmountEdit.value()),
             "date": self.applyDateEdit.date().toString("yyyy-MM-dd"),
             "notes": (self.applyNotesEdit.toPlainText().strip() or None),
-            "created_by": (int(self.applyCreatedByEdit.text()) if self.applyCreatedByEdit.text().strip() else None),
         }
         return payload
