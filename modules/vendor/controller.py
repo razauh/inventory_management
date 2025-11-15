@@ -485,8 +485,12 @@ class VendorController(BaseModule):
 
             # Record the vendor advance using the submit_advance callback
             tx_id = defaults["submit_advance"](payload)
+            
+            # Commit the transaction to persist the advance
+            self.conn.commit()
 
             # Release the savepoint to commit the changes
+            # Note: Since we already committed above, this is just for savepoint cleanup
             self.conn.execute("RELEASE apply_advance")
 
             info(self.view, "Recorded", f"Advance payment of {amount:.2f} recorded successfully (Tx #{tx_id}).")
@@ -558,6 +562,7 @@ class VendorController(BaseModule):
             return
         try:
             updated = self.ppay.update_clearing_state(payment_id=int(data["payment_id"]), clearing_state=str(data["clearing_state"]), cleared_date=data.get("cleared_date"), notes=data.get("notes"))
+            self.conn.commit()  # Commit the transaction to persist the changes
         except (ValueError, sqlite3.IntegrityError) as e:
             info(self.view, "Not updated", str(e))
             return

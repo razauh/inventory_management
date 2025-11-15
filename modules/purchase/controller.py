@@ -1054,6 +1054,7 @@ class PurchaseController(BaseModule):
                 cleared_date=when,
                 notes=notes,
             )
+            self.conn.commit()  # Commit the transaction to persist the changes
             if not changed:
                 info(self.view, "No change", "Payment was not updated.")
                 return
@@ -1080,6 +1081,7 @@ class PurchaseController(BaseModule):
                 cleared_date=None,
                 notes=notes,
             )
+            self.conn.commit()  # Commit the transaction to persist the changes
             if not changed:
                 info(self.view, "No change", "Payment was not updated.")
                 return

@@ -329,6 +329,7 @@ class SalePaymentsRepo:
                     "payment_id": payment_id,
                 },
             )
+        return  # The with statement automatically commits if no exception occurs
 
     def list_by_sale(self, sale_id: str) -> list[sqlite3.Row]:
         """

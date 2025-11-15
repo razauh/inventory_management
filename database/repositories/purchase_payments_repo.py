@@ -134,6 +134,7 @@ class PurchasePaymentsRepo:
                 f"Recorded payment of {amount:g} using {method}. Purchase ID: {purchase_id}",
             ),
         )
+        # Note: This method does not commit; caller is responsible for transaction management
         return payment_id
 
     def update_clearing_state(
@@ -144,7 +145,7 @@ class PurchasePaymentsRepo:
         cleared_date: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> int:
-        """Update clearing status for a payment (no commit)."""
+        """Update clearing status for a payment. This method does not commit."""
         sets = ["clearing_state = ?"]
         params: list[object] = [clearing_state]
         if cleared_date is not None:
