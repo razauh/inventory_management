@@ -172,10 +172,6 @@ class SalesView(QWidget):
         self.items = SaleItemsView()
         lv.addWidget(self.items, 2)
 
-        # compact payments table under items (hidden in quotation mode)
-        self.payments = PaymentsView()
-        lv.addWidget(self.payments, 1)
-
         split.addWidget(left)
 
         self.details = SaleDetails()
@@ -240,8 +236,6 @@ class SalesView(QWidget):
         self.btn_apply_credit.setVisible(not is_quote)   # NEW: only in Sales mode
         self.btn_apply_credit.setEnabled(not is_quote)
 
-        # Payments panel only for sales
-        self.payments.setVisible(not is_quote)
 
         # Search placeholder
         self.search.setPlaceholderText(

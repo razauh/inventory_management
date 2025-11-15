@@ -121,6 +121,8 @@ class SalesController(BaseModule):
     def _on_mode_changed(self, mode: str):
         mode = (mode or "sale").lower()
         self._doc_type = "quotation" if mode == "quotation" else "sale"
+        # Let the model update its headers for the new document type
+        self.base.set_doc_type(self._doc_type)
         # Let the details widget know (if it supports this)
         try:
             if hasattr(self.view, "details") and hasattr(self.view.details, "set_mode"):
@@ -197,14 +199,18 @@ class SalesController(BaseModule):
             norm = []
             for r in rows_to_use:
                 d = dict(r)
+                # Ensure all required fields exist for quotations
                 d.setdefault("paid_amount", 0.0)
+                d.setdefault("customer_id", 0)
+                d.setdefault("order_discount", 0.0)
+                d.setdefault("payment_status", "—")  # Default status for quotations
                 qstat = d.get("quotation_status") or d.get("payment_status") or "—"
                 d["payment_status"] = qstat
                 norm.append(d)
             rows_to_use = norm
 
         # Build model & wire to view
-        self.base = SalesTableModel(rows_to_use)
+        self.base = SalesTableModel(rows_to_use, doc_type=self._doc_type)
         self.proxy = QSortFilterProxyModel(self.view)
         self.proxy.setSourceModel(self.base)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
@@ -232,7 +238,18 @@ class SalesController(BaseModule):
         if not idxs:
             return None
         src = self.proxy.mapToSource(idxs[0])
-        return self.base.at(src.row())
+        row_data = self.base.at(src.row())
+
+        # Convert to dict to ensure setdefault method is available
+        if row_data:
+            if not isinstance(row_data, dict):
+                row_data = dict(row_data)
+            row_data.setdefault("customer_id", 0)
+            row_data.setdefault("date", "")
+            row_data.setdefault("order_discount", 0.0)
+            row_data.setdefault("total_amount", 0.0)
+
+        return row_data
 
     # --- small helper: fetch financials using calc view + header -----------
     def _fetch_sale_financials(self, sale_id: str) -> dict:

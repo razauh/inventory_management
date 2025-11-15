@@ -64,7 +64,7 @@ class SaleDetails(QWidget):
         self._form = f  # keep a handle for row visibility control
 
         # --- Payments list (compact, read-only) -----------------------------
-        self.pay_box = QGroupBox("Payments (read-only)")
+        self.pay_box = QGroupBox("Payments")
         pay_layout = QVBoxLayout(self.pay_box)
 
         self.tbl_payments = QTableWidget(0, 6)
