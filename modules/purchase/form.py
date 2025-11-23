@@ -303,7 +303,6 @@ class PurchaseForm(QDialog):
         ip_layout.addLayout(amount_layout)
 
         # Payment Date layout - label, then date field
-        from PySide6.QtCore import Qt
         payment_date_layout = QHBoxLayout()
         payment_date_layout.setSpacing(8)
         payment_date_label = QLabel("Payment Date")
@@ -368,7 +367,6 @@ class PurchaseForm(QDialog):
         self.temp_bank_number.setVisible(False)
 
         # Add payment notes as a separate row
-        from PySide6.QtCore import Qt
         notes_label = QLabel("Payment Notes")
         notes_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
