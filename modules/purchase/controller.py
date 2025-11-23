@@ -336,10 +336,14 @@ class PurchaseController(BaseModule):
             "items": [],
         }
         
-        dlg = PurchaseForm(None, vendors=self.vendors, products=self.products, initial=initial_data)
-        if not dlg.exec():
+        self.active_dialog = PurchaseForm(None, vendors=self.vendors, products=self.products, initial=initial_data)
+        self.active_dialog.accepted.connect(self._handle_add_dialog_accept)
+        self.active_dialog.show()
+
+    def _handle_add_dialog_accept(self):
+        if not self.active_dialog:
             return
-        p = dlg.payload()
+        p = self.active_dialog.payload()
         if not p:
             return
 
@@ -557,6 +561,7 @@ class PurchaseController(BaseModule):
             self._print_purchase_invoice(pid)
         elif should_export_pdf_after_save:
             self._export_purchase_invoice_to_pdf(pid)
+
 
     def _print_purchase_invoice(self, purchase_id: str):
         """Print the purchase invoice using WeasyPrint for better rendering"""
