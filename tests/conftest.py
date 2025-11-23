@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -23,9 +24,14 @@ from typing import Optional
 import pytest
 from PySide6 import QtCore
 
+# Ensure project root is in path for imports
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT.parent))
+
 # ---------- Paths ----------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DB_PATH      = PROJECT_ROOT / "data" / "myshop.db"
+DB_PATH      = PROJECT_ROOT / "data" / "test_myshop.db"
 SEED_SQL     = PROJECT_ROOT / "tests" / "seed_common.sql"
 
 
@@ -124,20 +130,35 @@ def _close_top_levels(qtbot):
 def _apply_common_seed():
     """
     Run the idempotent seed once per test session against the shared DB.
-    Assumes schema already exists in data/myshop.db.
+    Creates DB from schema if it doesn't exist.
     """
-    if not DB_PATH.exists():
-        raise FileNotFoundError(
-            f"Expected shared DB at {DB_PATH!s}.\n"
-            "Create it with your normal schema/migrations, then re-run tests."
-        )
+    # Ensure data directory exists
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Import schema SQL
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT.parent))
+        from inventory_management.database.schema import SQL as SCHEMA_SQL
+    except ImportError:
+        # Fallback if import fails (though it shouldn't with correct path)
+        SCHEMA_SQL = None
+        print("Warning: Could not import schema SQL")
 
     con = sqlite3.connect(DB_PATH)
     try:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON;")
-        sql = SEED_SQL.read_text(encoding="utf-8")
-        con.executescript(sql)
+        
+        # Apply schema if table 'users' doesn't exist (simple check for empty/new DB)
+        table_check = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+        if not table_check and SCHEMA_SQL:
+            con.executescript(SCHEMA_SQL)
+            
+        # Apply seed
+        if SEED_SQL.exists():
+            sql = SEED_SQL.read_text(encoding="utf-8")
+            con.executescript(sql)
+            
         con.commit()
     finally:
         con.close()

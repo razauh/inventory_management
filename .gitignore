@@ -57,3 +57,6 @@ QWEN.md
 
 # Backup files
 *.bak
+
+# Obsidian folder
+.obsidian/

@@ -1,3 +1,9 @@
+inside the sales module 
+/home/pc/Desktop/inventory_management/modules/sales
+1: i need you to update the SO window, right now there is only x button on it, i need you to update it with minimize/maximize button, don't try to implement anything new, it's been already implemented inside the new PO window /home/pc/Desktop/inventory_management/modules/purchase/form.py
+so i just need you to go ahead and copy it from there
+2: 
+
 # Comprehensive Test Plan: Purchase Module
 
 ## 1. Introduction & Scope
@@ -31,20 +37,22 @@ We will employ a multi-layered testing strategy to ensure comprehensive coverage
 | PO-UI-002 | Check that the window has minimize, maximize, and close buttons. | All three buttons are present and functional. |
 | PO-UI-003 | Resize the window. | All UI elements resize and re-flow gracefully. |
 | PO-UI-004 | Add a new row to the items table. | A new, empty row is added, and the cursor is focused on the "Product" field. |
-| PO-UI-005 | Delete a row from the items table. | The selected row is removed, and the totals are updated. |
+| PO-UI-005 | Delete a row from the items table using the "✕" button. | The selected row is removed, and the totals are updated. |
+| PO-UI-009 | Click the "Print" button. | A PDF invoice is generated and opened for printing. |
+| PO-UI-010 | Click the "Export to PDF" button. | A PDF invoice is saved to the "PIs" folder on the Desktop. |
 | PO-UI-006 | Enter text in the "Vendor" dropdown. | A list of matching vendors appears. |
 | PO-UI-007 | Select a vendor. | The vendor's name and ID are populated, and the "Vendor Balance" is displayed. |
 | PO-UI-008 | Change the "Initial Payment" amount. | The payment details section enables/disables fields appropriately. |
 
 #### 3.1.2. Data Validation
 
-| Test Case ID | Description | Expected Result |
-| :--- | :--- | :--- |
-| PO-DV-001 | Try to save a PO without selecting a vendor. | A validation error message is displayed. |
-| PO-DV-002 | Try to save a PO without any items. | A validation error message is displayed. |
-| PO-DV-003 | Enter a non-numeric value in the "Qty" or "Price" fields. | The input should be rejected or flagged as invalid. |
-| PO-DV-004 | Enter a sale price lower than the buy price. | The sale price field is marked as invalid, and a validation error is shown on save. |
-| PO-DV-005 | Enter a negative initial payment amount. | A validation error message is displayed. |
+| Test Case ID | Description                                               | Expected Result                                                                     |
+| :----------- | :-------------------------------------------------------- | :---------------------------------------------------------------------------------- |
+| PO-DV-001    | Try to save a PO without selecting a vendor.              | A validation error message is displayed.                                            |
+| PO-DV-002    | Try to save a PO without any items.                       | A validation error message is displayed.                                            |
+| PO-DV-003    | Enter a non-numeric value in the "Qty" or "Price" fields. | The input should be rejected or flagged as invalid.                                 |
+| PO-DV-004    | Enter a sale price lower than the buy price.              | The sale price field is marked as invalid, and a validation error is shown on save. |
+| PO-DV-005    | Enter a negative initial payment amount.                  | A validation error message is displayed.                                            |
 
 #### 3.1.3. Initial Payment Permutations
 
@@ -122,5 +130,6 @@ This matrix is similar to the initial payment one and should be tested with the 
 | DB-INT-001 | Create a new PO. | A new record is created in the `purchases` table, and records for each item are created in the `purchase_items` table. |
 | DB-INT-002 | Add an initial payment. | A new record is created in the `purchase_payments` table, linked to the new PO. |
 | DB-INT-003 | Edit a PO's items. | The `purchase_items` table is updated, and the `total_amount` in the `purchases` table is recalculated. |
-| DB-INT-004 | Delete a PO. | All related records in `purchases`, `purchase_items`, and `purchase_payments` are deleted (or marked as inactive, depending on the desired behavior). |
+| DB-INT-004 | Delete a PO. | [NOT IMPLEMENTED] All related records in `purchases`, `purchase_items`, and `purchase_payments` are deleted (or marked as inactive, depending on the desired behavior). |
+| DB-INT-006 | Auto-apply vendor credit. | When a purchase is created/paid, any available vendor credit is automatically applied to the remaining balance. |
 | DB-INT-005 | Record a return for vendor credit. | A new record is created in the `purchase_returns` table, and a new credit is added to the `vendor_advances` table. |

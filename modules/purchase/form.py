@@ -1369,10 +1369,13 @@ class PurchaseForm(QDialog):
         return len(errors) == 0, errors
 
     def get_payload(self) -> dict | None:
-        
-        
-        
-        vendor_id = int(self.cmb_vendor.currentData())
+
+
+
+        vendor_data = self.cmb_vendor.currentData()
+        if vendor_data is None:
+            return None  # No vendor selected, return None to indicate invalid state
+        vendor_id = int(vendor_data)
         date_str = self.date.date().toString("yyyy-MM-dd")
         total_amount = self._calc_subtotal()
 
