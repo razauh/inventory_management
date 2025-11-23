@@ -1,8 +1,15 @@
 inside the sales module 
 /home/pc/Desktop/inventory_management/modules/sales
 1: i need you to update the SO window, right now there is only x button on it, i need you to update it with minimize/maximize button, don't try to implement anything new, it's been already implemented inside the new PO window /home/pc/Desktop/inventory_management/modules/purchase/form.py
-so i just need you to go ahead and copy it from there
-2: 
+so i just need you to go ahead and copy it from there, but remember do not change the location of the subtotla, line total, order discount, total discount, and total 
+2: i need you to restructure the SO window just like the PO window, bring the payment section on the right side, keep the overall width of it small, probably not more than 20-25% of it, 
+3: when the payment method bank transfer is selected there is dropdown that is supposed to show the saved company bank accounts, but right now its not showing anything, its stuck like there are no values in the DB but if you look into the DB there are values in it,
+4: inside product line the first column # has too big of the width, reduce it, also reduce the width of other columns with numeric values, these dont need that much and around 50% increased the width of the product column
+5: reduce the width of input boxes of the values of customer, contact, date, order discount, Notes, 
+6: increase the font sizes of the subtotal, line total, order discount, total discount, and total for better visibility
+
+before doing all this, i need you to implement tests to verify all these changes by creating a new dir inside test, named sales, make sure these test are implemented first before you try to implement the actual code changes inside the application and then run those tests to verify the correctness
+
 
 # Comprehensive Test Plan: Purchase Module
 

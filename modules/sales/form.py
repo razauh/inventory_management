@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QComboBox,
     QDateEdit, QLineEdit, QLabel, QGroupBox, QTableWidget, QTableWidgetItem,
-    QPushButton, QAbstractItemView, QCompleter, QWidget
+    QPushButton, QAbstractItemView, QCompleter, QWidget, QGridLayout
 )
 from PySide6.QtCore import Qt, QDate
 from ...database.repositories.customers_repo import CustomersRepo
@@ -27,7 +27,11 @@ class SaleForm(QDialog):
         super().__init__(parent)
         self.mode = "quotation" if str(mode).lower() == "quotation" else "sale"
         self.setWindowTitle("Quotation" if self.mode == "quotation" else "Sale")
-        self.setModal(True)
+
+        # Match PurchaseForm pattern: start modal, then switch to non-modal
+        self.setModal(True)  # Start as modal
+        # Set window flags at the end of initialization like in PurchaseForm
+
         self.customers = customers; self.products = products; self.bank_accounts = bank_accounts
         self._payload = None
 
@@ -116,6 +120,43 @@ class SaleForm(QDialog):
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setEditTriggers(QAbstractItemView.AllEditTriggers)
+
+        # Set column widths: narrow # column, wider Product column, narrower numerical columns
+        header = self.tbl.horizontalHeader()
+
+        # Column 0: "#" - make narrower
+        self.tbl.setColumnWidth(0, 40)  # narrow for row numbers
+
+        # Column 1: "Product" - make narrower (decreased by 50% from current)
+        self.tbl.setColumnWidth(1, 125)  # narrowed for product selection (50% reduction)
+
+        # Column 2: "Base UoM" - keep default/narrow
+        self.tbl.setColumnWidth(2, 80)
+
+        # Column 3: "Alt UoM" - keep default/narrow
+        self.tbl.setColumnWidth(3, 80)
+
+        # Column 4: "Avail" - make narrower (numerical column)
+        self.tbl.setColumnWidth(4, 70)
+
+        # Column 5: "Qty" - make narrower (numerical column)
+        self.tbl.setColumnWidth(5, 70)
+
+        # Column 6: "Unit Price" - make narrower (numerical column)
+        self.tbl.setColumnWidth(6, 90)
+
+        # Column 7: "Discount" - make narrower (numerical column)
+        self.tbl.setColumnWidth(7, 70)
+
+        # Column 8: "Margin" - make narrower (numerical column)
+        self.tbl.setColumnWidth(8, 90)
+
+        # Column 9: "Line Total" - make narrower (numerical column)
+        self.tbl.setColumnWidth(9, 90)
+
+        # Column 10: "" (delete button) - keep narrow
+        self.tbl.setColumnWidth(10, 40)
+
         ib.addWidget(self.tbl, 1)
         add = QHBoxLayout(); self.btn_add_row = QPushButton("Add Row"); add.addWidget(self.btn_add_row); add.addStretch(1); ib.addLayout(add)
 
@@ -170,14 +211,56 @@ class SaleForm(QDialog):
 
         # layout assembly
         lay = QVBoxLayout(self)
-        form = QFormLayout()
-        form.addRow("Customer*", self.cmb_customer)
-        form.addRow("Contact", self.edt_contact)
-        form.addRow("", self.btn_add_customer)
-        form.addRow("Date*", self.date)
-        form.addRow("Order Discount", self.txt_discount)
-        form.addRow("Notes", self.txt_notes)
-        lay.addLayout(form); lay.addWidget(box, 1); lay.addLayout(tot)
+
+        # Shorten the input boxes for header fields
+        maxw = 240  # Reduce from 360 to 240
+        for w in (self.cmb_customer, self.edt_contact, self.btn_add_customer, self.date, self.txt_discount, self.txt_notes):
+            w.setMaximumWidth(maxw)
+
+        # Create horizontal layout to put payment fields right next to customer info
+        customer_payment_layout = QHBoxLayout()
+
+        # Create a form layout for customer info
+        customer_info_layout = QFormLayout()
+        customer_info_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        customer_info_layout.addRow("Customer*", self.cmb_customer)
+        customer_info_layout.addRow("Contact", self.edt_contact)
+        customer_info_layout.addRow("", self.btn_add_customer)
+        customer_info_layout.addRow("Date*", self.date)
+        customer_info_layout.addRow("Order Discount", self.txt_discount)
+        customer_info_layout.addRow("Notes", self.txt_notes)
+
+        # Create a form layout for payment section
+        payment_layout = QFormLayout()
+        payment_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        payment_layout.addRow("Initial Payment:", self.pay_amount)
+        payment_layout.addRow("Method:", self.pay_method)
+        payment_layout.addRow("Bank Account:", self.cmb_bank_account)
+        payment_layout.addRow("Reference No.:", self.edt_instr_no)
+
+        # Make payment input fields shorter
+        self.pay_amount.setMaximumWidth(100)
+        self.cmb_bank_account.setMaximumWidth(120)
+        self.edt_instr_no.setMaximumWidth(100)
+        self.pay_method.setMaximumWidth(100)
+
+        # Initially hide bank-related fields
+        self.cmb_bank_account.setVisible(False)
+        self.edt_instr_no.setVisible(False)
+
+        # Add both layouts to horizontal container with minimal spacing
+        customer_payment_layout.addLayout(customer_info_layout, 3)  # Give more space to customer info
+        customer_payment_layout.setSpacing(5)  # Very minimal spacing between sections
+        customer_payment_layout.addLayout(payment_layout, 1)  # Payment gets less space
+
+        # For quotations, hide the payment section
+        if self.mode == "quotation":
+            payment_layout.parentWidget().setVisible(False)
+
+        lay.addLayout(customer_payment_layout)
+
+        # Add items box (table), totals and buttons to the main layout
+        lay.addWidget(box, 1); lay.addLayout(tot)
 
         # Add payment/ bank strips only for 'sale' mode (hidden for quotations)
         lay.addWidget(self.pay_box)
@@ -188,7 +271,13 @@ class SaleForm(QDialog):
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept); self.buttons.rejected.connect(self.reject); lay.addWidget(self.buttons)
-        self.resize(1200, 600); self.setSizeGripEnabled(True)
+
+        # Set window flags like in PurchaseForm to enable minimize, maximize, and close buttons
+        # This should be done after UI construction but before setting size properties
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        # Switch to non-modal to allow proper minimize functionality, like in PurchaseForm
+        self.setModal(False)
+        self.resize(1100, 700); self.setMinimumSize(860, 560); self.setSizeGripEnabled(True)
 
         # wiring
         self.tbl.cellChanged.connect(self._cell_changed)
@@ -209,9 +298,12 @@ class SaleForm(QDialog):
     def _toggle_bank_fields(self, text: str):
         # Only relevant in sale mode
         if self.mode != "sale":
-            self.bank_box.setVisible(False)
+            self.cmb_bank_account.setVisible(False)
+            self.edt_instr_no.setVisible(False)
             return
-        self.bank_box.setVisible(text == "Bank Transfer")
+        is_bank_transfer = text == "Bank Transfer"
+        self.cmb_bank_account.setVisible(is_bank_transfer)
+        self.edt_instr_no.setVisible(is_bank_transfer)
 
     def _warn(self, title: str, message: str, focus_widget=None, row_to_select: int | None = None):
         """Show a friendly message, focus a widget, optionally select a row."""
@@ -243,8 +335,7 @@ class SaleForm(QDialog):
         num.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         self.tbl.setItem(r, 0, num)
 
-        # product combo (lazy import)
-        from PySide6.QtWidgets import QComboBox
+        # product combo (already imported at module level)
         cmb = QComboBox()
         for p in self._all_products():
             cmb.addItem(f"{p.name} (#{p.product_id})", p.product_id)
@@ -607,3 +698,4 @@ class SaleForm(QDialog):
 
     def payload(self):
         return self._payload
+

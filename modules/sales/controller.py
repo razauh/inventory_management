@@ -49,6 +49,7 @@ class SalesController(BaseModule):
         # Controller-level state
         self._doc_type: str = "sale"   # 'sale' | 'quotation' (mirrors view toggle)
         self._search_text: str = ""    # current server-side search string
+        self.active_dialog = None      # Track active dialog for non-modal operation
 
         # Repos using the shared connection
         self.repo = SalesRepo(conn)
@@ -519,16 +520,28 @@ class SalesController(BaseModule):
     def _add(self):
         doc_type = self._doc_type
 
+        # Store doc_type so the handler method knows the context
+        self._pending_doc_type = doc_type
+
         dlg = self._open_sale_form(as_quotation=(doc_type == "quotation"))
         if dlg is None:
             info(self.view, "Error", "Sale form could not be opened.")
             return
 
-        if not dlg.exec():
+        # Set this as the active dialog and connect the accepted signal
+        self.active_dialog = dlg
+        self.active_dialog.accepted.connect(self._handle_add_dialog_accept)
+        self.active_dialog.show()
+
+    def _handle_add_dialog_accept(self):
+        """Handle the accepted signal from the non-modal SaleForm"""
+        if not self.active_dialog:
             return
-        p = dlg.payload()
+        p = self.active_dialog.payload()
         if not p:
             return
+
+        doc_type = getattr(self, '_pending_doc_type', 'sale')  # Use stored doc type
 
         if doc_type == "quotation":
             # Quotation creation: ID prefix QO, no inventory posting, no payments
@@ -648,6 +661,10 @@ class SalesController(BaseModule):
 
         doc_type = self._doc_type
 
+        # Store doc_type and selected row so the handler method knows the context
+        self._pending_doc_type = doc_type
+        self._pending_edit_row = r
+
         items = self.repo.list_items(r["sale_id"])
         init = {
             "customer_id": r["customer_id"],
@@ -671,11 +688,21 @@ class SalesController(BaseModule):
             info(self.view, "Error", "Sale form could not be opened.")
             return
 
-        if not dlg.exec():
+        # Set this as the active dialog and connect the accepted signal
+        self.active_dialog = dlg
+        self.active_dialog.accepted.connect(self._handle_edit_dialog_accept)
+        self.active_dialog.show()
+
+    def _handle_edit_dialog_accept(self):
+        """Handle the accepted signal from the non-modal SaleForm during edit"""
+        if not self.active_dialog:
             return
-        p = dlg.payload()
+        p = self.active_dialog.payload()
         if not p:
             return
+
+        doc_type = getattr(self, '_pending_doc_type', 'sale')  # Use stored doc type
+        r = getattr(self, '_pending_edit_row', {})  # Use stored row data
 
         sid = r["sale_id"]
 
@@ -993,11 +1020,25 @@ class SalesController(BaseModule):
         else:
             dlg = SaleReturnForm(self.view, repo=self.repo)
 
-        if not dlg.exec():
+        # Store doc_type so the handler method knows the context
+        self._pending_doc_type = doc_type
+        self._pending_selected = selected
+
+        # Set this as the active dialog and connect the accepted signal
+        self.active_dialog = dlg
+        self.active_dialog.accepted.connect(self._handle_return_dialog_accept)
+        self.active_dialog.show()
+
+    def _handle_return_dialog_accept(self):
+        """Handle the accepted signal from the non-modal SaleReturnForm"""
+        if not self.active_dialog:
             return
-        p = dlg.payload()
+        p = self.active_dialog.payload()
         if not p:
             return
+
+        doc_type = getattr(self, '_pending_doc_type', 'sale')  # Use stored doc type
+        selected = getattr(self, '_pending_selected', None)  # Use stored selected data
 
         sid = p["sale_id"]
         items = self.repo.list_items(sid)
@@ -1115,3 +1156,4 @@ class SalesController(BaseModule):
 
         self._reload()
         self._sync_details()
+
