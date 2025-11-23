@@ -1,5 +1,5 @@
 from pathlib import Path
-from .constants import DATA_DIR, DB_FILE_NAME
+from constants import DATA_DIR, DB_FILE_NAME
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / DATA_DIR

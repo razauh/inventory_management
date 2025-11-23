@@ -87,7 +87,7 @@ class VendorController(BaseModule):
         sel = self.view.table.selectionModel()
         try:
             sel.selectionChanged.disconnect(self._update_details)
-        except (TypeError, RuntimeError):
+        except (TypeError, RuntimeError, RuntimeWarning):
             pass
         sel.selectionChanged.connect(self._update_details)
     def _reload(self):

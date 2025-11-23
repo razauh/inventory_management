@@ -1,4 +1,4 @@
-from ...utils.auth import hash_password
+from utils.auth import hash_password
 
 def seed(conn):
     # if no users exist, create admin/admin and a demo cashier

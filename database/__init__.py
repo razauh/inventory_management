@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
-from ..config import DB_PATH
-from ..constants import TABLE_SCHEMA_VERSION, SCHEMA_VERSION
+from config import DB_PATH
+from constants import TABLE_SCHEMA_VERSION, SCHEMA_VERSION
 from . import schema as schema_module
 from .seeders.default_data import seed as seed_default_data
 

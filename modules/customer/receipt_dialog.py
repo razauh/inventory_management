@@ -899,7 +899,7 @@ class _CustomerMoneyDialog(QDialog):
             # Disconnect any existing connections to avoid duplicates
             try:
                 self.applySalesTable.selectionModel().selectionChanged.disconnect()
-            except TypeError:
+            except (TypeError, RuntimeError, RuntimeWarning):
                 # Signal was not connected, that's fine
                 pass
             self.applySalesTable.selectionModel().selectionChanged.connect(self._on_sale_selection_changed)

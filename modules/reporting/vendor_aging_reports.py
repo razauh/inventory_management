@@ -159,7 +159,7 @@ class VendorAgingTab(QWidget):
         if sel:
             try:
                 sel.selectionChanged.disconnect(self._on_aging_selection_changed)
-            except Exception:
+            except (TypeError, RuntimeError, RuntimeWarning):
                 pass
             sel.selectionChanged.connect(self._on_aging_selection_changed)
 

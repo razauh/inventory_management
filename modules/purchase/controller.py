@@ -101,7 +101,7 @@ class PurchaseController(BaseModule):
         sel = self.view.tbl.selectionModel()
         try:
             sel.selectionChanged.disconnect(self._sync_details)
-        except (TypeError, RuntimeError):
+        except (TypeError, RuntimeError, RuntimeWarning):
             pass
         sel.selectionChanged.connect(self._sync_details)
 

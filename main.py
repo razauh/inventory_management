@@ -11,9 +11,15 @@ import traceback
 import os
 from importlib import import_module
 
-from .constants import APP_NAME, STYLE_FILE
-from .database import get_connection
-from .modules.base_module import BaseModule
+import sys
+from pathlib import Path
+# Add the project root to the Python path for imports
+project_root = Path(__file__).resolve().parent
+sys.path.insert(0, str(project_root))
+
+from constants import APP_NAME, STYLE_FILE
+from database import get_connection
+from modules.base_module import BaseModule
 
 
 def load_qss() -> str:
@@ -26,6 +32,25 @@ def load_qss() -> str:
 
 def _lazy_get(name: str, attr: str):
     """Import a module by name and fetch an attribute from it, with a clear error if missing."""
+    # Prepend the project root and make sure the package can be imported
+    import sys
+    import warnings
+    from pathlib import Path
+    project_root = Path(__file__).resolve().parent
+    root_str = str(project_root)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
+    # Also make sure the parent of the project root is in the path for absolute imports
+    parent_dir = str(project_root.parent)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+
+    # Filter out the specific RuntimeWarning about signal disconnection
+    warnings.filterwarnings("ignore",
+                           message=r".*Failed to disconnect.*selectionChanged.*",
+                           category=RuntimeWarning)
+
     try:
         mod = import_module(name)
     except Exception as e:
@@ -108,13 +133,17 @@ class MainWindow(QMainWindow):
         row_lay.addWidget(self.stack, 1)
         layout.addWidget(row, 1)
 
+        # Store module information for lazy loading
+        self.module_info: list[dict] = []
+
+        # Store loaded modules
         self.modules: list[tuple[str, BaseModule]] = []
 
-        # nav wiring
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        # nav wiring - connect to our lazy loading function
+        self.nav.currentRowChanged.connect(self._on_nav_item_changed)
 
         # Dashboard
-        self._add_module_safe(
+        self._add_module_deferred(
             "Dashboard",
             "inventory_management.modules.dashboard.controller",
             "DashboardController",
@@ -123,7 +152,7 @@ class MainWindow(QMainWindow):
         )
 
         # Products
-        self._add_module_safe(
+        self._add_module_deferred(
             "Products",
             "inventory_management.modules.product.controller",
             "ProductController",
@@ -132,7 +161,7 @@ class MainWindow(QMainWindow):
         )
 
         # Inventory
-        self._add_module_safe(
+        self._add_module_deferred(
             "Inventory",
             "inventory_management.modules.inventory.controller",
             "InventoryController",
@@ -142,7 +171,7 @@ class MainWindow(QMainWindow):
         )
 
         # Purchases
-        self._add_module_safe(
+        self._add_module_deferred(
             "Purchases",
             "inventory_management.modules.purchase.controller",
             "PurchaseController",
@@ -152,7 +181,7 @@ class MainWindow(QMainWindow):
         )
 
         # Sales
-        self._add_module_safe(
+        self._add_module_deferred(
             "Sales",
             "inventory_management.modules.sales.controller",
             "SalesController",
@@ -162,7 +191,7 @@ class MainWindow(QMainWindow):
         )
 
         # Customers
-        self._add_module_safe(
+        self._add_module_deferred(
             "Customers",
             "inventory_management.modules.customer.controller",
             "CustomerController",
@@ -171,7 +200,7 @@ class MainWindow(QMainWindow):
         )
 
         # Vendors
-        self._add_module_safe(
+        self._add_module_deferred(
             "Vendors",
             "inventory_management.modules.vendor.controller",
             "VendorController",
@@ -180,7 +209,7 @@ class MainWindow(QMainWindow):
         )
 
         # Expenses
-        self._add_module_safe(
+        self._add_module_deferred(
             "Expenses",
             "inventory_management.modules.expense.controller",
             "ExpenseController",
@@ -189,7 +218,7 @@ class MainWindow(QMainWindow):
         )
 
         # Reporting (load actual module; if it fails we will print the exact error)
-        self._add_module_safe(
+        self._add_module_deferred(
             "Reporting",
             "inventory_management.modules.reporting.controller",
             "ReportingController",
@@ -199,7 +228,7 @@ class MainWindow(QMainWindow):
         )
 
         # # Payments (load actual module; not admin-gated)
-        # self._add_module_safe(
+        # self._add_module_deferred(
         #     "Payments",
         #     "inventory_management.modules.payments.controller",
         #     "PaymentsController",
@@ -213,11 +242,13 @@ class MainWindow(QMainWindow):
         #     self.add_placeholder("System Logs")
 
         # ---- Backup & Restore (replace previous placeholder) ----
-        self._add_backup_restore_module()
+        self._add_backup_restore_module_deferred()
 
         # Ensure first page is visible
         if self.nav.count():
             self.nav.setCurrentRow(0)
+            # Load the first module (Dashboard) immediately
+            self._load_module_at_index(0)
             self.stack.setCurrentIndex(0)
 
         # -------- Inventory menu anchored to left nav item (click to open) --------
@@ -362,11 +393,210 @@ class MainWindow(QMainWindow):
 
     def add_placeholder(self, title: str):
         from PySide6.QtWidgets import QLabel
-        from .utils.ui_helpers import wrap_center
+        from utils.ui_helpers import wrap_center
         placeholder = wrap_center(QLabel(f"{title}\n\nComing soon..."))
         item = QListWidgetItem(title)
         self.nav.addItem(item)
         self.stack.addWidget(placeholder)
+
+    def _add_module_deferred(
+        self,
+        title: str,
+        module_path: str,
+        class_name: str,
+        *args,
+        fallback_placeholder: bool = True,
+        **kwargs
+    ):
+        """Add module info for deferred loading."""
+        module_info = {
+            'title': title,
+            'module_path': module_path,
+            'class_name': class_name,
+            'args': args,
+            'kwargs': kwargs,
+            'fallback_placeholder': fallback_placeholder
+        }
+
+        # Add placeholder item to navigation
+        item = QListWidgetItem(title)
+        self.nav.addItem(item)
+
+        # Add a placeholder widget to the stack - will be replaced when loaded
+        from PySide6.QtWidgets import QLabel
+        from utils.ui_helpers import wrap_center
+        placeholder = wrap_center(QLabel(f"Loading {title}..."))
+        self.stack.addWidget(placeholder)
+
+        # Store module info for later loading
+        self.module_info.append(module_info)
+
+    def _add_backup_restore_module_deferred(self) -> None:
+        """Add Backup & Restore module info for deferred loading."""
+        module_info = {
+            'title': 'Backup & Restore',
+            'module_path': 'inventory_management.modules.backup_restore',
+            'class_name': 'create_module',
+            'args': (),
+            'kwargs': {},
+            'fallback_placeholder': True,
+            'is_special': True  # Special handling for backup module
+        }
+
+        # Add placeholder item to navigation
+        item = QListWidgetItem('Backup & Restore')
+        self.nav.addItem(item)
+
+        # Add a placeholder widget to the stack
+        from PySide6.QtWidgets import QLabel
+        from utils.ui_helpers import wrap_center
+        placeholder = wrap_center(QLabel("Loading Backup & Restore..."))
+        self.stack.addWidget(placeholder)
+
+        # Store module info for later loading
+        self.module_info.append(module_info)
+
+    def _on_nav_item_changed(self, index: int):
+        """Load module when navigating to it."""
+        if index < 0 or index >= len(self.module_info):
+            return
+
+        # Load the module if it hasn't been loaded yet
+        self._load_module_at_index(index)
+
+    def _load_module_at_index(self, index: int):
+        """Load the module at the specified index if not already loaded."""
+        if index < len(self.modules):
+            # Module is already loaded, just show it
+            self.stack.setCurrentIndex(index)
+            return
+
+        # Check if we've already loaded this module
+        if index >= len(self.modules):
+            # Load the module
+            self._load_module(index)
+
+        # Set the current index to show the module
+        self.stack.setCurrentIndex(index)
+
+    def _load_module(self, index: int):
+        """Actually load the module at the specified index."""
+        if index >= len(self.module_info):
+            return
+
+        # Set cursor to waiting
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        try:
+            module_info = self.module_info[index]
+
+            if module_info.get('is_special'):
+                # Special handling for Backup & Restore
+                self._load_backup_restore_module(index)
+            else:
+                # Normal module loading
+                self._load_normal_module(index)
+        except Exception as e:
+            print(f"Error loading module at index {index}: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+
+            # Add placeholder if loading failed
+            if module_info.get('fallback_placeholder'):
+                self._replace_placeholder_widget(index, f"{module_info['title']}\n\nLoading failed")
+        finally:
+            # Restore cursor
+            QApplication.restoreOverrideCursor()
+
+    def _load_normal_module(self, index: int):
+        """Load a normal module (not special case)."""
+        module_info = self.module_info[index]
+
+        try:
+            Controller = _lazy_get(module_info['module_path'], module_info['class_name'])
+            controller = Controller(*module_info['args'], **module_info['kwargs'])
+
+            # Replace the placeholder widget with the actual module widget
+            widget = controller.get_widget()
+            current_widget = self.stack.widget(index)
+
+            # Remove the placeholder from the stack
+            self.stack.removeWidget(current_widget)
+            current_widget.deleteLater()
+
+            # Add the actual module widget to the stack
+            self.stack.insertWidget(index, widget)
+
+            # Add to loaded modules list
+            self.modules.append((module_info['title'], controller))
+
+        except Exception as e:
+            # === DEBUG Reporting only ===
+            if module_info['title'] in ["Sales", "Dashboard"]:
+                import traceback as _tb, sys as _sys
+                print(f"[{module_info['title']}] failed to load:", e, file=_sys.stderr)
+                _tb.print_exc()
+            # ============================
+            if module_info['fallback_placeholder']:
+                self._replace_placeholder_widget(index, f"{module_info['title']}\n\nComing soon...")
+
+    def _load_backup_restore_module(self, index: int):
+        """Load the special Backup & Restore module."""
+        module_info = self.module_info[index]
+
+        try:
+            # Use the module factory (lazy import)
+            backup_pkg = import_module(module_info['module_path'])
+            create_module = getattr(backup_pkg, 'create_module')
+            module_title = getattr(backup_pkg, 'MODULE_TITLE', 'Backup & Restore')
+
+            controller = create_module()
+
+            # Attach the lightweight DB manager shim so restore can close/reopen the DB.
+            setattr(controller, '_app_db_manager', MainWindow._AppDbManager(self))
+
+            # Replace the placeholder widget with the actual module widget
+            widget = controller.get_widget()
+            current_widget = self.stack.widget(index)
+
+            # Remove the placeholder from the stack
+            self.stack.removeWidget(current_widget)
+            current_widget.deleteLater()
+
+            # Add the actual module widget to the stack
+            self.stack.insertWidget(index, widget)
+
+            # Add to loaded modules list
+            self.modules.append((module_title, controller))
+
+            # Register File menu actions (controller wires actions to Backup/Restore dialogs)
+            if hasattr(controller, 'register_menu_actions'):
+                controller.register_menu_actions(self.menuBar())
+
+        except Exception as e:
+            # If anything goes wrong, fall back to placeholder to keep app usable.
+            print("[BackupRestore] failed to load:", e, file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            self._replace_placeholder_widget(index, f"{module_info['title']}\n\nComing soon...")
+
+    def _replace_placeholder_widget(self, index: int, message: str):
+        """Replace a placeholder widget with a message."""
+        from PySide6.QtWidgets import QLabel
+        from utils.ui_helpers import wrap_center
+        new_widget = wrap_center(QLabel(message))
+
+        current_widget = self.stack.widget(index)
+
+        # Remove the old placeholder from the stack
+        self.stack.removeWidget(current_widget)
+        current_widget.deleteLater()
+
+        # Add the new widget to the stack
+        self.stack.insertWidget(index, new_widget)
+
+        # Add a placeholder module entry so the index doesn't get out of sync
+        self.modules.append((self.module_info[index]['title'], None))
 
     def _find_module_index(self, title: str) -> int | None:
         for i, (t, _m) in enumerate(self.modules):
@@ -376,6 +606,12 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Filter out warnings about signal disconnection
+    import warnings
+    warnings.filterwarnings("ignore",
+                           message=r".*Failed to disconnect.*selectionChanged.*",
+                           category=RuntimeWarning)
+
     # Make sure no test-time env disables decorations when running the app
     import os
     os.environ.pop("QT_QPA_DISABLE_WINDOWDECORATION", None)
