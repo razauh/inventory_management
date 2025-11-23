@@ -336,7 +336,7 @@ class PurchaseController(BaseModule):
             "items": [],
         }
         
-        dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products, initial=initial_data)
+        dlg = PurchaseForm(None, vendors=self.vendors, products=self.products, initial=initial_data)
         if not dlg.exec():
             return
         p = dlg.payload()
