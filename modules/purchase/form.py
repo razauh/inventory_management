@@ -506,7 +506,7 @@ class PurchaseForm(QDialog):
         self._refresh_totals()
         
         self._toggle_ip_fields_by_amount()
-        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
         self.resize(1100, 700)
         self.setMinimumSize(860, 560)
         self.setSizeGripEnabled(True)
