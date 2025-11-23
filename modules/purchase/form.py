@@ -95,14 +95,29 @@ class PurchaseForm(QDialog):
         # Create reverse mapping from display values to keys for payment methods
         self._method_display_to_key = {v: k for k, v in self.PAYMENT_METHODS.items()}
 
+        # Set dialog to be non-application modal to allow minimizing
+        self.setModal(False)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+
         main_widget = QWidget()
-        main_layout = QVBoxLayout(main_widget)
+        main_layout = QHBoxLayout(main_widget)  # Changed to horizontal layout
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(10)
 
+        # Left side - main content (header, items, totals)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
         self.cmb_vendor = QComboBox(); self.cmb_vendor.setEditable(True)
+        # Add an empty item first to avoid auto-selecting the first vendor
+        self.cmb_vendor.addItem("", None)  # Empty text with None data
         for v in self.vendors.list_vendors():
             self.cmb_vendor.addItem(f"{v.name} (#{v.vendor_id})", v.vendor_id)
+        # Only set the first item (empty one) as the default if not in edit mode
+        if not initial:
+            self.cmb_vendor.setCurrentIndex(0)
 
         self.date = QDateEdit(); self.date.setCalendarPopup(True)
         self.date.setDate(
@@ -133,26 +148,26 @@ class PurchaseForm(QDialog):
             hg.addWidget(widget, row, c + 1)
 
         # Create advance balance label
-        self.lbl_vendor_advance = QLabel("Vendor Advance: $0.00")
+        self.lbl_vendor_advance = QLabel("Vendor Balance: $0.00")
         self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")
 
         # Create purchase ID label - placing it above the main header fields
         self.lbl_purchase_id = QLabel("Purchase ID: (New)")
         self.lbl_purchase_id.setStyleSheet("font-weight: bold; font-size: 14px; color: #0000ff;")  # Blue text for visibility
-        
+
         # Add purchase ID label at the top of the header box
         hg.addWidget(self.lbl_purchase_id, 0, 0, 1, 6)  # Span across all 6 columns
-        
+
         # Add the other fields starting from row 1
         add_pair(1, 0, "Vendor", self.cmb_vendor, required=True)
         add_pair(1, 1, "Date", self.date, required=True)
         hg.addWidget(self.lbl_vendor_advance, 1, 4, 1, 2)  # Span across last 2 columns
-        
+
         add_pair(2, 0, "Notes", self.txt_notes, required=False)
         hg.setColumnStretch(1, 1)
         hg.setColumnStretch(3, 1)
         hg.setColumnStretch(5, 1)  # Stretch the advance label column too
-        main_layout.addWidget(header_box)
+        left_layout.addWidget(header_box)
 
         items_box = QGroupBox("Items")
         ib = QVBoxLayout(items_box)
@@ -180,37 +195,59 @@ class PurchaseForm(QDialog):
         self.tbl.installEventFilter(self.table_event_filter)
 
         row_btns = QHBoxLayout()
+        from PySide6.QtGui import QKeySequence, QShortcut
+
         self.btn_add_row = QPushButton("Add Row")
         row_btns.addWidget(self.btn_add_row)
+
+        # Add Ctrl+N shortcut to add a new row
+        shortcut_add_row = QShortcut(QKeySequence("Ctrl+N"), self)
+        shortcut_add_row.activated.connect(self._add_row)
+
+        # Add totals to the right of the add row button with improved styling
         row_btns.addStretch(1)
+
+        # Subtotal label and value with styling
+        subtotal_label = QLabel("Subtotal:")
+        subtotal_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        row_btns.addWidget(subtotal_label)
+        self.lab_sub = QLabel("0.00")
+        self.lab_sub.setStyleSheet("font-weight: bold; font-size: 12px; color: green;")  # Green for visibility
+        row_btns.addWidget(self.lab_sub)
+
+        row_btns.addSpacing(16)
+
+        # Total label and value with styling
+        total_label = QLabel("Total:")
+        total_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        row_btns.addWidget(total_label)
+        self.lab_total = QLabel("0.00")
+        self.lab_total.setStyleSheet("font-weight: bold; font-size: 14px; color: green;")  # Changed to green to match subtotal
+        row_btns.addWidget(self.lab_total)
+
         ib.addLayout(row_btns)
 
-        main_layout.addWidget(items_box, 2)
+        left_layout.addWidget(items_box, 2)
 
-        tot = QHBoxLayout()
-        self.lab_sub = QLabel("0.00")
-        self.lab_total = QLabel("0.00")
-        tot.addStretch(1)
-        tot.addWidget(QLabel("Subtotal:")); tot.addWidget(self.lab_sub)
-        tot.addSpacing(16)
-        tot.addWidget(QLabel("Total:"));    tot.addWidget(self.lab_total)
-        main_layout.addLayout(tot)
+        # Add left side to main layout
+        main_layout.addWidget(left_widget, 2)  # Left side gets 2/3 of space
 
-        
         is_edit_mode = bool(initial)
-        
+
         ip_box = QGroupBox("Initial Payment (optional)")
-        
-        
-        if is_edit_mode:
-            ip_box.setEnabled(False)
-            ip_box.setTitle("Initial Payment (disabled during edit - use Payments section)")
-        
-        ipg = QGridLayout(ip_box)
-        ipg.setHorizontalSpacing(12); ipg.setVerticalSpacing(8)
+
+
+        # Always enable the initial payment section
+        ip_box.setEnabled(True)
+        ip_box.setTitle("Initial Payment (optional)")
+
+        # Use a vertical layout for the single column format
+        ip_layout = QVBoxLayout(ip_box)
+        ip_layout.setSpacing(8)
 
         self.ip_amount = QLineEdit(); self.ip_amount.setPlaceholderText("0")
         self.ip_date = QDateEdit(); self.ip_date.setCalendarPopup(True); self.ip_date.setDate(self.date.date())
+        self.ip_date.setDisplayFormat("yyyy-MM-dd")  # Set a consistent format
 
         self.ip_method = QComboBox()
         self.ip_method.addItems(list(self.PAYMENT_METHODS.values()))
@@ -219,59 +256,137 @@ class PurchaseForm(QDialog):
         self.ip_vendor_acct  = QComboBox(); self.ip_vendor_acct.setEditable(True)
         self.ip_instr_no   = QLineEdit(); self.ip_instr_no.setPlaceholderText("Instrument / Cheque / Slip #")
         self.ip_instr_date = QDateEdit(); self.ip_instr_date.setCalendarPopup(True); self.ip_instr_date.setDate(self.ip_date.date())
+        self.ip_instr_date.setDisplayFormat("yyyy-MM-dd")  # Set a consistent format
         self.ip_ref_no     = QLineEdit(); self.ip_ref_no.setPlaceholderText("Reference (optional)")
         self.ip_notes      = QLineEdit(); self.ip_notes.setPlaceholderText("Notes (optional)")
-        
-        
+
+
         self.temp_bank_name = QLineEdit(); self.temp_bank_name.setPlaceholderText("Bank Name")
         self.temp_bank_number = QLineEdit(); self.temp_bank_number.setPlaceholderText("Account Number")
 
-        def add_ip(row, col, text, widget, required=False):
-            """Modified function for payment section with optional required field indicators"""
-            c = col * 2
+        # Create labels and add to the vertical layout as pairs
+        def add_single_column_row(text, widget, required=False):
+            """Add a label and widget in a horizontal layout for single column format"""
+            from PySide6.QtWidgets import QSizePolicy
+            from PySide6.QtCore import Qt
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(8)
+
             if required:
                 label = create_required_label(text)
-                ipg.addWidget(label, row, c)
             else:
                 label = QLabel(text)
-                ipg.addWidget(label, row, c)
-            ipg.addWidget(widget, row, c + 1)
-            return label  
 
-        
+            # Set label to align left
+            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+            # Ensure all widgets have consistent size behavior
+            if hasattr(widget, 'setSizePolicy'):
+                widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            # For specific widget types, set more appropriate sizes
+            if isinstance(widget, QDateEdit):
+                widget.setFixedWidth(110)  # Fixed width for date fields
+            elif isinstance(widget, QComboBox):
+                widget.setMinimumWidth(140)  # Minimum width for combo boxes
+            elif isinstance(widget, QLineEdit):
+                widget.setMinimumWidth(140)  # Minimum width for line edits
+
+            row_layout.addWidget(label)
+            row_layout.addWidget(widget)
+            return label, row_layout
+
+
         self._ip_labels = {}
-        
-        add_ip(0, 0, "Amount", self.ip_amount, required=False)
-        add_ip(0, 1, "Payment Date", self.ip_date, required=False)
-        add_ip(1, 0, "Method", self.ip_method, required=False)
-        self._ip_labels['company_acct'] = add_ip(1, 1, "Company Bank Account", self.ip_company_acct, required=False)
-        self._ip_labels['vendor_acct'] = add_ip(2, 0, "Vendor Bank Account", self.ip_vendor_acct, required=False)
-        self._ip_labels['instr_no'] = add_ip(2, 1, "Instrument No", self.ip_instr_no, required=False)
-        add_ip(3, 0, "Instrument Date", self.ip_instr_date, required=False)
-        add_ip(3, 1, "Ref No", self.ip_ref_no, required=False)
-        
-        
-        self._ip_labels['temp_bank_name'] = add_ip(4, 0, "Temp Bank Name", self.temp_bank_name, required=False)
-        self._ip_labels['temp_bank_number'] = add_ip(4, 1, "Temp Bank Number", self.temp_bank_number, required=False)
-        
-        
+
+        # Add payment fields in single column format
+        _, amount_layout = add_single_column_row("Amount", self.ip_amount, required=False)
+        ip_layout.addLayout(amount_layout)
+
+        # Payment Date layout - label, then date field
+        from PySide6.QtCore import Qt
+        payment_date_layout = QHBoxLayout()
+        payment_date_layout.setSpacing(8)
+        payment_date_label = QLabel("Payment Date")
+        payment_date_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        payment_date_layout.addWidget(payment_date_label)
+        self.ip_date.setFixedWidth(110)
+        payment_date_layout.addWidget(self.ip_date)
+        payment_date_layout.addStretch(1)  # Add stretch to align properly
+        ip_layout.addLayout(payment_date_layout)
+
+        _, method_layout = add_single_column_row("Method", self.ip_method, required=False)
+        ip_layout.addLayout(method_layout)
+
+        # Store references to labels for required field indicators
+        company_label, company_layout = add_single_column_row("Company Bank Account", self.ip_company_acct, required=False)
+        self._ip_labels['company_acct'] = company_label
+        ip_layout.addLayout(company_layout)
+
+        vendor_label, vendor_layout = add_single_column_row("Vendor Bank Account", self.ip_vendor_acct, required=False)
+        self._ip_labels['vendor_acct'] = vendor_label
+        ip_layout.addLayout(vendor_layout)
+
+        # Instrument No layout - separate row
+        instr_no_label = QLabel("Instrument No")
+        instr_no_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        instr_no_layout = QHBoxLayout()
+        instr_no_layout.setSpacing(8)
+        instr_no_layout.addWidget(instr_no_label)
+        instr_no_layout.addWidget(self.ip_instr_no)
+        ip_layout.addLayout(instr_no_layout)
+
+        # Instrument Date layout - separate row
+        instr_date_label = QLabel("Instrument Date")
+        instr_date_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        instr_date_layout = QHBoxLayout()
+        instr_date_layout.setSpacing(8)  # Reduce spacing to bring label and field closer
+        instr_date_layout.addWidget(instr_date_label)
+        self.ip_instr_date.setFixedWidth(110)
+        instr_date_layout.addWidget(self.ip_instr_date)
+        instr_date_layout.addStretch(1)  # Add stretch to align properly
+        ip_layout.addLayout(instr_date_layout)
+
+        # Store reference for instrument label in _ip_labels
+        self._ip_labels['instr_no'] = instr_no_label
+
+        _, ref_no_layout = add_single_column_row("Ref No", self.ip_ref_no, required=False)
+        ip_layout.addLayout(ref_no_layout)
+
+
+        temp_bank_name_label, temp_bank_name_layout = add_single_column_row("Temp Bank Name", self.temp_bank_name, required=False)
+        self._ip_labels['temp_bank_name'] = temp_bank_name_label
+        ip_layout.addLayout(temp_bank_name_layout)
+
+        temp_bank_number_label, temp_bank_number_layout = add_single_column_row("Temp Bank Number", self.temp_bank_number, required=False)
+        self._ip_labels['temp_bank_number'] = temp_bank_number_label
+        ip_layout.addLayout(temp_bank_number_layout)
+
+
+        self.temp_bank_name.setMinimumWidth(140)
+        self.temp_bank_number.setMinimumWidth(140)
         self.temp_bank_name.setVisible(False)
         self.temp_bank_number.setVisible(False)
-        
-        ipg.addWidget(QLabel("Payment Notes"), 5, 0)
-        ipg.addWidget(self.ip_notes, 5, 1, 1, 3)
-        ipg.setColumnStretch(1, 1)
-        ipg.setColumnStretch(3, 1)
+
+        # Add payment notes as a separate row
+        from PySide6.QtCore import Qt
+        notes_label = QLabel("Payment Notes")
+        notes_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.ip_notes.setMinimumWidth(140)
+
+        notes_layout = QHBoxLayout()
+        notes_layout.addWidget(notes_label)
+        notes_layout.addWidget(self.ip_notes)
+        ip_layout.addLayout(notes_layout)
+
+        # Add stretch to fill remaining space
+        ip_layout.addStretch(1)
+
+        # Add right side (Initial Payment) to main layout
+        main_layout.addWidget(ip_box, 1)  # Right side gets 1/3 of space
 
         
-        if is_edit_mode:
-            for widget in [self.ip_amount, self.ip_date, self.ip_method, 
-                          self.ip_company_acct, self.ip_vendor_acct, 
-                          self.ip_instr_no, self.ip_instr_date, 
-                          self.ip_ref_no, self.ip_notes]:
-                widget.setEnabled(False)
-
-        main_layout.addWidget(ip_box, 0)
 
         
         button_box = QDialogButtonBox(QDialogButtonBox.Cancel)
@@ -323,12 +438,70 @@ class PurchaseForm(QDialog):
             idx = self.cmb_vendor.findData(initial["vendor_id"])
             if idx >= 0: self.cmb_vendor.setCurrentIndex(idx)
             self.txt_notes.setText(initial.get("notes") or "")
-            
+
             # Update the purchase ID label with the actual PO number
             if initial and "purchase_id" in initial:
                 self.lbl_purchase_id.setText(f"Purchase ID: {initial['purchase_id']}")
             else:
                 self.lbl_purchase_id.setText("Purchase ID: (New)")
+
+            # Load initial payment data if it exists in the initial data
+            if "initial_payment" in initial and initial["initial_payment"]:
+                initial_payment = initial["initial_payment"]
+                self.ip_amount.setText(str(initial_payment.get("amount", "0")))
+                method_value = initial_payment.get("method", "CASH")
+
+                # Convert method value back to display value if needed
+                display_method = method_value
+                # Check if the stored value is a key (like 'CASH', 'BANK_TRANSFER', etc.)
+                if method_value in self.PAYMENT_METHODS:
+                    display_method = self.PAYMENT_METHODS[method_value]
+                # If it's already a display value, keep it as is
+                elif method_value not in self.PAYMENT_METHODS.values():
+                    # If it's neither a key nor a known display value, default to 'CASH'
+                    display_method = self.PAYMENT_METHODS.get('CASH', 'Cash')
+
+                method_idx = self.ip_method.findText(display_method)
+                if method_idx >= 0:
+                    self.ip_method.setCurrentIndex(method_idx)
+
+                # Set payment date
+                if initial_payment.get("date"):
+                    payment_date = QDate.fromString(initial_payment["date"], "yyyy-MM-dd")
+                    self.ip_date.setDate(payment_date)
+
+                # Set company bank account if provided
+                if initial_payment.get("bank_account_id"):
+                    company_acct_idx = self.ip_company_acct.findData(initial_payment["bank_account_id"])
+                    if company_acct_idx >= 0:
+                        self.ip_company_acct.setCurrentIndex(company_acct_idx)
+
+                # Set vendor bank account if provided
+                if initial_payment.get("vendor_bank_account_id"):
+                    vendor_acct_idx = self.ip_vendor_acct.findData(initial_payment["vendor_bank_account_id"])
+                    if vendor_acct_idx >= 0:
+                        self.ip_vendor_acct.setCurrentIndex(vendor_acct_idx)
+
+                # Set instrument details
+                self.ip_instr_no.setText(initial_payment.get("instrument_no", ""))
+                if initial_payment.get("instrument_date"):
+                    instr_date = QDate.fromString(initial_payment["instrument_date"], "yyyy-MM-dd")
+                    self.ip_instr_date.setDate(instr_date)
+
+                # Set reference and notes
+                self.ip_ref_no.setText(initial_payment.get("ref_no", ""))
+                self.ip_notes.setText(initial_payment.get("notes", ""))
+
+                # Handle temporary bank details if applicable
+                temp_bank_name = initial_payment.get("temp_vendor_bank_name", "")
+                temp_bank_number = initial_payment.get("temp_vendor_bank_number", "")
+                if temp_bank_name or temp_bank_number:
+                    self.temp_bank_name.setText(temp_bank_name)
+                    self.temp_bank_number.setText(temp_bank_number)
+                    # Show temporary bank fields if they were used
+                    selected_idx = self.ip_vendor_acct.findData("TEMP_BANK")
+                    if selected_idx >= 0:
+                        self.ip_vendor_acct.setCurrentIndex(selected_idx)
 
         self._reload_company_accounts()
         self._reload_vendor_accounts()
@@ -349,7 +522,7 @@ class PurchaseForm(QDialog):
         """Update the vendor advance balance display"""
         # Guard: Check if vendors exists and has a connection
         if self.vendors is None or getattr(self.vendors, "conn", None) is None:
-            self.lbl_vendor_advance.setText("Vendor Advance: System unavailable")
+            self.lbl_vendor_advance.setText("Vendor Balance: System unavailable")
             self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #666666;")  # Gray for unavailable
             return
         
@@ -359,30 +532,30 @@ class PurchaseForm(QDialog):
                 # Create a vendor advances repo instance using the vendors' connection
                 vadv_repo = VendorAdvancesRepo(self.vendors.conn)
                 advance_balance = vadv_repo.get_balance(vendor_id)
-                
+
                 # Check if balance retrieval returned None
                 if advance_balance is None:
-                    self.lbl_vendor_advance.setText("Vendor Advance: Unknown")
+                    self.lbl_vendor_advance.setText("Vendor Balance: Unknown")
                     self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #666666;")  # Gray for unknown
-                    logging.warning(f"Vendor advance balance is None for vendor_id {vendor_id}")
+                    logging.warning(f"Vendor balance is None for vendor_id {vendor_id}")
                     return
 
                 # Format the display (positive means we have a receivable from vendor, negative means we have a payable to vendor)
                 if advance_balance > 0:
-                    self.lbl_vendor_advance.setText(f"Vendor Advance: {fmt_money(advance_balance)} (RECEIVABLE)")
+                    self.lbl_vendor_advance.setText(f"Vendor Balance: {fmt_money(advance_balance)[1:]} (Receivable)")  # Remove $ sign
                     self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")  # Green
                 elif advance_balance < 0:
-                    self.lbl_vendor_advance.setText(f"Vendor Advance: {fmt_money(abs(advance_balance))} (PAYABLE)")
+                    self.lbl_vendor_advance.setText(f"Vendor Balance: {fmt_money(abs(advance_balance))[1:]} (Payable)")  # Remove $ sign
                     self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #cc0000;")  # Red
                 else:
-                    self.lbl_vendor_advance.setText("Vendor Advance: $0.00")
+                    self.lbl_vendor_advance.setText("Vendor Balance: 0.00")  # Remove $ sign
                     self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")  # Green for zero
             except Exception as e:
-                logging.error(f"Error retrieving vendor advance balance: {e}")
-                self.lbl_vendor_advance.setText("Vendor Advance: Error retrieving balance")
+                logging.error(f"Error retrieving vendor balance: {e}")
+                self.lbl_vendor_advance.setText("Vendor Balance: Error retrieving balance")
                 self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #cc0000;")  # Red for error
         else:
-            self.lbl_vendor_advance.setText("Vendor Advance: Select a vendor")
+            self.lbl_vendor_advance.setText("Vendor Balance: Select a vendor")
             self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #666666;")  # Gray for placeholder
     def _to_float_safe(self, txt: str) -> float:
         if txt is None:
@@ -482,7 +655,7 @@ class PurchaseForm(QDialog):
         
         if not vid:
             
-            self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+            self.ip_vendor_acct.addItem("Temporary", "TEMP_BANK")
             return
         
         try:
@@ -506,7 +679,7 @@ class PurchaseForm(QDialog):
                     primary_account_added = True
             
             
-            self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+            self.ip_vendor_acct.addItem("Temporary", "TEMP_BANK")
             
             
             previous_selection_restored = False
@@ -540,7 +713,7 @@ class PurchaseForm(QDialog):
             print(f"Error loading vendor bank accounts: {e}")
             logging.exception("Error in _reload_vendor_accounts")
             
-            self.ip_vendor_acct.addItem("Temporary/External Bank Account", "TEMP_BANK")
+            self.ip_vendor_acct.addItem("Temporary", "TEMP_BANK")
             
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")
@@ -772,10 +945,14 @@ class PurchaseForm(QDialog):
         completer = QCompleter(product_names, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         cmb_prod.setCompleter(completer)
-        
-        
+
+        # Add an empty item first to avoid auto-selecting the first product
+        cmb_prod.addItem("", None)  # Empty text with None data
         for p in self._all_products():
             cmb_prod.addItem(f"{p.name} (#{p.product_id})", p.product_id)
+        # Set the empty item as the default selection
+        cmb_prod.setCurrentIndex(0)
+
         self.tbl.setCellWidget(r, 1, cmb_prod)
 
         for c in (2, 3, 4):
@@ -829,12 +1006,22 @@ class PurchaseForm(QDialog):
             self._with_signal_blocking(self.tbl, init_pre_populated_data)
             cmb_prod.blockSignals(False)
         else:
-            
+
             on_prod_changed()
-            
-            
-            
+
+
+
             self._recalc_row(r)
+
+        # Focus on the product combo box in the new row to allow direct typing
+        new_row = self.tbl.rowCount() - 1
+        if new_row >= 0:
+            # Get the combo box from the product column (index 1)
+            combo_widget = self.tbl.cellWidget(new_row, 1)
+            if combo_widget and isinstance(combo_widget, QComboBox):
+                combo_widget.setFocus()
+                # Also select all text to make it easy to start typing
+                combo_widget.lineEdit().selectAll()
 
         
         
