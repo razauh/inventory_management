@@ -268,7 +268,6 @@ class PurchaseForm(QDialog):
         def add_single_column_row(text, widget, required=False):
             """Add a label and widget in a horizontal layout for single column format"""
             from PySide6.QtWidgets import QSizePolicy
-            from PySide6.QtCore import Qt
             row_layout = QHBoxLayout()
             row_layout.setSpacing(8)
 
