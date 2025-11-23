@@ -97,7 +97,6 @@ class PurchaseForm(QDialog):
 
         # Set dialog to be non-application modal to allow minimizing
         self.setModal(False)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
 
         main_widget = QWidget()
         main_layout = QHBoxLayout(main_widget)  # Changed to horizontal layout
@@ -507,6 +506,7 @@ class PurchaseForm(QDialog):
         self._refresh_totals()
         
         self._toggle_ip_fields_by_amount()
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
         self.resize(1100, 700)
         self.setMinimumSize(860, 560)
         self.setSizeGripEnabled(True)
