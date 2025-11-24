@@ -391,6 +391,8 @@ class SalesController(BaseModule):
         kwargs = {
             "customers": self.customers,
             "products": self.products,
+            "sales_repo": self.repo,
+            "db_path": self._db_path,
             "bank_accounts": self.bank_accounts,
         }
         if initial is not None:
@@ -409,7 +411,7 @@ class SalesController(BaseModule):
         except TypeError:
             # Try progressively simpler ctor shapes
             try:
-                kwargs2 = {"customers": self.customers, "products": self.products}
+                kwargs2 = {"customers": self.customers, "products": self.products, "sales_repo": self.repo, "db_path": self._db_path}
                 if initial is not None:
                     kwargs2["initial"] = initial
                 return SaleForm(self.view, **kwargs2)

@@ -1,12 +1,15 @@
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QComboBox,
     QDateEdit, QLineEdit, QLabel, QGroupBox, QTableWidget, QTableWidgetItem,
-    QPushButton, QAbstractItemView, QCompleter, QWidget, QGridLayout
+    QPushButton, QAbstractItemView, QCompleter, QWidget, QGridLayout, QSplitter,
+    QFrame, QHeaderView
 )
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtCore import Qt, QDate
 from ...database.repositories.customers_repo import CustomersRepo
     # (bank account repo is passed in, not imported here)
 from ...database.repositories.products_repo import ProductsRepo
+from ...database.repositories.sales_repo import SalesRepo
 from ...utils.helpers import today_str, fmt_money
 from ...utils.ui_helpers import info  # <-- added for visible validation messages
 
@@ -20,6 +23,8 @@ class SaleForm(QDialog):
         parent=None,
         customers: CustomersRepo | None = None,
         products: ProductsRepo | None = None,
+        sales_repo=None,  # sales repository to load payment history
+        db_path=None,  # database path to create payment repo
         bank_accounts=None,  # repo instance providing list_company_bank_accounts(); kept optional, no import here
         initial=None,
         mode: str = "sale",   # <-- NEW: 'sale' | 'quotation'
@@ -32,7 +37,7 @@ class SaleForm(QDialog):
         self.setModal(True)  # Start as modal
         # Set window flags at the end of initialization like in PurchaseForm
 
-        self.customers = customers; self.products = products; self.bank_accounts = bank_accounts
+        self.customers = customers; self.products = products; self.sales_repo = sales_repo; self.db_path = db_path; self.bank_accounts = bank_accounts
         self._payload = None
 
         # --- header widgets ---
@@ -58,7 +63,7 @@ class SaleForm(QDialog):
         self._completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.cmb_customer.setCompleter(self._completer)
 
-        # auto-fill contact for existing selection
+        # auto-fill contact for existing selection and update payment history
         def _fill_contact_from_sel():
             idx = self.cmb_customer.currentIndex()
             if idx >= 0:
@@ -66,12 +71,21 @@ class SaleForm(QDialog):
                 c = self.customers.get(cid)
                 if c:
                     self.edt_contact.setText(c.contact_info or "")
+                    # Update payment history for the selected customer
+                    self._update_payment_history_for_customer(int(cid))
         self.cmb_customer.currentIndexChanged.connect(lambda _=None: _fill_contact_from_sel())
 
         # enable/disable "Add Customer" when new name + contact are provided
         def _update_add_customer_state():
+            # Check if an existing customer is selected by checking the current data
+            current_data = self.cmb_customer.currentData()
             name = (self.cmb_customer.currentText() or "").strip()
-            enable = bool(name) and name.lower() not in self._customers_by_name and bool((self.edt_contact.text() or "").strip())
+
+            # If currentData gives us a customer ID, this is an existing customer
+            is_existing_customer = current_data is not None
+
+            # Only enable if there's a name, it's not an existing customer, and there's contact info
+            enable = bool(name) and not is_existing_customer and bool((self.edt_contact.text() or "").strip())
             self.btn_add_customer.setEnabled(enable)
 
         self.cmb_customer.currentTextChanged.connect(lambda _=None: _update_add_customer_state())
@@ -167,21 +181,38 @@ class SaleForm(QDialog):
         self.lab_order_disc= QLabel("0.00")   # order discount field value
         self.lab_overall   = QLabel("0.00")   # total discount = line + order
         self.lab_total     = QLabel("0.00")   # sub_raw - overall
+
+        # Increase font size and set colors for better visibility
+        font = QFont()
+        font.setPointSize(10)
+        for label in (self.lab_sub_raw, self.lab_line_disc, self.lab_order_disc, self.lab_overall, self.lab_total):
+            label.setFont(font)
+
+        # Set different colors for key values
+        self.lab_sub_raw.setStyleSheet("color: #006600; font-weight: bold;")  # Green for subtotal
+        self.lab_line_disc.setStyleSheet("color: #CC0000; font-weight: bold;")  # Red for discount
+        self.lab_order_disc.setStyleSheet("color: #CC0000; font-weight: bold;")  # Red for discount
+        self.lab_overall.setStyleSheet("color: #990000; font-weight: bold;")  # Darker red for total discount
+        self.lab_total.setStyleSheet("color: #0000AA; font-weight: bold; font-size: 12px;")  # Blue for total
+
         tot.addStretch(1)
         for cap, w in (("Subtotal:", self.lab_sub_raw),
                        ("Line Discount:", self.lab_line_disc),
                        ("Order Discount:", self.lab_order_disc),
                        ("Total Discount:", self.lab_overall),
                        ("Total:", self.lab_total)):
-            tot.addWidget(QLabel(cap)); tot.addWidget(w)
+            cap_label = QLabel(cap)
+            cap_label.setStyleSheet("font-weight: bold;")
+            tot.addWidget(cap_label); tot.addWidget(w)
 
         # payment strip (wrapped in a widget so we can hide for quotations)
         self.pay_box = QWidget()
         pay = QHBoxLayout(self.pay_box)
         self.pay_amount = QLineEdit(); self.pay_amount.setPlaceholderText("0")
-        self.pay_method = QComboBox(); self.pay_method.addItems(["Cash","Bank Transfer","Card","Cheque","Other"])
-        pay.addStretch(1); pay.addWidget(QLabel("Initial Payment:")); pay.addWidget(self.pay_amount)
-        pay.addWidget(QLabel("Method:")); pay.addWidget(self.pay_method)
+        self.pay_method = QComboBox(); self.pay_method.addItems(["Cash","Bank Transfer","Cheque","Cross Cheque","Other"])
+        self.pay_method.setCurrentText("Bank Transfer")  # Set default to Bank Transfer
+        pay.addStretch(1); pay.addWidget(self.pay_amount)
+        pay.addWidget(self.pay_method)
 
         # --- Bank details strip (visible only when Method == "Bank Transfer") ---
         self.bank_box = QWidget()
@@ -189,11 +220,11 @@ class SaleForm(QDialog):
         bank_layout.setContentsMargins(0, 0, 0, 0)
         self.cmb_bank_account = QComboBox()
         self.cmb_bank_account.setMinimumWidth(280)
-        self.edt_instr_no = QLineEdit(); self.edt_instr_no.setPlaceholderText("Transaction/Reference No.")
+        self.edt_instr_no = QLineEdit(); self.edt_instr_no.setPlaceholderText("Transaction/Instrument No.")
         bank_layout.addStretch(1)
         bank_layout.addWidget(QLabel("Bank Account:"))
         bank_layout.addWidget(self.cmb_bank_account)
-        bank_layout.addWidget(QLabel("Reference No.:"))
+        bank_layout.addWidget(QLabel("Instrument No.:"))
         bank_layout.addWidget(self.edt_instr_no)
 
         # Populate bank accounts if repo provided
@@ -209,9 +240,14 @@ class SaleForm(QDialog):
 
         self.bank_box.setVisible(False)  # hidden by default; toggled by method selection
 
-        # layout assembly
-        lay = QVBoxLayout(self)
+        # Create main splitter to divide form and payment history panel
+        main_splitter = QSplitter(Qt.Horizontal)
 
+        # Left side: main form content
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+
+        # layout assembly for left widget
         # Shorten the input boxes for header fields
         maxw = 240  # Reduce from 360 to 240
         for w in (self.cmb_customer, self.edt_contact, self.btn_add_customer, self.date, self.txt_discount, self.txt_notes):
@@ -230,14 +266,6 @@ class SaleForm(QDialog):
         customer_info_layout.addRow("Order Discount", self.txt_discount)
         customer_info_layout.addRow("Notes", self.txt_notes)
 
-        # Create a form layout for payment section
-        payment_layout = QFormLayout()
-        payment_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        payment_layout.addRow("Initial Payment:", self.pay_amount)
-        payment_layout.addRow("Method:", self.pay_method)
-        payment_layout.addRow("Bank Account:", self.cmb_bank_account)
-        payment_layout.addRow("Reference No.:", self.edt_instr_no)
-
         # Make payment input fields shorter
         self.pay_amount.setMaximumWidth(100)
         self.cmb_bank_account.setMaximumWidth(120)
@@ -248,6 +276,14 @@ class SaleForm(QDialog):
         self.cmb_bank_account.setVisible(False)
         self.edt_instr_no.setVisible(False)
 
+        # Create a form layout for payment section
+        payment_layout = QFormLayout()
+        payment_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        payment_layout.addRow("Initial Payment:", self.pay_amount)
+        payment_layout.addRow("Method:", self.pay_method)
+        payment_layout.addRow("Bank Account:", self.cmb_bank_account)
+        payment_layout.addRow("Instrument No.:", self.edt_instr_no)
+
         # Add both layouts to horizontal container with minimal spacing
         customer_payment_layout.addLayout(customer_info_layout, 3)  # Give more space to customer info
         customer_payment_layout.setSpacing(5)  # Very minimal spacing between sections
@@ -257,17 +293,31 @@ class SaleForm(QDialog):
         if self.mode == "quotation":
             payment_layout.parentWidget().setVisible(False)
 
-        lay.addLayout(customer_payment_layout)
+        left_layout.addLayout(customer_payment_layout)
 
-        # Add items box (table), totals and buttons to the main layout
-        lay.addWidget(box, 1); lay.addLayout(tot)
+        # Add items box (table), totals and buttons to the left layout
+        left_layout.addWidget(box, 1); left_layout.addLayout(tot)
 
         # Add payment/ bank strips only for 'sale' mode (hidden for quotations)
-        lay.addWidget(self.pay_box)
-        lay.addWidget(self.bank_box)
+        left_layout.addWidget(self.pay_box)
+        left_layout.addWidget(self.bank_box)
         if self.mode == "quotation":
             self.pay_box.setVisible(False)
             self.bank_box.setVisible(False)
+
+        # Create right side: payment history panel
+        self.payment_history_widget = self._create_payment_history_panel()
+
+        # Add to splitter
+        main_splitter.addWidget(left_widget)
+        main_splitter.addWidget(self.payment_history_widget)
+
+        # Set initial sizes (left 75%, right 25%)
+        main_splitter.setSizes([825, 275])  # Approximate 75/25 split for 1100px total width
+
+        # Main layout
+        lay = QVBoxLayout(self)
+        lay.addWidget(main_splitter)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept); self.buttons.rejected.connect(self.reject); lay.addWidget(self.buttons)
@@ -293,6 +343,26 @@ class SaleForm(QDialog):
             if i >= 0: self.cmb_customer.setCurrentIndex(i)
             self.txt_discount.setText(str(initial.get("order_discount", 0) or 0))
             self.txt_notes.setText(initial.get("notes") or "")
+            # If initial data includes sale_id, load payment history
+            if initial and initial.get("sale_id"):
+                self._sale_id = initial.get("sale_id")
+                # Load payment history in a delayed way to ensure UI is ready
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(100, self._update_payment_history)  # 100ms delay
+            else:
+                self._sale_id = None
+                # If initial data has a customer_id but no sale_id, show customer payment history
+                if initial and initial.get("customer_id"):
+                    # Load customer payment history in a delayed way to ensure UI is ready
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(100, lambda: self._update_payment_history_for_customer(int(initial.get("customer_id"))))
+                else:
+                    # Clear payment history since no specific sale or customer is loaded
+                    self._clear_payment_history()
+        else:
+            self._sale_id = None
+            # Clear payment history since no specific sale is loaded
+            self._clear_payment_history()
 
     # --- helpers ---
     def _toggle_bank_fields(self, text: str):
@@ -301,9 +371,10 @@ class SaleForm(QDialog):
             self.cmb_bank_account.setVisible(False)
             self.edt_instr_no.setVisible(False)
             return
-        is_bank_transfer = text == "Bank Transfer"
-        self.cmb_bank_account.setVisible(is_bank_transfer)
-        self.edt_instr_no.setVisible(is_bank_transfer)
+        # Show bank fields for Bank Transfer, Cheque, Cross Cheque and Other methods
+        needs_bank = text in ("Bank Transfer", "Cheque", "Cross Cheque", "Other")
+        self.cmb_bank_account.setVisible(needs_bank)
+        self.edt_instr_no.setVisible(needs_bank)
 
     def _warn(self, title: str, message: str, focus_widget=None, row_to_select: int | None = None):
         """Show a friendly message, focus a widget, optionally select a row."""
@@ -316,6 +387,356 @@ class SaleForm(QDialog):
                 self.tbl.selectRow(row_to_select)
             except Exception:
                 pass
+
+    def _create_payment_history_panel(self):
+        """Create the payment history panel on the right side."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+
+        # Title
+        title_label = QLabel("Payment History")
+        title_label.setStyleSheet("font-weight: bold; font-size: 12px; margin-bottom: 5px;")
+        layout.addWidget(title_label)
+
+        # Payment summary section
+        summary_group = QGroupBox("Payment Summary")
+        summary_layout = QFormLayout(summary_group)
+
+        self.payment_total_label = QLabel("0.00")
+        self.payment_total_label.setStyleSheet("font-weight: bold;")
+        self.payment_paid_label = QLabel("0.00")
+        self.payment_paid_label.setStyleSheet("color: green; font-weight: bold;")
+        self.payment_advances_label = QLabel("0.00")
+        self.payment_advances_label.setStyleSheet("color: green; font-weight: bold;")
+        self.payment_advances_label.setToolTip("Customer advances: Total credit deposited by customer that can be applied to future sales")
+        self.payment_balance_label = QLabel("0.00")
+        self.payment_balance_label.setStyleSheet("color: red; font-weight: bold;")
+        self.payment_balance_label.setToolTip("Outstanding balance: Total sales amount minus total payments made by customer (excluding advances)")
+        self.payment_status_label = QLabel("Unpaid")
+        self.payment_status_label.setStyleSheet("font-weight: bold;")
+
+        summary_layout.addRow("Total:", self.payment_total_label)
+        summary_layout.addRow("Paid:", self.payment_paid_label)
+        summary_layout.addRow("Advances:", self.payment_advances_label)
+        summary_layout.addRow("Balance:", self.payment_balance_label)
+        summary_layout.addRow("Status:", self.payment_status_label)
+
+        layout.addWidget(summary_group)
+
+        # Payments table
+        payments_table_label = QLabel("Payment Transactions")
+        payments_table_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(payments_table_label)
+
+        self.payments_table = QTableWidget()
+        self.payments_table.setColumnCount(4)
+        self.payments_table.setHorizontalHeaderLabels(["Date", "Amount", "Method", "Status"])
+        self.payments_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.payments_table.verticalHeader().setVisible(False)
+        self.payments_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.payments_table.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make read-only
+
+        layout.addWidget(self.payments_table, 1)  # 1 = stretch factor
+
+        # Add refresh button
+        refresh_button = QPushButton("Refresh Payments")
+        refresh_button.clicked.connect(self._update_payment_history)
+        layout.addWidget(refresh_button)
+
+        return panel
+
+    def _update_payment_history(self):
+        """Update the payment history panel with current sale's payment data."""
+        if not hasattr(self, '_sale_id') or not self._sale_id:
+            # If no specific sale is loaded, show customer payment history if a customer is selected
+            current_cid = self.cmb_customer.currentData()
+            if current_cid:
+                self._update_payment_history_for_customer(int(current_cid))
+            else:
+                self._clear_payment_history()
+            return
+
+        try:
+            # Use the provided sales repo and db_path to get payment info
+            if not self.sales_repo or not self.db_path:
+                self._clear_payment_history()
+                return
+
+            from ...database.repositories.sale_payments_repo import SalePaymentsRepo
+            from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo
+            payment_repo = SalePaymentsRepo(self.db_path)
+            advances_repo = CustomerAdvancesRepo(self.db_path)
+
+            # Get sale details using the get_header method
+            sale = self.sales_repo.get_header(self._sale_id)
+            if not sale:
+                self._clear_payment_history()
+                return
+
+            # Get customer ID to fetch advances
+            customer_id = int(sale['customer_id'])
+            advances = advances_repo.list_ledger(customer_id)
+
+            # Calculate net advances (deposits minus applications)
+            net_advances = sum(
+                float(adv['amount']) if adv['amount'] is not None else 0.0
+                for adv in advances
+            )
+
+            # Available advances (only positive net balance)
+            available_advances = max(0.0, net_advances)
+
+            # Update summary
+            total_amount = float(sale['total_amount']) if sale['total_amount'] is not None else 0.0
+            paid_amount = float(sale['paid_amount']) if sale['paid_amount'] is not None else 0.0
+            advance_applied = float(sale['advance_payment_applied']) if sale['advance_payment_applied'] is not None else 0.0
+            balance = total_amount - paid_amount - advance_applied
+            payment_status = str(sale['payment_status']) if sale['payment_status'] is not None else 'Unknown'
+
+            self.payment_total_label.setText(fmt_money(total_amount))
+            self.payment_paid_label.setText(fmt_money(paid_amount))
+            self.payment_advances_label.setText(fmt_money(available_advances))  # Customer advances
+            self.payment_balance_label.setText(fmt_money(balance))
+            self.payment_status_label.setText(payment_status)
+
+            # Get payment transactions for this sale
+            payments = payment_repo.list_by_sale(self._sale_id)
+
+            # Also get any advances applied to this specific sale
+            sale_advances = []
+            for adv in advances:
+                if (adv['source_type'] == 'applied_to_sale' and
+                    adv['source_id'] == self._sale_id and
+                    float(adv['amount']) < 0):  # Applications are negative
+                    sale_advances.append(adv)
+
+            # Combine payments and applied advances for display
+            all_transactions = []
+
+            # Add regular payments
+            for payment in payments:
+                all_transactions.append({
+                    'date': str(payment['date']) if payment['date'] is not None else '',
+                    'amount': float(payment['amount']) if payment['amount'] is not None else 0.0,
+                    'method': str(payment['method']) if payment['method'] is not None else 'Payment',
+                    'status': str(payment['clearing_state']) if payment['clearing_state'] is not None else 'N/A',
+                    'type': 'payment'
+                })
+
+            # Add advances applied to this sale
+            for advance in sale_advances:
+                all_transactions.append({
+                    'date': str(advance['tx_date']) if advance['tx_date'] is not None else '',
+                    'amount': float(advance['amount']) if advance['amount'] is not None else 0.0,
+                    'method': f"Advance Applied ({advance['source_type']})",
+                    'status': 'Applied',
+                    'type': 'advance_applied'
+                })
+
+            # Sort all transactions by date
+            all_transactions.sort(key=lambda x: x['date'])
+
+            # Update payments table with combined transactions
+            self.payments_table.setRowCount(len(all_transactions))
+
+            for row_idx, transaction in enumerate(all_transactions):
+                # Date
+                date_item = QTableWidgetItem(transaction['date'])
+                date_item.setTextAlignment(Qt.AlignCenter)
+                self.payments_table.setItem(row_idx, 0, date_item)
+
+                # Amount
+                amount = transaction['amount']
+                amount_item = QTableWidgetItem(fmt_money(amount))
+                amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+                # Color code based on type and amount
+                if transaction['type'] == 'advance_applied':
+                    amount_item.setForeground(QColor("blue"))  # Applied advances in blue
+                elif transaction['type'] == 'payment':
+                    if amount < 0:
+                        amount_item.setForeground(QColor("red"))  # Refunds in red
+                    else:
+                        amount_item.setForeground(QColor("green"))  # Payments in green
+                else:
+                    amount_item.setForeground(QColor("green"))  # Default to green
+                self.payments_table.setItem(row_idx, 1, amount_item)
+
+                # Method
+                method_item = QTableWidgetItem(transaction['method'])
+                self.payments_table.setItem(row_idx, 2, method_item)
+
+                # Status
+                status_item = QTableWidgetItem(transaction['status'])
+                # Color code based on status
+                if transaction['status'] == 'cleared':
+                    status_item.setForeground(QColor("green"))
+                elif transaction['status'] in ['Applied', 'Available', 'pending']:
+                    status_item.setForeground(QColor("orange"))
+                elif transaction['status'] == 'bounced':
+                    status_item.setForeground(QColor("red"))
+                self.payments_table.setItem(row_idx, 3, status_item)
+
+        except Exception as e:
+            # If there's an error, clear the payment history
+            print(f"Error updating payment history: {e}")
+            self._clear_payment_history()
+
+    def _update_payment_history_for_customer(self, customer_id: int):
+        """Update the payment history panel with customer's payment data."""
+        if not self.db_path:
+            self._clear_payment_history()
+            return
+
+        try:
+            from ...database.repositories.sale_payments_repo import SalePaymentsRepo
+            from ...database.repositories.customers_repo import CustomersRepo
+            payment_repo = SalePaymentsRepo(self.db_path)
+
+            # Get all payments for this customer across all their sales
+            payments = payment_repo.list_by_customer(customer_id)
+
+            # Calculate summary information for the customer
+            total_paid = sum(float(row['amount']) if row['amount'] is not None else 0.0 for row in payments if float(row['amount']) > 0)
+            refund_amount = abs(sum(float(row['amount']) if row['amount'] is not None else 0.0 for row in payments if float(row['amount']) < 0))
+
+            # Also get customer's total outstanding balance across all sales
+            # For this, we need to get all sales for this customer
+            all_sales = self.sales_repo.list_by_customer(customer_id, 'sale')
+
+            # Calculate total outstanding amount for all sales by the customer
+            # This represents the total amount still owed across all sales for this customer
+            total_outstanding = 0
+            for sale in all_sales:
+                total_amt = float(sale['total_amount']) if sale['total_amount'] is not None else 0.0
+                paid_amt = float(sale['paid_amount']) if sale['paid_amount'] is not None else 0.0
+                advance_applied = float(sale['advance_payment_applied']) if sale['advance_payment_applied'] is not None else 0.0
+                outstanding = total_amt - paid_amt - advance_applied
+                total_outstanding += max(0, outstanding)  # Only positive outstanding amounts
+
+            # Calculate customer's total sales amount across all their sales
+            total_sales_amount = sum(float(sale['total_amount']) if sale['total_amount'] is not None else 0.0
+                                   for sale in all_sales)
+
+            # Calculate total amount paid by the customer (positive payments only)
+            total_paid_by_customer = sum(float(payment['amount']) if payment['amount'] is not None else 0.0
+                                       for payment in payments if float(payment['amount']) > 0)
+
+            # Calculate total refunds given to customer (negative values)
+            total_refunds = abs(sum(float(payment['amount']) if payment['amount'] is not None else 0.0
+                                  for payment in payments if float(payment['amount']) < 0))
+
+            # Calculate customer advances (separate from regular payments)
+            from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo
+            advances_repo = CustomerAdvancesRepo(self.db_path)
+            advances = advances_repo.list_ledger(customer_id)
+
+            # Calculate net advances (deposits minus applications)
+            net_advances = sum(
+                float(adv['amount']) if adv['amount'] is not None else 0.0
+                for adv in advances
+            )
+
+            # Available advances (only positive net balance)
+            available_advances = max(0.0, net_advances)
+
+            # The total_outstanding was already calculated from individual sales
+            # Now determine overall customer payment status based on the calculated outstanding amount
+            if total_outstanding <= 0:
+                overall_status = "Paid"
+            elif total_outstanding < total_sales_amount * 0.5:  # If less than half is outstanding
+                overall_status = "Partially Paid"
+            else:
+                overall_status = "Overdue"
+
+            # Update summary
+            self.payment_total_label.setText(fmt_money(total_sales_amount))
+            self.payment_paid_label.setText(fmt_money(total_paid_by_customer))
+            self.payment_advances_label.setText(fmt_money(available_advances))
+            self.payment_balance_label.setText(fmt_money(total_outstanding))
+            self.payment_status_label.setText(overall_status)
+
+            # Combine payments and advances for display in chronological order
+            all_transactions = []
+
+            # Add regular payments
+            for payment in payments:
+                all_transactions.append({
+                    'date': str(payment['date']) if payment['date'] is not None else '',
+                    'amount': float(payment['amount']) if payment['amount'] is not None else 0.0,
+                    'method': str(payment['method']) if payment['method'] is not None else 'Payment',
+                    'status': str(payment['clearing_state']) if payment['clearing_state'] is not None else 'N/A',
+                    'type': 'payment'
+                })
+
+            # Add advances
+            for advance in advances:
+                # Only show deposits/credits, not applications to sales (which have negative amounts)
+                if float(advance['amount']) > 0:  # Positive amounts are deposits/credits
+                    all_transactions.append({
+                        'date': str(advance['tx_date']) if advance['tx_date'] is not None else '',
+                        'amount': float(advance['amount']) if advance['amount'] is not None else 0.0,
+                        'method': f"Advance ({advance['source_type']})",
+                        'status': 'Available',  # Advances are available for application
+                        'type': 'advance'
+                    })
+
+            # Sort all transactions by date
+            all_transactions.sort(key=lambda x: x['date'])
+
+            # Update payments table with combined transactions
+            self.payments_table.setRowCount(len(all_transactions))
+
+            for row_idx, transaction in enumerate(all_transactions):
+                # Date
+                date_item = QTableWidgetItem(transaction['date'])
+                date_item.setTextAlignment(Qt.AlignCenter)
+                self.payments_table.setItem(row_idx, 0, date_item)
+
+                # Amount
+                amount = transaction['amount']
+                amount_item = QTableWidgetItem(fmt_money(amount))
+                amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+                # Color code based on type and amount
+                if transaction['type'] == 'advance':
+                    amount_item.setForeground(QColor("green"))  # Advances in green
+                elif amount < 0:
+                    amount_item.setForeground(QColor("red"))  # Refunds in red
+                else:
+                    amount_item.setForeground(QColor("green"))  # Payments in green
+                self.payments_table.setItem(row_idx, 1, amount_item)
+
+                # Method
+                method_item = QTableWidgetItem(transaction['method'])
+                self.payments_table.setItem(row_idx, 2, method_item)
+
+                # Status
+                status_item = QTableWidgetItem(transaction['status'])
+                # Color code based on status
+                if transaction['status'] == 'cleared':
+                    status_item.setForeground(QColor("green"))
+                elif transaction['status'] in ['Available', 'pending']:
+                    status_item.setForeground(QColor("orange"))
+                elif transaction['status'] == 'bounced':
+                    status_item.setForeground(QColor("red"))
+                else:
+                    status_item.setForeground(QColor("gray"))
+                self.payments_table.setItem(row_idx, 3, status_item)
+
+        except Exception as e:
+            # If there's an error, clear the payment history
+            print(f"Error updating customer payment history: {e}")
+            self._clear_payment_history()
+
+    def _clear_payment_history(self):
+        """Clear all payment history data."""
+        self.payment_total_label.setText("0.00")
+        self.payment_paid_label.setText("0.00")
+        self.payment_advances_label.setText("0.00")  # Clear advances label
+        self.payment_balance_label.setText("0.00")
+        self.payment_status_label.setText("Unpaid")
+        self.payments_table.setRowCount(0)
 
     def _all_products(self):
         return self.products.list_products()
@@ -672,21 +1093,44 @@ class SaleForm(QDialog):
             payload["initial_payment"] = init
             payload["initial_method"] = method
 
-            # Bank Transfer specifics (only when initial_payment > 0 and method == Bank Transfer)
-            if init > 0 and method == "Bank Transfer":
+            # Payment methods that require bank account and instrument details
+            if init > 0 and method in ("Bank Transfer", "Cheque", "Cross Cheque", "Other"):
                 bank_id = self.cmb_bank_account.currentData()
                 instr_no = (self.edt_instr_no.text() or "").strip()
 
-                if bank_id is None:
-                    self._warn("Bank Required", "Select a company bank account for Bank Transfer.", self.cmb_bank_account)
-                    return None
-                if not instr_no:
-                    self._warn("Reference Required", "Enter the transaction/reference number for Bank Transfer.", self.edt_instr_no)
-                    return None
+                # For Bank Transfer, Cheque and Cross Cheque, bank account and reference are required
+                if method in ("Bank Transfer", "Cheque", "Cross Cheque"):
+                    if bank_id is None:
+                        if method == "Bank Transfer":
+                            self._warn("Bank Required", "Select a company bank account for Bank Transfer.", self.cmb_bank_account)
+                        elif method == "Cheque":
+                            self._warn("Bank Required", "Select a company bank account for Cheque.", self.cmb_bank_account)
+                        else:  # Cross Cheque
+                            self._warn("Bank Required", "Select a company bank account for Cross Cheque.", self.cmb_bank_account)
+                        return None
+                    if not instr_no:
+                        if method == "Bank Transfer":
+                            self._warn("Reference Required", "Enter the transaction/instrument number for Bank Transfer.", self.edt_instr_no)
+                        elif method == "Cheque":
+                            self._warn("Reference Required", "Enter the cheque number for Cheque payment.", self.edt_instr_no)
+                        else:  # Cross Cheque
+                            self._warn("Reference Required", "Enter the cheque number for Cross Cheque payment.", self.edt_instr_no)
+                        return None
 
-                payload["initial_bank_account_id"] = int(bank_id)
-                payload["initial_instrument_no"] = instr_no
-                payload["initial_instrument_type"] = "online"  # fixed per rule
+                # For Other method, only store values if they exist (optional fields)
+                # For Bank Transfer, Cheque and Cross Cheque, these will be required values
+                if bank_id is not None:
+                    payload["initial_bank_account_id"] = int(bank_id)
+                if instr_no:
+                    payload["initial_instrument_no"] = instr_no
+
+                # Set appropriate instrument type based on the method
+                if method == "Bank Transfer":
+                    payload["initial_instrument_type"] = "online"
+                elif method in ("Cheque", "Cross Cheque"):
+                    payload["initial_instrument_type"] = "cross_cheque"  # Both Cheque and Cross Cheque use cross_cheque
+                else:  # Other method
+                    payload["initial_instrument_type"] = "other"
 
         return payload
 
@@ -694,8 +1138,15 @@ class SaleForm(QDialog):
         p = self.get_payload()
         if p is None:
             return
-        self._payload = p; super().accept()
+        self._payload = p
+
+        # If this is an edit operation, update the payment history after saving
+        if hasattr(self, '_sale_id') and self._sale_id:
+            # Update payment history in a delayed way after successful save
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, self._update_payment_history)  # 100ms delay
+
+        super().accept()
 
     def payload(self):
         return self._payload
-

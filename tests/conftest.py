@@ -139,10 +139,10 @@ def _apply_common_seed():
     try:
         sys.path.insert(0, str(PROJECT_ROOT.parent))
         from inventory_management.database.schema import SQL as SCHEMA_SQL
-    except ImportError:
+    except ImportError as e:
         # Fallback if import fails (though it shouldn't with correct path)
         SCHEMA_SQL = None
-        print("Warning: Could not import schema SQL")
+        print(f"Warning: Could not import schema SQL: {e}")
 
     con = sqlite3.connect(DB_PATH)
     try:
@@ -150,9 +150,14 @@ def _apply_common_seed():
         con.execute("PRAGMA foreign_keys=ON;")
         
         # Apply schema if table 'users' doesn't exist (simple check for empty/new DB)
-        table_check = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+        # Also check for 'customer_advances' to ensure we have the latest schema
+        table_check = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='customer_advances'").fetchone()
+        print(f"DEBUG: table_check for customer_advances: {table_check}")
         if not table_check and SCHEMA_SQL:
+            print("DEBUG: Applying SCHEMA_SQL")
             con.executescript(SCHEMA_SQL)
+        else:
+            print("DEBUG: Skipping SCHEMA_SQL")
             
         # Apply seed
         if SEED_SQL.exists():

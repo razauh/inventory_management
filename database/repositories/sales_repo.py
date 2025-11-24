@@ -737,3 +737,19 @@ class SalesRepo:
             (sale_id,),
         ).fetchone()
         return row or {"net_subtotal": 0.0, "total_after_od": 0.0}
+
+    def list_by_customer(self, customer_id: int, doc_type: str = 'sale') -> list[sqlite3.Row]:
+        """
+        Return all sales for a given customer.
+        """
+        with self.conn:  # Ensure consistent connection handling
+            cur = self.conn.execute(
+                """
+                SELECT sale_id, total_amount, paid_amount, payment_status, advance_payment_applied
+                  FROM sales
+                 WHERE customer_id = ? AND doc_type = ?
+                 ORDER BY date ASC, sale_id ASC;
+                """,
+                (customer_id, doc_type),
+            )
+            return cur.fetchall()

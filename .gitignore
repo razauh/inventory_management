@@ -14,6 +14,17 @@ Thumbs.db
 *.sqlitedb
 # Ignore the database file
 data/myshop.db
+data/*.db
+data/*.sqlite3
+
+# Ignore SQLite connection object representations (if they somehow get created as files)
+*<sqlite3.Connection object at 0x*.db
+*<sqlite3.Connection object at 0x*.sqlite3
+*<sqlite3.Connection object at 0x*.sqlitedb
+
+# Additional database-related temp files
+*.db-journal
+*.sqlite3-journal
 
 # Logs and temp files
 *.log
