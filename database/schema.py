@@ -301,14 +301,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_accounts_label
 
 /* === Payments per sale (supports partial, refunds, bank channel details) === */
 CREATE TABLE IF NOT EXISTS sale_payments (
-  payment_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  sale_id         TEXT    NOT NULL,
-  date            DATE    NOT NULL DEFAULT CURRENT_DATE,
-  amount          NUMERIC NOT NULL,   -- +ve = payment, -ve = refund
-  method          TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cash Deposit','Other')),
-  bank_account_id INTEGER,
-  instrument_type TEXT    CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other')),
-  instrument_no   TEXT,
+  payment_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  sale_id                 TEXT    NOT NULL,
+  date                    DATE    NOT NULL DEFAULT CURRENT_DATE,
+  amount                  NUMERIC NOT NULL,   -- +ve = payment, -ve = refund (original payment amount)
+  method                  TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cash Deposit','Other')),
+  bank_account_id         INTEGER,
+  instrument_type         TEXT    CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other')),
+  instrument_no           TEXT,
   instrument_date DATE,
   deposited_date  DATE,
   cleared_date    DATE,
@@ -316,6 +316,8 @@ CREATE TABLE IF NOT EXISTS sale_payments (
   ref_no          TEXT,
   notes           TEXT,
   created_by      INTEGER,
+  overpayment_converted   INTEGER NOT NULL DEFAULT 0 CHECK (overpayment_converted IN (0,1)),  -- Flag to prevent duplicate credit creation
+  converted_to_credit     NUMERIC DEFAULT 0,  -- Amount converted to customer credit to prevent double counting
   FOREIGN KEY (sale_id)         REFERENCES sales(sale_id) ON DELETE CASCADE,
   FOREIGN KEY (bank_account_id) REFERENCES company_bank_accounts(account_id),
   FOREIGN KEY (created_by)      REFERENCES users(user_id)
@@ -1117,10 +1119,10 @@ AFTER INSERT ON sale_payments
 FOR EACH ROW
 BEGIN
   UPDATE sales
-     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id), 0.0)),
+     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'), 0.0)),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id),0.0)) > 0 THEN 'partial'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) > 0 THEN 'partial'
             ELSE 'unpaid' END
    WHERE sale_id = NEW.sale_id;
 END;
@@ -1130,10 +1132,10 @@ AFTER UPDATE ON sale_payments
 FOR EACH ROW
 BEGIN
   UPDATE sales
-     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id), 0.0)),
+     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'), 0.0)),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id),0.0)) > 0 THEN 'partial'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) > 0 THEN 'partial'
             ELSE 'unpaid' END
    WHERE sale_id = NEW.sale_id;
 END;
@@ -1143,10 +1145,10 @@ AFTER DELETE ON sale_payments
 FOR EACH ROW
 BEGIN
   UPDATE sales
-     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id), 0.0)),
+     SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'), 0.0)),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id),0.0)) > 0 THEN 'partial'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'),0.0)) > 0 THEN 'partial'
             ELSE 'unpaid' END
    WHERE sale_id = OLD.sale_id;
 END;

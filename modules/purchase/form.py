@@ -150,17 +150,10 @@ class PurchaseForm(QDialog):
         self.lbl_vendor_advance = QLabel("Vendor Balance: $0.00")
         self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")
 
-        # Create purchase ID label - placing it above the main header fields
-        self.lbl_purchase_id = QLabel("Purchase ID: (New)")
-        self.lbl_purchase_id.setStyleSheet("font-weight: bold; font-size: 14px; color: #0000ff;")  # Blue text for visibility
-
-        # Add purchase ID label at the top of the header box
-        hg.addWidget(self.lbl_purchase_id, 0, 0, 1, 6)  # Span across all 6 columns
-
-        # Add the other fields starting from row 1
-        add_pair(1, 0, "Vendor", self.cmb_vendor, required=True)
-        add_pair(1, 1, "Date", self.date, required=True)
-        hg.addWidget(self.lbl_vendor_advance, 1, 4, 1, 2)  # Span across last 2 columns
+        # Add the fields starting from row 0
+        add_pair(0, 0, "Vendor", self.cmb_vendor, required=True)
+        add_pair(0, 1, "Date", self.date, required=True)
+        hg.addWidget(self.lbl_vendor_advance, 0, 4, 1, 2)  # Span across last 2 columns
 
         add_pair(2, 0, "Notes", self.txt_notes, required=False)
         hg.setColumnStretch(1, 1)
@@ -177,6 +170,13 @@ class PurchaseForm(QDialog):
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setEditTriggers(QAbstractItemView.AllEditTriggers)
         self.tbl.verticalHeader().setVisible(False)
+        # Improve readability of selected rows: dark text on light highlight
+        self.tbl.setStyleSheet(
+            "QTableView::item:selected {"
+            " background-color: #87cefa;"   # light sky blue
+            " color: #000000;"              # black text for contrast
+            "}"
+        )
 
         header = self.tbl.horizontalHeader()
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -434,12 +434,6 @@ class PurchaseForm(QDialog):
             idx = self.cmb_vendor.findData(initial["vendor_id"])
             if idx >= 0: self.cmb_vendor.setCurrentIndex(idx)
             self.txt_notes.setText(initial.get("notes") or "")
-
-            # Update the purchase ID label with the actual PO number
-            if initial and "purchase_id" in initial:
-                self.lbl_purchase_id.setText(f"Purchase ID: {initial['purchase_id']}")
-            else:
-                self.lbl_purchase_id.setText("Purchase ID: (New)")
 
             # Load initial payment data if it exists in the initial data
             if "initial_payment" in initial and initial["initial_payment"]:
@@ -1593,10 +1587,6 @@ class PurchaseForm(QDialog):
             return True
             
         self._validate_and_perform_action(pdf_export_action)
-
-    def update_purchase_id_label(self, purchase_id: str):
-        """Update the purchase ID label to show the actual purchase ID after saving"""
-        self.lbl_purchase_id.setText(f"Purchase ID: {purchase_id}")
 
 
 

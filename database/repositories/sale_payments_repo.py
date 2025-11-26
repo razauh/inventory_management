@@ -50,12 +50,12 @@ class SalePaymentsRepo:
 
     # Sensible default clearing states per method
     DEFAULT_CLEARING_STATE_BY_METHOD: dict[str, str] = {
-        "Cash": "posted",
-        "Bank Transfer": "posted",
-        "Card": "posted",
-        "Other": "posted",
-        "Cheque": "pending",        # typically pending until cleared
-        "Cash Deposit": "pending",  # typically pending until cleared
+        "Cash": "cleared",          # cash is immediately available
+        "Bank Transfer": "pending", # bank transfer pending verification
+        "Card": "pending",          # card payment pending verification
+        "Other": "pending",         # other payment pending verification
+        "Cheque": "pending",        # cheque pending clearing
+        "Cash Deposit": "pending",  # cash deposit pending verification
     }
 
     def __init__(self, db_path: str | Path):
@@ -206,12 +206,14 @@ class SalePaymentsRepo:
 
         with self._connect() as con:
             # Check if this is an overpayment and convert excess to customer credit
+            # CRITICAL FIX: Only grant customer credit for payments that are already cleared
+            # For pending payments, we calculate overpayment but don't convert to credit yet
             # Get sale information to determine what's due
             sale_info = con.execute(
                 """
-                SELECT 
-                    s.total_amount, 
-                    s.paid_amount, 
+                SELECT
+                    s.total_amount,
+                    s.paid_amount,
                     s.advance_payment_applied,
                     c.customer_id
                 FROM sales s
@@ -220,41 +222,20 @@ class SalePaymentsRepo:
                 """,
                 (sale_id,),
             ).fetchone()
-            
+
             if not sale_info:
                 raise ValueError(f"Sale not found: {sale_id}")
-            
+
             total_amount = float(sale_info["total_amount"])
             current_paid = float(sale_info["paid_amount"])
             current_advance = float(sale_info["advance_payment_applied"]) if sale_info["advance_payment_applied"] else 0.0
             customer_id = int(sale_info["customer_id"])
-            
-            # Calculate amount due (what's left to pay)
-            amount_due = total_amount - current_paid - current_advance
-            
-            # If payment exceeds the amount due, split the payment
-            if amount > amount_due + 1e-9:  # Handle overpayment
-                # Calculate the excess that needs to be converted to customer credit
-                excess_amount = amount - amount_due
-                # Adjust the payment amount to only cover the due amount
-                adjusted_amount = amount_due
-                
-                # Record the excess as a customer advance (credit)
-                if excess_amount > 1e-9:  # Only if there's a meaningful excess
-                    cadv = CustomerAdvancesRepo(con)
-                    cadv.grant_credit(
-                        customer_id=customer_id,
-                        amount=excess_amount,
-                        date=date or "CURRENT_DATE",
-                        notes=f"Excess payment converted to credit on {sale_id}",
-                        created_by=created_by,
-                        source_id=sale_id,
-                        source_type="overpayment_credit",
-                    )
-                
-                # Use the adjusted amount for the payment (the due amount)
-                amount = adjusted_amount
 
+            # Calculate excess amount immediately before INSERT using original amount
+            amount_due = total_amount - current_paid - current_advance
+            excess_amount = max(0, amount - amount_due)  # Using original unmodified amount
+
+            # Record the original full payment amount in the database
             cur = con.cursor()
             cur.execute(
                 """
@@ -262,18 +243,18 @@ class SalePaymentsRepo:
                     sale_id, date, amount, method,
                     bank_account_id, instrument_type, instrument_no,
                     instrument_date, deposited_date, cleared_date,
-                    clearing_state, ref_no, notes, created_by
+                    clearing_state, ref_no, notes, created_by, overpayment_converted, converted_to_credit
                 ) VALUES (
-                    :sale_id, COALESCE(:date, CURRENT_DATE), :amount, :method,
+                    :sale_id, COALESCE(:date, CURRENT_DATE), :original_amount, :method,
                     :bank_account_id, :instrument_type, :instrument_no,
                     :instrument_date, :deposited_date, :cleared_date,
-                    :clearing_state, :ref_no, :notes, :created_by
+                    :clearing_state, :ref_no, :notes, :created_by, 0, :converted_to_credit
                 );
                 """,
                 {
                     "sale_id": sale_id,
                     "date": date,
-                    "amount": amount,
+                    "original_amount": amount,  # Always record the original payment amount
                     "method": method,
                     "bank_account_id": bank_account_id,
                     "instrument_type": instrument_type,
@@ -285,9 +266,29 @@ class SalePaymentsRepo:
                     "ref_no": ref_no,
                     "notes": notes,
                     "created_by": created_by,
+                    "converted_to_credit": excess_amount if excess_amount > 1e-9 else 0,  # Use epsilon for precision
                 },
             )
-            return int(cur.lastrowid)
+            payment_id_of_new_record = int(cur.lastrowid)
+
+            # Only grant customer credit and mark overpayment_converted if the payment is cleared
+            # For pending payments, do not grant credit and do not mark overpayment_converted
+            if excess_amount > 1e-9 and clearing_state == "cleared":  # Only if there's a meaningful excess and payment is cleared
+                cadv = CustomerAdvancesRepo(con)
+                cadv.grant_credit(
+                    customer_id=customer_id,
+                    amount=excess_amount,
+                    date=date or None,
+                    notes=f"Excess payment converted to credit on {sale_id}",
+                    created_by=created_by,
+                )
+                # Mark that overpayment has been converted to prevent duplicate credits
+                con.execute(
+                    "UPDATE sale_payments SET overpayment_converted = 1 WHERE payment_id = ?",
+                    (payment_id_of_new_record,)
+                )
+
+            return payment_id_of_new_record
 
     def update_clearing_state(
         self,
@@ -302,14 +303,25 @@ class SalePaymentsRepo:
     ) -> None:
         """
         Update the clearing_state (posted/pending/cleared/bounced) and optional dates.
-        (Sales rollup does not depend on clearing state, but we keep lifecycle semantics.)
+        When changing to 'cleared', this will also process any overpayment as customer credit.
         """
         if clearing_state not in {"posted", "pending", "cleared", "bounced"}:
             raise ValueError("clearing_state must be one of: posted, pending, cleared, bounced")
 
         with self._connect() as con:
-            con.execute(
-                """
+            # Get original values before update - this is atomic and will be part of our transaction
+            original_values = con.execute(
+                "SELECT sale_id, amount, method, clearing_state FROM sale_payments WHERE payment_id = ?;",
+                (payment_id,),
+            ).fetchone()
+
+            if not original_values:
+                raise ValueError(f"Payment not found: {payment_id}")
+
+            old_clearing_state = original_values["clearing_state"]
+
+            # Only update if the state is actually different (atomic check prevents race condition)
+            update_query = """
                 UPDATE sale_payments
                    SET clearing_state = :clearing_state,
                        cleared_date   = :cleared_date,
@@ -317,19 +329,109 @@ class SalePaymentsRepo:
                        instrument_date= :instrument_date,
                        notes          = COALESCE(:notes, notes),
                        ref_no         = COALESCE(:ref_no, ref_no)
-                 WHERE payment_id = :payment_id;
-                """,
-                {
-                    "clearing_state": clearing_state,
-                    "cleared_date": cleared_date,
-                    "deposited_date": deposited_date,
-                    "instrument_date": instrument_date,
-                    "notes": notes,
-                    "ref_no": ref_no,
-                    "payment_id": payment_id,
-                },
-            )
-        return  # The with statement automatically commits if no exception occurs
+                 WHERE payment_id = :payment_id
+                   AND clearing_state = :old_clearing_state;  -- Ensure the old state matches what we expect, preventing TOCTOU
+                """
+
+            cur = con.cursor()
+            cur.execute(update_query, {
+                "clearing_state": clearing_state,
+                "cleared_date": cleared_date,
+                "deposited_date": deposited_date,
+                "instrument_date": instrument_date,
+                "notes": notes,
+                "ref_no": ref_no,
+                "payment_id": payment_id,
+                "old_clearing_state": old_clearing_state,  # This ensures atomicity against concurrent updates
+            })
+
+            # Check how many rows were affected to ensure the update happened
+            rows_affected = cur.rowcount
+
+            if rows_affected == 0:
+                # Another thread may have already updated this payment between our select and update
+                # Check if the current state is what we wanted
+                current_state = con.execute(
+                    "SELECT clearing_state FROM sale_payments WHERE payment_id = ?;",
+                    (payment_id,),
+                ).fetchone()
+
+                if not current_state:
+                    raise ValueError(f"Payment not found: {payment_id}")
+
+                if current_state["clearing_state"] == clearing_state:
+                    # State is already what we wanted, so return silently
+                    return
+                else:
+                    # Another thread changed to a different state, operation failed
+                    raise ValueError(f"Another operation changed payment {payment_id} state concurrently")
+
+            # If we're changing the state TO 'cleared' from another state, check for overpayment
+            if clearing_state == 'cleared' and old_clearing_state != 'cleared':
+                # Check if this payment causes overpayment and convert excess to customer credit
+                sale_id = original_values["sale_id"]
+                payment_amount = float(original_values["amount"])
+
+                # Get sale information to determine what's due
+                sale_info = con.execute(
+                    """
+                    SELECT
+                        s.total_amount,
+                        s.paid_amount,  -- This may already include the payment if trigger ran
+                        s.advance_payment_applied,
+                        c.customer_id
+                    FROM sales s
+                    JOIN customers c ON c.customer_id = s.customer_id
+                    WHERE s.sale_id = ?
+                    """,
+                    (sale_id,),
+                ).fetchone()
+
+                if sale_info:
+                    total_amount = float(sale_info["total_amount"])
+                    current_paid = float(sale_info["paid_amount"])  # This may include the payment we're clearing
+                    current_advance = float(sale_info["advance_payment_applied"]) if sale_info["advance_payment_applied"] else 0.0
+                    customer_id = int(sale_info["customer_id"])
+
+                    # The trigger may have already updated paid_amount to include our payment_amount
+                    # Initialize effective_current_paid to the current value in the database
+                    # If transitioning from a non-cleared state to cleared, the DB trigger already updated
+                    # sales.paid_amount to include this payment, so we need to subtract it to get the pre-payment value
+                    effective_current_paid = current_paid
+                    if old_clearing_state != 'cleared' and clearing_state == 'cleared':
+                        # Since we just changed to cleared, the trigger would have included this payment in the current_paid
+                        effective_current_paid = current_paid - payment_amount
+
+                    # Calculate excess amount - the amount beyond what needs to be paid (total - advance)
+                    total_amount_owed = total_amount - current_advance
+                    total_paid_if_we_include_this = effective_current_paid + payment_amount
+                    excess_amount = max(0.0, total_paid_if_we_include_this - total_amount_owed)
+
+                    # Only grant as customer credit if there's actual excess and hasn't been converted before
+                    if excess_amount > 1e-9:  # Only if there's a meaningful excess
+                        # Check if this payment has already had its overpayment converted to credit
+                        already_converted = con.execute(
+                            "SELECT overpayment_converted FROM sale_payments WHERE payment_id = ?",
+                            (payment_id,)
+                        ).fetchone()["overpayment_converted"]
+
+                        if not already_converted:
+                            # Convert the excess to customer credit
+                            cadv = CustomerAdvancesRepo(con)
+                            cadv.grant_credit(
+                                customer_id=customer_id,
+                                amount=excess_amount,
+                                date=cleared_date or None,
+                                notes=f"Excess from cleared payment #{payment_id} on {sale_id}",
+                                created_by=None,  # Use existing created_by or None
+                            )
+                            # Mark that overpayment has been converted to prevent duplicate credits
+                            # and update the converted_to_credit amount
+                            con.execute(
+                                "UPDATE sale_payments SET overpayment_converted = 1, converted_to_credit = ? WHERE payment_id = ?",
+                                (excess_amount, payment_id)
+                            )
+
 
     def list_by_sale(self, sale_id: str) -> list[sqlite3.Row]:
         """
