@@ -3,6 +3,8 @@ from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QTimer
 import sqlite3, datetime
 from typing import Optional
 import logging
+import re
+import uuid
 
 from ..base_module import BaseModule
 from .view import PurchaseView
@@ -52,6 +54,24 @@ def new_purchase_id(conn: sqlite3.Connection, date_str: str) -> str:
 
 
 class PurchaseController(BaseModule):
+    # CSS for PDF generation - shared between print and export methods
+    _INVOICE_PDF_CSS = '''
+        @page {
+            margin: 10mm;
+            size: A4;
+        }
+        body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+        }
+        .page {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+        }
+    '''
+
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None):
         super().__init__()
         self.conn = conn
@@ -575,35 +595,16 @@ class PurchaseController(BaseModule):
             # Generate HTML content using the shared helper
             html_content = self._generate_invoice_html_content(purchase_id)
             
+            # Sanitize the purchase_id to prevent path traversal attacks in temp file prefix
+            sanitized_purchase_id = self._sanitize_filename(purchase_id, max_length=50)  # Shorter for temp prefix
+
             # Create PDF in temporary location with proper naming
-            temp_pdf_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{purchase_id}_')
+            temp_pdf_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{sanitized_purchase_id}_')
             os.close(temp_pdf_fd)  # Close the file descriptor
             
             # Convert HTML to PDF with custom CSS for proper margins
-            # Define custom CSS to override default margins
-            custom_css = CSS(string='''
-                @page {
-                    margin: 10mm;
-                    size: A4;
-                }
-                body {
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    width: 100% !important;
-                }
-                .page {
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    width: 100% !important;
-                    box-sizing: border-box !important;
-                }
-                .header {
-                    width: 100% !important;
-                }
-                table {
-                    width: 100% !important;
-                }
-            ''')
+            # Use shared CSS constant from class
+            custom_css = CSS(string=self._INVOICE_PDF_CSS)
             
             html_doc = HTML(string=html_content)
             html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
@@ -644,35 +645,16 @@ class PurchaseController(BaseModule):
             # Create the directory if it doesn't exist
             os.makedirs(pdfs_dir, exist_ok=True)
             
-            # Construct the file path
-            file_name = f"{purchase_id}.pdf"
+            # Sanitize the purchase_id to prevent path traversal attacks
+            sanitized_purchase_id = self._sanitize_filename(purchase_id, max_length=100)
+
+            # Construct the file path using the sanitized identifier
+            file_name = f"{sanitized_purchase_id}.pdf"
             file_path = os.path.join(pdfs_dir, file_name)
             
             # Convert HTML to PDF using WeasyPrint with custom CSS for proper margins
-            # Define custom CSS to override default margins
-            custom_css = CSS(string='''
-                @page {
-                    margin: 10mm;
-                    size: A4;
-                }
-                body {
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    width: 100% !important;
-                }
-                .page {
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    width: 100% !important;
-                    box-sizing: border-box !important;
-                }
-                .header {
-                    width: 100% !important;
-                }
-                table {
-                    width: 100% !important;
-                }
-            ''')
+            # Use shared CSS constant from class
+            custom_css = CSS(string=self._INVOICE_PDF_CSS)
             
             html_doc = HTML(string=html_content)
             html_doc.write_pdf(file_path, stylesheets=[custom_css])
@@ -693,9 +675,18 @@ class PurchaseController(BaseModule):
         template_path = "resources/templates/invoices/purchase_invoice.html"
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         full_template_path = os.path.join(project_root, template_path)
-        
-        with open(full_template_path, 'r', encoding='utf-8') as f:
-            template_content = f.read()
+
+        try:
+            with open(full_template_path, 'r', encoding='utf-8') as f:
+                template_content = f.read()
+        except FileNotFoundError:
+            error_msg = f"Template file not found: {full_template_path}. Please ensure the invoice template exists."
+            _log.error(error_msg)
+            raise FileNotFoundError(error_msg)
+        except OSError as e:
+            error_msg = f"Could not read template file {full_template_path}: {e}"
+            _log.error(error_msg)
+            raise OSError(error_msg)
         
         # Prepare data for the template
         enriched_data = {"purchase_id": purchase_id}
@@ -764,6 +755,20 @@ class PurchaseController(BaseModule):
         html_content = template.render(**enriched_data)
         
         return html_content
+
+    def _sanitize_filename(self, filename: str, max_length: int = 100) -> str:
+        """
+        Sanitize a string for safe use as a filename.
+        Removes unsafe characters, truncates to max_length, and provides UUID fallback for empty results.
+        """
+        # Remove or replace any path separators and other non-filename-safe characters
+        sanitized = re.sub(r'[^A-Za-z0-9._-]', '_', filename)
+        # Trim to reasonable length to prevent issues with filesystem limits
+        sanitized = sanitized[:max_length]
+        # Fallback to a safe generated token if the result is empty
+        if not sanitized:
+            sanitized = f"file_{uuid.uuid4().hex[:8]}"
+        return sanitized
 
     def _edit(self):
         row = self._selected_row_dict()

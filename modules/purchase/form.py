@@ -638,14 +638,17 @@ class PurchaseForm(QDialog):
             QMessageBox.warning(self, "Error", f"Could not load company bank accounts: {str(e)}")
 
     def _reload_vendor_accounts(self):
-        
+        # Invalidate cached payload since vendor changed (could affect overall purchase data)
+        if hasattr(self, '_payload'):
+            self._payload = None
+
         current_text = self.ip_vendor_acct.currentText()
-        
+
         self.ip_vendor_acct.clear()
         vid = self.cmb_vendor.currentData()
-        
+
         if not vid:
-            
+
             self.ip_vendor_acct.addItem("Temporary", "TEMP_BANK")
             return
         
@@ -901,6 +904,9 @@ class PurchaseForm(QDialog):
     def _delete_row_for_button(self, btn: QPushButton):
         for r in range(self.tbl.rowCount()):
             if self.tbl.cellWidget(r, 6) is btn:
+                # Invalidate cached payload since form state changed (row deleted)
+                if hasattr(self, '_payload'):
+                    self._payload = None
                 self.tbl.removeRow(r)
                 self._reindex_rows()
                 self._refresh_totals()
@@ -924,6 +930,9 @@ class PurchaseForm(QDialog):
             self._recalc_row(r); self._refresh_totals()
 
         r = self.tbl.rowCount()
+        # Invalidate cached payload since form state changed (new row added)
+        if hasattr(self, '_payload'):
+            self._payload = None
         self.tbl.insertRow(r)
 
         num = QTableWidgetItem(str(r + 1))
@@ -1024,6 +1033,9 @@ class PurchaseForm(QDialog):
 
     def _rebuild_table(self):
         def rebuild_table_content():
+            # Invalidate cached payload since form state changed (entire table rebuilt)
+            if hasattr(self, '_payload'):
+                self._payload = None
             self.tbl.setRowCount(0)
             if not self._rows:
                 self._add_row({})
@@ -1031,24 +1043,27 @@ class PurchaseForm(QDialog):
                 for row in self._rows:
                     self._add_row(row)
             self._refresh_totals()
-            
+
             # Recalculate all visible rows to ensure all line totals are updated
             # This is necessary because programmatic value changes may not trigger _cell_changed
             for r in range(self.tbl.rowCount()):
                 self._recalc_row(r)  # Calculate line total for each row once
-            
-            
+
+
             self._refresh_totals()
-        
+
         self._with_signal_blocking(self.tbl, rebuild_table_content)
 
     def _cell_changed(self, row: int, col: int):
         if row < 0 or row >= self.tbl.rowCount():
             return
-        
+
         if col in [2, 3, 4]:
-            
+
             if self.tbl.item(row, col) is not None:
+                # Invalidate cached payload since form state changed
+                if hasattr(self, '_payload'):
+                    self._payload = None
                 self._recalc_row(row)
                 self._refresh_totals()
 
@@ -1363,7 +1378,7 @@ class PurchaseForm(QDialog):
         return len(errors) == 0, errors
 
     def get_payload(self) -> dict | None:
-
+        # Pure function: always generate payload from current form state
 
 
         vendor_data = self.cmb_vendor.currentData()
@@ -1520,6 +1535,7 @@ class PurchaseForm(QDialog):
 
         return len(errors) == 0, errors
 
+
     def accept(self):
         is_valid, errors = self.validate_form()
         if not is_valid:
@@ -1527,15 +1543,17 @@ class PurchaseForm(QDialog):
             error_message = self._format_validation_errors(errors)
             QMessageBox.warning(self, "Validation Errors", error_message)
             return
+        # Always call get_payload() fresh to ensure form state is current
         p = self.get_payload()
         if p is None:
-            
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Missing/Invalid Fields",
                                 "Please enter valid purchase details (all required fields must be filled).")
             return
+        # Update the cached payload with the fresh data
         self._payload = p
         super().accept()
+        # Payload remains cached so caller can retrieve it via self.payload()
 
     def payload(self):
         return self._payload
@@ -1561,31 +1579,53 @@ class PurchaseForm(QDialog):
     def _save_clicked(self):
         """Handle save button click"""
         def save_action():
-            
+            # Get payload and validate
+            payload = self.get_payload()
+            if not payload:
+                return False  # Validation failed, don't close dialog
+
+            # Store the validated payload so accept() reuses it instead of regenerating
+            self._payload = payload
+            # Call accept once with the cached payload
             self.accept()
             return True
-        
+
         self._validate_and_perform_action(save_action)
 
     def _print_clicked(self):
         """Handle print button click"""
         def print_action():
-            
-            self.accept()  
-            
-            
+            # Get payload and validate
+            payload = self.get_payload()
+            if not payload:
+                return False  # Validation failed, don't close dialog
+
+            # Add flag to indicate this should be printed after saving
+            payload['_should_print'] = True
+            # Store the modified payload so accept() uses it instead of regenerating
+            self._payload = payload
+            # Call accept once with the modified payload
+            self.accept()
             return True
-            
+
         self._validate_and_perform_action(print_action)
 
     def _pdf_export_clicked(self):
         """Handle PDF export button click"""
         def pdf_export_action():
-            
+            # Get payload and validate
+            payload = self.get_payload()
+            if not payload:
+                return False  # Validation failed, don't close dialog
+
+            # Add flag to indicate this should be exported to PDF after saving
+            payload['_should_export_pdf'] = True
+            # Store the modified payload so accept() uses it instead of regenerating
+            self._payload = payload
+            # Call accept once with the modified payload
             self.accept()
-            
             return True
-            
+
         self._validate_and_perform_action(pdf_export_action)
 
 

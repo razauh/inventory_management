@@ -449,6 +449,23 @@ class SalePaymentsRepo:
             )
             return cur.fetchall()
 
+    def get_latest_payment_for_sale(self, sale_id: str) -> sqlite3.Row | None:
+        """
+        Return the latest payment for a given sale_id (by date and payment_id).
+        """
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                SELECT *
+                  FROM sale_payments
+                 WHERE sale_id = ?
+                 ORDER BY date DESC, payment_id DESC
+                 LIMIT 1;
+                """,
+                (sale_id,),
+            )
+            return cur.fetchone()
+
     def list_by_customer(self, customer_id: int) -> list[sqlite3.Row]:
         """
         Return all payments for all SALES belonging to a given customer.

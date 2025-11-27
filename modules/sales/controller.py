@@ -1,6 +1,9 @@
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QSortFilterProxyModel
 import sqlite3
+import re
+import uuid
+import logging
 
 from ..base_module import BaseModule
 from .view import SalesView
@@ -12,6 +15,10 @@ from ...database.repositories.customers_repo import CustomersRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str, fmt_money
+import os
+import tempfile
+import datetime
+from PySide6.QtCore import QStandardPaths
 
 
 def new_sale_id(conn: sqlite3.Connection, date_str: str) -> str:
@@ -40,6 +47,27 @@ def new_quotation_id(conn: sqlite3.Connection, date_str: str) -> str:
 
 
 class SalesController(BaseModule):
+    # CSS for PDF generation - shared between print and export methods
+    _INVOICE_PDF_CSS = '''
+        @page {
+            margin: 10mm;
+            size: A4;
+        }
+        body {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+        }
+        .page {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+        }
+    '''
+
+    # Default path for invoice templates - can be overridden via config
+    INVOICE_TEMPLATE_PATH = "resources/templates/invoices/sale_invoice.html"
+
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None):
         super().__init__()
         self.conn = conn
@@ -580,6 +608,14 @@ class SalesController(BaseModule):
             try:
                 self.repo.create_quotation(h, items)
                 info(self.view, "Saved", f"Quotation {qid} created.")
+
+                # Check if this was called from print or PDF export button
+                should_print_after_save = p.get('_should_print', False)
+                should_export_pdf_after_save = p.get('_should_export_pdf', False)
+
+                # Handle print or PDF export request after saving (for now, just notify user about limitations)
+                if should_print_after_save or should_export_pdf_after_save:
+                    info(self.view, "Not Implemented", "Quotation printing/PDF export not yet implemented.")
             except Exception as e:
                 info(self.view, "Error", f"Could not create quotation: {e}")
             self._reload()
@@ -651,6 +687,16 @@ class SalesController(BaseModule):
                      f"Sale {sid} created. Initial payment was not recorded: {e}")
         else:
             info(self.view, "Saved", f"Sale {sid} created.")
+
+        # Check if this was called from print or PDF export button
+        should_print_after_save = p.get('_should_print', False)
+        should_export_pdf_after_save = p.get('_should_export_pdf', False)
+
+        # Handle print or PDF export request after saving
+        if should_print_after_save:
+            self._print_sale_invoice(sid)
+        elif should_export_pdf_after_save:
+            self._export_sale_invoice_to_pdf(sid)
 
         self._reload()
         self._sync_details()
@@ -775,7 +821,19 @@ class SalesController(BaseModule):
             for it in p["items"]
         ]
         self.repo.update_sale(h, items)
-        info(self.view, "Saved", f"Sale {sid} updated.")
+
+        # Check if this was called from print or PDF export button
+        should_print_after_save = p.get('_should_print', False)
+        should_export_pdf_after_save = p.get('_should_export_pdf', False)
+
+        # Handle print or PDF export request after saving
+        if should_print_after_save:
+            self._print_sale_invoice(sid)
+        elif should_export_pdf_after_save:
+            self._export_sale_invoice_to_pdf(sid)
+        else:
+            info(self.view, "Saved", f"Sale {sid} updated.")
+
         self._reload()
         self._sync_details()
 
@@ -879,7 +937,7 @@ class SalesController(BaseModule):
 
     def _print(self):
         """
-        Route to the appropriate template based on mode.
+        Print the selected sale invoice.
         """
         row = self._selected_row()
         if not row:
@@ -889,47 +947,11 @@ class SalesController(BaseModule):
         doc_type = self._doc_type
         sale_id = row["sale_id"]
 
-        # Choose template
-        if doc_type == "quotation":
-            template = "resources/templates/invoices/quotation_invoice.html"
-            window_title = f"Quotation — {sale_id}"
-        else:
-            template = "resources/templates/invoices/sale_invoice.html"
-            window_title = f"Sale Invoice — {sale_id}"
-
-        # Try a printing controller first
-        try:
-            from ...printing.controller import PrintingController  # type: ignore
-
-            pc = PrintingController(self.conn)
-            if hasattr(pc, "preview_invoice"):
-                pc.preview_invoice(template, {"sale_id": sale_id})
-                return
-            # Optional aliases if your controller has specialized methods
-            if doc_type == "quotation" and hasattr(pc, "print_quotation"):
-                pc.print_quotation(sale_id)
-                return
-            if doc_type == "sale" and hasattr(pc, "print_sale"):
-                pc.print_sale(sale_id)
-                return
-            raise RuntimeError("No suitable printing method found on PrintingController.")
-        except Exception:
-            pass
-
-        # Fallback to invoice preview widget if available
-        try:
-            from ...widgets.invoice_preview import InvoicePreview  # type: ignore
-            w = InvoicePreview(template, {"sale_id": sale_id})
-            w.setWindowTitle(window_title)
-            w.show()  # non-modal
-            return
-        except Exception:
-            info(
-                self.view,
-                "Printing not configured",
-                "Printing/preview is not wired in this build. "
-                "Use the Printing module to preview/print.",
-            )
+        # For now, only handle sales (not quotations)
+        if doc_type == "sale":
+            self._print_sale_invoice(sale_id)
+        elif doc_type == "quotation":
+            info(self.view, "Not Implemented", "Quotation printing not yet implemented.")
 
         # After printing attempt, keep states fresh
         self._update_action_states()
@@ -1158,4 +1180,289 @@ class SalesController(BaseModule):
 
         self._reload()
         self._sync_details()
+
+    def _generate_invoice_html_content(self, sale_id: str) -> str:
+        """Generate HTML content for sales invoice - shared between print and export methods."""
+        import os
+        from pathlib import Path
+        from jinja2 import Template
+
+        # Attempt to load template via configurable directory or filesystem path
+        template_content = None
+
+        # First, try configurable template directory attribute
+        configured_template_dir = getattr(self, 'template_dir', None)
+        if configured_template_dir:
+            template_path = os.path.join(configured_template_dir, "sale_invoice.html")
+            try:
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    template_content = f.read()
+            except (FileNotFoundError, OSError):
+                pass  # Try alternative methods
+
+        # If not found via config, try to load from filesystem using a more robust path detection
+        if template_content is None:
+            try:
+                # Define full_template_path before the try block to ensure it's always defined
+                # Use pathlib for reliable path resolution relative to project root
+                current_file_path = Path(__file__).resolve()  # Absolute path to current file
+                project_root = current_file_path.parent.parent.parent  # Go up 3 levels to project root
+                full_template_path = project_root / self.INVOICE_TEMPLATE_PATH
+
+                with open(full_template_path, 'r', encoding='utf-8') as f:
+                    template_content = f.read()
+            except (FileNotFoundError, OSError) as e:
+                error_msg = f"Template file not found at: {full_template_path}. Please ensure the invoice template exists. Error: {e}"
+                logging.error(error_msg)
+                raise FileNotFoundError(error_msg)
+
+        if template_content is None:
+            error_msg = "Could not load invoice template: all methods failed to find the template"
+            logging.error(error_msg)
+            raise FileNotFoundError(error_msg)
+
+        # Prepare data for the template
+        enriched_data = {"id": sale_id}
+
+        # Fetch sale header data using repository
+        header_row = self.repo.get_header_with_customer(sale_id)
+
+        if header_row:
+            doc_data = dict(header_row)
+            # Map sale_id to id for template compatibility (matching purchase invoice template)
+            doc_data['id'] = doc_data.get('sale_id', '')
+            enriched_data['doc'] = doc_data
+            enriched_data['customer'] = {
+                'name': doc_data.get('customer_name', ''),
+                'contact_info': doc_data.get('customer_contact_info', ''),
+                'address': doc_data.get('customer_address', '')
+            }
+
+            # Fetch sale items using repository
+            items_rows = self.repo.list_items(sale_id)
+
+            items = []
+            for row in items_rows:
+                item_dict = dict(row)
+                # Calculate line_total
+                quantity = float(item_dict.get('quantity', 0.0))
+                unit_price = float(item_dict.get('unit_price', 0.0))
+                item_discount = float(item_dict.get('item_discount', 0.0))
+                # Apply discount per unit: total_cost - (quantity * discount_per_unit)
+                line_total = (quantity * unit_price) - (quantity * item_discount)
+                item_dict['line_total'] = line_total
+
+                # Calculate idx (row number)
+                item_dict['idx'] = len(items) + 1
+
+                items.append(item_dict)
+
+            enriched_data['items'] = items
+
+            # Calculate totals
+            # Add back the quantity * item_discount per item to get subtotal before discounts
+            subtotal_before_order_discount = sum(
+                item['line_total'] + (float(item.get('quantity', 0.0)) * float(item.get('item_discount', 0.0)))
+                for item in items
+            )
+            line_discount_total = sum(
+                (float(item.get('quantity', 0.0)) * float(item.get('item_discount', 0.0)))
+                for item in items
+            )
+            order_discount = float(doc_data.get('order_discount', 0.0))
+            total = subtotal_before_order_discount - line_discount_total - order_discount
+
+            enriched_data['totals'] = {
+                'subtotal_before_order_discount': subtotal_before_order_discount,
+                'line_discount_total': line_discount_total,
+                'order_discount': order_discount,
+                'total': total
+            }
+
+            # Get customer payment details using repository
+            from ...database.repositories.sale_payments_repo import SalePaymentsRepo
+            payments_repo = SalePaymentsRepo(self._db_path)
+
+            # Get the latest payment directly using the dedicated method
+            latest_payment = payments_repo.get_latest_payment_for_sale(sale_id)
+
+            # Calculate paid amount and remaining
+            paid_amount = float(doc_data.get('paid_amount', 0.0))
+            total_amount = float(doc_data.get('total_amount', 0.0))
+            advance_payment_applied = float(doc_data.get('advance_payment_applied', 0.0))
+            # Calculate remaining properly by accounting for advance payments
+            remaining = max(0.0, total_amount - paid_amount - advance_payment_applied)
+
+            enriched_data['paid_amount'] = paid_amount
+            enriched_data['advance_payment_applied'] = advance_payment_applied
+            enriched_data['remaining'] = remaining
+
+            # Get latest payment details and enhance with account names
+            if latest_payment:
+                latest_payment = dict(latest_payment)  # Convert to dict for modification
+
+                # Add bank account labels if available
+                if latest_payment.get('bank_account_id'):
+                    try:
+                        # Query the bank account directly from the database
+                        bank_account_row = self.conn.execute(
+                            "SELECT label FROM company_bank_accounts WHERE account_id = ?",
+                            (latest_payment['bank_account_id'],)
+                        ).fetchone()
+                        if bank_account_row:
+                            latest_payment['bank_account_label'] = bank_account_row['label']
+                        else:
+                            latest_payment['bank_account_label'] = 'N/A'
+                    except Exception:
+                        latest_payment['bank_account_label'] = 'N/A'
+
+                enriched_data['initial_payment'] = latest_payment
+            else:
+                enriched_data['initial_payment'] = None
+
+            # Add company info
+            from ...database.repositories.company_repo import CompanyRepo
+            company_repo = CompanyRepo(self._db_path)
+            company_info = company_repo.get()
+
+            if company_info:
+                enriched_data['company'] = {
+                    'name': company_info['company_name'],
+                    'logo_path': company_info['logo_path']
+                }
+            else:
+                enriched_data['company'] = {
+                    'name': 'Your Company Name',
+                    'logo_path': None
+                }
+
+            # Add payment status
+            enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
+
+        # Create Jinja2 template and render
+        template = Template(template_content, autoescape=True)
+        html_content = template.render(**enriched_data)
+
+        return html_content
+
+    def _sanitize_filename(self, filename: str, max_length: int = 100) -> str:
+        """
+        Sanitize a string for safe use as a filename.
+        Removes unsafe characters, truncates to max_length, and provides UUID fallback for empty results.
+        """
+        # Remove or replace any path separators and other non-filename-safe characters
+        sanitized = re.sub(r'[^A-Za-z0-9._-]', '_', filename)
+        # Trim to reasonable length to prevent issues with filesystem limits
+        sanitized = sanitized[:max_length]
+        # Fallback to a safe generated token if the result is empty
+        if not sanitized or sanitized == "":
+            sanitized = f"file_{uuid.uuid4().hex[:8]}"
+        return sanitized
+
+    def _print_sale_invoice(self, sale_id: str):
+        """Print the sale invoice using WeasyPrint for better rendering"""
+        temp_pdf_path = None  # Initialize to None to ensure it's available in finally block
+        try:
+            from weasyprint import HTML, CSS
+
+            # Generate HTML content using the shared helper
+            html_content = self._generate_invoice_html_content(sale_id)
+
+            # Sanitize the sale_id to prevent path traversal attacks in temp file prefix
+            sanitized_sale_id = self._sanitize_filename(sale_id, max_length=50)  # Shorter for temp prefix
+
+            # Create PDF in temporary location with proper naming
+            temp_pdf_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{sanitized_sale_id}_')
+            os.close(temp_pdf_fd)  # Close the file descriptor
+
+            # Convert HTML to PDF with custom CSS for proper margins
+            # Use shared CSS constant from class
+            custom_css = CSS(string=self._INVOICE_PDF_CSS)
+
+            html_doc = HTML(string=html_content)
+            html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
+
+            # Open the PDF in default PDF viewer (to allow printing)
+            import subprocess
+            import sys
+            import platform
+
+            if platform.system() == 'Windows':
+                os.startfile(temp_pdf_path)
+            elif platform.system() == 'Darwin':  # macOS
+                subprocess.run(['open', temp_pdf_path])
+            else:  # Linux and other Unix-like
+                subprocess.run(['xdg-open', temp_pdf_path])
+
+            info(self.view, "Print", "A temporary PDF was created and opened for printing.")
+
+        except ImportError:
+            info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
+        except Exception as e:
+            info(self.view, "Error", f"Could not print invoice: {e}")
+        finally:
+            # Ensure temporary file is removed after some time to allow PDF viewer to access it
+            # Use a background thread to delay the deletion
+            try:
+                if temp_pdf_path is not None:
+                    import threading
+                    import time
+
+                    def delayed_delete(file_path):
+                        # Wait for a few seconds to allow the PDF viewer to open the file
+                        time.sleep(5)
+                        try:
+                            os.remove(file_path)
+                        except OSError:
+                            # If file removal fails, silently ignore
+                            # since the primary operation (printing) has already happened
+                            pass
+
+                    # Start the delayed deletion in a background thread
+                    deletion_thread = threading.Thread(target=delayed_delete, args=(temp_pdf_path,))
+                    deletion_thread.daemon = True  # Make it a daemon thread so it doesn't prevent program exit
+                    deletion_thread.start()
+            except Exception:
+                # If setting up delayed deletion fails, silently ignore
+                pass
+
+    def _export_sale_invoice_to_pdf(self, sale_id: str):
+        """Export the sale invoice to PDF using WeasyPrint for better rendering"""
+        try:
+            from weasyprint import HTML, CSS
+
+            # Generate HTML content using the shared helper
+            html_content = self._generate_invoice_html_content(sale_id)
+
+            # Determine the desktop path and create SIs (Sale Invoices) subdirectory
+            desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+            pdfs_dir = os.path.join(desktop_path, "SIs")
+
+            # Create the directory if it doesn't exist
+            os.makedirs(pdfs_dir, exist_ok=True)
+
+            # Sanitize the sale_id to prevent path traversal attacks
+            sanitized_sale_id = self._sanitize_filename(sale_id, max_length=100)
+
+            # Create a unique filename by appending a timestamp to avoid collisions
+            # Use Pakistani Standard Time (PKT) for the timestamp
+            import zoneinfo
+            pk_time = datetime.datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
+            timestamp = pk_time.strftime("%Y%m%d_%H%M%S_%f")[:-3]  # YYYYMMDD_HHMMSS_mmm format
+            file_name = f"{sanitized_sale_id}_{timestamp}.pdf"
+            file_path = os.path.join(pdfs_dir, file_name)
+
+            # Convert HTML to PDF using WeasyPrint with custom CSS for proper margins
+            # Use shared CSS constant from class
+            custom_css = CSS(string=self._INVOICE_PDF_CSS)
+
+            html_doc = HTML(string=html_content)
+            html_doc.write_pdf(file_path, stylesheets=[custom_css])
+
+            info(self.view, "Exported", f"Sale invoice exported to: {file_path}")
+
+        except ImportError:
+            info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
+        except Exception as e:
+            info(self.view, "Error", f"Could not export invoice to PDF: {e}")
 

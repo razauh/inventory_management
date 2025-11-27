@@ -40,7 +40,6 @@ class SaleForm(QDialog):
         # Set window flags at the end of initialization like in PurchaseForm
 
         self.customers = customers; self.products = products; self.sales_repo = sales_repo; self.db_path = db_path; self.bank_accounts = bank_accounts
-        self._payload = None
 
         # --- header widgets ---
         self.cmb_customer = QComboBox(); self.cmb_customer.setEditable(True)
@@ -53,9 +52,10 @@ class SaleForm(QDialog):
         self._customers_by_name = {}
         names = []
         for c in self.customers.list_customers():
-            self.cmb_customer.addItem(f"{c.name} (#{c.customer_id})", c.customer_id)
+            display_text = f"{c.name} (#{c.customer_id})"
+            self.cmb_customer.addItem(display_text, c.customer_id)
             self._customers_by_name[c.name.lower()] = c
-            names.append(c.name)
+            names.append(display_text)  # Use the same format as combo box items for completer
 
         # do NOT preselect a customer by default
         self.cmb_customer.setCurrentIndex(-1)
@@ -102,9 +102,10 @@ class SaleForm(QDialog):
             self.cmb_customer.clear(); self._customers_by_name.clear()
             names = []
             for c in self.customers.list_customers():
-                self.cmb_customer.addItem(f"{c.name} (#{c.customer_id})", c.customer_id)
+                display_text = f"{c.name} (#{c.customer_id})"
+                self.cmb_customer.addItem(display_text, c.customer_id)
                 self._customers_by_name[c.name.lower()] = c
-                names.append(c.name)
+                names.append(display_text)  # Use the same format as combo box items for completer
             self._completer = QCompleter(names, self); self._completer.setCaseSensitivity(Qt.CaseInsensitive)
             self.cmb_customer.setCompleter(self._completer)
             # select new customer
@@ -312,8 +313,20 @@ class SaleForm(QDialog):
             self.pay_box.setVisible(False)
             self.bank_box.setVisible(False)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.accepted.connect(self.accept); self.buttons.rejected.connect(self.reject); lay.addWidget(self.buttons)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)  # Start with only Cancel, we'll add others manually
+        self.save_button = QPushButton("Save")
+        self.print_button = QPushButton("Print")
+        self.pdf_export_button = QPushButton("Export to PDF")
+        self.buttons.addButton(self.save_button, QDialogButtonBox.AcceptRole)
+        self.buttons.addButton(self.print_button, QDialogButtonBox.ActionRole)
+        self.buttons.addButton(self.pdf_export_button, QDialogButtonBox.ActionRole)
+
+        # Connect the custom buttons to their respective functions
+        self.save_button.clicked.connect(lambda: self._handle_action('save'))
+        self.print_button.clicked.connect(lambda: self._handle_action('print'))
+        self.pdf_export_button.clicked.connect(lambda: self._handle_action('export_pdf'))
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
 
         # Set window flags like in PurchaseForm to enable minimize, maximize, and close buttons
         # This should be done after UI construction but before setting size properties
@@ -698,6 +711,8 @@ class SaleForm(QDialog):
 
     # payload with visible validation and row highlighting
     def get_payload(self) -> dict | None:
+        # Validate and extract payload data from current form state, with UI side effects
+        # Shows warnings, changes focus, and highlights invalid rows
         # customer must be chosen or added
         cid = self.cmb_customer.currentData()
         if not cid:
@@ -854,13 +869,43 @@ class SaleForm(QDialog):
 
         return payload
 
+    def _handle_action(self, action: str):
+        """Handle save/print/export actions with a single consolidated handler"""
+        # Get payload and validate
+        payload = self.get_payload()
+        if not payload:
+            return  # Validation failed, don't close dialog
+
+        # Store the validated payload and set the action
+        self._pending_payload = payload
+        self._action = action
+
+        self.accept()
+
     def accept(self):
-        p = self.get_payload()
-        if p is None:
-            return
+        # Use pending payload if available, otherwise get fresh
+        if hasattr(self, '_pending_payload') and self._pending_payload is not None:
+            p = self._pending_payload
+            # Clear the pending payload after using it
+            delattr(self, '_pending_payload')
+        else:
+            # Fallback to get_payload() if no pending payload exists
+            p = self.get_payload()
+            if p is None:
+                return
+
+        # Determine action and apply appropriate flags
+        action = getattr(self, '_action', 'save')  # default to 'save'
+        if action == 'print':
+            p['_should_print'] = True
+        elif action == 'export_pdf':
+            p['_should_export_pdf'] = True
+        # For 'save', no flags are needed
+
+        # Store the payload temporarily so the caller can access it via self.payload()
         self._payload = p
 
         super().accept()
 
     def payload(self):
-        return self._payload
+        return getattr(self, '_payload', None)

@@ -2015,6 +2015,34 @@ def _ensure_customer_is_active(conn: sqlite3.Connection) -> None:
             "ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1));"
         )
 
+
+def _ensure_sale_payments_overpayment_converted(conn: sqlite3.Connection) -> None:
+    """
+    Safe migration for older DBs that created `sale_payments` before `overpayment_converted` existed.
+    Adds the column if missing. No-op if already present.
+    """
+    cur = conn.execute("PRAGMA table_info(sale_payments);")
+    cols = {row[1] for row in cur.fetchall()}  # row[1] = name
+    if "overpayment_converted" not in cols:
+        conn.execute(
+            "ALTER TABLE sale_payments "
+            "ADD COLUMN overpayment_converted INTEGER NOT NULL DEFAULT 0 CHECK (overpayment_converted IN (0,1));"
+        )
+
+
+def _ensure_sale_payments_converted_to_credit(conn: sqlite3.Connection) -> None:
+    """
+    Safe migration for older DBs that created `sale_payments` before `converted_to_credit` existed.
+    Adds the column if missing. No-op if already present.
+    """
+    cur = conn.execute("PRAGMA table_info(sale_payments);")
+    cols = {row[1] for row in cur.fetchall()}  # row[1] = name
+    if "converted_to_credit" not in cols:
+        conn.execute(
+            "ALTER TABLE sale_payments "
+            "ADD COLUMN converted_to_credit NUMERIC DEFAULT 0;"
+        )
+
 def init_schema(db_path: Path | str = "myshop.db") -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2023,8 +2051,10 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         conn.execute("PRAGMA journal_mode=WAL;")
         # Apply (idempotent) schema
         conn.executescript(SQL)
-        # Backfill migration for existing DBs missing customers.is_active
+        # Backfill migrations for existing DBs missing columns
         _ensure_customer_is_active(conn)
+        _ensure_sale_payments_overpayment_converted(conn)
+        _ensure_sale_payments_converted_to_credit(conn)
         conn.commit()
     print(f"✓ DB applied to {db_path}")
 

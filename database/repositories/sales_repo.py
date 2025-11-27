@@ -753,3 +753,20 @@ class SalesRepo:
                 (customer_id, doc_type),
             )
             return cur.fetchall()
+
+    def get_header_with_customer(self, sale_id: str) -> dict | None:
+        """
+        Get sale header with customer information joined.
+        Returns a dictionary with sale fields and customer fields aliased with customer_ prefix.
+        """
+        sql = """
+        SELECT s.*,
+               c.name AS customer_name,
+               c.contact_info AS customer_contact_info,
+               c.address AS customer_address
+          FROM sales s
+          JOIN customers c ON c.customer_id = s.customer_id
+         WHERE s.sale_id = ?
+        """
+        row = self.conn.execute(sql, (sale_id,)).fetchone()
+        return dict(row) if row else None

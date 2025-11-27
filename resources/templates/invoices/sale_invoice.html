@@ -33,6 +33,27 @@
     .totals .rule { border-top: 1px solid #ccc; }
     .muted { color: #666; }
     .footer { margin-top: 18px; font-size: 11px; color: #444; display: grid; grid-template-columns: 1fr; gap: 6px; }
+
+    .payment-details { margin-top: 16px; }
+    .payment-card {
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 10px;
+        background: #fafafa;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .payment-card h3 {
+        font-size: 12px;
+        font-weight: 700;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: .4px;
+    }
+    .payment-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
   </style>
 </head>
 <body>
@@ -166,6 +187,34 @@
         {% endif %}
       </table>
     </div>
+
+    <!-- Initial Payment Details -->
+    {% if initial_payment %}
+    <div class="payment-details">
+      <div class="payment-card">
+        <h3>Initial Payment Details</h3>
+        <div class="payment-grid">
+          <div><strong>Method:</strong> {{ initial_payment.method|default('N/A')|e }}</div>
+          <div><strong>Date:</strong> {{ (initial_payment.date or doc.date)|e }}</div>
+          {% if initial_payment.bank_account_id %}
+          <div><strong>Company Account:</strong> {{ initial_payment.bank_account_label|default('N/A')|e }}</div>
+          {% endif %}
+          {% if initial_payment.instrument_no %}
+          <div><strong>Instrument No:</strong> {{ initial_payment.instrument_no|default('N/A')|e }}</div>
+          {% endif %}
+          {% if initial_payment.instrument_date %}
+          <div><strong>Instrument Date:</strong> {{ initial_payment.instrument_date|default('')|e }}</div>
+          {% endif %}
+          {% if initial_payment.ref_no %}
+          <div><strong>Reference No:</strong> {{ initial_payment.ref_no|default('')|e }}</div>
+          {% endif %}
+          {% if initial_payment.notes %}
+          <div><strong>Notes:</strong> {{ initial_payment.notes|default('')|e }}</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
 
     <!-- Footer -->
     <div class="footer">
