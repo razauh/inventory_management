@@ -8,10 +8,9 @@
     .page { width: 210mm; min-height: 297mm; padding: 16mm 15mm; box-sizing: border-box; }
     h1, h2, h3 { margin: 0; padding: 0; }
     .header { display: grid; grid-template-columns: 65% 35%; gap: 16px; align-items: start; }
-    .company-block { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
-    .logo { width: 36mm; max-height: 18mm; object-fit: contain; }
+    .company-block { display: block; }
     .company-name { font-size: 22px; font-weight: 700; line-height: 1.1; }
-    .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-wrap; }
+    .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-wrap; text-align: left; }
     .meta { text-align: right; }
     .doc-title { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
     .meta small { color: #555; }
@@ -27,6 +26,13 @@
     table { width: 100%; border-collapse: collapse; margin-top: 16px; }
     th, td { padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
     th { text-align: left; background: #fafafa; font-weight: 700; }
+    .items-table { table-layout: fixed; }
+    .items-table .col-idx { width: 24px; }
+    .items-table .col-qty,
+    .items-table .col-uom { width: 60px; }
+    .items-table .col-unit-price,
+    .items-table .col-discount,
+    .items-table .col-line-total { width: 80px; }
     .t-right { text-align: right; }
     .totals { width: 50%; margin-left: auto; margin-top: 6px; }
     .totals table { margin-top: 0; }
@@ -61,16 +67,11 @@
     <!-- Header -->
     <div class="header">
       <div class="company-block">
-        {% if company.logo_path %}
-          <img class="logo" src="{{ company.logo_path }}" alt="Logo" />
-        {% endif %}
-        <div>
-          <div class="company-name">{{ company.name }}</div>
-          <div class="company-lines">
-            Address: XXXX
-            XXXXX: XXXXXX
-            XXXXXX: XXXXXX
-          </div>
+        <div class="company-name">{{ company.name }}</div>
+        <div class="company-lines">
+Address: XXXX<br>
+XXXXX: XXXXXX<br>
+XXXXXX: XXXXXX
         </div>
       </div>
       <div class="meta">
@@ -117,16 +118,19 @@
     </div>
 
     <!-- Items -->
-    <table aria-label="Line items">
+    {% set has_line_discount = (items|sum(attribute='item_discount')) > 0 %}
+    <table class="items-table" aria-label="Line items">
       <thead>
         <tr>
-          <th style="width:36px;">#</th>
+          <th class="col-idx t-right">#</th>
           <th>Product</th>
-          <th class="t-right" style="width:70px;">Qty</th>
-          <th style="width:70px;">UoM</th>
-          <th class="t-right" style="width:90px;">Unit Price</th>
-          <th class="t-right" style="width:90px;">Discount</th>
-          <th class="t-right" style="width:110px;">Line Total</th>
+          <th class="col-qty t-right">Qty</th>
+          <th class="col-uom">UoM</th>
+          <th class="col-unit-price t-right">Unit Price</th>
+          {% if has_line_discount %}
+          <th class="col-discount t-right">Discount</th>
+          {% endif %}
+          <th class="col-line-total t-right">Line Total</th>
         </tr>
       </thead>
       <tbody>
@@ -137,7 +141,16 @@
           <td class="t-right">{{ '%.2f' % it.quantity }}</td>
           <td>{{ it.uom_name }}</td>
           <td class="t-right">{{ '%.2f' % it.unit_price }}</td>
-          <td class="t-right">{{ '%.2f' % it.item_discount }}</td>
+          {% if has_line_discount %}
+          <td class="t-right">
+            {% if it.item_discount and it.item_discount > 0 %}
+              {{ '%.2f' % it.item_discount }}<br>
+              <span class="muted">x {{ '%.2f' % it.quantity }}</span>
+            {% else %}
+              {{ '%.2f' % it.item_discount }}
+            {% endif %}
+          </td>
+          {% endif %}
           <td class="t-right">{{ '%.2f' % it.line_total }}</td>
         </tr>
         {% endfor %}
@@ -151,14 +164,18 @@
           <td class="t-right muted">Subtotal</td>
           <td class="t-right">{{ '%.2f' % totals.subtotal_before_order_discount }}</td>
         </tr>
+        {% if totals.line_discount_total %}
         <tr>
           <td class="t-right muted">Line Discount Total</td>
           <td class="t-right">{{ '%.2f' % totals.line_discount_total }}</td>
         </tr>
+        {% endif %}
+        {% if totals.order_discount %}
         <tr>
           <td class="t-right muted">Order Discount</td>
           <td class="t-right">{{ '%.2f' % totals.order_discount }}</td>
         </tr>
+        {% endif %}
         <tr class="rule">
           <td class="t-right"><strong>Total</strong></td>
           <td class="t-right"><strong>{{ '%.2f' % totals.total }}</strong></td>
@@ -208,8 +225,9 @@
           {% if initial_payment.ref_no %}
           <div><strong>Reference No:</strong> {{ initial_payment.ref_no|default('')|e }}</div>
           {% endif %}
-          {% if initial_payment.notes %}
-          <div><strong>Notes:</strong> {{ initial_payment.notes|default('')|e }}</div>
+          {% set notes = initial_payment.notes|default('')|trim %}
+          {% if notes and notes != 'Init payment' and notes != '[Init payment]' %}
+          <div><strong>Notes:</strong> {{ notes|e }}</div>
           {% endif %}
         </div>
       </div>

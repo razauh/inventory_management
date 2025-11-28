@@ -129,7 +129,7 @@ class SaleReturnForm(QDialog):
         """Best-effort check that the row represents a real sale (not a quotation)."""
         try:
             if isinstance(row, dict):
-                dt = row.get("doc_type")
+                dt = row["doc_type"] if "doc_type" in row.keys() else None
             else:
                 # sqlite3.Row supports mapping; .keys() may exist or not, so guard
                 dt = row["doc_type"] if "doc_type" in row.keys() else None
@@ -157,7 +157,14 @@ class SaleReturnForm(QDialog):
 
         if not row:
             h = self.repo.get_header(sid)
-            if not h or str(h.get("doc_type", "sale")) != "sale":
+            if not h:
+                dt = "sale"
+            else:
+                try:
+                    dt = h["doc_type"]
+                except (KeyError, TypeError):
+                    dt = "sale"
+            if str(dt) != "sale":
                 return
             row = {
                 "sale_id": h["sale_id"],
@@ -177,7 +184,11 @@ class SaleReturnForm(QDialog):
         self.tbl_sales.setRowCount(1)
         self.tbl_sales.setItem(0, 0, QTableWidgetItem(str(row["sale_id"])))
         self.tbl_sales.setItem(0, 1, QTableWidgetItem(row["date"]))
-        self.tbl_sales.setItem(0, 2, QTableWidgetItem(row.get("customer_name", "")))
+        try:
+            customer_name = row["customer_name"] if row["customer_name"] else ""
+        except (KeyError, TypeError):
+            customer_name = ""
+        self.tbl_sales.setItem(0, 2, QTableWidgetItem(customer_name))
         self.tbl_sales.setItem(0, 3, QTableWidgetItem(fmt_money(row["total_amount"])))
         self.tbl_sales.setItem(0, 4, QTableWidgetItem(fmt_money(row["paid_amount"])))
         self.tbl_sales.selectRow(0)  # triggers _load_items
@@ -201,7 +212,11 @@ class SaleReturnForm(QDialog):
         for r, x in enumerate(rows):
             self.tbl_sales.setItem(r, 0, QTableWidgetItem(x["sale_id"]))
             self.tbl_sales.setItem(r, 1, QTableWidgetItem(x["date"]))
-            self.tbl_sales.setItem(r, 2, QTableWidgetItem(x.get("customer_name", "")))
+            try:
+                customer_name = x["customer_name"] if x["customer_name"] else ""
+            except (KeyError, TypeError):
+                customer_name = ""
+            self.tbl_sales.setItem(r, 2, QTableWidgetItem(customer_name))
             self.tbl_sales.setItem(r, 3, QTableWidgetItem(fmt_money(x["total_amount"])))
             self.tbl_sales.setItem(r, 4, QTableWidgetItem(fmt_money(x["paid_amount"])))
 
@@ -217,26 +232,55 @@ class SaleReturnForm(QDialog):
         # Header (paid + order discount)
         h = self.repo.get_header(sid) or {}
         # Guard: if somehow a quotation slipped through, do nothing
-        if str(h.get("doc_type", "sale")) != "sale":
+        if not h:
+            dt = "sale"
+        else:
+            try:
+                dt = h["doc_type"]
+            except (KeyError, TypeError):
+                dt = "sale"
+        if str(dt) != "sale":
             return
 
-        self._sale_paid = float(h.get("paid_amount") or 0.0)
-        self._sale_od   = float(h.get("order_discount") or 0.0)
+        try:
+            paid_amount = h["paid_amount"]
+        except (KeyError, TypeError):
+            paid_amount = 0.0
+        self._sale_paid = float(paid_amount)
+
+        try:
+            order_discount = h["order_discount"]
+        except (KeyError, TypeError):
+            order_discount = 0.0
+        self._sale_od = float(order_discount)
 
         # Canonical totals from DB view (preferred), safe fallback if not present
         totals_ok = False
         try:
             if hasattr(self.repo, "get_sale_totals"):
                 t = self.repo.get_sale_totals(sid) or {}
-                self._sale_net_subtotal   = float(t.get("net_subtotal") or 0.0)
-                self._sale_total_after_od = float(t.get("total_after_od") or 0.0)
+                try:
+                    net_subtotal = t["net_subtotal"]
+                except (KeyError, TypeError):
+                    net_subtotal = 0.0
+                self._sale_net_subtotal = float(net_subtotal)
+
+                try:
+                    total_after_od = t["total_after_od"]
+                except (KeyError, TypeError):
+                    total_after_od = 0.0
+                self._sale_total_after_od = float(total_after_od)
                 totals_ok = True
         except Exception:
             totals_ok = False
 
         items = self.repo.list_items(sid)
         if not totals_ok:
-            self._sale_total_after_od = float(h.get("total_amount") or 0.0)
+            try:
+                total_amount = h["total_amount"]
+            except (KeyError, TypeError):
+                total_amount = 0.0
+            self._sale_total_after_od = float(total_amount)
             self._sale_net_subtotal = 0.0
 
         self.tbl_items.blockSignals(True)

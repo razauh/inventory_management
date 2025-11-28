@@ -714,8 +714,13 @@ class SalesController(BaseModule):
         self._pending_edit_row = r
 
         items = self.repo.list_items(r["sale_id"])
+
+        # Get complete header with customer information
+        header_with_customer = self.repo.get_header_with_customer(r["sale_id"])
+
         init = {
             "customer_id": r["customer_id"],
+            "customer_name": header_with_customer.get("customer_name") if header_with_customer else None,
             "date": r["date"],
             "order_discount": r.get("order_discount"),
             "notes": r.get("notes"),
@@ -1255,6 +1260,12 @@ class SalesController(BaseModule):
                 # Calculate idx (row number)
                 item_dict['idx'] = len(items) + 1
 
+                # Map unit_name to uom_name for template compatibility
+                if 'unit_name' in item_dict:
+                    item_dict['uom_name'] = item_dict['unit_name']
+                else:
+                    item_dict['uom_name'] = 'N/A'
+
                 items.append(item_dict)
 
             enriched_data['items'] = items
@@ -1321,14 +1332,14 @@ class SalesController(BaseModule):
                 enriched_data['initial_payment'] = None
 
             # Add company info
-            from ...database.repositories.company_repo import CompanyRepo
-            company_repo = CompanyRepo(self._db_path)
-            company_info = company_repo.get()
+            company_row = self.conn.execute(
+                "SELECT company_name, logo_path FROM company_info WHERE company_id = 1"
+            ).fetchone()
 
-            if company_info:
+            if company_row:
                 enriched_data['company'] = {
-                    'name': company_info['company_name'],
-                    'logo_path': company_info['logo_path']
+                    'name': company_row['company_name'],
+                    'logo_path': company_row['logo_path']
                 }
             else:
                 enriched_data['company'] = {
@@ -1363,10 +1374,15 @@ class SalesController(BaseModule):
         """Print the sale invoice using WeasyPrint for better rendering"""
         temp_pdf_path = None  # Initialize to None to ensure it's available in finally block
         try:
-            from weasyprint import HTML, CSS
-
-            # Generate HTML content using the shared helper
+            # Generate HTML content using the shared helper - this can raise various exceptions
             html_content = self._generate_invoice_html_content(sale_id)
+
+            # Only try to import and use WeasyPrint after HTML is successfully generated
+            try:
+                from weasyprint import HTML, CSS
+            except ImportError:
+                info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
+                return
 
             # Sanitize the sale_id to prevent path traversal attacks in temp file prefix
             sanitized_sale_id = self._sanitize_filename(sale_id, max_length=50)  # Shorter for temp prefix
@@ -1396,10 +1412,13 @@ class SalesController(BaseModule):
 
             info(self.view, "Print", "A temporary PDF was created and opened for printing.")
 
-        except ImportError:
-            info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
         except Exception as e:
-            info(self.view, "Error", f"Could not print invoice: {e}")
+            # Check if this is specifically an ImportError for WeasyPrint (shouldn't happen with new structure)
+            # but keep this for safety
+            if "weasyprint" in str(e).lower():
+                info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
+            else:
+                info(self.view, "Error", f"Could not print invoice: {e}")
         finally:
             # Ensure temporary file is removed after some time to allow PDF viewer to access it
             # Use a background thread to delay the deletion
@@ -1429,10 +1448,15 @@ class SalesController(BaseModule):
     def _export_sale_invoice_to_pdf(self, sale_id: str):
         """Export the sale invoice to PDF using WeasyPrint for better rendering"""
         try:
-            from weasyprint import HTML, CSS
-
-            # Generate HTML content using the shared helper
+            # Generate HTML content using the shared helper - this can raise various exceptions
             html_content = self._generate_invoice_html_content(sale_id)
+
+            # Only try to import and use WeasyPrint after HTML is successfully generated
+            try:
+                from weasyprint import HTML, CSS
+            except ImportError:
+                info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
+                return
 
             # Determine the desktop path and create SIs (Sale Invoices) subdirectory
             desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
@@ -1461,8 +1485,11 @@ class SalesController(BaseModule):
 
             info(self.view, "Exported", f"Sale invoice exported to: {file_path}")
 
-        except ImportError:
-            info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
         except Exception as e:
-            info(self.view, "Error", f"Could not export invoice to PDF: {e}")
+            # Check if this is specifically an ImportError for WeasyPrint (shouldn't happen with new structure)
+            # but keep this for safety
+            if "weasyprint" in str(e).lower():
+                info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
+            else:
+                info(self.view, "Error", f"Could not export invoice to PDF: {e}")
 

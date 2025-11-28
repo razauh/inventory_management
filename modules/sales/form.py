@@ -1,5 +1,6 @@
 import re
 
+import logging
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QComboBox,
     QDateEdit, QLineEdit, QLabel, QGroupBox, QTableWidget, QTableWidgetItem,
@@ -349,8 +350,58 @@ class SaleForm(QDialog):
         self._rows = [dict(x) for x in (initial.get("items") or [])] if initial else []
         self._rebuild_table()
         if initial:
-            i = self.cmb_customer.findData(initial.get("customer_id"))
-            if i >= 0: self.cmb_customer.setCurrentIndex(i)
+            # Try to set customer by ID first, then by name if needed
+            customer_id = initial.get("customer_id")
+            customer_name = initial.get("customer_name")
+
+            # Look for customer by ID first
+            i = self.cmb_customer.findData(customer_id)
+            if i >= 0:
+                self.cmb_customer.setCurrentIndex(i)
+            elif customer_name and customer_id:
+                # If customer ID not found in combobox, try to fetch the real customer from the in-memory store
+                real_customer = self.customers.get(customer_id)
+                if real_customer:
+                    # Use the real customer object
+                    display_text = f"{real_customer.name} (#{real_customer.customer_id})"
+                    self.cmb_customer.addItem(display_text, real_customer.customer_id)
+                    # Select the newly added customer
+                    self.cmb_customer.setCurrentIndex(self.cmb_customer.count() - 1)
+
+                    # Update our internal mapping with the real customer object
+                    self._customers_by_name[real_customer.name.lower()] = real_customer
+                else:
+                    # DB lookup failed - log an error and skip adding the customer
+                    logging.warning(f"Customer with ID {customer_id} not found in customers store when loading sales form")
+                    # Do not add a fabricated anonymous object
+            else:
+                # Last resort: try to select by name if available
+                if customer_name:
+                    # Normalize the customer name for comparison
+                    normalized_customer_name = customer_name.strip().lower()
+                    exact_match_found = False
+
+                    for idx in range(self.cmb_customer.count()):
+                        # Get the display text and extract just the customer name part (before the ID)
+                        item_text = self.cmb_customer.itemText(idx)
+                        # Extract name part by removing the ID part in parentheses
+                        # Format is "Name (#ID)", so split at " (" and take the first part
+                        if " (#" in item_text:
+                            display_name = item_text.split(" (#")[0].strip()
+                        else:
+                            display_name = item_text.strip()
+
+                        # Normalize and compare
+                        normalized_display_name = display_name.lower()
+
+                        if normalized_display_name == normalized_customer_name:
+                            self.cmb_customer.setCurrentIndex(idx)
+                            exact_match_found = True
+                            break  # Select first exact match
+
+                    # Optionally log if we had multiple potential matches (though break above prevents this)
+                    # Would require a different approach to detect multiple matches
+
             self.txt_discount.setText(str(initial.get("order_discount", 0) or 0))
             self.txt_notes.setText(initial.get("notes") or "")
             # If initial data includes sale_id, load payment history
