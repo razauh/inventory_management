@@ -41,11 +41,12 @@ class PurchasePaymentsRepo:
             purchase_info = self.conn.execute(
                 """
                 SELECT 
-                    p.total_amount, 
-                    p.paid_amount, 
-                    p.advance_payment_applied,
+                    COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+                    COALESCE(p.paid_amount, 0.0)              AS paid_amount,
+                    COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
                     p.vendor_id
                 FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
                 WHERE p.purchase_id = ?
                 """,
                 (purchase_id,),
@@ -53,9 +54,9 @@ class PurchasePaymentsRepo:
             if not purchase_info:
                 raise ValueError(f"Purchase not found: {purchase_id}")
 
-            total_amount = float(purchase_info["total_amount"])
-            current_paid = float(purchase_info["paid_amount"])
-            current_advance = float(purchase_info["advance_payment_applied"]) if purchase_info["advance_payment_applied"] else 0.0
+            total_amount = float(purchase_info["total_calc"] or 0.0)
+            current_paid = float(purchase_info["paid_amount"] or 0.0)
+            current_advance = float(purchase_info["advance_payment_applied"] or 0.0)
             vendor_id = int(purchase_info["vendor_id"])
             amount_due = total_amount - current_paid - current_advance
 

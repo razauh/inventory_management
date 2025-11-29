@@ -177,6 +177,8 @@ class SalesView(QWidget):
         self.details = SaleDetails()
         split.addWidget(self.details)
 
+        # Store reference to the splitter to adjust initial sizes
+        self._splitter = split
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
         root.addWidget(split, 1)
@@ -242,3 +244,23 @@ class SalesView(QWidget):
             "Search quotations (id, customer, status)…" if is_quote
             else "Search sales (id, customer, status)…"
         )
+
+    def resizeEvent(self, event):
+        """Adjust splitter sizes when the widget is resized to maintain 30% reduction."""
+        super().resizeEvent(event)
+        # After the layout is done, set the splitter sizes to achieve 30% reduction
+        if hasattr(self, '_splitter'):
+            # Get the current size of the splitter
+            total_width = self._splitter.width()
+            # Calculate sizes that maintain the 3:2 ratio but are 30% smaller than full allocation
+            # Original ratio: 3:2 = 3/5 and 2/5 of total space
+            # With 30% reduction: use 0.7 * 3/5 and 0.7 * 2/5 = 0.42 and 0.28 of total width
+            left_width = int(total_width * 0.42)
+            right_width = int(total_width * 0.28)
+
+            # To ensure the panels are actually reduced by 30% while maintaining proportions:
+            # Instead of using the full available width (100%), use 70% of it
+            # Left: (3/5)*0.7 ≈ 0.42
+            # Right: (2/5)*0.7 ≈ 0.28
+            if left_width > 0 and right_width > 0:
+                self._splitter.setSizes([left_width, right_width])

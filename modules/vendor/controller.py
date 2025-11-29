@@ -160,17 +160,23 @@ class VendorController(BaseModule):
             return []
         return self._open_purchases_for_vendor(vid)
     def _purchase_belongs_to_vendor(self, purchase_id: str, vendor_id: int) -> bool:
-        row = self.repo.get_vendor_id_for_purchase(purchase_id)
+        from ...database.repositories.purchases_repo import PurchasesRepo
+        prep = PurchasesRepo(self.conn)
+        row = prep.get_vendor_id_for_purchase(purchase_id)
         return bool(row) and int(row["vendor_id"]) == int(vendor_id)
     def _remaining_due_for_purchase(self, purchase_id: str) -> float:
-        row = self.repo.get_purchase_remaining_due(purchase_id)
+        from ...database.repositories.purchases_repo import PurchasesRepo
+        prep = PurchasesRepo(self.conn)
+        row = prep.get_purchase_remaining_due(purchase_id)
         if not row:
             return 0.0
-        total = float(row["total_amount"] or 0.0)
-        paid = float(row["paid_amount"] or 0.0)
-        applied = float(row["advance_payment_applied"] or 0.0)
-        remaining = total - paid - applied
-        return max(0.0, remaining)
+        try:
+            return max(0.0, float(row["remaining_due"] or 0.0))
+        except Exception:
+            total = float(row.get("calculated_total_amount") or row.get("total_amount") or 0.0)
+            paid = float(row.get("paid_amount") or 0.0)
+            applied = float(row.get("advance_payment_applied") or 0.0)
+            return max(0.0, total - paid - applied)
     def _vendor_credit_balance(self, vendor_id: int) -> float:
         try:
             return float(self.vadv.get_balance(vendor_id))

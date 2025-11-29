@@ -712,75 +712,10 @@ class _VendorMoneyDialog(QDialog):
 
         if amount < 0:
             errors.append("Payment amount cannot be negative.")
-        elif amount > 0:
-            method = self.method.currentText()
-            
-            selected_vendor_account = self.vendor_acct.currentData()
-            is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
-
-            validation_rules = {
-                self.PAYMENT_METHODS['BANK_TRANSFER']: {
-                    'requires_company_acct': True,
-                    'requires_vendor_acct': True,
-                    'requires_instr_no': True,
-                    'requires_temp_details': True,
-                    'error_msg_company': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a company bank account.",
-                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a vendor bank account.",
-                    'error_msg_instr': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please enter the instrument/cheque number.",
-                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter bank name.",
-                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter account number.",
-                },
-                self.PAYMENT_METHODS['CHEQUE']: {
-                    'requires_company_acct': True,
-                    'requires_vendor_acct': False,  
-                    'requires_instr_no': True,
-                    'requires_temp_details': False,
-                    'error_msg_company': f"For {self.PAYMENT_METHODS['CHEQUE']}, please select a company bank account.",
-                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CHEQUE']}, please enter the instrument/cheque number.",
-                },
-                self.PAYMENT_METHODS['CROSS_CHEQUE']: {
-                    'requires_company_acct': True,
-                    'requires_vendor_acct': True,
-                    'requires_instr_no': True,
-                    'requires_temp_details': True,
-                    'error_msg_company': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a company bank account.",
-                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a vendor bank account.",
-                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please enter the instrument/cheque number.",
-                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please enter bank name.",
-                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']} with temporary account, please enter account number.",
-                },
-                self.PAYMENT_METHODS['CASH_DEPOSIT']: {
-                    'requires_company_acct': False,  
-                    'requires_vendor_acct': True,
-                    'requires_instr_no': True,
-                    'requires_temp_details': True,
-                    'error_msg_vendor': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please select a vendor bank account.",
-                    'error_msg_instr': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please enter the deposit slip number.",
-                    'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter bank name.",
-                    'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter account number.",
-                },
-                self.PAYMENT_METHODS['OTHER']: {
-                    # OTHER method has no specific requirements
-                }
-            }
-
-            if method in validation_rules:
-                rule = validation_rules[method]
-                
-                if rule.get('requires_company_acct', False) and self.company_acct.currentData() is None:
-                    errors.append(rule['error_msg_company'])
-                
-                if rule.get('requires_vendor_acct', False):
-                    if self.vendor_acct.currentData() is None:
-                        errors.append(rule['error_msg_vendor'])
-                    elif is_temp_account and rule.get('requires_temp_details', False):
-                        if not self.temp_bank_name.text().strip():
-                            errors.append(rule['error_msg_temp_name'])
-                        if not self.temp_bank_number.text().strip():
-                            errors.append(rule['error_msg_temp_number'])
-                
-                if rule.get('requires_instr_no', False) and not self.instr_no.text().strip():
-                    errors.append(rule['error_msg_instr'])
+        # For advances, allow all methods (Cash, Bank Transfer, Cheque, Cross Cheque,
+        # Cash Deposit, Other) without enforcing bank/instrument fields. Advances are
+        # stored purely as vendor credit, so banking details are optional for the user
+        # but not required for persistence.
 
         return len(errors) == 0, errors
 
@@ -987,5 +922,4 @@ class _VendorMoneyDialog(QDialog):
         }
 
         return payload
-
 

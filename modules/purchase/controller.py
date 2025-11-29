@@ -249,10 +249,31 @@ class PurchaseController(BaseModule):
 
     def _sync_details(self, *args):
         row = self._selected_row_dict()
-        self.view.details.set_data(row)
         if row:
-            self.view.items.set_rows(self.repo.list_items(row["purchase_id"]))
+            r = dict(row)
+            # Returns summary
+            try:
+                rt = self.repo.purchase_return_totals(r["purchase_id"])
+                r["returned_qty"] = float(rt.get("qty", 0.0) or 0.0)
+                r["returned_value"] = float(rt.get("value", 0.0) or 0.0)
+            except Exception:
+                r["returned_qty"] = 0.0
+                r["returned_value"] = 0.0
+
+            # Financials including net total after returns and remaining due
+            try:
+                fin = self._fetch_purchase_financials(r["purchase_id"])
+                r["calculated_total_amount"] = fin["calculated_total_amount"]
+                r["advance_payment_applied"] = fin["advance_payment_applied"]
+                r["remaining_due"] = fin["remaining_due"]
+            except Exception:
+                r.setdefault("calculated_total_amount", float(r.get("total_amount", 0.0) or 0.0))
+                r.setdefault("advance_payment_applied", float(r.get("advance_payment_applied", 0.0) or 0.0))
+
+            self.view.details.set_data(r)
+            self.view.items.set_rows(self.repo.list_items(r["purchase_id"]))
         else:
+            self.view.details.set_data(None)
             self.view.items.set_rows([])
         try:
             self._refresh_payment_summary(row["purchase_id"] if row else None)

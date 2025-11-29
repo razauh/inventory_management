@@ -127,12 +127,23 @@ class PurchaseReturnForm(QDialog):
         self.tbl.setColumnWidth(self.COL_LINE_VALUE, 120)
         self.tbl.setColumnWidth(self.COL_NOTES, 160)
 
-        # Totals
+        # Totals + return mode
         tot_bar = QHBoxLayout()
+
+        # Return scope selector
+        self.rb_return_selected = QRadioButton("Return selected quantities")
+        self.rb_return_whole = QRadioButton("Return whole order")
+        self.rb_return_selected.setChecked(True)
+
+        tot_bar.addWidget(QLabel("Return:"))
+        tot_bar.addWidget(self.rb_return_selected)
+        tot_bar.addWidget(self.rb_return_whole)
+
         tot_bar.addStretch(1)
         self.lab_qty_total = QLabel("0")
         self.lab_val_total = QLabel("Total Return Value: 0.00")
-        tot_bar.addWidget(QLabel("Total Qty:")); tot_bar.addWidget(self.lab_qty_total)
+        tot_bar.addWidget(QLabel("Total Qty:"))
+        tot_bar.addWidget(self.lab_qty_total)
         tot_bar.addSpacing(20)
         tot_bar.addWidget(self.lab_val_total)
 
@@ -251,6 +262,7 @@ class PurchaseReturnForm(QDialog):
         # signals (user editing)
         self.tbl.cellChanged.connect(self._cell_changed)
         self.tbl.itemChanged.connect(self._item_changed)
+        self.rb_return_whole.toggled.connect(self._toggle_return_scope)
         self.rb_credit_note.toggled.connect(self._toggle_mode)
         self.cmb_method.currentIndexChanged.connect(self._refresh_refund_visibility)
         self.date.dateChanged.connect(self._default_instrument_date)
@@ -486,6 +498,32 @@ class PurchaseReturnForm(QDialog):
             self._recalc_row(r)
         self._refresh_totals()
         self._validate()
+
+    def _toggle_return_scope(self, whole_checked: bool):
+        """
+        When 'Return whole order' is selected, pre-fill each line's
+        return quantity with its max_returnable amount.
+        """
+        if not whole_checked:
+            return
+
+        self.tbl.blockSignals(True)
+        try:
+            for r in range(self.tbl.rowCount()):
+                meta = self._meta_for_row(r)
+                max_ret = float(meta.get("max_returnable") or 0.0)
+                q_item = self.tbl.item(r, self.COL_QTY_RETURN)
+                if not q_item:
+                    q_item = QTableWidgetItem("0")
+                    q_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self.tbl.setItem(r, self.COL_QTY_RETURN, q_item)
+                q_item.setText(f"{max_ret:g}")
+        finally:
+            self.tbl.blockSignals(False)
+
+        # Snapshot and recompute totals/validation
+        self._qty_snapshot = self._snapshot_qtys()
+        self._recalc_all()
 
     def _refresh_totals(self):
         qty_total = 0.0

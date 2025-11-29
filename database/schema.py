@@ -1206,7 +1206,9 @@ BEGIN
    WHERE sale_id = OLD.source_id;
 END;
 
-/* Roll up paid_amount & payment_status from purchase_payments (clamped ≥ 0; cleared only) */
+/* Roll up paid_amount & payment_status from purchase_payments (clamped ≥ 0; cleared only).
+   NOTE: payment_status comparisons use the *net* purchase total after returns via
+   purchase_detailed_totals.calculated_total_amount where available. */
 DROP TRIGGER IF EXISTS trg_paid_from_purchase_payments_ai;
 DROP TRIGGER IF EXISTS trg_paid_from_purchase_payments_au;
 DROP TRIGGER IF EXISTS trg_paid_from_purchase_payments_ad;
@@ -1231,7 +1233,11 @@ BEGIN
                  FROM purchase_payments
                  WHERE purchase_id = NEW.purchase_id
                    AND clearing_state = 'cleared'
-               ), 0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+               ), 0.0)) >= COALESCE((
+                 SELECT CAST(calculated_total_amount AS REAL)
+                 FROM purchase_detailed_totals pdt
+                 WHERE pdt.purchase_id = NEW.purchase_id
+               ), CAST(total_amount AS REAL)) THEN 'paid'
             WHEN MAX(0.0, COALESCE((
                  SELECT SUM(CAST(amount AS REAL))
                  FROM purchase_payments
@@ -1253,7 +1259,7 @@ BEGIN
              SELECT SUM(CAST(amount AS REAL))
              FROM purchase_payments
              WHERE purchase_id = NEW.purchase_id
-               AND clearing_state = 'cleared'
+              AND clearing_state = 'cleared'
            ), 0.0)
          ),
          payment_status = CASE
@@ -1262,7 +1268,11 @@ BEGIN
                  FROM purchase_payments
                  WHERE purchase_id = NEW.purchase_id
                    AND clearing_state = 'cleared'
-               ), 0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+               ), 0.0)) >= COALESCE((
+                 SELECT CAST(calculated_total_amount AS REAL)
+                 FROM purchase_detailed_totals pdt
+                 WHERE pdt.purchase_id = NEW.purchase_id
+               ), CAST(total_amount AS REAL)) THEN 'paid'
             WHEN MAX(0.0, COALESCE((
                  SELECT SUM(CAST(amount AS REAL))
                  FROM purchase_payments
@@ -1284,7 +1294,7 @@ BEGIN
              SELECT SUM(CAST(amount AS REAL))
              FROM purchase_payments
              WHERE purchase_id = OLD.purchase_id
-               AND clearing_state = 'cleared'
+              AND clearing_state = 'cleared'
            ), 0.0)
          ),
          payment_status = CASE
@@ -1293,7 +1303,11 @@ BEGIN
                  FROM purchase_payments
                  WHERE purchase_id = OLD.purchase_id
                    AND clearing_state = 'cleared'
-               ), 0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
+               ), 0.0)) >= COALESCE((
+                 SELECT CAST(calculated_total_amount AS REAL)
+                 FROM purchase_detailed_totals pdt
+                 WHERE pdt.purchase_id = OLD.purchase_id
+               ), CAST(total_amount AS REAL)) THEN 'paid'
             WHEN MAX(0.0, COALESCE((
                  SELECT SUM(CAST(amount AS REAL))
                  FROM purchase_payments
@@ -1457,10 +1471,15 @@ BEGIN
     ELSE 1
   END;
 
-  /* remaining_due = total_amount - cleared paid_amount - advance_payment_applied */
+  /* remaining_due = net_total_after_returns - cleared paid_amount - advance_payment_applied */
   SELECT CASE
     WHEN (
-      COALESCE((SELECT CAST(total_amount AS REAL)            FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      COALESCE((
+        SELECT CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS REAL)
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = NEW.source_id
+      ), 0.0)
       -
       COALESCE((SELECT CAST(paid_amount AS REAL)             FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
       -
@@ -1486,11 +1505,16 @@ BEGIN
     ELSE 1
   END;
 
-  /* remaining_due = total - cleared paid - advance_applied
+  /* remaining_due = net_total_after_returns - cleared paid - advance_applied
      On UPDATE, advance_applied already includes OLD.amount; check DELTA (NEW.amount - OLD.amount). */
   SELECT CASE
     WHEN (
-      COALESCE((SELECT CAST(total_amount AS REAL)            FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
+      COALESCE((
+        SELECT CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS REAL)
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = NEW.source_id
+      ), 0.0)
       -
       COALESCE((SELECT CAST(paid_amount AS REAL)             FROM purchases WHERE purchase_id = NEW.source_id), 0.0)
       -
@@ -1581,7 +1605,7 @@ SELECT s.sale_id,
        ),0.0) - CAST(s.order_discount AS REAL) AS calculated_total_amount
 FROM sales s;
 
-/* Purchase totals (per-unit discount) */
+/* Purchase totals (per-unit discount, net of returns) */
 DROP VIEW IF EXISTS purchase_detailed_totals;
 CREATE VIEW purchase_detailed_totals AS
 SELECT p.purchase_id,
@@ -1590,10 +1614,19 @@ SELECT p.purchase_id,
          SELECT SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
          FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
        ), 0.0) AS subtotal_before_order_discount,
+       (
+         COALESCE((
+           SELECT SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
+           FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
+         ), 0.0)
+         - CAST(p.order_discount AS REAL)
+       )
+       -
        COALESCE((
-         SELECT SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
-         FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
-       ), 0.0) - CAST(p.order_discount AS REAL) AS calculated_total_amount
+         SELECT SUM(CAST(prv.return_value AS REAL))
+         FROM purchase_return_valuations prv
+         WHERE prv.purchase_id = p.purchase_id
+       ), 0.0) AS calculated_total_amount
 FROM purchases p;
 
 /* On-hand stock (from latest valuation snapshot per product) */
@@ -1608,6 +1641,50 @@ WITH latest AS (
 SELECT l.product_id, svh.quantity AS qty_in_base, svh.unit_value, svh.total_value, svh.valuation_date
 FROM latest l
 JOIN stock_valuation_history svh ON svh.valuation_id = l.last_vid;
+
+/* Purchase layers (inbound stock lots) for FIFO costing */
+DROP VIEW IF EXISTS purchase_layers;
+CREATE VIEW purchase_layers AS
+SELECT
+  it.transaction_id AS layer_txn_id,
+  it.product_id,
+  it.date AS layer_date,
+  it.txn_seq,
+  (CAST(it.quantity AS REAL) * COALESCE((
+    SELECT CAST(pu.factor_to_base AS REAL)
+    FROM product_uoms pu
+    WHERE pu.product_id = it.product_id
+      AND pu.uom_id = it.uom_id
+    LIMIT 1
+  ), 1.0)) AS qty_in_base,
+  -- Determine cost based on transaction type
+  CASE
+    WHEN it.reference_table = 'purchases' THEN
+      -- For purchases, get cost from purchase_items
+      (SELECT CAST(pi.purchase_price - COALESCE(pi.item_discount, 0) AS REAL)
+       FROM purchase_items pi
+       WHERE pi.purchase_id = it.reference_id
+         AND pi.item_id = it.reference_item_id
+       LIMIT 1)
+    WHEN it.reference_table = 'sales' AND it.transaction_type = 'sale_return' THEN
+      -- For sale returns, reuse the previous COGS cost
+      (SELECT CAST(cogs.unit_cost_base AS REAL)
+       FROM sale_item_cogs cogs
+       WHERE cogs.item_id = it.reference_item_id
+       LIMIT 1)
+    ELSE
+      -- For adjustments, use current valuation cost
+      (SELECT svh.unit_value
+       FROM stock_valuation_history svh
+       WHERE svh.product_id = it.product_id
+         AND DATE(svh.valuation_date) <= DATE(it.date)
+       ORDER BY DATE(svh.valuation_date) DESC, svh.valuation_id DESC
+       LIMIT 1)
+  END AS unit_cost_base
+FROM inventory_transactions it
+JOIN products p ON p.product_id = it.product_id
+WHERE it.transaction_type IN ('purchase', 'sale_return', 'adjustment')
+  AND CAST(it.quantity AS REAL) > 0.0;
 
 /* COGS per sale item using running average at sale date (only for real sales) */
 DROP VIEW IF EXISTS sale_item_cogs;
@@ -1657,6 +1734,84 @@ SELECT
 FROM sale_items si
 JOIN sales s ON s.sale_id = si.sale_id AND s.doc_type = 'sale';
 
+/* FIFO COGS per sale item using per-product purchase layers.
+   This implements true FIFO by assigning each sale's quantity segment
+   in the cumulative sales stream to overlapping purchase layers. */
+DROP VIEW IF EXISTS sale_item_fifo_cogs;
+CREATE VIEW sale_item_fifo_cogs AS
+WITH purchase_layers_for_fifo AS (
+  SELECT
+    pl.layer_txn_id,
+    pl.product_id,
+    pl.layer_date,
+    pl.qty_in_base,
+    pl.unit_cost_base,
+    SUM(pl.qty_in_base) OVER (
+      PARTITION BY pl.product_id
+      ORDER BY pl.layer_date, pl.layer_txn_id
+    ) AS running_available
+  FROM purchase_layers pl
+),
+sale_items_with_base_qty AS (
+  SELECT
+    si.item_id,
+    si.sale_id,
+    si.product_id,
+    (CAST(si.quantity AS REAL) * COALESCE(
+      (SELECT CAST(pu.factor_to_base AS REAL)
+       FROM product_uoms pu
+       WHERE pu.product_id = si.product_id
+         AND pu.uom_id     = si.uom_id
+       LIMIT 1
+      ), 1.0
+    )) AS qty_base,
+    s.date AS sale_date
+  FROM sale_items si
+  JOIN sales s ON s.sale_id = si.sale_id AND s.doc_type = 'sale'
+),
+sales_running_total AS (
+  SELECT
+    si.*,
+    SUM(si.qty_base) OVER (
+      PARTITION BY si.product_id
+      ORDER BY si.sale_date, si.item_id
+    ) AS running_sales_total
+  FROM sale_items_with_base_qty si
+)
+SELECT
+  srt.item_id,
+  srt.sale_id,
+  srt.product_id,
+  srt.qty_base,
+  CASE
+    WHEN srt.qty_base > 0 THEN
+      SUM(
+        MAX(
+          0.0,
+          MIN(pl.running_available, srt.running_sales_total)
+          - MAX(pl.running_available - pl.qty_in_base,
+                srt.running_sales_total - srt.qty_base)
+        ) * pl.unit_cost_base
+      ) / srt.qty_base
+    ELSE 0.0
+  END AS unit_cost_base,
+  SUM(
+    MAX(
+      0.0,
+      MIN(pl.running_available, srt.running_sales_total)
+      - MAX(pl.running_available - pl.qty_in_base,
+            srt.running_sales_total - srt.qty_base)
+    ) * pl.unit_cost_base
+  ) AS cogs_value
+FROM sales_running_total srt
+JOIN purchase_layers_for_fifo pl
+  ON pl.product_id = srt.product_id
+GROUP BY
+  srt.item_id,
+  srt.sale_id,
+  srt.product_id,
+  srt.qty_base;
+
 /* Monthly Profit & Loss — exclude quotations */
 DROP VIEW IF EXISTS profit_loss_view;
 CREATE VIEW profit_loss_view AS
@@ -1679,7 +1834,7 @@ cogs AS (
     SELECT strftime('%Y-%m', s.date) AS period,
            SUM(c.cogs_value) AS total_cogs
     FROM sales s
-    JOIN sale_item_cogs c ON c.sale_id = s.sale_id
+    JOIN sale_item_fifo_cogs c ON c.sale_id = s.sale_id
     WHERE s.doc_type = 'sale'
     GROUP BY period
 ),

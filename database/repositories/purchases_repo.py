@@ -377,6 +377,36 @@ class PurchasesRepo:
                     f"Return qty exceeds remaining for item {item_id}: requested {batch_qty:g}, remaining {remaining:g}"
                 )
 
+            # Additional stock check: ensure return doesn't exceed current on-hand stock
+            product_id = int(row["product_id"])
+            uom_id = int(row["uom_id"])
+
+            # Get the factor to convert to base units
+            factor_row = self.conn.execute(
+                """
+                SELECT COALESCE(CAST(factor_to_base AS REAL), 1.0) AS factor
+                FROM product_uoms
+                WHERE product_id=? AND uom_id=?
+                """,
+                (product_id, uom_id),
+            ).fetchone()
+            factor = float(factor_row["factor"] if factor_row else 1.0)
+            return_qty_base = batch_qty * factor
+
+            # Get current stock from v_stock_on_hand
+            stock_row = self.conn.execute(
+                "SELECT qty_in_base FROM v_stock_on_hand WHERE product_id=?",
+                (product_id,),
+            ).fetchone()
+            on_hand = float(stock_row["qty_in_base"] if stock_row else 0.0)
+
+            # Check if return would make on-hand stock negative
+            if return_qty_base > on_hand + 1e-9:
+                raise ValueError(
+                    f"Cannot return {batch_qty:g} units for product {product_id}: "
+                    f"only {on_hand / factor:.2f} available in stock."
+                )
+
         # Determine starting txn_seq for the date; bump to at least 100
         row = self.conn.execute(
             "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
@@ -595,6 +625,30 @@ class PurchasesRepo:
         rows = self.conn.execute(sql, (purchase_id,)).fetchall()
         return {int(r["item_id"]): float(r["returnable"]) for r in rows}
 
+    def purchase_return_totals(self, purchase_id: str) -> dict:
+        """
+        Aggregate quantity and value for all recorded returns against a purchase.
+
+        Uses the purchase_return_valuations view to stay consistent with how
+        monetary return value is computed in record_return.
+        """
+        row = self.conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(CAST(qty_returned AS REAL)), 0.0)  AS qty_returned,
+              COALESCE(SUM(CAST(return_value  AS REAL)), 0.0) AS value_returned
+            FROM purchase_return_valuations
+            WHERE purchase_id = ?
+            """,
+            (purchase_id,),
+        ).fetchone()
+        if not row:
+            return {"qty": 0.0, "value": 0.0}
+        return {
+            "qty": float(row["qty_returned"] or 0.0),
+            "value": float(row["value_returned"] or 0.0),
+        }
+
     def get_payment(self, payment_id: int, purchase_id: str) -> dict | None:
         """
         Get a specific payment by ID and purchase ID.
@@ -670,7 +724,7 @@ class PurchasesRepo:
         Recompute and update the header totals (paid_amount and payment_status) for a purchase
         based on cleared payments.
         """
-        # Calculate the cleared paid amount
+        # Calculate the cleared paid amount (clamped ≥ 0.0 to mirror DB triggers)
         r_pay = self.conn.execute(
             """
             SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS cleared_paid
@@ -680,7 +734,7 @@ class PurchasesRepo:
             """,
             (purchase_id,),
         ).fetchone()
-        cleared_paid = float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0)
+        cleared_paid = max(0.0, float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0))
 
         # Get the calculated total and advance applied
         row = self.conn.execute(

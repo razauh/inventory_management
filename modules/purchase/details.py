@@ -12,6 +12,8 @@ class PurchaseDetails(QWidget):
         self.lab_date = QLabel("-")
         self.lab_vendor = QLabel("-")
         self.lab_total = QLabel("-")
+        self.lab_returned = QLabel("-")
+        self.lab_net_after = QLabel("-")
         self.lab_paid = QLabel("-")
         self.lab_remain = QLabel("-")
         self.lab_status = QLabel("-")
@@ -27,6 +29,8 @@ class PurchaseDetails(QWidget):
         f.addRow("Date:", self.lab_date)
         f.addRow("Vendor:", self.lab_vendor)
         f.addRow("Total:", self.lab_total)
+        f.addRow("Returned:", self.lab_returned)
+        f.addRow("Net (after returns):", self.lab_net_after)
         f.addRow("Paid:", self.lab_paid)
         f.addRow("Remaining:", self.lab_remain)
         f.addRow("Status:", self.lab_status)
@@ -60,6 +64,19 @@ class PurchaseDetails(QWidget):
         except (TypeError, ValueError):
             total_amount = 0.0
         self.lab_total.setText(fmt_money(total_amount))
+
+        # Returned value and net total after returns (if provided)
+        try:
+            returned_value = float(row.get("returned_value", 0.0))
+        except (TypeError, ValueError):
+            returned_value = 0.0
+        self.lab_returned.setText(fmt_money(returned_value))
+
+        try:
+            net_after = float(row.get("calculated_total_amount", total_amount))
+        except (TypeError, ValueError):
+            net_after = total_amount
+        self.lab_net_after.setText(fmt_money(net_after))
         
         try:
             paid_amount = float(row.get("paid_amount", 0.0))
@@ -71,8 +88,14 @@ class PurchaseDetails(QWidget):
             advance_payment_applied = float(row.get("advance_payment_applied", 0.0))
         except (TypeError, ValueError):
             advance_payment_applied = 0.0
-            
-        remaining = total_amount - paid_amount - advance_payment_applied
+        # Prefer precomputed remaining_due if present, otherwise derive from net total
+        if "remaining_due" in row:
+            try:
+                remaining = float(row.get("remaining_due", 0.0))
+            except (TypeError, ValueError):
+                remaining = max(0.0, net_after - paid_amount - advance_payment_applied)
+        else:
+            remaining = max(0.0, net_after - paid_amount - advance_payment_applied)
         self.lab_remain.setText(fmt_money(remaining))
         
         payment_status = row.get("payment_status", "-")
@@ -85,6 +108,8 @@ class PurchaseDetails(QWidget):
             self.lab_date,
             self.lab_vendor,
             self.lab_total,
+            self.lab_returned,
+            self.lab_net_after,
             self.lab_paid,
             self.lab_remain,
             self.lab_status,
