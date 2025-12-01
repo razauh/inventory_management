@@ -125,7 +125,7 @@ XXXXXX: XXXXXX
           <th class="col-idx t-right">#</th>
           <th>Product</th>
           <th class="col-qty t-right">Qty</th>
-          <th class="col-uom">UoM</th>
+          <th class="col-uom">Unit</th>
           <th class="col-unit-price t-right">Unit Price</th>
           {% if has_line_discount %}
           <th class="col-discount t-right">Discount</th>
@@ -196,40 +196,44 @@ XXXXXX: XXXXXX
             <strong>{{ '%.2f' % remaining }}</strong>
           </td>
         </tr>
-        {% if credit_applied is defined %}
-        <tr>
-          <td class="t-right muted">Returns/Credits Applied</td>
-          <td class="t-right">{{ '%.2f' % credit_applied }}</td>
-        </tr>
-        {% endif %}
       </table>
     </div>
 
-    <!-- Initial Payment Details -->
-    {% if initial_payment %}
+    <!-- Payment History -->
+    {% if payments %}
     <div class="payment-details">
       <div class="payment-card">
-        <h3>Initial Payment Details</h3>
-        <div class="payment-grid">
-          <div><strong>Method:</strong> {{ initial_payment.method|default('N/A')|e }}</div>
-          <div><strong>Date:</strong> {{ (initial_payment.date or doc.date)|e }}</div>
-          {% if initial_payment.bank_account_id %}
-          <div><strong>Company Account:</strong> {{ initial_payment.bank_account_label|default('N/A')|e }}</div>
-          {% endif %}
-          {% if initial_payment.instrument_no %}
-          <div><strong>Instrument No:</strong> {{ initial_payment.instrument_no|default('N/A')|e }}</div>
-          {% endif %}
-          {% if initial_payment.instrument_date %}
-          <div><strong>Instrument Date:</strong> {{ initial_payment.instrument_date|default('')|e }}</div>
-          {% endif %}
-          {% if initial_payment.ref_no %}
-          <div><strong>Reference No:</strong> {{ initial_payment.ref_no|default('')|e }}</div>
-          {% endif %}
-          {% set notes = initial_payment.notes|default('')|trim %}
-          {% if notes and notes != 'Init payment' and notes != '[Init payment]' %}
-          <div><strong>Notes:</strong> {{ notes|e }}</div>
-          {% endif %}
-        </div>
+        <h3>Payment History</h3>
+        <table aria-label="Payment history">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Method</th>
+              <th class="t-right">Amount</th>
+              <th>Status</th>
+              <th>Bank</th>
+              <th>Ref / Instrument</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in payments %}
+            <tr>
+              <td>{{ p.date or '' }}</td>
+              <td>{{ p.method }}</td>
+              <td class="t-right">{{ '%.2f' % p.amount }}</td>
+              <td>{{ p.clearing_state or 'N/A' }}</td>
+              <td>{{ p.bank_account_label or '—' }}</td>
+              <td>
+                {% if p.instrument_no %}
+                  {{ p.instrument_no }}
+                {% elif p.ref_no %}
+                  {{ p.ref_no }}
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </div>
     {% endif %}

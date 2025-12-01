@@ -111,7 +111,7 @@ XXXXXX: XXXXXX</div>
           <th style="width:36px;">#</th>
           <th>Product</th>
           <th class="t-right" style="width:70px;">Qty</th>
-          <th style="width:70px;">UoM</th>
+          <th style="width:70px;">Unit</th>
           <th class="t-right" style="width:90px;">Unit Price</th>
           <th class="t-right" style="width:110px;">Line Total</th>
         </tr>
@@ -135,47 +135,66 @@ XXXXXX: XXXXXX</div>
       <table>
         <tr class="rule">
           <td class="t-right"><strong>Total</strong></td>
-          <td class="t-right"><strong>{{ '%.2f' % totals.total }}</strong></td>
-        </tr>
-        {% if initial_payment %}
-        <tr>
-          <td class="t-right">Initial Payment</td>
-          <td class="t-right">{{ '%.2f' % initial_payment.amount }}</td>
+          <td class="t-right">
+            <strong>{{ '%.2f' % (totals.total|default(0.0)|float) }}</strong>
+          </td>
         </tr>
         <tr>
-          <td class="t-right">Remaining Amount</td>
-          <td class="t-right">{{ '%.2f' % (totals.total - initial_payment.amount) }}</td>
+          <td class="t-right muted">Paid to Date</td>
+          <td class="t-right">
+            {{ '%.2f' % (paid_amount|default(0.0)|float) }}
+          </td>
         </tr>
-        {% endif %}
+        <tr class="rule">
+          <td class="t-right"><strong>Remaining</strong></td>
+          <td class="t-right">
+            <strong>{{ '%.2f' % (remaining|default(0.0)|float) }}</strong>
+          </td>
+        </tr>
       </table>
     </div>
 
-    <!-- Initial Payment Details -->
-    {% if initial_payment %}
+    <!-- Payment History -->
+    {% if payments %}
     <div class="payment-details">
       <div class="payment-card">
-        <h3>Initial Payment Details</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-          <div><strong>Method:</strong> {{ initial_payment.method }}</div>
-          <div><strong>Date:</strong> {{ initial_payment.date }}</div>
-          {% if initial_payment.bank_account_id %}
-          <div><strong>Company Account:</strong> {{ initial_payment.bank_account_label or "N/A" }}</div>
-          {% endif %}
-          {% if initial_payment.vendor_bank_account_id %}
-          <div><strong>Vendor Account:</strong> {{ initial_payment.vendor_bank_account_label or "N/A" }}</div>
-          {% endif %}
-          {% if initial_payment.instrument_no %}
-          <div><strong>Instrument No:</strong> {{ initial_payment.instrument_no }}</div>
-          {% endif %}
-          {% if initial_payment.instrument_date %}
-          <div><strong>Instrument Date:</strong> {{ initial_payment.instrument_date }}</div>
-          {% endif %}
-          {% if initial_payment.ref_no %}
-          <div><strong>Reference No:</strong> {{ initial_payment.ref_no }}</div>
-          {% endif %}
-          {% if initial_payment.notes %}
-          <div><strong>Notes:</strong> {{ initial_payment.notes }}</div>
-          {% endif %}
+        <h3>Payment History</h3>
+        <!-- Single-column layout; expand table to full width -->
+        <div style="display: grid; grid-template-columns: 1fr; gap: 8px;">
+          <table aria-label="Payment history">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Method</th>
+                <th class="t-right">Amount</th>
+                <th>Status</th>
+                <th>Company Bank</th>
+                <th>Vendor Bank</th>
+                <th>Ref / Instrument</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in payments %}
+              <tr>
+                <td>{{ p.date }}</td>
+                <td>{{ p.method }}</td>
+                <td class="t-right">
+                  {{ '%.2f' % (p.amount|default(0.0)|float) }}
+                </td>
+                <td>{{ p.clearing_state }}</td>
+                <td>{{ p.bank_account_label }}</td>
+                <td>{{ p.vendor_bank_account_label }}</td>
+                <td>
+                  {% if p.instrument_no %}
+                    {{ p.instrument_no }}
+                  {% elif p.ref_no %}
+                    {{ p.ref_no }}
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

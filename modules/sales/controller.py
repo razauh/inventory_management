@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QApplication
 from PySide6.QtCore import Qt, QSortFilterProxyModel
 import sqlite3
 import re
@@ -46,6 +46,59 @@ def new_quotation_id(conn: sqlite3.Connection, date_str: str) -> str:
     return f"{prefix}{last+1:04d}"
 
 
+class SalesStatusProxy(QSortFilterProxyModel):
+    """
+    Proxy model that can filter SALE rows by payment_status while leaving
+    quotations untouched. The controller controls the active filter via
+    set_status_filter(...).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._status_filter = "all"
+        self._doc_type = "sale"
+
+    def set_status_filter(self, status: str):
+        status = (status or "all").lower()
+        if status != self._status_filter:
+            self._status_filter = status
+            self.invalidateFilter()
+
+    def set_doc_type(self, doc_type: str):
+        self._doc_type = (doc_type or "sale").lower()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        # Only filter SALES; quotations are unaffected.
+        if self._doc_type != "sale" or self._status_filter == "all":
+            return True
+        src_model = self.sourceModel()
+        if not hasattr(src_model, "at"):
+            return True
+        try:
+            row = src_model.at(source_row)
+        except Exception:
+            return True
+
+        try:
+            status = (
+                row.get("payment_status", "")
+                if isinstance(row, dict)
+                else row["payment_status"]
+            )
+        except Exception:
+            status = ""
+        status = str(status or "").lower()
+
+        if self._status_filter == "paid":
+            return status == "paid"
+        if self._status_filter == "unpaid":
+            return status == "unpaid"
+        if self._status_filter == "partial":
+            return status in ("partial", "partial_paid")
+        return True
+
+
 class SalesController(BaseModule):
     # CSS for PDF generation - shared between print and export methods
     _INVOICE_PDF_CSS = '''
@@ -73,10 +126,18 @@ class SalesController(BaseModule):
         self.conn = conn
         self.user = current_user
         self.view = SalesView()
+        try:
+            # Allow details panel to request payment status changes
+            self.view.details.paymentStatusChangeRequested.connect(
+                self._on_payment_status_change_requested
+            )
+        except Exception:
+            pass
 
         # Controller-level state
         self._doc_type: str = "sale"   # 'sale' | 'quotation' (mirrors view toggle)
         self._search_text: str = ""    # current server-side search string
+        self._status_filter: str = "all"
         self.active_dialog = None      # Track active dialog for non-modal operation
 
         # Repos using the shared connection
@@ -129,6 +190,9 @@ class SalesController(BaseModule):
 
         # Server-side search: on change, refetch from repo
         self.view.search.textChanged.connect(self._on_search_changed)
+        # Status filter (paid/unpaid/partial/all)
+        if hasattr(self.view, "status_filter"):
+            self.view.status_filter.currentIndexChanged.connect(self._on_status_filter_changed)
 
         if hasattr(self.view, "btn_record_payment"):
             self.view.btn_record_payment.clicked.connect(self._record_payment)
@@ -150,20 +214,56 @@ class SalesController(BaseModule):
     def _on_mode_changed(self, mode: str):
         mode = (mode or "sale").lower()
         self._doc_type = "quotation" if mode == "quotation" else "sale"
-        # Let the model update its headers for the new document type
-        self.base.set_doc_type(self._doc_type)
-        # Let the details widget know (if it supports this)
+
+        # Show a busy cursor while we rebuild potentially large models
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.setOverrideCursor(Qt.WaitCursor)
+            except Exception:
+                app = None
+
         try:
-            if hasattr(self.view, "details") and hasattr(self.view.details, "set_mode"):
-                self.view.details.set_mode(self._doc_type)
-        except Exception:
-            pass
-        self._update_action_states()
-        self._reload()
+            # Let the model update its headers for the new document type
+            try:
+                self.base.set_doc_type(self._doc_type)
+            except Exception:
+                pass
+            # Let the details widget know (if it supports this)
+            try:
+                if hasattr(self.view, "details") and hasattr(self.view.details, "set_mode"):
+                    self.view.details.set_mode(self._doc_type)
+            except Exception:
+                pass
+            self._update_action_states()
+            self._reload()
+        finally:
+            if app is not None:
+                try:
+                    app.restoreOverrideCursor()
+                except Exception:
+                    pass
 
     def _on_search_changed(self, text: str):
         self._search_text = text or ""
         self._reload()
+
+    def _on_status_filter_changed(self, _idx: int):
+        # Read the current data value; fall back to label if needed.
+        value = None
+        try:
+            value = self.view.status_filter.currentData()
+        except Exception:
+            try:
+                value = self.view.status_filter.currentText()
+            except Exception:
+                value = "all"
+        self._status_filter = str(value or "all").lower()
+        try:
+            if isinstance(self.proxy, SalesStatusProxy):
+                self.proxy.set_status_filter(self._status_filter)
+        except Exception:
+            pass
 
     def _on_selection_changed(self, *_):
         # Enable/disable buttons then refresh details
@@ -240,10 +340,13 @@ class SalesController(BaseModule):
 
         # Build model & wire to view
         self.base = SalesTableModel(rows_to_use, doc_type=self._doc_type)
-        self.proxy = QSortFilterProxyModel(self.view)
+        self.proxy = SalesStatusProxy(self.view)
         self.proxy.setSourceModel(self.base)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.proxy.setFilterKeyColumn(-1)  # no client-side filtering; server-side fetch above
+        # We filter via filterAcceptsRow, not by a specific text column
+        self.proxy.setFilterKeyColumn(-1)
+        self.proxy.set_doc_type(self._doc_type)
+        self.proxy.set_status_filter(self._status_filter)
         self.view.tbl.setModel(self.proxy)
         self.view.tbl.resizeColumnsToContents()
 
@@ -453,28 +556,38 @@ class SalesController(BaseModule):
 
     def _list_company_bank_accounts(self) -> list[dict]:
         """
-        Adapter used by customer.money dialog. Tries common repo shapes; returns list of {id, name}.
+        Adapter used by payment dialogs. Returns list of {id, name} for
+        active company bank accounts, mirroring the purchase controller.
         """
-        # Try repo methods if present
         try:
-            if self.bank_accounts:
-                for attr in ("list_accounts", "list", "list_all", "all"):
-                    if hasattr(self.bank_accounts, attr):
-                        rows = list(getattr(self.bank_accounts, attr)())
-                        # Try to normalize to {id, name}
-                        norm = []
-                        for r in rows:
-                            d = dict(r)
-                            _id = d.get("id") or d.get("account_id") or d.get("bank_account_id")
-                            _name = d.get("name") or d.get("account_name") or d.get("title")
-                            if _id is not None and _name is not None:
-                                norm.append({"id": int(_id), "name": str(_name)})
-                        if norm:
-                            return norm
+            rows: list[dict] = []
+            # Preferred: use BankAccountsRepo, if available
+            if self.bank_accounts and hasattr(self.bank_accounts, "list_company_bank_accounts"):
+                rows = list(self.bank_accounts.list_company_bank_accounts())
+            else:
+                # Fallback: direct SQL, same shape purchase controller uses
+                cur = self.conn.execute(
+                    "SELECT account_id AS id, label AS name "
+                    "FROM company_bank_accounts WHERE is_active=1 ORDER BY account_id"
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+
+            norm: list[dict] = []
+            for r in rows or []:
+                d = dict(r)
+                _id = d.get("id") or d.get("account_id") or d.get("bank_account_id")
+                _name = (
+                    d.get("name")
+                    or d.get("account_name")
+                    or d.get("title")
+                    or d.get("account_title")
+                    or d.get("label")
+                )
+                if _id is not None and _name is not None:
+                    norm.append({"id": int(_id), "name": str(_name)})
+            return norm
         except Exception:
-            pass
-        # Fallback empty list
-        return []
+            return []
 
     def _list_sales_for_customer(self, customer_id: int) -> list[dict]:
         """
@@ -548,7 +661,24 @@ class SalesController(BaseModule):
     # ---- CRUD -------------------------------------------------------------
 
     def _add(self):
-        doc_type = self._doc_type
+        # Use current view mode (Sales vs Quotations) when the user clicks
+        # the module's own "Add" button.
+        self._start_new_document(self._doc_type)
+
+    def new_sale(self):
+        """Start a new Sale, regardless of current mode."""
+        self._start_new_document("sale")
+
+    def new_quotation(self):
+        """Start a new Quotation, regardless of current mode."""
+        self._start_new_document("quotation")
+
+    def _start_new_document(self, doc_type: str):
+        """
+        Shared helper for starting a new Sale or Quotation.
+        doc_type: 'sale' or 'quotation'
+        """
+        doc_type = "quotation" if (doc_type or "sale").lower() == "quotation" else "sale"
 
         # Store doc_type so the handler method knows the context
         self._pending_doc_type = doc_type
@@ -609,13 +739,12 @@ class SalesController(BaseModule):
                 self.repo.create_quotation(h, items)
                 info(self.view, "Saved", f"Quotation {qid} created.")
 
-                # Check if this was called from print or PDF export button
+                # Check if this was called from print button
                 should_print_after_save = p.get('_should_print', False)
-                should_export_pdf_after_save = p.get('_should_export_pdf', False)
 
-                # Handle print or PDF export request after saving (for now, just notify user about limitations)
-                if should_print_after_save or should_export_pdf_after_save:
-                    info(self.view, "Not Implemented", "Quotation printing/PDF export not yet implemented.")
+                # Handle print request after saving
+                if should_print_after_save:
+                    self._print_quotation_invoice(qid)
             except Exception as e:
                 info(self.view, "Error", f"Could not create quotation: {e}")
             self._reload()
@@ -662,6 +791,11 @@ class SalesController(BaseModule):
                 pay_repo = SalePaymentsRepo(self._db_path)
 
                 method = p.get("initial_method") or "Cash"
+                 # Optional bank / instrument fields from the form payload
+                bank_id = p.get("initial_bank_account_id")
+                instr_no = (p.get("initial_instrument_no") or "").strip() if p.get("initial_instrument_no") else ""
+                instr_type = p.get("initial_instrument_type")
+
                 kwargs = {
                     "sale_id": sid,
                     "amount": init_amt,
@@ -671,13 +805,24 @@ class SalesController(BaseModule):
                     "notes": "[Init payment]",
                 }
 
-                # Method-specific fields
-                if method == "Bank Transfer":
-                    kwargs["bank_account_id"] = int(p["initial_bank_account_id"])
-                    kwargs["instrument_no"] = p["initial_instrument_no"]
-                    kwargs["instrument_type"] = p.get("initial_instrument_type", "online")
+                # Method-specific fields: align with SalePaymentsRepo expectations
+                if method in ("Bank Transfer", "Cheque", "Cross Cheque"):
+                    if bank_id is not None:
+                        kwargs["bank_account_id"] = int(bank_id)
+                    if instr_no:
+                        kwargs["instrument_no"] = instr_no
+
+                # Instrument type: prefer form payload; otherwise choose sensible defaults
+                if instr_type:
+                    kwargs["instrument_type"] = instr_type
                 else:
-                    kwargs["instrument_type"] = "other"
+                    if method == "Bank Transfer":
+                        kwargs["instrument_type"] = "online"
+                    elif method in ("Cheque", "Cross Cheque"):
+                        # Cheque and Cross Cheque share cross_cheque instrument_type
+                        kwargs["instrument_type"] = "cross_cheque"
+                    else:
+                        kwargs["instrument_type"] = "other"
 
                 pay_repo.record_payment(**kwargs)
                 info(self.view, "Saved", f"Sale {sid} created and initial payment recorded.")
@@ -685,19 +830,12 @@ class SalesController(BaseModule):
                 # Sale is created; payment failed → notify clearly
                 info(self.view, "Saved (with note)",
                      f"Sale {sid} created. Initial payment was not recorded: {e}")
-        else:
-            info(self.view, "Saved", f"Sale {sid} created.")
-
-        # Check if this was called from print or PDF export button
+        # Check if this was called from print button
         should_print_after_save = p.get('_should_print', False)
-        should_export_pdf_after_save = p.get('_should_export_pdf', False)
-
-        # Handle print or PDF export request after saving
         if should_print_after_save:
             self._print_sale_invoice(sid)
-        elif should_export_pdf_after_save:
-            self._export_sale_invoice_to_pdf(sid)
-
+        else:
+            info(self.view, "Saved", f"Sale {sid} created.")
         self._reload()
         self._sync_details()
 
@@ -796,6 +934,11 @@ class SalesController(BaseModule):
             else:
                 info(self.view, "Not available",
                      "Updating quotations requires SalesRepo.update_quotation(...).")
+            # Handle optional print-after-save for quotations
+            should_print_after_save = p.get('_should_print', False)
+            if should_print_after_save:
+                self._print_quotation_invoice(sid)
+
             self._reload()
             self._sync_details()
             return
@@ -827,15 +970,10 @@ class SalesController(BaseModule):
         ]
         self.repo.update_sale(h, items)
 
-        # Check if this was called from print or PDF export button
+        # Check if this was called from print button
         should_print_after_save = p.get('_should_print', False)
-        should_export_pdf_after_save = p.get('_should_export_pdf', False)
-
-        # Handle print or PDF export request after saving
         if should_print_after_save:
             self._print_sale_invoice(sid)
-        elif should_export_pdf_after_save:
-            self._export_sale_invoice_to_pdf(sid)
         else:
             info(self.view, "Saved", f"Sale {sid} updated.")
 
@@ -870,20 +1008,89 @@ class SalesController(BaseModule):
         so_id = new_sale_id(self.conn, date_for_so)
 
         try:
+            # Perform DB-side conversion first (marks quotation, creates sale)
             self.repo.convert_quotation_to_sale(
                 qo_id=qo_id,
                 new_so_id=so_id,
                 date=date_for_so,
                 created_by=(self.user["user_id"] if self.user else None),
             )
-            info(self.view, "Converted", f"{qo_id} → {so_id} created.")
         except Exception as e:
             info(self.view, "Error", f"Conversion failed: {e}")
+            return
 
-        self._reload()
-        self._sync_details()
+        # After conversion, open the new SALE in the SaleForm with the
+        # initial payment section visible so the user can optionally
+        # record an initial payment and/or print immediately.
+        header_with_customer = self.repo.get_header_with_customer(so_id)
+        items = self.repo.list_items(so_id)
+
+        init = {
+            "customer_id": header_with_customer.get("customer_id") if header_with_customer else r.get("customer_id"),
+            "customer_name": header_with_customer.get("customer_name") if header_with_customer else r.get("customer_name"),
+            "date": header_with_customer.get("date") if header_with_customer else date_for_so,
+            "order_discount": header_with_customer.get("order_discount") if header_with_customer else r.get("order_discount"),
+            "notes": header_with_customer.get("notes") if header_with_customer else r.get("notes"),
+            "sale_id": so_id,
+            "items": [
+                {
+                    "product_id": it["product_id"],
+                    "uom_id": it["uom_id"],
+                    "quantity": it["quantity"],
+                    "unit_price": it["unit_price"],
+                    "item_discount": it["item_discount"],
+                }
+                for it in items
+            ],
+        }
+
+        dlg = self._open_sale_form(initial=init, as_quotation=False)
+        if dlg is None:
+            info(self.view, "Error", "Sale form could not be opened after conversion.")
+            self._reload()
+            self._sync_details()
+            return
+
+        # Treat this like editing the newly created sale so our existing
+        # handler (including optional print-after-save) can be reused.
+        self._pending_doc_type = "sale"
+        self._pending_edit_row = {
+            "sale_id": so_id,
+            "customer_id": init["customer_id"],
+            "date": init["date"],
+            "order_discount": init["order_discount"],
+            "notes": init["notes"],
+            "payment_status": header_with_customer.get("payment_status", "unpaid") if header_with_customer else "unpaid",
+            "paid_amount": header_with_customer.get("paid_amount", 0.0) if header_with_customer else 0.0,
+        }
+
+        self.active_dialog = dlg
+        self.active_dialog.accepted.connect(self._handle_edit_dialog_accept)
+        self.active_dialog.show()
 
     # ---- Payments / Printing ---------------------------------------------
+
+    def _on_payment_status_change_requested(self, payment_id: int, new_state: str):
+        """
+        Handle a request from the SaleDetails panel to update a payment's
+        clearing_state (e.g., pending → cleared/bounced) for the current sale.
+        """
+        new = (new_state or "").lower()
+        if new not in ("cleared", "bounced"):
+            return
+        try:
+            from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
+            pay_repo = SalePaymentsRepo(self._db_path)
+            cleared_date = today_str() if new == "cleared" else None
+            pay_repo.update_clearing_state(
+                payment_id=payment_id,
+                clearing_state=new,
+                cleared_date=cleared_date,
+            )
+            self._reload()
+            self._sync_details()
+        except Exception as e:
+            info(self.view, "Update failed", f"Could not update payment status:\n{e}")
 
     def _record_payment(self):
         """
@@ -904,41 +1111,50 @@ class SalesController(BaseModule):
         customer_id = int(row.get("customer_id") or 0)
         customer_display = str(row.get("customer_name") or customer_id)
 
-        # Local dialog + actions (lazy import)
-        try:
-            from ...customer.receipt_dialog import open_payment_or_advance_form  # type: ignore
-            from ...customer import actions as customer_actions  # type: ignore
+        # Only allow recording payments when there is a positive remaining
+        # amount for this specific sale. This mirrors the purchase side where
+        # the dialog is for clearing outstanding amounts, not creating credit.
+        fin = self._fetch_sale_financials(sale_id)
+        remaining = float(fin.get("remaining_due", 0.0))
+        if remaining <= 1e-9:
+            info(self.view, "Nothing to pay", "This sale has no remaining amount to receive.")
+            return
 
-            payload = open_payment_or_advance_form(
-                mode="receipt",
-                customer_id=customer_id,
-                sale_id=sale_id,
-                defaults={
-                    "list_company_bank_accounts": self._list_company_bank_accounts,
-                    "list_sales_for_customer": self._list_sales_for_customer,
-                    "customer_display": customer_display,
-                },
-            )
-            if payload:
-                _ = customer_actions.receive_payment(
-                    db_path=self._db_path,
-                    sale_id=sale_id,
-                    customer_id=customer_id,
-                    with_ui=False,
-                    form_defaults=payload,
-                )
-                self._reload()
-                self._sync_details()
-                return
-        except Exception:
-            info(
+        # Open a dedicated Sales payment form, mirroring the purchase payment
+        # window but simplified to only use company bank accounts.
+        try:
+            from .payment_form import SalesPaymentForm  # type: ignore
+            from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
+
+            dlg = SalesPaymentForm(
                 self.view,
-                "Payments UI not available",
-                "The local customer money dialog isn't available. "
-                "Enable modules.customer.receipt_dialog or use the Customers module.",
+                sale_id=sale_id,
+                remaining=remaining,
+                list_company_bank_accounts=self._list_company_bank_accounts,
             )
-            self._update_action_states()
+            if not dlg.exec():
+                return
+            payload = dlg.payload()
+            if not payload:
+                return
+
+            repo = SalePaymentsRepo(self._db_path)
+            repo.record_payment(
+                sale_id=sale_id,
+                amount=float(payload["amount"]),
+                method=str(payload["method"]),
+                date=payload["date"],
+                bank_account_id=payload["bank_account_id"],
+                instrument_no=payload["instrument_no"],
+                notes=payload["notes"],
+            )
+            self._reload()
             self._sync_details()
+            return
+        except Exception as e:
+            import logging
+            logging.exception("Could not record payment")
+            info(self.view, "Payment not recorded", f"Could not record payment:\n{e}")
 
     def _print(self):
         """
@@ -952,11 +1168,10 @@ class SalesController(BaseModule):
         doc_type = self._doc_type
         sale_id = row["sale_id"]
 
-        # For now, only handle sales (not quotations)
         if doc_type == "sale":
             self._print_sale_invoice(sale_id)
         elif doc_type == "quotation":
-            info(self.view, "Not Implemented", "Quotation printing not yet implemented.")
+            self._print_quotation_invoice(sale_id)
 
         # After printing attempt, keep states fresh
         self._update_action_states()
@@ -987,8 +1202,8 @@ class SalesController(BaseModule):
 
         # Local dialog + actions (lazy import)
         try:
-            from ...customer.receipt_dialog import open_payment_or_advance_form  # type: ignore
-            from ...customer import actions as customer_actions  # type: ignore
+            from ..customer.receipt_dialog import open_payment_or_advance_form  # type: ignore
+            from ..customer import actions as customer_actions  # type: ignore
 
             payload = open_payment_or_advance_form(
                 mode="apply_advance",
@@ -1103,11 +1318,16 @@ class SalesController(BaseModule):
         paid_before = float(hdr.get("paid_amount") or 0.0)
         customer_id = int(hdr.get("customer_id") or 0)
 
+        requested_cash = float(p.get("cash_refund_now") or 0.0)
+
         cash_refund = 0.0
         credit_part = refund_amount
 
-        if p.get("refund_now"):
-            cash_refund = min(refund_amount, paid_before)
+        # User intent: treat either the checkbox or a positive spinner value
+        # as a request to refund cash now, but always clamp to the cap.
+        cap = min(refund_amount, paid_before)
+        if p.get("refund_now") or requested_cash > 0:
+            cash_refund = min(max(0.0, requested_cash), cap)
             credit_part = max(0.0, refund_amount - cash_refund)
 
             if cash_refund > 0:
@@ -1290,13 +1510,6 @@ class SalesController(BaseModule):
                 'total': total
             }
 
-            # Get customer payment details using repository
-            from ...database.repositories.sale_payments_repo import SalePaymentsRepo
-            payments_repo = SalePaymentsRepo(self._db_path)
-
-            # Get the latest payment directly using the dedicated method
-            latest_payment = payments_repo.get_latest_payment_for_sale(sale_id)
-
             # Calculate paid amount and remaining
             paid_amount = float(doc_data.get('paid_amount', 0.0))
             total_amount = float(doc_data.get('total_amount', 0.0))
@@ -1307,29 +1520,6 @@ class SalesController(BaseModule):
             enriched_data['paid_amount'] = paid_amount
             enriched_data['advance_payment_applied'] = advance_payment_applied
             enriched_data['remaining'] = remaining
-
-            # Get latest payment details and enhance with account names
-            if latest_payment:
-                latest_payment = dict(latest_payment)  # Convert to dict for modification
-
-                # Add bank account labels if available
-                if latest_payment.get('bank_account_id'):
-                    try:
-                        # Query the bank account directly from the database
-                        bank_account_row = self.conn.execute(
-                            "SELECT label FROM company_bank_accounts WHERE account_id = ?",
-                            (latest_payment['bank_account_id'],)
-                        ).fetchone()
-                        if bank_account_row:
-                            latest_payment['bank_account_label'] = bank_account_row['label']
-                        else:
-                            latest_payment['bank_account_label'] = 'N/A'
-                    except Exception:
-                        latest_payment['bank_account_label'] = 'N/A'
-
-                enriched_data['initial_payment'] = latest_payment
-            else:
-                enriched_data['initial_payment'] = None
 
             # Add company info
             company_row = self.conn.execute(
@@ -1350,11 +1540,134 @@ class SalesController(BaseModule):
             # Add payment status
             enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
 
+            # Get ALL payment rows for this sale so the invoice can show a
+            # full payment history, not just the initial payment.
+            from ...database.repositories.sale_payments_repo import SalePaymentsRepo
+            payments_repo = SalePaymentsRepo(self._db_path)
+
+            raw_payments = list(payments_repo.list_by_sale(sale_id)) or []
+
+            # Pre-load company bank labels to avoid querying inside the loop
+            bank_labels: dict[int, str] = {}
+            try:
+                cur = self.conn.execute(
+                    "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1"
+                )
+                bank_labels = {int(r["account_id"]): str(r["label"]) for r in cur.fetchall()}
+            except Exception:
+                bank_labels = {}
+
+            payments: list[dict] = []
+            for row in raw_payments:
+                d = dict(row)
+                bid = d.get("bank_account_id")
+                if bid is not None:
+                    try:
+                        d["bank_account_label"] = bank_labels.get(int(bid), "")
+                    except Exception:
+                        d["bank_account_label"] = ""
+                else:
+                    d["bank_account_label"] = ""
+                payments.append(d)
+
+            enriched_data["payments"] = payments
+
+            # For backward compatibility, still expose the latest payment as
+            # `initial_payment` (used by older templates).
+            enriched_data["initial_payment"] = payments[-1] if payments else None
+
         # Create Jinja2 template and render
         template = Template(template_content, autoescape=True)
         html_content = template.render(**enriched_data)
 
         return html_content
+
+    def _generate_quotation_html_content(self, quotation_id: str) -> str:
+        """
+        Generate HTML content for a QUOTATION invoice.
+        Structure mirrors the sales invoice but without payments.
+        """
+        import os
+        from pathlib import Path
+        from jinja2 import Template
+
+        # Load quotation template
+        template_content = None
+        try:
+            current_file_path = Path(__file__).resolve()
+            project_root = current_file_path.parent.parent.parent
+            full_template_path = project_root / "resources/templates/invoices/quotation_invoice.html"
+            with open(full_template_path, "r", encoding="utf-8") as f:
+                template_content = f.read()
+        except (FileNotFoundError, OSError) as e:
+            error_msg = f"Quotation template file not found or unreadable: {e}"
+            logging.error(error_msg)
+            raise FileNotFoundError(error_msg)
+
+        enriched_data: dict = {"id": quotation_id}
+
+        header_row = self.repo.get_header_with_customer(quotation_id)
+        if header_row:
+            doc_data = dict(header_row)
+            doc_data["id"] = doc_data.get("sale_id", "")
+            enriched_data["doc"] = doc_data
+            enriched_data["customer"] = {
+                "name": doc_data.get("customer_name", ""),
+                "contact_info": doc_data.get("customer_contact_info", ""),
+                "address": doc_data.get("customer_address", ""),
+            }
+
+            # Items and totals (same computation as sales invoice)
+            items_rows = self.repo.list_items(quotation_id)
+            items: list[dict] = []
+            for row in items_rows:
+                item_dict = dict(row)
+                quantity = float(item_dict.get("quantity", 0.0))
+                unit_price = float(item_dict.get("unit_price", 0.0))
+                item_discount = float(item_dict.get("item_discount", 0.0))
+                line_total = (quantity * unit_price) - (quantity * item_discount)
+                item_dict["line_total"] = line_total
+                item_dict["idx"] = len(items) + 1
+                if "unit_name" in item_dict:
+                    item_dict["uom_name"] = item_dict["unit_name"]
+                else:
+                    item_dict["uom_name"] = "N/A"
+                items.append(item_dict)
+            enriched_data["items"] = items
+
+            subtotal_before_order_discount = sum(
+                it["line_total"]
+                + (float(it.get("quantity", 0.0)) * float(it.get("item_discount", 0.0)))
+                for it in items
+            )
+            line_discount_total = sum(
+                float(it.get("quantity", 0.0)) * float(it.get("item_discount", 0.0))
+                for it in items
+            )
+            order_discount = float(doc_data.get("order_discount", 0.0))
+            total = subtotal_before_order_discount - line_discount_total - order_discount
+
+            enriched_data["totals"] = {
+                "subtotal_before_order_discount": subtotal_before_order_discount,
+                "line_discount_total": line_discount_total,
+                "order_discount": order_discount,
+                "total": total,
+            }
+
+            # Company info (same as sales)
+            company_row = self.conn.execute(
+                "SELECT company_name, logo_path FROM company_info WHERE company_id = 1"
+            ).fetchone()
+            if company_row:
+                enriched_data["company"] = {
+                    "name": company_row["company_name"],
+                    "logo_path": company_row["logo_path"],
+                }
+            else:
+                enriched_data["company"] = {"name": "Your Company Name", "logo_path": None}
+
+        template = Template(template_content, autoescape=True)
+        return template.render(**enriched_data)
 
     def _sanitize_filename(self, filename: str, max_length: int = 100) -> str:
         """
@@ -1445,8 +1758,11 @@ class SalesController(BaseModule):
                 # If setting up delayed deletion fails, silently ignore
                 pass
 
-    def _export_sale_invoice_to_pdf(self, sale_id: str):
-        """Export the sale invoice to PDF using WeasyPrint for better rendering"""
+    def _print_sale_invoice(self, sale_id: str):
+        """Print the sale invoice using WeasyPrint, writing to a temp folder
+        with a stable filename equal to the sale_id. Old temp PDFs for sales
+        are cleaned up automatically."""
+        temp_pdf_path = None
         try:
             # Generate HTML content using the shared helper - this can raise various exceptions
             html_content = self._generate_invoice_html_content(sale_id)
@@ -1458,38 +1774,107 @@ class SalesController(BaseModule):
                 info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
                 return
 
-            # Determine the desktop path and create SIs (Sale Invoices) subdirectory
-            desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
-            pdfs_dir = os.path.join(desktop_path, "SIs")
+            import tempfile
+            import time
+            import subprocess
+            import sys
 
-            # Create the directory if it doesn't exist
-            os.makedirs(pdfs_dir, exist_ok=True)
+            # Temp directory dedicated to sale invoices
+            temp_root = tempfile.gettempdir()
+            pdf_dir = os.path.join(temp_root, "inventory_sales")
+            os.makedirs(pdf_dir, exist_ok=True)
 
-            # Sanitize the sale_id to prevent path traversal attacks
+            # Cleanup old PDFs (> 1 day) in background
+            now = time.time()
+            try:
+                for name in os.listdir(pdf_dir):
+                    if not name.lower().endswith(".pdf"):
+                        continue
+                    path = os.path.join(pdf_dir, name)
+                    try:
+                        if now - os.path.getmtime(path) > 86400:
+                            os.remove(path)
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+
+            # Use only the sale_id (sanitized) as filename
             sanitized_sale_id = self._sanitize_filename(sale_id, max_length=100)
+            temp_pdf_path = os.path.join(pdf_dir, f"{sanitized_sale_id}.pdf")
 
-            # Create a unique filename by appending a timestamp to avoid collisions
-            # Use Pakistani Standard Time (PKT) for the timestamp
-            import zoneinfo
-            pk_time = datetime.datetime.now(zoneinfo.ZoneInfo("Asia/Karachi"))
-            timestamp = pk_time.strftime("%Y%m%d_%H%M%S_%f")[:-3]  # YYYYMMDD_HHMMSS_mmm format
-            file_name = f"{sanitized_sale_id}_{timestamp}.pdf"
-            file_path = os.path.join(pdfs_dir, file_name)
-
-            # Convert HTML to PDF using WeasyPrint with custom CSS for proper margins
-            # Use shared CSS constant from class
+            # Convert HTML to PDF with custom CSS for proper margins
             custom_css = CSS(string=self._INVOICE_PDF_CSS)
 
             html_doc = HTML(string=html_content)
-            html_doc.write_pdf(file_path, stylesheets=[custom_css])
+            html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
 
-            info(self.view, "Exported", f"Sale invoice exported to: {file_path}")
+            # Open the PDF in default PDF viewer (to allow printing or saving)
+            try:
+                if sys.platform.startswith('win'):
+                    os.startfile(temp_pdf_path)
+                elif sys.platform.startswith('darwin'):  # macOS
+                    subprocess.run(['open', temp_pdf_path])
+                else:  # Linux and other Unix-like
+                    subprocess.run(['xdg-open', temp_pdf_path])
+            except Exception:
+                info(self.view, "Print", f"PDF saved to: {temp_pdf_path}. Please open it to print.")
 
         except Exception as e:
-            # Check if this is specifically an ImportError for WeasyPrint (shouldn't happen with new structure)
-            # but keep this for safety
-            if "weasyprint" in str(e).lower():
-                info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
-            else:
-                info(self.view, "Error", f"Could not export invoice to PDF: {e}")
+            info(self.view, "Error", f"Could not print invoice: {e}")
 
+    def _print_quotation_invoice(self, quotation_id: str):
+        """Print a quotation using the quotation invoice template. Uses the
+        same temp-folder strategy as sales invoices."""
+        temp_pdf_path = None
+        try:
+            html_content = self._generate_quotation_html_content(quotation_id)
+
+            try:
+                from weasyprint import HTML, CSS
+            except ImportError:
+                info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
+                return
+
+            import tempfile
+            import time
+            import subprocess
+            import sys
+
+            temp_root = tempfile.gettempdir()
+            pdf_dir = os.path.join(temp_root, "inventory_quotations")
+            os.makedirs(pdf_dir, exist_ok=True)
+
+            now = time.time()
+            try:
+                for name in os.listdir(pdf_dir):
+                    if not name.lower().endswith(".pdf"):
+                        continue
+                    path = os.path.join(pdf_dir, name)
+                    try:
+                        if now - os.path.getmtime(path) > 86400:
+                            os.remove(path)
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+
+            sanitized_qid = self._sanitize_filename(quotation_id, max_length=100)
+            temp_pdf_path = os.path.join(pdf_dir, f"{sanitized_qid}.pdf")
+
+            custom_css = CSS(string=self._INVOICE_PDF_CSS)
+            html_doc = HTML(string=html_content)
+            html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
+
+            try:
+                if sys.platform.startswith("win"):
+                    os.startfile(temp_pdf_path)
+                elif sys.platform.startswith("darwin"):
+                    subprocess.run(["open", temp_pdf_path])
+                else:
+                    subprocess.run(["xdg-open", temp_pdf_path])
+            except Exception:
+                info(self.view, "Print", f"PDF saved to: {temp_pdf_path}. Please open it to print.")
+
+        except Exception as e:
+            info(self.view, "Error", f"Could not print quotation: {e}")

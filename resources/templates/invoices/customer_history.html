@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Customer Statement — {{ customer.name or 'Customer' }}</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; font-size: 10px; color: #111; }
+    .page { width: 210mm; min-height: 297mm; padding: 12mm 12mm; box-sizing: border-box; }
+    h1, h2, h3 { margin: 0; padding: 0; }
+    .header { display: grid; grid-template-columns: 65% 35%; gap: 16px; align-items: start; }
+    .company-block { display: block; }
+    .company-name { font-size: 20px; font-weight: 700; line-height: 1.1; }
+    .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-wrap; text-align: left; }
+    .meta { text-align: right; }
+    .doc-title { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; }
+    .meta small { color: #555; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 3px 4px; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { text-align: left; background: #fafafa; font-weight: 700; }
+    .t-right { text-align: right; }
+    .muted { color: #444; }
+    .rule { border-top: 1px solid #ccc; }
+    .footer { margin-top: 18px; font-size: 10px; color: #444; }
+    .transactions-table { table-layout: fixed; margin-top: 14px; }
+    .transactions-table th,
+    .transactions-table td { font-size: 9px; }
+    .transactions-table .col-date { width: 60px; }
+    .transactions-table .col-type { width: 70px; }
+    .transactions-table .col-sale {
+      width: 95px;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+      word-break: break-all;
+    }
+    .transactions-table .col-amount,
+    .transactions-table .col-remaining { width: 55px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <!-- Header -->
+    <div class="header">
+      <div class="company-block">
+        <div class="company-name">Customer Statement</div>
+        <div class="company-lines">
+Customer: {{ customer.name or '' }}<br>
+Contact: {{ customer.contact_info or '' }}<br>
+Address: {{ customer.address or '' }}
+        </div>
+      </div>
+      <div class="meta">
+        <div class="doc-title">Statement</div>
+        <div><small>Customer ID:</small> <strong>{{ customer.id }}</strong></div>
+        <div><small>Last Sale Date:</small> <strong>{{ summary.last_sale_date or '' }}</strong></div>
+      </div>
+    </div>
+
+    <!-- Summary -->
+    <table>
+      <tr>
+        <td class="muted">Sales Count</td>
+        <td class="t-right">{{ summary.sales_count }}</td>
+      </tr>
+      <tr>
+        <td class="muted">Outstanding Receivables</td>
+        <td class="t-right">{{ '%.2f' % (summary.open_due_sum or 0.0) }}</td>
+      </tr>
+      <tr>
+        <td class="muted">Available Advance Balance</td>
+        <td class="t-right">{{ '%.2f' % (summary.credit_balance or 0.0) }}</td>
+      </tr>
+    </table>
+
+    <!-- Timeline -->
+    <h3 style="margin-top:16px;">Transactions</h3>
+    <table class="transactions-table" aria-label="Customer transactions">
+      <thead>
+        <tr>
+          <th class="col-date">Date</th>
+          <th class="col-type">Type</th>
+          <th class="col-sale">Sale ID</th>
+          <th class="col-amount t-right">Amount</th>
+          <th class="col-remaining t-right">Remaining</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set order = {'sale':'Sale','receipt':'Payment','advance':'Advance','advance_applied':'Advance Applied'} %}
+        {% for ev in (events or []) %}
+        <tr>
+          <td>{{ ev.date }}</td>
+          <td>{{ order.get(ev.kind, ev.kind) }}</td>
+          <td>{{ ev.sale_id or '' }}</td>
+          <td class="t-right">{{ '%.2f' % (ev.amount or 0.0) }}</td>
+          <td class="t-right">
+            {% if ev.kind == 'sale' %}
+              {{ '%.2f' % (ev.remaining_due or 0.0) }}
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- Net summary at bottom -->
+    {% set outstanding = summary.open_due_sum or 0.0 %}
+    {% set advance = summary.credit_balance or 0.0 %}
+    {% set net = outstanding - advance %}
+    <table style="margin-top:12px;">
+      <tr>
+        <td class="muted">Outstanding Receivables</td>
+        <td class="t-right">{{ '%.2f' % outstanding }}</td>
+      </tr>
+      <tr>
+        <td class="muted">Available Advance Balance</td>
+        <td class="t-right">{{ '%.2f' % advance }}</td>
+      </tr>
+      <tr class="rule">
+        <td class="t-right">
+          <strong>
+            {% if net > 0 %}
+              Amount customer still owes you
+            {% elif net < 0 %}
+              Amount you owe the customer
+            {% else %}
+              No balance (account settled)
+            {% endif %}
+          </strong>
+        </td>
+        <td class="t-right">
+          <strong>
+            {% if net != 0 %}
+              {{ '%.2f' % (net|abs) }}
+            {% else %}
+              0.00
+            {% endif %}
+          </strong>
+        </td>
+      </tr>
+    </table>
+
+    <div class="footer">
+      This statement is for information purposes only.
+    </div>
+  </div>
+</body>
+</html>

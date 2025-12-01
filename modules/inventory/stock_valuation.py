@@ -27,7 +27,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QComboBox,
+    QLineEdit,
+    QCompleter,
     QPushButton,
     QGroupBox,
     QGridLayout,
@@ -73,9 +74,10 @@ class StockValuationWidget(QWidget):
         lbl_prod.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         row.addWidget(lbl_prod)
 
-        self.cmb_product = QComboBox(self)
-        self.cmb_product.setMinimumWidth(240)
-        row.addWidget(self.cmb_product, 1)
+        self.txt_product = QLineEdit(self)
+        self.txt_product.setPlaceholderText("Start typing product name…")
+        self.txt_product.setMinimumWidth(240)
+        row.addWidget(self.txt_product, 1)
 
         self.btn_refresh = QPushButton("Refresh")
         row.addWidget(self.btn_refresh)
@@ -122,7 +124,9 @@ class StockValuationWidget(QWidget):
         # ------------------------------------------------------------------
         # Signals
         # ------------------------------------------------------------------
-        self.cmb_product.currentIndexChanged.connect(lambda _=None: self._on_filters_changed())
+        # Avoid querying on every keystroke; refresh when user confirms
+        # via Enter.
+        self.txt_product.returnPressed.connect(self._refresh_clicked)
         self.btn_refresh.clicked.connect(self._refresh_clicked)
 
         # ------------------------------------------------------------------
@@ -143,16 +147,19 @@ class StockValuationWidget(QWidget):
         Works whether `self.repo` is an InventoryRepo (has `.conn`) or a raw
         sqlite3.Connection.
         """
-        self.cmb_product.blockSignals(True)
+        # Build name→ids map and attach a completer to the line edit.
+        # Some databases may contain products with duplicate names; we keep
+        # all matching IDs so callers can disambiguate if needed.
+        self._name_to_id: dict[str, list[int]] = {}
+        self.txt_product.blockSignals(True)
         try:
-            self.cmb_product.clear()
-            self.cmb_product.addItem("(Select…)", userData=None)
-
             # Use the repo's connection directly; add real product_id as userData
             conn = getattr(self.repo, "conn", None) or self.repo
             rows = conn.execute(
                 "SELECT product_id, name FROM products ORDER BY name"
             ).fetchall()
+            display_names: list[str] = []
+            # First pass: build name->ids map
             for r in rows:
                 # tolerate Row or tuple
                 if hasattr(r, "keys"):
@@ -161,11 +168,68 @@ class StockValuationWidget(QWidget):
                 else:
                     pid = int(r[0])
                     name = r[1]
-                self.cmb_product.addItem(name, userData=pid)
+                display = str(name)
+                key = display.lower()
+                ids = self._name_to_id.setdefault(key, [])
+                ids.append(pid)
+
+            # Build display labels, appending ID when duplicates exist for a name
+            for r in rows:
+                if hasattr(r, "keys"):
+                    pid = int(r["product_id"])
+                    name = r["name"]
+                else:
+                    pid = int(r[0])
+                    name = r[1]
+                display = str(name)
+                key = display.lower()
+                ids = self._name_to_id.get(key, [])
+                if len(ids) > 1:
+                    label = f"{display} (ID: {pid})"
+                else:
+                    label = display
+                display_names.append(label)
+
+            # Detect case-insensitive names mapped to multiple product IDs.
+            # Strip a trailing " (ID:...)" only when it appears at the end so
+            # product names that legitimately contain that substring are preserved.
+            dup_keys = [k for k, ids in self._name_to_id.items() if len(ids) > 1]
+            dup_labels = set()
+            for name in display_names:
+                base, sep, _rest = name.rpartition(" (ID:")
+                key = (base if sep else name).lower()
+                if key in dup_keys:
+                    dup_labels.add(name)
+            dup_labels = sorted(dup_labels)
+            if dup_labels:
+                try:
+                    ui.info(
+                        self,
+                        "Duplicate product names",
+                        "Multiple products share the following names:\n"
+                        + ", ".join(dup_labels),
+                    )
+                except Exception as e:
+                    logging.getLogger(__name__).warning(
+                        "Failed to show duplicate product names info dialog: %s", e, exc_info=True
+                    )
+
+            # Deduplicate display labels while preserving original ordering
+            seen_names: set[str] = set()
+            unique_display_names: list[str] = []
+            for nm in display_names:
+                if nm not in seen_names:
+                    seen_names.add(nm)
+                    unique_display_names.append(nm)
+
+            completer = QCompleter(unique_display_names, self)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchContains)
+            self.txt_product.setCompleter(completer)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:
-            self.cmb_product.blockSignals(False)
+            self.txt_product.blockSignals(False)
 
     # ----------------------------------------------------------------------
     # Handlers
@@ -179,8 +243,20 @@ class StockValuationWidget(QWidget):
         self._load_product_snapshot(pid)
 
     def _refresh_clicked(self) -> None:
+        name_raw = (self.txt_product.text() or "").strip()
         pid = self._selected_product_id()
         if pid is None:
+            if name_raw:
+                try:
+                    ui.info(self, "Not found", f"Product '{name_raw}' was not found.")
+                except Exception as e:
+                    logging.getLogger(__name__).warning(
+                        "Failed to show 'Product not found' dialog for %r: %s",
+                        name_raw,
+                        e,
+                        exc_info=True,
+                    )
+                return
             self._clear_card()
             return
         self._load_product_snapshot(pid)
@@ -189,9 +265,32 @@ class StockValuationWidget(QWidget):
     # Helpers
     # ----------------------------------------------------------------------
     def _selected_product_id(self) -> Optional[int]:
-        data = self.cmb_product.currentData()
+        raw = (self.txt_product.text() or "").strip()
+        if not raw:
+            return None
+
+        # Prefer explicit "Name (ID: N)" format when present
+        if raw.endswith(")") and "(ID:" in raw:
+            try:
+                start = raw.rfind("(ID:") + len("(ID:")
+                end = raw.rfind(")")
+                id_str = raw[start:end].strip()
+                return int(id_str)
+            except Exception:
+                # Fall back to name-based lookup below
+                pass
+
+        # Strip a trailing " (ID: ...)" suffix, if present, before name-based lookup
+        base, sep, _rest = raw.rpartition(" (ID:")
+        lookup_name = base if sep and raw.endswith(")") else raw
+
+        name = lookup_name.lower()
+        ids = self._name_to_id.get(name) or []
+        if not ids:
+            return None
+        # If multiple IDs share the same name, use the first one by default.
         try:
-            return int(data) if data is not None else None
+            return int(ids[0])
         except Exception:
             return None
 

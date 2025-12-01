@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import logging
 from typing import Any, Optional, Dict, List
 
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
@@ -58,10 +59,11 @@ class CustomerController(BaseModule):
         self.view.search.textChanged.connect(self._apply_filter)
 
         # Payments/credit/history actions
-        self.view.btn_receive_payment.clicked.connect(self._on_receive_payment)
         self.view.btn_record_advance.clicked.connect(self._on_record_advance)
         self.view.btn_apply_advance.clicked.connect(self._on_apply_advance)
-        self.view.btn_payment_history.clicked.connect(self._on_payment_history)
+        self.view.btn_history.clicked.connect(self._on_payment_history)
+        if hasattr(self.view, "btn_print_history"):
+            self.view.btn_print_history.clicked.connect(self._on_history_print)
 
         # Optional: Update Clearing button (wire only if present on the view)
         if hasattr(self.view, "btn_update_clearing"):
@@ -226,11 +228,10 @@ class CustomerController(BaseModule):
         # Editing customer info follows the same active flag
         self.view.btn_edit.setEnabled(enabled)
         # Optional delete remains unchanged/commented in base code.
-        self.view.btn_receive_payment.setEnabled(enabled)
         self.view.btn_record_advance.setEnabled(enabled)
         self.view.btn_apply_advance.setEnabled(enabled)
-        # History is allowed as long as something is selected
-        self.view.btn_payment_history.setEnabled(True if self._selected_id() else False)
+        # History popup is allowed as long as something is selected
+        self.view.btn_history.setEnabled(True if self._selected_id() else False)
         # Optional clearing button mirrors enabled state (if present)
         if hasattr(self.view, "btn_update_clearing"):
             self.view.btn_update_clearing.setEnabled(enabled)
@@ -409,77 +410,129 @@ class CustomerController(BaseModule):
             return None
         return db_path
 
-    def _sale_belongs_to_customer_and_is_sale(self, sale_id: str, customer_id: int) -> bool:
-        row = self.conn.execute(
-            "SELECT customer_id, doc_type FROM sales WHERE sale_id = ?;",
-            (sale_id,),
-        ).fetchone()
-        if not row:
-            return False
-        return int(row["customer_id"]) == int(customer_id) and row["doc_type"] == "sale"
-
-    # -- Receive Payment --
-
-    def _on_receive_payment(self):
-        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+    def _on_history_print(self):
+        """
+        Print a simple customer statement based on the same history payload
+        used for the Payment History window.
+        """
+        cid, db_path = self._preflight(require_active=False, require_file_db=True)
         if not cid or not db_path:
             return
 
-        # Use local dialog to gather payload so the user can PICK the sale (legacy UX).
-        open_payment_or_advance_form = self._lazy_attr(
-            "inventory_management.modules.customer.receipt_dialog.open_payment_or_advance_form",
-            toast_title="Unavailable",
-            on_fail="Receipt dialog is not available.",
-        )
-        if not open_payment_or_advance_form:
+        from .history import CustomerHistoryService
+        from jinja2 import Template
+        import os
+        import tempfile
+        import time
+        import subprocess
+        import sys
+        from weasyprint import HTML, CSS
+
+        try:
+            svc = CustomerHistoryService(db_path)
+            payload = svc.full_history(cid)
+        except Exception as e:
+            info(self.view, "Error", f"Could not load customer history:\n{e}")
             return
 
-        form_defaults = {
-            "list_company_bank_accounts": self._list_company_bank_accounts,
-            "list_sales_for_customer": self._list_sales_for_customer,
-            "customer_display": str(cid),
+        # Load template (TODO: move to a centralized template loader / config)
+        from importlib import resources as importlib_resources
+        try:
+            template_content = importlib_resources.files(
+                "inventory_management.resources.templates.invoices"
+            ).joinpath("customer_history.html").read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError, ModuleNotFoundError) as e:
+            info(self.view, "Error", f"Cannot load customer history template:\n{e}")
+            return
+
+        # Basic customer info from repo
+        cust = self.repo.get(cid)
+        customer_data = {
+            "id": cid,
+            "name": getattr(cust, "name", ""),
+            "contact_info": getattr(cust, "contact_info", ""),
+            "address": getattr(cust, "address", ""),
         }
-        payload = open_payment_or_advance_form(
-            mode="receipt",
-            customer_id=cid,
-            sale_id=None,           # allow the dialog to present the sale picker (legacy UX)
-            defaults=form_defaults,
+
+        summary = payload.get("summary") or {}
+        events = payload.get("timeline") or []
+
+        template = Template(template_content, autoescape=True)
+        html = template.render(
+            customer=customer_data,
+            summary=summary,
+            events=events,
         )
-        if not payload:
-            return  # cancelled
 
-        sale_id = payload.get("sale_id")
-        if not sale_id:
-            info(self.view, "Required", "Please select a sale to receive payment.")
+        # Temp dir for customer statements
+        temp_root = tempfile.gettempdir()
+        pdf_dir = os.path.join(temp_root, "inventory_customer_history")
+        os.makedirs(pdf_dir, exist_ok=True)
+
+        # Cleanup old PDFs (>1 day)
+        now = time.time()
+        try:
+            for name in os.listdir(pdf_dir):
+                if not name.lower().endswith(".pdf"):
+                    continue
+                path = os.path.join(pdf_dir, name)
+                try:
+                    if now - os.path.getmtime(path) > 86400:
+                        os.remove(path)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+        file_path = os.path.join(pdf_dir, f"customer_{cid}.pdf")
+
+        try:
+            css = CSS(string="body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; }")
+            HTML(string=html).write_pdf(file_path, stylesheets=[css])
+        except Exception as e:
+            info(self.view, "Error", f"Could not generate statement PDF:\n{e}")
             return
 
-        # Guard: must be a real SALE for this customer (not a quotation)
-        if not self._sale_belongs_to_customer_and_is_sale(sale_id, cid):
-            info(self.view, "Invalid", "Payments can only be recorded against SALES belonging to this customer.")
-            return
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(file_path)  # type: ignore[attr-defined]
+            elif sys.platform.startswith("darwin"):
+                subprocess.run(["open", file_path], timeout=5)
+            else:
+                subprocess.run(["xdg-open", file_path], timeout=5)
+        except subprocess.TimeoutExpired:
+            info(self.view, "Print", f"Statement PDF saved to: {file_path} (viewer timed out).")
+        except Exception:
+            info(self.view, "Print", f"Statement PDF saved to: {file_path}")
 
-        # Persist via the actions layer (no additional UI)
-        receive_payment = self._lazy_attr(
-            "inventory_management.modules.customer.actions.receive_payment",
-            toast_title="Error",
-            on_fail="Could not load actions.receive_payment",
-        )
-        if not receive_payment:
-            return
+    def sale_belongs_to_customer_and_is_sale(self, sale_id: int, customer_id: int) -> bool:
+        try:
+            row = self.conn.execute(
+                "SELECT customer_id, doc_type FROM sales WHERE sale_id = ?;",
+                (int(sale_id),),
+            ).fetchone()
+        except sqlite3.DatabaseError as e:
+            logging.getLogger(__name__).error(
+                "Error checking sale %s for customer %s: %s",
+                sale_id,
+                customer_id,
+                e,
+                exc_info=True,
+            )
+            return False
+        except Exception as e:
+            logging.getLogger(__name__).error(
+                "Unexpected error checking sale %s for customer %s: %s",
+                sale_id,
+                customer_id,
+                e,
+                exc_info=True,
+            )
+            return False
 
-        result = receive_payment(
-            db_path=db_path,
-            sale_id=str(sale_id),
-            customer_id=cid,
-            with_ui=False,
-            form_defaults=payload,  # already validated by dialog; actions will recheck required keys
-        )
-        if not result or not result.success:
-            info(self.view, "Not saved", (result.message if result else "Unknown error"))
-            return
-
-        info(self.view, "Saved", f"Payment #{result.id} recorded.")
-        self._reload()
+        if not row:
+            return False
+        return int(row["customer_id"]) == int(customer_id) and row["doc_type"] == "sale"
 
     # -- Record Advance (Deposit / Credit) --
 

@@ -1,9 +1,15 @@
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QListWidget, QListWidgetItem, QStackedWidget, QMessageBox,
-    QHBoxLayout, QMenu, QSizePolicy
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QListWidget,
+    QListWidgetItem,
+    QStackedWidget,
+    QMessageBox,
+    QHBoxLayout,
+    QSizePolicy,
 )
-from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 from pathlib import Path
 import sys
@@ -121,8 +127,8 @@ class MainWindow(QMainWindow):
 
         # Left nav + content
         self.nav = QListWidget()
-        # Cap the nav width so center content has room
-        self.nav.setFixedWidth(200)
+        # Cap the nav width so center content has room (reduced)
+        self.nav.setFixedWidth(100)
         self.nav.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
         self.stack = QStackedWidget()
@@ -250,50 +256,6 @@ class MainWindow(QMainWindow):
             # Load the first module (Dashboard) immediately
             self._load_module_at_index(0)
             self.stack.setCurrentIndex(0)
-
-        # -------- Inventory menu anchored to left nav item (click to open) --------
-        self.inventory_menu = QMenu(self)
-        act_adj = QAction("Adjustments & Recent", self.inventory_menu)
-        act_txn = QAction("Transactions", self.inventory_menu)
-        act_val = QAction("Stock Valuation", self.inventory_menu)
-        self.inventory_menu.addAction(act_adj)
-        self.inventory_menu.addAction(act_txn)
-        self.inventory_menu.addSeparator()
-        self.inventory_menu.addAction(act_val)
-
-        # Wire actions to open sub-tabs
-        act_adj.triggered.connect(lambda: self.open_inventory_sub("adjustments"))
-        act_txn.triggered.connect(lambda: self.open_inventory_sub("transactions"))
-        act_val.triggered.connect(lambda: self.open_inventory_sub("valuation"))
-
-        # Open the Inventory menu when user clicks the Inventory row
-        self.nav.setMouseTracking(False)  # no hover popups
-
-        def _show_inventory_menu_at_row():
-            idx = self._find_module_index("Inventory")
-            if idx is None:
-                return
-            item = self.nav.item(idx)
-            if not item:
-                return
-            rect = self.nav.visualItemRect(item)
-            global_pt = self.nav.viewport().mapToGlobal(rect.topRight())
-            global_pt.setX(global_pt.x() + 6)  # slight offset from list edge
-            self.inventory_menu.popup(global_pt)
-
-        def _nav_mouse_press(event):
-            # Qt6: event.position() returns QPointF
-            pos = event.position().toPoint()
-            clicked_item = self.nav.itemAt(pos)
-            # open menu only if user clicked exactly "Inventory"
-            if clicked_item and clicked_item.text() == "Inventory":
-                _show_inventory_menu_at_row()
-                event.accept()
-            else:
-                QListWidget.mousePressEvent(self.nav, event)  # default behavior
-
-        # install the light handler
-        self.nav.viewport().mousePressEvent = _nav_mouse_press
 
     # ---------- quick open to Inventory sub-tab ----------
     def open_inventory_sub(self, sub: str):
@@ -603,6 +565,50 @@ class MainWindow(QMainWindow):
             if t == title:
                 return i
         return None
+
+    # ---------- global Sales shortcuts ----------
+    def _find_module_info_index(self, title: str) -> int | None:
+        for i, info in enumerate(self.module_info):
+            if info.get("title") == title:
+                return i
+        return None
+
+    def _get_sales_controller(self):
+        """
+        Ensure Sales module is loaded and return its controller, or None on failure.
+        """
+        info_idx = self._find_module_info_index("Sales")
+        if info_idx is None:
+            QMessageBox.warning(self, "Missing", "Sales module is not available.")
+            return None
+
+        # Ensure the Sales module is loaded (by index in module_info),
+        # then resolve the actual controller by title from self.modules.
+        self._load_module_at_index(info_idx)
+
+        mod_idx = self._find_module_index("Sales")
+        if mod_idx is None or mod_idx >= len(self.modules):
+            QMessageBox.warning(self, "Missing", "Sales module could not be loaded.")
+            return None
+
+        return self.modules[mod_idx][1]
+
+    def _invoke_sales_action(self, action_name: str, error_message: str) -> None:
+        """
+        Helper to invoke a method on the Sales controller with basic error handling.
+        """
+        ctrl = self._get_sales_controller()
+        if ctrl and hasattr(ctrl, action_name):
+            try:
+                getattr(ctrl, action_name)()
+            except Exception:
+                QMessageBox.warning(self, "Error", error_message)
+
+    def _open_new_sale(self):
+        self._invoke_sales_action("new_sale", "Could not open New Sale form.")
+
+    def _open_new_quotation(self):
+        self._invoke_sales_action("new_quotation", "Could not open New Quotation form.")
 
 
 def main():

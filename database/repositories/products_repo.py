@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List
 import sqlite3
 from contextlib import contextmanager
+import logging
 
 
 class DomainError(Exception):
@@ -274,12 +275,75 @@ class ProductsRepo:
 
     # ---------------- Latest prices & stock in BASE UoM ----------------
 
+    def latest_manual_sale_price_base(self, product_id: int) -> Optional[dict]:
+        """
+        Optional manual sale price override per base unit, if any.
+        Returns {"price": float, "date": <str|None>} or None if no override exists.
+        """
+        row = self.conn.execute(
+            """
+            SELECT price, date
+            FROM product_sale_prices
+            WHERE product_id = ?
+            ORDER BY (date IS NULL), date DESC, price_id DESC
+            LIMIT 1
+            """,
+            (product_id,),
+        ).fetchone()
+        if not row:
+            return None
+        raw_price = row["price"]
+        if raw_price is None:
+            # Treat NULL as "no override"
+            return None
+        return {"price": float(raw_price), "date": row["date"]}
+
+    def set_manual_sale_price_base(self, product_id: int, price: float) -> None:
+        """
+        Append a new manual sale price per base unit for this product.
+        Historical overrides are preserved; the latest row wins.
+        """
+        # Validate price
+        try:
+            p = float(price)
+        except Exception:
+            raise ValueError(f"Invalid sale price: {price!r}")
+        if not (p > 0.0 and p < float("inf")):
+            raise ValueError("Sale price must be a positive, finite number.")
+
+        with self._immediate_tx():
+            try:
+                self.conn.execute(
+                    """
+                    INSERT INTO product_sale_prices(product_id, price)
+                    VALUES (?, ?)
+                    """,
+                    (int(product_id), p),
+                )
+            except sqlite3.IntegrityError as e:
+                # Map integrity violations (including FK errors) to a domain-level error
+                logging.getLogger(__name__).error(
+                    "Integrity error while setting manual sale price for product_id %s: %s",
+                    product_id,
+                    e,
+                    exc_info=True,
+                )
+                raise DomainError(
+                    f"Cannot set price: integrity constraint violated for product_id {product_id} ({e})."
+                ) from e
+
     def latest_prices_base(self, product_id: int) -> dict:
         """
-        Returns per-unit prices in BASE UoM: {"cost": purchase_price, "sale": sale_price, "date": <str|None>}
-        taken from the most recent purchase item for this product. If none, zeros.
+        Returns per-unit prices in BASE UoM:
+          {"cost": purchase_price, "sale": sale_price, "date": <str|None>}
+
+        Cost is always taken from the most recent purchase item.
+        Sale price first checks for a manual override in product_sale_prices;
+        if none exists, it falls back to the most recent purchase item.
+        If no data exists at all, zeros are returned.
         Assumes purchases.date is stored as ISO 'YYYY-MM-DD'.
         """
+        # 1) Latest purchase item (for cost + default sale price)
         row = self.conn.execute(
             """
             SELECT pi.purchase_price, pi.sale_price, pi.uom_id, p.date
@@ -291,20 +355,48 @@ class ProductsRepo:
             """,
             (product_id,),
         ).fetchone()
-        if not row:
-            return {"cost": 0.0, "sale": 0.0, "date": None}
+        cost_base = 0.0
+        sale_base_default = 0.0
+        date_default = None
 
-        frow = self.conn.execute(
-            "SELECT CAST(factor_to_base AS REAL) AS f "
-            "FROM product_uoms WHERE product_id=? AND uom_id=?",
-            (product_id, row["uom_id"]),
-        ).fetchone()
-        f = float(frow["f"]) if frow else 1.0
+        if row:
+            frow = self.conn.execute(
+                "SELECT CAST(factor_to_base AS REAL) AS f "
+                "FROM product_uoms WHERE product_id=? AND uom_id=?",
+                (product_id, row["uom_id"]),
+            ).fetchone()
+            # Validate factor_to_base; fall back to 1.0 if missing/zero
+            try:
+                f = float(frow["f"]) if frow and frow["f"] is not None else 1.0
+            except Exception:
+                f = 1.0
+            if not f:
+                logging.getLogger(__name__).warning(
+                    "factor_to_base is zero for product_id=%s uom_id=%s; using 1.0",
+                    product_id,
+                    row["uom_id"],
+                )
+                f = 1.0
+            cost_base = float(row["purchase_price"] or 0.0) / f
+            sale_base_default = float(row["sale_price"] or 0.0) / f
+            date_default = row["date"]
+
+        # 2) Manual override for sale price (if any).
+        # Treat an override as real only if a row exists (latest_manual_sale_price_base
+        # returns None when no override has ever been stored).
+        override = self.latest_manual_sale_price_base(product_id)
+        if override is not None:
+            sale_base = float(override["price"])
+            override_date = override.get("date")
+            date = override_date if override_date is not None else date_default
+        else:
+            sale_base = sale_base_default
+            date = date_default
 
         return {
-            "cost": float(row["purchase_price"]) / f,
-            "sale": float(row["sale_price"]) / f,
-            "date": row["date"],
+            "cost": cost_base,
+            "sale": sale_base,
+            "date": date,
         }
 
     def on_hand_base(self, product_id: int) -> float:

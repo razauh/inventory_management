@@ -89,6 +89,18 @@ CREATE TABLE IF NOT EXISTS products (
     min_stock_level NUMERIC NOT NULL DEFAULT 0 CHECK (CAST(min_stock_level AS REAL) >= 0)
 );
 
+/* Optional per-product sale price overrides (per BASE UoM).
+   When present, this is treated as the current sale price per base unit
+   for new sales; historical purchase prices remain unchanged. */
+CREATE TABLE IF NOT EXISTS product_sale_prices (
+    price_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL,
+    price      NUMERIC NOT NULL CHECK (CAST(price AS REAL) >= 0),
+    date       DATE NOT NULL DEFAULT CURRENT_DATE,
+    UNIQUE(product_id, date),
+    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS product_uoms (
     product_uom_id INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id     INTEGER NOT NULL,
@@ -305,9 +317,9 @@ CREATE TABLE IF NOT EXISTS sale_payments (
   sale_id                 TEXT    NOT NULL,
   date                    DATE    NOT NULL DEFAULT CURRENT_DATE,
   amount                  NUMERIC NOT NULL,   -- +ve = payment, -ve = refund (original payment amount)
-  method                  TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cash Deposit','Other')),
+  method                  TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cross Cheque','Cash Deposit','Other')),
   bank_account_id         INTEGER,
-  instrument_type         TEXT    CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other')),
+  instrument_type         TEXT    CHECK (instrument_type IN ('online','cheque','cross_cheque','cash_deposit','pay_order','other')),
   instrument_no           TEXT,
   instrument_date DATE,
   deposited_date  DATE,
@@ -1975,7 +1987,7 @@ BEGIN
 
   /* CHEQUE (incoming only) */
   SELECT CASE
-    WHEN NEW.method = 'Cheque' AND (
+    WHEN NEW.method IN ('Cheque','Cross Cheque') AND (
          CAST(NEW.amount AS REAL) <= 0 OR
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no   IS NULL OR
@@ -2022,7 +2034,7 @@ BEGIN
     ELSE 1 END;
 
   SELECT CASE
-    WHEN NEW.method = 'Cheque' AND (
+    WHEN NEW.method IN ('Cheque','Cross Cheque') AND (
          CAST(NEW.amount AS REAL) <= 0 OR
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no   IS NULL OR

@@ -56,8 +56,6 @@ class VendorController(BaseModule):
 
         if hasattr(self.view, "btn_apply_advance"):
             self.view.btn_apply_advance.clicked.connect(self._on_apply_advance_dialog)
-        if hasattr(self.view, "btn_update_clearing"):
-            self.view.btn_update_clearing.clicked.connect(self._on_update_clearing)
         if hasattr(self.view, "btn_grant_credit"):
             try:
                 self.view.btn_grant_credit.clicked.disconnect()
@@ -68,8 +66,8 @@ class VendorController(BaseModule):
             self.view.btn_list_vendor_payments.clicked.connect(self._on_list_vendor_payments)
         if hasattr(self.view, "btn_list_purchase_payments"):
             self.view.btn_list_purchase_payments.clicked.connect(self._on_list_purchase_payments)
-        if hasattr(self.view, "btn_list_pending_instruments"):
-            self.view.btn_list_pending_instruments.clicked.connect(self._on_list_pending_instruments)
+        if hasattr(self.view, "btn_history"):
+            self.view.btn_history.clicked.connect(self._on_history)
         self.view.btn_acc_add.clicked.connect(self._acc_add)
         self.view.btn_acc_edit.clicked.connect(self._acc_edit)
         self.view.btn_acc_deactivate.clicked.connect(self._acc_deactivate)
@@ -514,69 +512,6 @@ class VendorController(BaseModule):
             return
 
         self._reload()
-
-    def _on_update_clearing(self):
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor first.")
-            return
-        class ClearingDialog(QDialog):
-            def __init__(self, parent=None):
-                super().__init__(parent)
-                self.setWindowTitle("Update Clearing State")
-                self._payload = None
-                self.paymentId = QLineEdit()
-                self.paymentId.setPlaceholderText("Payment ID (int)")
-                self.stateCombo = QComboBox()
-                self.stateCombo.addItems(["posted", "pending", "cleared", "bounced"])
-                self.clearedDate = QDateEdit()
-                self.clearedDate.setCalendarPopup(True)
-                self.clearedDate.setDisplayFormat("yyyy-MM-dd")
-                self.clearedDate.setDate(QDate.currentDate())
-                self.notes = QLineEdit()
-                self.notes.setPlaceholderText("Notes (optional)")
-                form = QFormLayout()
-                form.addRow("Payment ID*", self.paymentId)
-                form.addRow("Clearing State*", self.stateCombo)
-                form.addRow("Cleared Date", self.clearedDate)
-                form.addRow("Notes", self.notes)
-                btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-                btns.accepted.connect(self._on_ok)
-                btns.rejected.connect(self.reject)
-                lay = QVBoxLayout(self)
-                lay.addLayout(form)
-                lay.addWidget(btns)
-            def _on_ok(self):
-                pid_txt = self.paymentId.text().strip()
-                if not pid_txt:
-                    return
-                try:
-                    pid = int(pid_txt)
-                except ValueError:
-                    return
-                state = self.stateCombo.currentText()
-                date_str = self.clearedDate.date().toString("yyyy-MM-dd") if state == "cleared" else None
-                self._payload = {"payment_id": pid, "clearing_state": state, "cleared_date": date_str, "notes": (self.notes.text().strip() or None)}
-                self.accept()
-            def payload(self):
-                return self._payload
-        dlg = ClearingDialog(self.view)
-        if not dlg.exec():
-            return
-        data = dlg.payload()
-        if not data:
-            return
-        try:
-            updated = self.ppay.update_clearing_state(payment_id=int(data["payment_id"]), clearing_state=str(data["clearing_state"]), cleared_date=data.get("cleared_date"), notes=data.get("notes"))
-            self.conn.commit()  # Commit the transaction to persist the changes
-        except (ValueError, sqlite3.IntegrityError) as e:
-            info(self.view, "Not updated", str(e))
-            return
-        if updated <= 0:
-            info(self.view, "Not updated", "No payment updated.")
-            return
-        info(self.view, "Updated", "Payment clearing updated.")
-        self._reload()
     def _on_list_vendor_payments(self):
         vid = self._selected_id()
         if not vid:
@@ -594,13 +529,6 @@ class VendorController(BaseModule):
             return
         rows = self.ppay.list_payments_for_purchase(pid)
         info(self.view, "Payments", f"Found {len(rows)} payment(s) for purchase {pid}.")
-    def _on_list_pending_instruments(self):
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor first.")
-            return
-        rows = self.ppay.list_pending_instruments(vid)
-        info(self.view, "Pending", f"Found {len(rows)} pending instrument(s).")
     def _prompt_text(self, title: str) -> Optional[str]:
         class _Prompt(QDialog):
             def __init__(self, parent=None, title="Enter"):
@@ -688,7 +616,32 @@ class VendorController(BaseModule):
             elif r["type"] == "Credit Applied":
                 totals["credit_applied"] += abs(float(r["amount_effect"]))
         closing_balance = balance
-        return {"vendor_id": vendor_id, "period": {"from": date_from, "to": date_to}, "opening_credit": opening_credit, "opening_payable": opening_payable, "rows": out_rows, "totals": totals, "closing_balance": closing_balance}
+        return {
+            "vendor_id": vendor_id,
+            "period": {"from": date_from, "to": date_to},
+            "opening_credit": opening_credit,
+            "opening_payable": opening_payable,
+            "rows": out_rows,
+            "totals": totals,
+            "closing_balance": closing_balance,
+        }
+
+    def _on_history(self):
+        vid = self._selected_id()
+        if not vid:
+            info(self.view, "Select", "Please select a vendor first.")
+            return
+        try:
+            from .payment_history_view import open_vendor_history
+        except Exception as e:
+            info(self.view, "Unavailable", f"Vendor history view is not available: {e}")
+            return
+
+        try:
+            payload = self.build_vendor_statement(int(vid))
+            open_vendor_history(vendor_id=int(vid), history=payload)
+        except Exception as e:
+            info(self.view, "Error", f"Could not open vendor history:\n{e}")
     def list_bank_accounts(self, active_only: bool = True) -> list[dict]:
         vid = self._selected_id()
         if not vid:

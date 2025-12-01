@@ -294,9 +294,14 @@ class SaleForm(QDialog):
         customer_payment_layout.setSpacing(5)  # Very minimal spacing between sections
         customer_payment_layout.addLayout(payment_layout, 1)  # Payment gets less space
 
-        # For quotations, hide the payment section
+        # For quotations, hide the payment section widgets (no parent widget to hide)
         if self.mode == "quotation":
-            payment_layout.parentWidget().setVisible(False)
+            for i in range(payment_layout.rowCount()):
+                for role in (QFormLayout.LabelRole, QFormLayout.FieldRole):
+                    item = payment_layout.itemAt(i, role)
+                    w = item.widget() if item is not None else None
+                    if w is not None:
+                        w.setVisible(False)
 
         # Main layout
         lay = QVBoxLayout(self)
@@ -317,15 +322,12 @@ class SaleForm(QDialog):
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)  # Start with only Cancel, we'll add others manually
         self.save_button = QPushButton("Save")
         self.print_button = QPushButton("Print")
-        self.pdf_export_button = QPushButton("Export to PDF")
         self.buttons.addButton(self.save_button, QDialogButtonBox.AcceptRole)
         self.buttons.addButton(self.print_button, QDialogButtonBox.ActionRole)
-        self.buttons.addButton(self.pdf_export_button, QDialogButtonBox.ActionRole)
 
         # Connect the custom buttons to their respective functions
         self.save_button.clicked.connect(lambda: self._handle_action('save'))
         self.print_button.clicked.connect(lambda: self._handle_action('print'))
-        self.pdf_export_button.clicked.connect(lambda: self._handle_action('export_pdf'))
         self.buttons.rejected.connect(self.reject)
         lay.addWidget(self.buttons)
 
@@ -949,8 +951,6 @@ class SaleForm(QDialog):
         action = getattr(self, '_action', 'save')  # default to 'save'
         if action == 'print':
             p['_should_print'] = True
-        elif action == 'export_pdf':
-            p['_should_export_pdf'] = True
         # For 'save', no flags are needed
 
         # Store the payload temporarily so the caller can access it via self.payload()

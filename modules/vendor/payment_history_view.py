@@ -1,11 +1,22 @@
 # inventory_management/modules/vendor/payment_history_view.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import logging
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import threading
+
+from jinja2 import Template
+from weasyprint import HTML
 
 try:
     # Project-standard UI stack
-    from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
+    from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QObject, QTimer
     from PySide6.QtWidgets import (
         QApplication,
         QDialog,
@@ -19,6 +30,9 @@ try:
     )
 except Exception:  # pragma: no cover
     raise
+
+
+_log = logging.getLogger(__name__)
 
 
 def _t(s: str) -> str:
@@ -116,11 +130,12 @@ class _VendorHistoryDialog(QDialog):
     def __init__(self, *, vendor_id: int, history: Dict[str, Any], parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(_t(f"Vendor History — #{vendor_id}"))
-        self.setModal(True)
         self.resize(960, 560)
 
         self._vendor_id = int(vendor_id)
         self._history = history or {}
+        self._print_in_progress: bool = False
+        self._print_lock = threading.Lock()
 
         outer = QVBoxLayout(self)
 
@@ -175,6 +190,10 @@ class _VendorHistoryDialog(QDialog):
         tx_layout.addWidget(tx_table)
         tabs.addTab(tx_page, _t("Transactions"))
 
+        # Store for printing
+        self._tx_rows = tx_rows
+        self._tx_columns = tx_columns
+
         # Totals tab if available
         totals = self._history.get("totals") or {}
         if totals:
@@ -191,14 +210,12 @@ class _VendorHistoryDialog(QDialog):
             t_layout.addWidget(totals_table)
             tabs.addTab(totals_page, _t("Totals"))
 
-        # Close button
+        # Close / Print buttons
         btns = QDialogButtonBox(QDialogButtonBox.Close, parent=self)
+        self._print_btn = btns.addButton(_t("Print"), QDialogButtonBox.ActionRole)
         btns.rejected.connect(self.reject)
         btns.accepted.connect(self.accept)
-        # Map Close to accept for consistency
-        close_btn = btns.button(QDialogButtonBox.Close)
-        if close_btn:
-            close_btn.clicked.connect(self.accept)
+        self._print_btn.clicked.connect(self._on_print)
         outer.addWidget(btns)
 
     # -----------------------------
@@ -306,6 +323,244 @@ class _VendorHistoryDialog(QDialog):
             return float(v)
         except (TypeError, ValueError):
             return default
+
+    def _dict_to_rows_cols(self, data: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """
+        Convert a simple totals dict into rows/columns suitable for
+        _DictTableModel. We use a single row with sorted keys so headers
+        stay stable.
+        """
+        if not isinstance(data, dict):
+            return [], []
+        cols = sorted(data.keys())
+        row = {k: data.get(k) for k in cols}
+        return [row], cols
+
+    # -----------------------------
+    # Helpers
+    # -----------------------------
+    @staticmethod
+    def _find_project_root(start_path: str) -> str:
+        """
+        Walk upward from the given path looking for a project root marker
+        (pyproject.toml or setup.py). Fallback to PROJECT_ROOT env var or
+        the original two-level dirname traversal if none is found.
+        """
+        cur = os.path.abspath(start_path)
+        markers = ("pyproject.toml", "setup.py")
+        while True:
+            if any(os.path.isfile(os.path.join(cur, m)) for m in markers):
+                return cur
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+
+        env_root = os.environ.get("PROJECT_ROOT")
+        if env_root and os.path.isdir(env_root):
+            return os.path.abspath(env_root)
+
+        # Fallback to previous behavior: two levels up from this file.
+        return os.path.dirname(os.path.dirname(start_path))
+
+    # -----------------------------
+    # Printing
+    # -----------------------------
+    def _on_print(self) -> None:
+        """Render the transactions table to a landscape PDF."""
+        with self._print_lock:
+            if self._print_in_progress:
+                return
+            self._print_in_progress = True
+
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.setOverrideCursor(Qt.WaitCursor)
+            except Exception:
+                app = None
+
+        rows = getattr(self, "_tx_rows", []) or []
+        cols = getattr(self, "_tx_columns", []) or []
+        if not rows or not cols:
+            with self._print_lock:
+                self._print_in_progress = False
+            if app is not None:
+                try:
+                    app.restoreOverrideCursor()
+                except Exception:
+                    pass
+            return
+
+        closing = self._safe_float(self._history.get("closing_balance"), 0.0) or 0.0
+        if closing > 0:
+            total_label = "Total payable to vendor"
+            total_amount = closing
+        elif closing < 0:
+            total_label = "Total receivable from vendor"
+            total_amount = abs(closing)
+        else:
+            total_label = "No balance (account settled)"
+            total_amount = 0.0
+
+        def worker():
+            try:
+                # Load template using robust project-root resolution
+                template_path = ""
+                try:
+                    here = os.path.abspath(os.path.dirname(__file__))
+                    project_root = self._find_project_root(here)
+                    template_path = os.path.join(
+                        project_root, "resources", "templates", "invoices", "vendor_history_table.html"
+                    )
+                    with open(template_path, "r", encoding="utf-8") as f:
+                        tpl = f.read()
+                except (OSError, FileNotFoundError) as e:
+                    _log.error(
+                        "Failed to load vendor history template at %s: %s",
+                        template_path or "<unknown>",
+                        e,
+                        exc_info=True,
+                    )
+                    # Fallback: minimal template that surfaces the error visibly
+                    tpl_local = (
+                        "<html><body><p>Failed to load vendor history template."
+                        " See logs for details.</p></body></html>"
+                    )
+                else:
+                    tpl_local = tpl
+
+                template = Template(tpl_local, autoescape=True)
+
+                # Normalize rows: ensure dicts and coerce numeric-like values
+                numeric_cols = {
+                    "amount_effect",
+                    "balance_after",
+                    "opening_credit",
+                    "opening_payable",
+                    "closing_balance",
+                }
+                norm_rows: List[Dict[str, Any]] = []
+                for r in rows or []:
+                    if isinstance(r, dict):
+                        row_dict = dict(r)
+                    else:
+                        try:
+                            row_dict = dict(r)
+                        except Exception:
+                            continue
+                    cleaned: dict = {}
+                    for k in cols:
+                        v = row_dict.get(k)
+                        try:
+                            if isinstance(v, (int, float)):
+                                cleaned[k] = v
+                            elif isinstance(v, str) and v.strip() and k in numeric_cols:
+                                # Best-effort numeric parse only for known numeric columns
+                                cleaned[k] = float(v)
+                            else:
+                                cleaned[k] = v
+                        except Exception:
+                            cleaned[k] = v
+                    norm_rows.append(cleaned)
+
+                html = template.render(
+                    title=f"Vendor History — #{self._vendor_id}",
+                    keys=cols,
+                    labels=cols,
+                    rows=norm_rows,
+                    vendor_id=self._vendor_id,
+                    total_label=total_label,
+                    total_amount=total_amount,
+                )
+
+                temp_root = tempfile.gettempdir()
+                pdf_dir = os.path.join(temp_root, "inventory_vendor_history")
+                os.makedirs(pdf_dir, exist_ok=True)
+
+                # Clean up PDFs older than 1 day
+                now = time.time()
+                try:
+                    for name in os.listdir(pdf_dir):
+                        if not name.lower().endswith(".pdf"):
+                            continue
+                        path = os.path.join(pdf_dir, name)
+                        try:
+                            if now - os.path.getmtime(path) > 86400:
+                                os.remove(path)
+                        except OSError:
+                            continue
+                except OSError:
+                    pass
+
+                file_path = os.path.join(pdf_dir, f"vendor_{self._vendor_id}.pdf")
+                try:
+                    HTML(string=html).write_pdf(file_path)
+                except Exception as e:
+                    _log.error(
+                        "Failed to render vendor history PDF to %s: %s",
+                        file_path,
+                        e,
+                        exc_info=True,
+                    )
+                    return
+
+                try:
+                    if sys.platform.startswith("win"):
+                        subprocess.run(
+                            ["cmd", "/c", "start", "", file_path],
+                            shell=False,
+                            timeout=5,
+                        )
+                    elif sys.platform.startswith("darwin"):
+                        subprocess.run(["open", file_path], timeout=5)
+                    else:
+                        subprocess.run(["xdg-open", file_path], timeout=5)
+                except subprocess.TimeoutExpired:
+                    _log.warning(
+                        "Timed out while trying to open vendor history PDF: %s",
+                        file_path,
+                    )
+                except Exception as e:
+                    _log.warning(
+                        "Failed to open vendor history PDF %s: %s", file_path, e
+                    )
+            finally:
+                finish()
+
+        def finish():
+            def reset():
+                with self._print_lock:
+                    self._print_in_progress = False
+                a = QApplication.instance()
+                if a is not None:
+                    try:
+                        a.restoreOverrideCursor()
+                    except Exception:
+                        pass
+
+            app_local = QApplication.instance()
+            if app_local is not None:
+                QTimer.singleShot(0, reset)
+            else:
+                with self._print_lock:
+                    self._print_in_progress = False
+
+        # Track the worker thread so we can join it on close.
+        self._print_thread = threading.Thread(target=worker, daemon=False)
+        self._print_thread.start()
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """
+        Ensure any in-flight print thread has a chance to finish before closing.
+        """
+        try:
+            th = getattr(self, "_print_thread", None)
+            if th is not None and th.is_alive():
+                th.join(timeout=2.0)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 
 # -----------------------------

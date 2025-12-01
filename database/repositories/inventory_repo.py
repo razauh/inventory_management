@@ -152,17 +152,26 @@ class InventoryRepo:
 
         NOTE: This method is read-only and does not update any costing.
         """
+        # NOTE: We rely on the schema-level UNIQUE index
+        # `idx_product_uoms_one_base` (product_id WHERE is_base = 1) to ensure
+        # there is at most one base UoM row per product.
         row = self.conn.execute(
             """
             SELECT
-                v.product_id                 AS product_id,
-                v.product_name               AS product_name,
-                v.uom_name                   AS uom_name,
-                CAST(v.on_hand_qty AS REAL)  AS on_hand_qty,
-                /* unit_value/total_value may or may not exist depending on the view */
-                v.unit_value                 AS unit_value,
-                v.total_value                AS total_value
+                v.product_id                               AS product_id,
+                COALESCE(p.name, '')                       AS product_name,
+                COALESCE(u.unit_name, '')                  AS uom_name,
+                CAST(v.qty_in_base AS REAL)                AS on_hand_qty,
+                v.unit_value                               AS unit_value,
+                v.total_value                              AS total_value
             FROM v_stock_on_hand v
+            LEFT JOIN products p
+                   ON p.product_id = v.product_id
+            LEFT JOIN product_uoms pu
+                   ON pu.product_id = v.product_id
+                  AND pu.is_base = 1
+            LEFT JOIN uoms u
+                   ON u.uom_id = pu.uom_id
             WHERE v.product_id = ?
             """,
             (int(product_id),),

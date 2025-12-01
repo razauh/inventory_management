@@ -6,7 +6,7 @@ Encapsulates the widgets used by ExpenseController:
 - Optional single-date filter (blank == no filter, defaults to today)
 - Category filter
 - Advanced filters: Date From / Date To, Min Amount / Max Amount
-- Buttons: Add / Edit / Delete / Manage Categories / Export CSV
+- Buttons: Add / Edit / Delete / Manage Categories / Print
 - Table view for expenses
 - Summary (totals by category) table
 
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 from PySide6.QtCore import Qt, QDate
+import warnings
 
 
 class ExpenseView(QWidget):
@@ -51,7 +52,7 @@ class ExpenseView(QWidget):
 
         # ------------------------------------------------------------------
         # Top row: search, single-date filter, clear button, category filter,
-        #          action buttons (Add/Edit/Delete/Manage/Export)
+        #          action buttons (Add/Edit/Delete/Manage/Print)
         # ------------------------------------------------------------------
         top_row = QHBoxLayout()
         top_row.setSpacing(6)
@@ -109,13 +110,13 @@ class ExpenseView(QWidget):
         self.btn_edit = QPushButton("Edit")
         self.btn_delete = QPushButton("Delete")
         self.btn_manage_categories = QPushButton("Manage Categories")
-        self.btn_export_csv = QPushButton("Export CSV")
+        self.btn_print = QPushButton("Print")
 
         top_row.addWidget(self.btn_add)
         top_row.addWidget(self.btn_edit)
         top_row.addWidget(self.btn_delete)
         top_row.addWidget(self.btn_manage_categories)
-        top_row.addWidget(self.btn_export_csv)
+        top_row.addWidget(self.btn_print)
 
         root.addLayout(top_row)
 
@@ -196,6 +197,19 @@ class ExpenseView(QWidget):
         self.tbl_totals.setMaximumHeight(160)
         self.tbl_totals.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self.tbl_totals)
+
+    # Backward compatibility: legacy name for the Print button
+    @property
+    def btn_export_csv(self) -> QPushButton:
+        """
+        Deprecated alias for btn_print (was previously used for CSV export).
+        """
+        warnings.warn(
+            "ExpenseView.btn_export_csv is deprecated; use btn_print instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.btn_print
 
     # ----------------------------------------------------------------------
     # Convenience properties for the controller

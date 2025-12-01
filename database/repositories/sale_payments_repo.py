@@ -30,6 +30,7 @@ class SalePaymentsRepo:
         "Bank Transfer",
         "Card",
         "Cheque",
+        "Cross Cheque",
         "Cash Deposit",
         "Other",
     }
@@ -55,6 +56,7 @@ class SalePaymentsRepo:
         "Card": "pending",          # card payment pending verification
         "Other": "pending",         # other payment pending verification
         "Cheque": "pending",        # cheque pending clearing
+        "Cross Cheque": "pending",  # cross cheque pending clearing
         "Cash Deposit": "pending",  # cash deposit pending verification
     }
 
@@ -127,16 +129,16 @@ class SalePaymentsRepo:
             if instrument_type != "online":
                 raise ValueError("Bank Transfer must use instrument_type='online'.")
 
-        elif method == "Cheque":
-            # Incoming-only
+        elif method in ("Cheque", "Cross Cheque"):
+            # Cheque-like methods (Cheque and Cross Cheque) share the same rules
             if amount <= 0:
-                raise ValueError("Cheque must be a positive (incoming) amount.")
+                raise ValueError(f"{method} must be a positive (incoming) amount.")
             if bank_account_id is None:
-                raise ValueError("Cheque requires a company bank account.")
+                raise ValueError(f"{method} requires a company bank account.")
             if not instrument_no:
-                raise ValueError("Cheque requires a cheque number.")
+                raise ValueError(f"{method} requires a cheque number.")
             if instrument_type != "cross_cheque":
-                raise ValueError("Cheque must use instrument_type='cross_cheque'.")
+                raise ValueError(f"{method} must use instrument_type='cross_cheque'.")
 
         elif method == "Cash Deposit":
             # Incoming-only

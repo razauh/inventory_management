@@ -5,7 +5,7 @@ Wires ExpensesRepo <-> models <-> ExpenseView and connects Add/Edit/Delete
 to ExpenseForm. Adds:
 - Manage Categories dialog
 - Totals-by-category summary refresh
-- CSV export
+- Print support for the current expense list and totals
 - Advanced filters (date range, amount range)
 - Selection-aware UX (double-click, Enter, Delete, Ctrl+N/Ctrl+E)
 
@@ -17,12 +17,20 @@ The view exposes:
 from __future__ import annotations
 
 from typing import Optional, List, Dict
-import csv
 import sqlite3  # for error mapping of DB exceptions
+import html
+import logging
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget, QMessageBox, QFileDialog, QDialog
-from PySide6.QtGui import QKeySequence, QShortcut, QStandardItemModel, QStandardItem
+from PySide6.QtWidgets import QWidget, QMessageBox, QDialog
+from PySide6.QtGui import (
+    QKeySequence,
+    QShortcut,
+    QStandardItemModel,
+    QStandardItem,
+    QTextDocument,
+)
+from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 
 from ..base_module import BaseModule
 from .view import ExpenseView
@@ -61,7 +69,7 @@ class ExpenseController(BaseModule):
         self.view.btn_edit.clicked.connect(self._on_edit)
         self.view.btn_delete.clicked.connect(self._on_delete)
         self.view.btn_manage_categories.clicked.connect(self._on_manage_categories)
-        self.view.btn_export_csv.clicked.connect(self._on_export_csv)
+        self.view.btn_print.clicked.connect(self._on_print)
 
         # Table shortcuts / interactions
         self._wire_table_shortcuts()
@@ -318,38 +326,139 @@ class ExpenseController(BaseModule):
         except Exception as e:
             self._handle_error("Failed to open category manager", e)
 
-    def _on_export_csv(self) -> None:
-        """Export the current table view to CSV."""
-        path, _ = QFileDialog.getSaveFileName(
-            self.view, "Export CSV", "expenses.csv", "CSV Files (*.csv)"
-        )
-        if not path:
-            return
-
+    def _on_print(self) -> None:
+        """
+        Print the current expense list (and optional totals) using the system
+        print dialog.  This replaces the older CSV export.
+        """
         model = self.view.tbl_expenses.model()
-        if model is None:
-            ui.info(self.view, "Export", "Nothing to export.")
+        # Guard against missing or empty models; nothing to print in that case.
+        if model is None or getattr(model, "rowCount", lambda: 0)() == 0:
+            ui.info(self.view, "Print", "Nothing to print.")
             return
 
         try:
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                # headers (if provided by the model)
-                headers = getattr(model, "HEADERS", None)
-                if headers:
-                    w.writerow(headers)
-                else:
-                    # fall back to model columns
-                    cols = model.columnCount()
-                    w.writerow([f"Col {i+1}" for i in range(cols)])
+            html_chunks: List[str] = []
 
-                # rows
-                for r in range(model.rowCount()):
-                    row = []
-                    for c in range(model.columnCount()):
-                        row.append(model.data(model.index(r, c)))
-                    w.writerow(row)
+            # Heading and active filters summary
+            html_chunks.append("<h2>Expenses</h2>")
 
-            ui.info(self.view, "Exported", f"Saved to {path}")
+            filters: List[str] = []
+            if self.view.search_text:
+                filters.append(f"Search: {html.escape(self.view.search_text)}")
+            if self.view.selected_date:
+                filters.append(f"Date: {html.escape(self.view.selected_date)}")
+            if self.view.selected_category_id is not None:
+                # show category text instead of id
+                filters.append(f"Category: {html.escape(self.view.cmb_category.currentText())}")
+
+            # Advanced filters (only if user actually set them)
+            if self.view.date_from_str or self.view.date_to_str:
+                filters.append(
+                    f"Date range: {html.escape(self.view.date_from_str or '…')} → {html.escape(self.view.date_to_str or '…')}"
+                )
+            if self.view.amount_min_val is not None or self.view.amount_max_val is not None:
+                filters.append(
+                    f"Amount range: "
+                    f"{self.view.amount_min_val if self.view.amount_min_val is not None else '…'}"
+                    f" → "
+                    f"{self.view.amount_max_val if self.view.amount_max_val is not None else '…'}"
+                )
+
+            if filters:
+                html_chunks.append("<p>" + "<br>".join(filters) + "</p>")
+
+            # Build HTML table from the current model
+            cols = model.columnCount()
+            rows = model.rowCount()
+
+            html_chunks.append(
+                "<table border='1' cellspacing='0' cellpadding='4' "
+                "style='border-collapse:collapse; width:100%; font-size:10px;'>"
+            )
+            # headers
+            html_chunks.append("<thead><tr>")
+            for c in range(cols):
+                hdr = model.headerData(c, Qt.Horizontal, Qt.DisplayRole)
+                text_hdr = "" if hdr is None else html.escape(str(hdr))
+                html_chunks.append(f"<th>{text_hdr}</th>")
+            html_chunks.append("</tr></thead><tbody>")
+
+            # body
+            for r in range(rows):
+                html_chunks.append("<tr>")
+                for c in range(cols):
+                    idx = model.index(r, c)
+                    val = model.data(idx, Qt.DisplayRole)
+                    text = "" if val is None else html.escape(str(val))
+                    hdr = model.headerData(c, Qt.Horizontal, Qt.DisplayRole)
+                    hdr_key = (str(hdr or "").strip().lower())
+                    if hdr_key in {"amount", "total", "price"}:
+                        html_chunks.append(
+                            f"<td style='text-align:right;'>{text}</td>"
+                        )
+                    else:
+                        html_chunks.append(f"<td>{text}</td>")
+                html_chunks.append("</tr>")
+            html_chunks.append("</tbody></table>")
+
+            # Optional grand total (best-effort, computed from the last column)
+            total_amount = None
+            logger = logging.getLogger(__name__)
+            skipped = 0
+            skipped_vals: List[str] = []
+            try:
+                total_amount = 0.0
+                for r in range(rows):
+                    idx = model.index(r, cols - 1)
+                    val = model.data(idx, Qt.DisplayRole)
+                    try:
+                        total_amount += float(val or 0.0)
+                    except (ValueError, TypeError):
+                        skipped += 1
+                        try:
+                            skipped_vals.append(str(val))
+                        except Exception:
+                            skipped_vals.append("<unrepr>")
+                        continue
+            except Exception:
+                total_amount = None
+
+            if total_amount is not None:
+                html_chunks.append(
+                    "<p style='margin-top:8px; text-align:right;'>"
+                    f"<b>Total amount:</b> {total_amount:.2f}"
+                    "</p>"
+                )
+                if skipped > 0:
+                    logger.warning(
+                        "Expense print: skipped %d rows with invalid amounts when computing total: %s",
+                        skipped,
+                        skipped_vals,
+                    )
+                    html_chunks.append(
+                        f"<p style='margin-top:4px; font-size:8px; color:#666;'>"
+                        f"Note: {skipped} row(s) were skipped due to invalid amounts."
+                        f"</p>"
+                    )
+
+            html_content = "".join(html_chunks)
+
+            doc = QTextDocument()
+            doc.setHtml(html_content)
+
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setDocName("Expenses")
+
+            dlg = QPrintDialog(printer, self.view)
+            if dlg.exec() != QDialog.Accepted:
+                return
+
+            # Support both Qt6's print_ and older print
+            if hasattr(doc, "print_"):
+                doc.print_(printer)
+            else:  # pragma: no cover - fallback path
+                doc.print(printer)  # type: ignore[attr-defined]
+
         except Exception as e:
-            self._handle_error("Failed to export CSV", e)
+            self._handle_error("Failed to print expenses", e)

@@ -1,7 +1,19 @@
 from PySide6.QtWidgets import (
-    QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QCheckBox, QComboBox, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QDialogButtonBox,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGroupBox,
+    QCheckBox,
+    QComboBox,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
 )
 from PySide6.QtCore import Qt
 from ...utils.validators import non_empty, is_positive_number, try_parse_float
@@ -138,7 +150,9 @@ class ProductForm(QDialog):
         srow = QHBoxLayout()
         self.cmb_sales_alt = UomPicker(self.repo)
         self.txt_sales_factor = QLineEdit()
-        self.txt_sales_factor.setPlaceholderText("Factor → base (e.g., 12 or 0.5)")
+        # Business-facing meaning: how many of this UoM fit into ONE base unit
+        # (e.g., base=box, alt=piece → enter 100 for 100 pieces per box).
+        self.txt_sales_factor.setPlaceholderText("Units per base (e.g., 100)")
         self.txt_sales_factor.setMaximumWidth(100)  # Smaller width for factor field
         self.btn_sales_add = QPushButton("Add Sales Alternate")
         srow.addWidget(QLabel("Alternate"))
@@ -148,7 +162,8 @@ class ProductForm(QDialog):
         srow.addWidget(self.btn_sales_add)
         sl.addLayout(srow)
         self.tbl_sales = QTableWidget(0, 2)
-        self.tbl_sales.setHorizontalHeaderLabels(["UoM", "Factor→Base"])
+        # Display "Units per base" instead of internal factor_to_base
+        self.tbl_sales.setHorizontalHeaderLabels(["UoM", "Units per base"])
         self.tbl_sales.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tbl_sales.setEditTriggers(QTableWidget.NoEditTriggers)
         # ensure row selection UX is correct
@@ -238,11 +253,13 @@ class ProductForm(QDialog):
         lst.append({"uom_id": uom_id, "factor_to_base": factor})
         
     def _refresh_tables(self):
-        # sales table
+        # sales table (show "units per base" instead of raw factor_to_base)
         self.tbl_sales.setRowCount(len(self._sales_alts))
         for r, a in enumerate(self._sales_alts):
             self.tbl_sales.setItem(r, 0, QTableWidgetItem(self._uom_name(a["uom_id"])))
-            self.tbl_sales.setItem(r, 1, QTableWidgetItem(f'{float(a["factor_to_base"]):g}'))
+            f_db = float(a.get("factor_to_base") or 0.0)
+            units_per_base = (1.0 / f_db) if f_db not in (0.0, 0) else 0.0
+            self.tbl_sales.setItem(r, 1, QTableWidgetItem(f'{units_per_base:g}' if units_per_base else ""))
             
     def _selected_table_and_row(self):
         """Return ('sales', row) based on which table actually has a selection."""
@@ -258,12 +275,21 @@ class ProductForm(QDialog):
         return self._base_id is not None
         
     def _add_sales_alt(self):
-        if not self.chk_sales.isChecked(): return
+        if not self.chk_sales.isChecked():
+            return
         u = self.cmb_sales_alt.current_uom_id()
-        if u is None: return
+        if u is None:
+            return
         t = self.txt_sales_factor.text().strip()
-        if not is_positive_number(t): return
-        f = float(t)
+        ok, units_per_base = try_parse_float(t)
+        if not ok or units_per_base is None or units_per_base <= 0:
+            info(self, "Invalid value", "Units per base must be a number greater than zero.")
+            return
+        # Internally we store factor_to_base = base_units per 1 alt unit.
+        # If base is a large unit (box) and alt is a smaller unit (piece),
+        # and the user enters 100 pieces per box, then:
+        #   factor_to_base = 1 base / 100 alt = 0.01
+        f = 1.0 / units_per_base
         if not self._ensure_base_selected(): return
         if u == self._base_id:  # base already 1.0, nothing to add
             self._refresh_tables(); return
@@ -367,7 +393,7 @@ class ProductForm(QDialog):
                 "enabled_sales": sales_on,
                 "base_uom_id": base_id,     # always present now
                 "sales_alts": sales,
-            }
+            },
         }
         
     def accept(self):

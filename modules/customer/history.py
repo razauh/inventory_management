@@ -60,6 +60,7 @@ class CustomerHistoryService:
                 SELECT
                     s.sale_id,
                     s.customer_id,
+                    c.name AS customer_name,
                     s.date,
                     s.total_amount,
                     s.paid_amount,
@@ -73,6 +74,7 @@ class CustomerHistoryService:
                     COALESCE(sdt.subtotal_before_order_discount, 0.0) AS subtotal_before_order_discount,
                     COALESCE(sdt.calculated_total_amount, s.total_amount) AS calculated_total_amount
                 FROM sales s
+                JOIN customers c ON c.customer_id = s.customer_id
                 LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
                 WHERE s.customer_id = ?
                   AND s.doc_type = 'sale'
@@ -281,8 +283,21 @@ class CustomerHistoryService:
         last_payment_date = payments[-1]["date"] if payments else None
         last_advance_date = advances["entries"][-1]["tx_date"] if advances["entries"] else None
 
+        # Prefer customer name from sales payload; fall back to direct lookup.
+        customer_name: Optional[str] = None
+        if sales:
+            customer_name = sales[0].get("customer_name")
+        if customer_name is None:
+            with self._connect() as con:
+                row = con.execute(
+                    "SELECT name FROM customers WHERE customer_id = ?;",
+                    (customer_id,),
+                ).fetchone()
+            customer_name = row["name"] if row and row["name"] else None
+
         return {
             "customer_id": customer_id,
+            "customer_name": customer_name,
             "credit_balance": float(advances["balance"]),
             "sales_count": len(sales),
             "open_due_sum": open_due_sum,

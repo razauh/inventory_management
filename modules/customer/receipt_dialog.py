@@ -43,6 +43,7 @@ METHODS = [
     "Bank Transfer",
     "Card",
     "Cheque",
+    "Cross Cheque",
     "Cash Deposit",
     "Other",
 ]
@@ -62,21 +63,26 @@ METHOD_TO_FORCED_INSTRUMENT = {
     "Bank Transfer": "online",
     "Card": "other",
     "Cheque": "cross_cheque",
+    "Cross Cheque": "cross_cheque",
     "Cash Deposit": "cash_deposit",
     "Other": "other",
 }
 
+# Default clearing behavior is aligned with SalePaymentsRepo.DEFAULT_CLEARING_STATE_BY_METHOD:
+#   - Cash is immediately cleared.
+#   - Non-cash methods start as pending until explicitly cleared/bounced.
 METHOD_TO_DEFAULT_CLEARING = {
-    "Cash": "posted",
-    "Bank Transfer": "posted",
-    "Card": "posted",
+    "Cash": "cleared",
+    "Bank Transfer": "pending",
+    "Card": "pending",
     "Cheque": "pending",
+    "Cross Cheque": "pending",
     "Cash Deposit": "pending",
-    "Other": "posted",
+    "Other": "pending",
 }
 
-METHODS_REQUIRE_BANK = {"Bank Transfer", "Cheque", "Cash Deposit"}
-METHODS_REQUIRE_INSTR_NO = {"Bank Transfer", "Cheque", "Cash Deposit"}
+METHODS_REQUIRE_BANK = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"}
+METHODS_REQUIRE_INSTR_NO = {"Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"}
 
 # -----------------------------
 # Public APIs
@@ -144,6 +150,7 @@ class _CustomerMoneyDialog(QDialog):
         super().__init__(None)
         self.setWindowTitle(_t("Customer Money"))
         self.setModal(True)
+        self._mode = mode
 
         # --- common state ---
         self._payload: Optional[dict] = None
@@ -158,6 +165,7 @@ class _CustomerMoneyDialog(QDialog):
         self._today: Optional[Callable[[], str]] = self._defaults.get("today")
         self._get_available_advance: Optional[Callable[[int], float]] = self._defaults.get("get_available_advance")
         self._get_sale_due: Optional[Callable[[str], float]] = self._defaults.get("get_sale_due")
+        self._max_receipt_amount: Optional[float] = self._defaults.get("max_amount")
 
         # Store original sales data for filtering
         self._original_sales: list[dict] = []
@@ -229,6 +237,30 @@ class _CustomerMoneyDialog(QDialog):
         self.page_apply = QWidget()
         self._build_apply_page(self.page_apply)
         self.pageStack.addWidget(self.page_apply)
+
+        # Restrict visible/active tabs based on the entry mode so that
+        # callers always receive a payload matching the requested action.
+        if self._mode == "receipt":
+            for idx in (1, 2):
+                self.tabBar.setTabEnabled(idx, False)
+                try:
+                    self.tabBar.setTabVisible(idx, False)  # Qt >= 5.4
+                except Exception:
+                    pass
+        elif self._mode == "advance":
+            for idx in (0, 2):
+                self.tabBar.setTabEnabled(idx, False)
+                try:
+                    self.tabBar.setTabVisible(idx, False)
+                except Exception:
+                    pass
+        elif self._mode == "apply_advance":
+            for idx in (0, 1):
+                self.tabBar.setTabEnabled(idx, False)
+                try:
+                    self.tabBar.setTabVisible(idx, False)
+                except Exception:
+                    pass
 
         # Common hint/error/buttons
         self.hintLabel = QLabel("")
@@ -394,13 +426,9 @@ class _CustomerMoneyDialog(QDialog):
         self.advNotesEdit.setFixedHeight(80)
         form.addRow(QLabel(_t("Notes")), self.advNotesEdit)
 
-        self.advCreatedByEdit = QLineEdit()
-        self.advCreatedByEdit.setValidator(QIntValidator())
-        form.addRow(QLabel(_t("Created By")), self.advCreatedByEdit)
-
-        # available credit (if adapter provided)
+        # available advance (if adapter provided)
         self.availableLabel = QLabel("")
-        form.addRow(QLabel(_t("Available Credit")), self.availableLabel)
+        form.addRow(QLabel(_t("Available Advance")), self.availableLabel)
 
         # wire
         self.advAmountEdit.valueChanged.connect(self._validate_live_advance)
@@ -476,25 +504,38 @@ class _CustomerMoneyDialog(QDialog):
 
     # ---------- Data loaders ----------
     def _load_sales(self) -> None:
-        # used by both receipt and apply pages
-        sales: list[dict] = []
+        """
+        Load sales data for both the receipt page and the apply-advance page.
+
+        Receipt page:
+          - Uses full list from _list_sales_for_customer (all sales).
+        Apply page:
+          - Prefers the pre-filtered _sales_seed (e.g., only sales with remaining>0),
+            falling back to the full list if no seed was supplied.
+        """
+        sales_receipt: list[dict] = []
+        sales_apply: list[dict] = []
         try:
             if self._list_sales_for_customer:
-                sales = list(self._list_sales_for_customer(self._customer_id))
-            elif isinstance(self._sales_seed, list):
-                sales = list(self._sales_seed)
+                sales_receipt = list(self._list_sales_for_customer(self._customer_id))
+            if isinstance(self._sales_seed, list):
+                sales_apply = list(self._sales_seed)
         except Exception:
-            sales = []
+            sales_receipt = sales_receipt or []
+            sales_apply = sales_apply or []
+
+        if not sales_apply:
+            sales_apply = sales_receipt
 
         # Store original sales for filtering (only for apply advance page)
         if hasattr(self, "applySalesTable"):
-            self._original_sales = sales[:]  # Make a copy of the sales list
-            self._populate_sales_table(sales)  # Populate the sales table
+            self._original_sales = sales_apply[:]  # Make a copy of the sales list
+            self._populate_sales_table(sales_apply)  # Populate the sales table
 
         # Receipt sale picker
         if hasattr(self, "salePicker"):
             self.salePicker.clear()
-            for row in sales:
+            for row in sales_receipt:
                 sid = str(row.get("sale_id", ""))
                 doc = str(row.get("doc_no", sid))
                 date = str(row.get("date", ""))
@@ -552,13 +593,39 @@ class _CustomerMoneyDialog(QDialog):
             self.salePicker.setCurrentIndex(self.salePicker.count() - 1)
         self.salePicker.setEnabled(False)
 
-        # Apply page
-        for i in range(self.applySalePicker.count()):
-            data = self.applySalePicker.itemData(i)
-            if isinstance(data, dict) and str(data.get("sale_id", "")) == self._locked_sale_id:
-                self.applySalePicker.setCurrentIndex(i)
-                self.applySalePicker.setEnabled(False)
-                break
+        # Apply page (legacy combo-based UX) - keep for backward compatibility
+        if hasattr(self, "applySalePicker"):
+            for i in range(self.applySalePicker.count()):
+                data = self.applySalePicker.itemData(i)
+                if isinstance(data, dict) and str(data.get("sale_id", "")) == self._locked_sale_id:
+                    self.applySalePicker.setCurrentIndex(i)
+                    self.applySalePicker.setEnabled(False)
+                    break
+        # New table-based Apply page: if a locked sale is provided and the
+        # table has been populated, select that sale and disable selection.
+        elif hasattr(self, "applySalesTable") and hasattr(self, "_sales_model_data"):
+            try:
+                from PySide6.QtCore import QItemSelectionModel
+            except Exception:
+                QItemSelectionModel = None  # type: ignore
+            try:
+                model = self.applySalesTable.model()
+                sm = self.applySalesTable.selectionModel()
+            except Exception:
+                model = None
+                sm = None
+            if model is not None and sm is not None and self._sales_model_data:
+                target_row = None
+                for idx, row in enumerate(self._sales_model_data):
+                    if str(row.get("sale_id", "")) == str(self._locked_sale_id):
+                        target_row = idx
+                        break
+                if target_row is not None:
+                    index = model.index(target_row, 0)
+                    if QItemSelectionModel is not None:
+                        sm.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                    self.applySalesTable.setCurrentIndex(index)
+                    self.applySalesTable.setEnabled(False)
 
     # ---------- Prefills (receipt page only) ----------
     def _apply_prefills_receipt(self) -> None:
@@ -646,6 +713,8 @@ class _CustomerMoneyDialog(QDialog):
         self._validate_live()
 
     def _update_hint(self) -> None:
+        if not hasattr(self, "hintLabel"):
+            return
         idx = self.pageStack.currentIndex()
         hint = ""
         if idx == self.PAGE_RECEIPT:
@@ -655,6 +724,8 @@ class _CustomerMoneyDialog(QDialog):
             elif method == "Bank Transfer":
                 hint = _t("Incoming only (>0). Company bank required. Instrument type 'online'. Instrument no required.")
             elif method == "Cheque":
+                hint = _t("Incoming only (>0). Company bank required. Type 'cross_cheque'. Cheque no required.")
+            elif method == "Cross Cheque":
                 hint = _t("Incoming only (>0). Company bank required. Type 'cross_cheque'. Cheque no required.")
             elif method == "Cash Deposit":
                 hint = _t("Incoming only (>0). Company bank required. Type 'cash_deposit'. Deposit slip no required.")
@@ -669,9 +740,18 @@ class _CustomerMoneyDialog(QDialog):
     def _update_remaining(self) -> None:
         data = self.salePicker.currentData()
         if isinstance(data, dict):
-            total = float(data.get("total", 0.0))
-            paid = float(data.get("paid", 0.0))
-            rem = total - paid
+            # Prefer adapter for canonical remaining_due (includes advances, etc.)
+            rem = None
+            sid = str(data.get("sale_id", "")) if data.get("sale_id") is not None else ""
+            if self._get_sale_due and sid:
+                try:
+                    rem = float(self._get_sale_due(sid))
+                except Exception:
+                    rem = None
+            if rem is None:
+                total = float(data.get("total", 0.0))
+                paid = float(data.get("paid", 0.0))
+                rem = total - paid
             self.saleRemainingLabel.setText(_t(f"Remaining: ${rem:.2f}"))
         else:
             self.saleRemainingLabel.setText("")
@@ -718,6 +798,16 @@ class _CustomerMoneyDialog(QDialog):
             return False, _t("Amount cannot be zero.")
         if amount < 0 and method != "Cash":
             return False, _t("Refunds (negative amounts) are only allowed with the Cash method.")
+        # Optional ceiling used by Sales module when recording remaining
+        # payments against a specific sale: do not allow more than the
+        # remaining due passed in defaults (max_amount).
+        if self._max_receipt_amount is not None and amount > 0:
+            try:
+                max_amt = float(self._max_receipt_amount)
+            except (TypeError, ValueError):
+                max_amt = None
+            if max_amt is not None and amount - max_amt > 1e-9:
+                return False, _t("Amount cannot exceed remaining due for this sale.")
 
         # 4) Bank rules
         bank_id = self._current_bank_id()
@@ -732,11 +822,11 @@ class _CustomerMoneyDialog(QDialog):
         if instype not in INSTRUMENT_TYPES:
             return False, _t("Payment method is not supported.")
         forced = METHOD_TO_FORCED_INSTRUMENT.get(method)
-        if method in ("Bank Transfer", "Cheque", "Cash Deposit") and instype != forced:
+        if method in ("Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit") and instype != forced:
             if method == "Bank Transfer":
                 return False, _t("Instrument type must be 'online' for Bank Transfer.")
-            if method == "Cheque":
-                return False, _t("Instrument type must be 'cross_cheque' for Cheque.")
+            if method in ("Cheque", "Cross Cheque"):
+                return False, _t("Instrument type must be 'cross_cheque' for Cheque or Cross Cheque.")
             if method == "Cash Deposit":
                 return False, _t("Instrument type must be 'cash_deposit' for Cash Deposit.")
 
@@ -1021,7 +1111,7 @@ class _CustomerMoneyDialog(QDialog):
             "amount": float(self.advAmountEdit.value()),
             "date": self.advDateEdit.date().toString("yyyy-MM-dd"),
             "notes": (self.advNotesEdit.toPlainText().strip() or None),
-            "created_by": (int(self.advCreatedByEdit.text()) if self.advCreatedByEdit.text().strip() else None),
+            "created_by": None,
         }
         return payload
 

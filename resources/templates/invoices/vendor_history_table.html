@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ title }}</title>
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 10mm;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 10px;
+      color: #111;
+    }
+    .page {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 6px;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 3px 4px;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+    th {
+      text-align: left;
+      background: #fafafa;
+      font-weight: 700;
+    }
+    .t-right { text-align: right; }
+    .muted { color: #666; }
+    .summary-table { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>{{ title }}</h1>
+    <div class="muted">Vendor: {{ vendor_id }}</div>
+    <table aria-label="{{ title }} data">
+      <thead>
+        <tr>
+          {% for label in labels %}
+          <th>{{ label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          {% for key in keys %}
+          {% set val = row.get(key) %}
+          <td>
+            {% if val is none %}
+              <span class="muted">—</span>
+            {% else %}
+              {{ val }}
+            {% endif %}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if total_label is defined %}
+    <table class="summary-table" aria-label="{{ title }} summary">
+      <tbody>
+        <tr>
+          <td class="t-right"><strong>{{ total_label }}</strong></td>
+          <td class="t-right">
+            <strong>
+              {% if total_amount is not none %}
+                {{ '%.2f' % total_amount }}
+              {% else %}
+                0.00
+              {% endif %}
+            </strong>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</body>
+</html>

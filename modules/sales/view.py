@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
-    QSplitter, QWidget as W, QVBoxLayout as V, QGroupBox, QButtonGroup
+    QSplitter, QWidget as W, QVBoxLayout as V, QGroupBox, QButtonGroup,
+    QComboBox,
 )
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal
 from ...widgets.table_view import TableView
@@ -138,8 +139,8 @@ class SalesView(QWidget):
         # self.btn_del = QPushButton("Delete")
         self.btn_return = QPushButton("Return")
 
-        # Record Payment, Apply Credit & Print (Apply Credit is new)
-        self.btn_record_payment = QPushButton("Record Payment…")
+        # Payment, Apply Credit & Print (Apply Credit is new)
+        self.btn_record_payment = QPushButton("Payment")
         self.btn_apply_credit = QPushButton("Apply Credit…")
         self.btn_print = QPushButton("Print")
 
@@ -155,10 +156,19 @@ class SalesView(QWidget):
         bar.addWidget(self.btn_convert)
 
         bar.addStretch(1)
+        # Search + status filter
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search sales (id, customer, status)…")
         bar.addWidget(QLabel("Search:"))
         bar.addWidget(self.search, 2)
+
+        self.status_filter = QComboBox()
+        self.status_filter.addItem("All", "all")
+        self.status_filter.addItem("Paid", "paid")
+        self.status_filter.addItem("Unpaid", "unpaid")
+        self.status_filter.addItem("Partial", "partial")
+        bar.addWidget(QLabel("Status:"))
+        bar.addWidget(self.status_filter)
         root.addLayout(bar)
 
         # --- Main split: left (list + items + payments), right (details) ---

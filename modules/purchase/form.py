@@ -388,15 +388,11 @@ class PurchaseForm(QDialog):
         button_box = QDialogButtonBox(QDialogButtonBox.Cancel)
         self.save_button = QPushButton("Save")
         self.print_button = QPushButton("Print")
-        self.pdf_export_button = QPushButton("Export to PDF")
         button_box.addButton(self.save_button, QDialogButtonBox.AcceptRole)
         button_box.addButton(self.print_button, QDialogButtonBox.ActionRole)
-        button_box.addButton(self.pdf_export_button, QDialogButtonBox.ActionRole)
-        
         
         self.save_button.clicked.connect(self._save_clicked)
         self.print_button.clicked.connect(self._print_clicked)
-        self.pdf_export_button.clicked.connect(self._pdf_export_clicked)
         button_box.rejected.connect(self.reject)
 
         scroll_area = QScrollArea()
@@ -1609,25 +1605,3 @@ class PurchaseForm(QDialog):
             return True
 
         self._validate_and_perform_action(print_action)
-
-    def _pdf_export_clicked(self):
-        """Handle PDF export button click"""
-        def pdf_export_action():
-            # Get payload and validate
-            payload = self.get_payload()
-            if not payload:
-                return False  # Validation failed, don't close dialog
-
-            # Add flag to indicate this should be exported to PDF after saving
-            payload['_should_export_pdf'] = True
-            # Store the modified payload so accept() uses it instead of regenerating
-            self._payload = payload
-            # Call accept once with the modified payload
-            self.accept()
-            return True
-
-        self._validate_and_perform_action(pdf_export_action)
-
-
-
-

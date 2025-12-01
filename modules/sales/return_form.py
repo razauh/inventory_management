@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDate
 from ...utils.helpers import today_str, fmt_money
 from ...database.repositories.sales_repo import SalesRepo
+from ...database.repositories.sales_returns_helpers import get_returnable_quantities
 
 
 class SaleReturnForm(QDialog):
@@ -23,6 +24,8 @@ class SaleReturnForm(QDialog):
     def __init__(self, parent=None, repo: SalesRepo | None = None, sale_id: str | None = None):
         super().__init__(parent)
         self.setWindowTitle("Sale Return")
+        # Allow minimize / maximize buttons in the title bar for convenience.
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
         self.setModal(True)
         self.repo = repo
         self._initial_sale_id = sale_id
@@ -53,7 +56,8 @@ class SaleReturnForm(QDialog):
 
         # --- items of selected sale ---
         self.tbl_items = QTableWidget(0, 6)
-        self.tbl_items.setHorizontalHeaderLabels(["ItemID", "Product", "Qty Sold", "Unit Price", "Qty Return", "Line Refund"])
+        # Column 2 now represents the maximum remaining returnable quantity
+        self.tbl_items.setHorizontalHeaderLabels(["ItemID", "Product", "Max Returnable", "Unit Price", "Qty Return", "Line Refund"])
         self.tbl_items.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_items.setSelectionMode(QAbstractItemView.SingleSelection)
         lay.addWidget(self.tbl_items, 2)
@@ -284,17 +288,31 @@ class SaleReturnForm(QDialog):
             self._sale_net_subtotal = 0.0
 
         self.tbl_items.blockSignals(True)
+
+        # Pre-compute remaining returnable quantities for all items in this sale
+        remaining_map: dict[int, float] = {}
+        conn = getattr(self.repo, "conn", None)
+        if conn is not None:
+            try:
+                remaining_map = get_returnable_quantities(conn, sid)
+            except Exception:
+                remaining_map = {}
         self.tbl_items.setRowCount(len(items))
         for r, it in enumerate(items):
             unit_net = float(it["unit_price"]) - float(it["item_discount"])
             qty_sold = float(it["quantity"])
             if not totals_ok:
                 self._sale_net_subtotal += qty_sold * unit_net
+
+            # Compute remaining returnable quantity for this item
+            remaining = float(remaining_map.get(int(it["item_id"]), qty_sold))
+
             self.tbl_items.setItem(r, 0, QTableWidgetItem(str(it["item_id"])))
             self.tbl_items.setItem(r, 1, QTableWidgetItem(it["product_name"]))
-            self.tbl_items.setItem(r, 2, QTableWidgetItem(f'{qty_sold:g}'))
+            self.tbl_items.setItem(r, 2, QTableWidgetItem(f'{remaining:g}'))
             self.tbl_items.setItem(r, 3, QTableWidgetItem(fmt_money(unit_net)))
-            qret = QTableWidgetItem("0"); qret.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            qret = QTableWidgetItem("0")
+            qret.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.tbl_items.setItem(r, 4, qret)
             self.tbl_items.setItem(r, 5, QTableWidgetItem("0.00"))
         self.tbl_items.blockSignals(False)
@@ -446,6 +464,10 @@ class SaleReturnForm(QDialog):
     def accept(self):
         p = self.get_payload()
         if not p:
+            # No valid lines selected; provide a gentle hint instead of
+            # silently ignoring the click.
+            from ...utils.ui_helpers import info
+            info(self, "Nothing to return", "Enter a quantity to return (greater than 0 and not exceeding Max Returnable) before confirming.")
             return
         self._payload = p
         super().accept()

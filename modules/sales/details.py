@@ -1,9 +1,21 @@
+import logging
+
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QGroupBox, QFormLayout, QLabel,
-    QTableWidget, QTableWidgetItem, QAbstractItemView
+    QWidget,
+    QVBoxLayout,
+    QGroupBox,
+    QFormLayout,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QAbstractItemView,
+    QHBoxLayout,
+    QRadioButton,
+    QPushButton,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from ...utils.helpers import fmt_money
+from ...utils.ui_helpers import info
 
 
 class SaleDetails(QWidget):
@@ -20,6 +32,20 @@ class SaleDetails(QWidget):
                            clearing_state, ref_no/instrument_no, bank_name/account_title/account_no/bank_account_id
       (optional) customer_credit_balance: float
     """
+    # Emitted when user requests a state change for a pending payment
+    # Args: payment_id (int), new_state ('cleared' | 'bounced')
+    paymentStatusChangeRequested = Signal(int, str)
+
+    # Methods that can produce pending payments where clearing_state can change
+    PENDING_METHODS = {
+        "bank transfer",
+        "card",
+        "cheque",
+        "cross cheque",
+        "cash deposit",
+        "other",
+    }
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -76,6 +102,25 @@ class SaleDetails(QWidget):
         self.tbl_payments.setAlternatingRowColors(True)
         pay_layout.addWidget(self.tbl_payments)
 
+        # Payment status update controls (only visible when there is a pending payment)
+        self._pending_payment_id: int | None = None
+        self._apply_state_wired: bool = False
+        self.update_box = QWidget()
+        upd_layout = QHBoxLayout(self.update_box)
+        upd_layout.setContentsMargins(0, 0, 0, 0)
+        upd_layout.addWidget(QLabel("Update payment state:"))
+        self.rb_cleared = QRadioButton("Cleared")
+        self.rb_bounced = QRadioButton("Bounced")
+        upd_layout.addWidget(self.rb_cleared)
+        upd_layout.addWidget(self.rb_bounced)
+        self.btn_apply_state = QPushButton("Apply")
+        upd_layout.addWidget(self.btn_apply_state)
+        upd_layout.addStretch(1)
+        pay_layout.addWidget(self.update_box)
+        self.update_box.setVisible(False)
+
+        self.btn_apply_state.clicked.connect(self._on_apply_status_clicked)
+
         # Root layout
         root = QVBoxLayout(self)
         root.addWidget(self.box)
@@ -94,6 +139,11 @@ class SaleDetails(QWidget):
         self._load_payments([])
         # Default to 'sale' visibility when nothing is selected
         self._apply_doc_type_visibility("sale")
+        self._pending_payment_id = None
+        self.update_box.setVisible(False)
+        self.rb_cleared.setChecked(False)
+        self.rb_bounced.setChecked(False)
+        self.btn_apply_state.setEnabled(False)
 
     def _load_payments(self, rows: list[dict]):
         """Populate the compact payments table from a list of dict-like rows."""
@@ -234,3 +284,63 @@ class SaleDetails(QWidget):
             except Exception:
                 continue
         self._load_payments(norm_rows)
+
+        # Determine if there is a pending payment that can be updated
+        self._pending_payment_id = None
+        target = None
+        for row in norm_rows:
+            try:
+                state = str(row.get("clearing_state") or "").lower()
+                method = str(row.get("method") or "").lower()
+                pid = row.get("payment_id")
+            except Exception:
+                continue
+            if state == "pending" and method in self.PENDING_METHODS and pid is not None:
+                target = row
+                break
+
+        if target:
+            # Normalize pending payment id to an int, or clear if invalid.
+            pid_raw = target.get("payment_id")
+            try:
+                self._pending_payment_id = int(pid_raw)
+            except (TypeError, ValueError):
+                self._pending_payment_id = None
+
+        has_pending = self._pending_payment_id is not None and str(r.get("doc_type", "sale")).lower() == "sale"
+        self.update_box.setVisible(has_pending)
+        self.rb_cleared.setChecked(False)
+        self.rb_bounced.setChecked(False)
+        self.rb_cleared.setEnabled(has_pending)
+        self.rb_bounced.setEnabled(has_pending)
+        self.btn_apply_state.setEnabled(False)
+
+        # Tie Apply button enablement to radio selection when pending exists.
+        # Wire signals only once to avoid accumulating connections.
+        if not self._apply_state_wired:
+            def _update_apply_enabled():
+                enabled = self._pending_payment_id is not None and (
+                    self.rb_cleared.isChecked() or self.rb_bounced.isChecked()
+                )
+                self.btn_apply_state.setEnabled(enabled)
+
+            self.rb_cleared.toggled.connect(lambda _=None: _update_apply_enabled())
+            self.rb_bounced.toggled.connect(lambda _=None: _update_apply_enabled())
+            self._apply_state_wired = True
+
+    # ----------------------------------------------------------------------
+
+    def _on_apply_status_clicked(self):
+        if not self._pending_payment_id:
+            return
+        new_state = None
+        if self.rb_cleared.isChecked():
+            new_state = "cleared"
+        elif self.rb_bounced.isChecked():
+            new_state = "bounced"
+        if not new_state:
+            return
+        # Emit only; any exceptions from slots should propagate.
+        # The receiver is responsible for refreshing the view and updating/hiding
+        # the controls once the status change succeeds.
+        self.paymentStatusChangeRequested.emit(self._pending_payment_id, new_state)

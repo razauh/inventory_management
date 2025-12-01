@@ -20,11 +20,14 @@ class VendorView(QWidget):
 
         # New: apply advance action (from vendor profile to an open purchase)
         self.btn_apply_advance = QPushButton("Apply Advance…")
+        # New: unified history view (similar to customer History)
+        self.btn_history = QPushButton("History")
 
         top.addWidget(self.btn_add)
         top.addWidget(self.btn_edit)
         # top.addWidget(self.btn_del)
         top.addWidget(self.btn_apply_advance)
+        top.addWidget(self.btn_history)
         top.addStretch(1)
 
         self.search = QLineEdit()
@@ -43,8 +46,9 @@ class VendorView(QWidget):
         # Right: vertical split with details (top) and accounts (bottom)
         right = QSplitter(Qt.Vertical)
 
-        # Top-right: vendor details
+        # Top-right: vendor details (keep compact)
         self.details = VendorDetails()
+        self.details.setMaximumHeight(180)
         right.addWidget(self.details)
 
         # Bottom-right: bank accounts panel
@@ -119,9 +123,9 @@ class VendorView(QWidget):
 
         right.addWidget(accounts_panel)
 
-        # Sizing
+        # Sizing: keep details shorter than accounts
         right.setStretchFactor(0, 1)  # details
-        right.setStretchFactor(1, 1)  # accounts
+        right.setStretchFactor(1, 3)  # accounts
 
         split.addWidget(right)
         split.setStretchFactor(0, 3)  # vendor list

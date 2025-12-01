@@ -6,8 +6,8 @@ import sqlite3
 from importlib import import_module
 from typing import Dict, Optional
 
-from PySide6.QtCore import Slot
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel
+from PySide6.QtCore import Slot, Qt
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel, QApplication
 
 from ..base_module import BaseModule
 
@@ -254,7 +254,22 @@ class ReportingController(BaseModule):
 
     @Slot(int)
     def _on_tab_changed(self, index: int) -> None:
-        self._safe_refresh(self.tabs.widget(index))
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.setOverrideCursor(Qt.WaitCursor)
+            except Exception:
+                app = None
+        try:
+            self._safe_refresh(self.tabs.widget(index))
+        finally:
+            if app is not None:
+                logger = logging.getLogger(__name__)
+                try:
+                    app.restoreOverrideCursor()
+                except Exception as exc:
+                    # Log the failure; avoid additional cursor stack manipulation here.
+                    logger.error("Failed to restore override cursor: %s", exc, exc_info=True)
 
     def _safe_refresh(self, widget: QWidget | None) -> None:
         if widget is None:

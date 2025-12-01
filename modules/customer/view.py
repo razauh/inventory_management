@@ -18,9 +18,9 @@ from .details import CustomerDetails
 class CustomerView(QWidget):
     """
     Customers view:
-      - Toolbar: Add, Edit, Receive Payment, Record Advance, Apply Advance, Payment History
+      - Toolbar: Add, Edit, Record Advance, Apply Advance, History, Print Statement
       - Search box + 'Show inactive' toggle
-      - Split: table (left) + tabs (right) -> Details / History
+      - Split: table (left) + tabs (right) -> Details
     """
 
     def __init__(self, parent=None):
@@ -39,15 +39,15 @@ class CustomerView(QWidget):
         # bar.addWidget(self.btn_del)
 
         # Payments / Credits
-        self.btn_receive_payment = QPushButton("Receive Payment")
         self.btn_record_advance = QPushButton("Record Advance")
         self.btn_apply_advance = QPushButton("Apply Advance")
-        self.btn_payment_history = QPushButton("Payment History")
+        self.btn_history = QPushButton("History")
+        self.btn_print_history = QPushButton("Print Statement")
 
-        bar.addWidget(self.btn_receive_payment)
         bar.addWidget(self.btn_record_advance)
         bar.addWidget(self.btn_apply_advance)
-        bar.addWidget(self.btn_payment_history)
+        bar.addWidget(self.btn_history)
+        bar.addWidget(self.btn_print_history)
 
         bar.addStretch(1)
 
@@ -69,26 +69,10 @@ class CustomerView(QWidget):
         self.table = TableView()
         split.addWidget(self.table)
 
-        # Right: tabs -> Details / History
+        # Right: single Details panel (no History tab)
         self.tabs = QTabWidget()
-        # Details tab (keep attribute name for controller compatibility)
         self.details = CustomerDetails()
         self.tabs.addTab(self.details, "Details")
-
-        # History tab (compact, optional use)
-        self.history_panel = QWidget()
-        v_hist = QVBoxLayout(self.history_panel)
-        self.history_hint = QLabel(
-            "History shows receipts and advances for the selected customer.\n"
-            "Tip: Use the toolbar’s ‘Payment History’ to open the full view."
-        )
-        self.history_hint.setWordWrap(True)
-        v_hist.addWidget(self.history_hint)
-
-        # Optional compact table (controller may populate later)
-        self.history_table = TableView()
-        v_hist.addWidget(self.history_table)
-        self.tabs.addTab(self.history_panel, "History")
 
         split.addWidget(self.tabs)
 

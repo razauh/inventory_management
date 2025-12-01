@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QTimer
-import sqlite3, datetime
+import sqlite3, datetime, time
 from typing import Optional
 import logging
 import re
@@ -30,6 +30,7 @@ except Exception:
     OverpayPurchaseError = None
 
 _EPS = 1e-9
+_TEMP_PDF_CLEANUP_AGE_SECONDS = 86400
 
 _log = logging.getLogger(__name__)
 if not _log.handlers:
@@ -388,9 +389,8 @@ class PurchaseController(BaseModule):
         if not p:
             return
 
-        # Check if this was called from print or PDF export button
+        # Check if this was called from print button
         should_print_after_save = p.get('_should_print', False)
-        should_export_pdf_after_save = p.get('_should_export_pdf', False)
 
         # Use the actual date from the form to generate the final purchase ID
         pid = new_purchase_id(self.conn, p["date"])
@@ -597,95 +597,87 @@ class PurchaseController(BaseModule):
         info(self.view, "Saved", f"Purchase {pid} created.")
         self._reload()
         
-        # Handle print or PDF export request after saving
+        # Handle print request after saving
         if should_print_after_save:
             self._print_purchase_invoice(pid)
-        elif should_export_pdf_after_save:
-            self._export_purchase_invoice_to_pdf(pid)
 
 
     def _print_purchase_invoice(self, purchase_id: str):
-        """Print the purchase invoice using WeasyPrint for better rendering"""
+        """Print the purchase invoice using WeasyPrint, writing to a temp
+        folder with a stable filename equal to the purchase_id. Old temp
+        PDFs for purchases are cleaned up automatically."""
         try:
             import os
             import tempfile
-            from PySide6.QtCore import QStandardPaths
-            from weasyprint import HTML, CSS
-            from weasyprint.text.fonts import FontConfiguration
-            
-            # Generate HTML content using the shared helper
-            html_content = self._generate_invoice_html_content(purchase_id)
-            
-            # Sanitize the purchase_id to prevent path traversal attacks in temp file prefix
-            sanitized_purchase_id = self._sanitize_filename(purchase_id, max_length=50)  # Shorter for temp prefix
-
-            # Create PDF in temporary location with proper naming
-            temp_pdf_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{sanitized_purchase_id}_')
-            os.close(temp_pdf_fd)  # Close the file descriptor
-            
-            # Convert HTML to PDF with custom CSS for proper margins
-            # Use shared CSS constant from class
-            custom_css = CSS(string=self._INVOICE_PDF_CSS)
-            
-            html_doc = HTML(string=html_content)
-            html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
-            
-            # Open the PDF in default PDF viewer (to allow printing)
             import subprocess
             import sys
-            
+            import getpass
+            from weasyprint import HTML, CSS
+
+            # Generate HTML content using the shared helper
+            html_content = self._generate_invoice_html_content(purchase_id)
+
+            # Temp directory dedicated to purchase invoices (per-user where possible)
+            temp_root = tempfile.gettempdir()
             try:
-                if sys.platform.startswith('win'):
-                    os.startfile(temp_pdf_path)
-                elif sys.platform.startswith('darwin'):  # macOS
-                    subprocess.run(['open', temp_pdf_path])
-                else:  # Linux and others
-                    subprocess.run(['xdg-open', temp_pdf_path])
+                user = getpass.getuser()
             except Exception:
-                info(self.view, "Print", f"PDF saved to: {temp_pdf_path}. Please open it to print.")
-        
+                user = None
+            dir_name = f"inventory_purchases_{user}" if user else "inventory_purchases"
+            pdf_dir = os.path.join(temp_root, dir_name)
+            os.makedirs(pdf_dir, exist_ok=True)
+            # On POSIX, restrict permissions to the current user
+            if os.name == "posix":
+                try:
+                    os.chmod(pdf_dir, 0o700)
+                except OSError:
+                    pass
+
+            # Cleanup old PDFs (> 1 day)
+            now = time.time()
+            try:
+                for name in os.listdir(pdf_dir):
+                    if not name.lower().endswith(".pdf"):
+                        continue
+                    path = os.path.join(pdf_dir, name)
+                    try:
+                        if now - os.path.getmtime(path) > _TEMP_PDF_CLEANUP_AGE_SECONDS:
+                            os.remove(path)
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+
+            # Use only the purchase_id (sanitized) as filename
+            sanitized_purchase_id = self._sanitize_filename(purchase_id, max_length=100)
+            file_path = os.path.join(pdf_dir, f"{sanitized_purchase_id}.pdf")
+
+            # Convert HTML to PDF using WeasyPrint with custom CSS for proper margins
+            custom_css = CSS(string=self._INVOICE_PDF_CSS)
+            html_doc = HTML(string=html_content)
+            html_doc.write_pdf(file_path, stylesheets=[custom_css])
+
+            # Open the PDF in default PDF viewer (user can print or save)
+            if not os.path.exists(file_path):
+                info(self.view, "Print", f"PDF could not be found at: {file_path}")
+                return
+            try:
+                if sys.platform.startswith("win"):
+                    # Use os.startfile on Windows for robust handling of spaces
+                    os.startfile(file_path)  # type: ignore[attr-defined]
+                elif sys.platform.startswith("darwin"):  # macOS
+                    subprocess.run(["open", file_path], timeout=10)
+                else:  # Linux and others
+                    subprocess.run(["xdg-open", file_path], timeout=10)
+            except subprocess.TimeoutExpired:
+                info(self.view, "Print", f"PDF saved to: {file_path}. Please open it to print.")
+            except Exception:
+                info(self.view, "Print", f"PDF saved to: {file_path}. Please open it to print.")
+
         except ImportError:
             info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
         except Exception as e:
             info(self.view, "Error", f"Could not print invoice: {e}")
-    
-    def _export_purchase_invoice_to_pdf(self, purchase_id: str):
-        """Export the purchase invoice to PDF using WeasyPrint for better rendering"""
-        try:
-            import os
-            from PySide6.QtCore import QStandardPaths
-            from weasyprint import HTML, CSS
-            
-            # Generate HTML content using the shared helper
-            html_content = self._generate_invoice_html_content(purchase_id)
-            
-            # Determine the desktop path and create PIs subdirectory
-            desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
-            pdfs_dir = os.path.join(desktop_path, "PIs")
-            
-            # Create the directory if it doesn't exist
-            os.makedirs(pdfs_dir, exist_ok=True)
-            
-            # Sanitize the purchase_id to prevent path traversal attacks
-            sanitized_purchase_id = self._sanitize_filename(purchase_id, max_length=100)
-
-            # Construct the file path using the sanitized identifier
-            file_name = f"{sanitized_purchase_id}.pdf"
-            file_path = os.path.join(pdfs_dir, file_name)
-            
-            # Convert HTML to PDF using WeasyPrint with custom CSS for proper margins
-            # Use shared CSS constant from class
-            custom_css = CSS(string=self._INVOICE_PDF_CSS)
-            
-            html_doc = HTML(string=html_content)
-            html_doc.write_pdf(file_path, stylesheets=[custom_css])
-                
-            info(self.view, "Export Successful", f"Invoice exported to: {file_path}")
-            
-        except ImportError:
-            info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
-        except Exception as e:
-            info(self.view, "Error", f"Could not export invoice to PDF: {e}")
 
     def _generate_invoice_html_content(self, purchase_id: str) -> str:
         """Generate HTML content for purchase invoice - shared between print and export methods."""
@@ -745,22 +737,79 @@ class PurchaseController(BaseModule):
             
             # Calculate totals
             subtotal = sum(item['line_total'] for item in items)
-            total = subtotal  # For purchases, total = subtotal (no discount for now)
+            order_discount = float(doc_data.get('order_discount', 0.0))
+            total = max(0.0, subtotal - order_discount)
             
             enriched_data['totals'] = {
                 'subtotal_before_order_discount': subtotal,
                 'line_discount_total': 0,  # No line discounts in purchase for now
-                'order_discount': 0,  # No order discount in purchase for now
-                'total': total
+                'order_discount': order_discount,
+                'total': total,
             }
-            
-            # Get latest payment details using repository
-            latest_payment = self.payments.get_latest_payment_for_purchase(purchase_id)
-            
-            if latest_payment:
-                enriched_data['initial_payment'] = dict(latest_payment)
-            else:
-                enriched_data['initial_payment'] = None
+
+            # Paid / remaining from header (mirrors sales invoice)
+            paid_amount = float(doc_data.get('paid_amount', 0.0))
+            total_amount = float(doc_data.get('total_amount', total))
+            advance_payment_applied = float(doc_data.get('advance_payment_applied', 0.0))
+            remaining = max(0.0, total_amount - paid_amount - advance_payment_applied)
+
+            enriched_data['paid_amount'] = paid_amount
+            enriched_data['advance_payment_applied'] = advance_payment_applied
+            enriched_data['remaining'] = remaining
+
+            # Get ALL payment rows for this purchase so the invoice can show a
+            # full payment history, not just the initial payment.
+            raw_payments = list(self.payments.list_payments(purchase_id)) or []
+
+            # Pre-load company and vendor bank labels
+            bank_labels: dict[int, str] = {}
+            vendor_labels: dict[int, str] = {}
+            try:
+                cur = self.conn.execute(
+                    "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1"
+                )
+                bank_labels = {int(r["account_id"]): str(r["label"]) for r in cur.fetchall()}
+            except Exception:
+                bank_labels = {}
+            try:
+                cur = self.conn.execute(
+                    "SELECT vendor_bank_account_id, label FROM vendor_bank_accounts WHERE is_active=1"
+                )
+                vendor_labels = {
+                    int(r["vendor_bank_account_id"]): str(r["label"])
+                    for r in cur.fetchall()
+                }
+            except Exception:
+                vendor_labels = {}
+
+            payments: list[dict] = []
+            for row in raw_payments:
+                d = dict(row)
+                cbid = d.get("bank_account_id")
+                if cbid is not None:
+                    try:
+                        d["bank_account_label"] = bank_labels.get(int(cbid), "")
+                    except Exception:
+                        d["bank_account_label"] = ""
+                else:
+                    d["bank_account_label"] = ""
+
+                vbid = d.get("vendor_bank_account_id")
+                if vbid is not None:
+                    try:
+                        d["vendor_bank_account_label"] = vendor_labels.get(int(vbid), "")
+                    except Exception:
+                        d["vendor_bank_account_label"] = ""
+                else:
+                    d["vendor_bank_account_label"] = ""
+
+                payments.append(d)
+
+            enriched_data["payments"] = payments
+
+            # For backward compatibility, still expose the first (chronological)
+            # payment as `initial_payment` if anyone relies on it.
+            enriched_data["initial_payment"] = payments[0] if payments else None
             
             # Add company info
             enriched_data['company'] = {
@@ -821,6 +870,8 @@ class PurchaseController(BaseModule):
         p = dlg.payload()
         if not p:
             return
+        # Check if this was called from print button in edit flow
+        should_print_after_save = p.get("_should_print", False)
         pid = row["purchase_id"]
         h = PurchaseHeader(
             purchase_id=pid,
@@ -848,18 +899,7 @@ class PurchaseController(BaseModule):
             for it in p["items"]
         ]
         
-        # Check if this was called from print or PDF export button
-        should_print_after_save = p.get('_should_print', False)
-        should_export_pdf_after_save = p.get('_should_export_pdf', False)
-        
         # Update the purchase header and items first
-        self.repo.update_purchase(h, items)
-        
-        # Check if this was called from print or PDF export button
-        should_print_after_save = p.get('_should_print', False)
-        should_export_pdf_after_save = p.get('_should_export_pdf', False)
-        
-        # Update purchase
         self.repo.update_purchase(h, items)
         
         # After updating the purchase, automatically apply any available vendor advances
@@ -895,14 +935,11 @@ class PurchaseController(BaseModule):
                     raise
 
         info(self.view, "Saved", f"Purchase {pid} updated.")
-        
-        # Handle print or PDF export request after saving
+
+        # Match add-flow order: reload first, then optional print
+        self._reload()
         if should_print_after_save:
             self._print_purchase_invoice(pid)
-        elif should_export_pdf_after_save:
-            self._export_purchase_invoice_to_pdf(pid)
-        
-        self._reload()
 
     def _delete(self):
         row = self._selected_row_dict()
