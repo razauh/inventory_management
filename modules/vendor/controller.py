@@ -91,7 +91,7 @@ class VendorController(BaseModule):
         else:
             self.view.details.clear()
     def _apply_filter(self, text: str):
-        self.proxy.setFilterRegularExpression(QRegularExpression(text))
+        self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()
         if not idxs:

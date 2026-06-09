@@ -239,7 +239,7 @@ class ProductController(BaseModule):
         self._build_model()
 
     def _apply_filter(self, text: str):
-        self.proxy.setFilterRegularExpression(QRegularExpression(text))
+        self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
 
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()

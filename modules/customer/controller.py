@@ -98,7 +98,7 @@ class CustomerController(BaseModule):
 
     def _apply_filter(self, text: str):
         # Client-side filter (fast, preserves existing UX).
-        self.proxy.setFilterRegularExpression(QRegularExpression(text))
+        self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
 
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()
