@@ -37,6 +37,10 @@ class PurchasePaymentsRepo:
         Only 'cleared' rows roll into header totals via DB triggers.
         If a positive payment exceeds amount due, convert the excess to vendor credit.
         """
+        state = clearing_state or "posted"
+        if amount > 0 and state != "cleared":
+            raise ValueError("Positive vendor payments must have clearing_state='cleared'")
+
         if amount > 0:
             purchase_info = self.conn.execute(
                 """
@@ -76,7 +80,6 @@ class PurchasePaymentsRepo:
                     )
                 amount = adjusted_amount
 
-        state = clearing_state or "posted"
         cur = self.conn.execute(
             """
             INSERT INTO purchase_payments (

@@ -533,8 +533,15 @@ class PurchasesRepo:
         date_to: str | None = None,
     ) -> list[dict]:
         sql = [
-            "SELECT p.purchase_id, p.date, CAST(p.total_amount AS REAL) AS total_amount",
+            """
+            SELECT
+              p.purchase_id,
+              p.date,
+              CAST(p.total_amount AS REAL) AS total_amount,
+              CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS REAL) AS net_total_amount
+            """,
             "FROM purchases p",
+            "LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id",
             "WHERE p.vendor_id = ?",
         ]
         params: list[object] = [vendor_id]
@@ -553,7 +560,14 @@ class PurchasesRepo:
             if isinstance(r, sqlite3.Row):
                 out.append(dict(r))
             else:
-                out.append({"purchase_id": r[0], "date": r[1], "total_amount": float(r[2])})
+                out.append(
+                    {
+                        "purchase_id": r[0],
+                        "date": r[1],
+                        "total_amount": float(r[2]),
+                        "net_total_amount": float(r[3]),
+                    }
+                )
         return out
 
     def get_purchase_totals_for_vendor(

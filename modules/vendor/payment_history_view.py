@@ -114,6 +114,7 @@ class _VendorHistoryDialog(QDialog):
               "type": "Purchase"|"Cash Payment"|"Refund"|"Credit Note"|"Credit Applied",
               "doc_id": str|None,
               "reference": {... arbitrary keys ...},
+              "amount": float,
               "amount_effect": float,
               "balance_after": float
             },
@@ -230,6 +231,7 @@ class _VendorHistoryDialog(QDialog):
                     "date": r.get("date"),
                     "type": r.get("type"),
                     "doc_id": r.get("doc_id"),
+                    "amount": self._safe_float(r.get("amount")),
                     "amount_effect": self._safe_float(r.get("amount_effect")),
                     "balance_after": self._safe_float(r.get("balance_after")),
                 }
@@ -242,11 +244,13 @@ class _VendorHistoryDialog(QDialog):
         pays = history.get("payments") or []
         advs = history.get("advances") or []
         for p in pays:
+            amount = self._safe_float(p.get("amount"), 0.0) or 0.0
             rows.append({
                 "date": p.get("date"),
-                "type": p.get("type") or "Cash Payment",
+                "type": "Cash Payment" if amount >= 0 else "Refund",
                 "doc_id": p.get("purchase_id"),
-                "amount_effect": -abs(self._safe_float(p.get("amount"), 0.0)),  # payments reduce payable
+                "amount": abs(amount),
+                "amount_effect": -amount,
                 "balance_after": None,
                 **self._flatten_reference({
                     "payment_id": p.get("payment_id"),
@@ -267,16 +271,19 @@ class _VendorHistoryDialog(QDialog):
                     "date": a.get("tx_date"),
                     "type": "Credit Applied",
                     "doc_id": a.get("source_id"),
-                    "amount_effect": -abs(amt),
+                    "amount": abs(amt),
+                    "amount_effect": 0.0,
                     "balance_after": None,
                     "tx_id": a.get("tx_id"),
                 })
             else:
+                amount_effect = 0.0 if src_type == "return_credit" else -amt
                 rows.append({
                     "date": a.get("tx_date"),
                     "type": "Credit Note",
                     "doc_id": a.get("source_id"),
-                    "amount_effect": -amt,
+                    "amount": abs(amt),
+                    "amount_effect": amount_effect,
                     "balance_after": None,
                     "tx_id": a.get("tx_id"),
                 })
@@ -288,6 +295,7 @@ class _VendorHistoryDialog(QDialog):
             "date",
             "type",
             "doc_id",
+            "amount",
             "amount_effect",
             "balance_after",
             "payment_id",
@@ -434,6 +442,7 @@ class _VendorHistoryDialog(QDialog):
 
                 # Normalize rows: ensure dicts and coerce numeric-like values
                 numeric_cols = {
+                    "amount",
                     "amount_effect",
                     "balance_after",
                     "opening_credit",

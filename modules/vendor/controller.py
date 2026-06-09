@@ -541,31 +541,43 @@ class VendorController(BaseModule):
         opening_credit = 0.0
         opening_payable = 0.0
         if include_opening and date_from:
-            opening_credit = float(self.vadv.get_opening_balance(vendor_id, date_from))
+            opening_credit = float(
+                self.conn.execute(
+                    """
+                    SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0)
+                    FROM vendor_advances
+                    WHERE vendor_id = ?
+                      AND source_type = 'deposit'
+                      AND DATE(tx_date) < DATE(?)
+                    """,
+                    (vendor_id, date_from),
+                ).fetchone()[0]
+            )
             opening_payable -= opening_credit
         rows: list[dict] = []
         prep = PurchasesRepo(self.conn)
         for p in prep.list_purchases_by_vendor(vendor_id, date_from, date_to):
-            rows.append({"date": p["date"], "type": "Purchase", "doc_id": p["purchase_id"], "reference": {}, "amount_effect": float(p["total_amount"])})
+            amount = float(p["net_total_amount"])
+            rows.append({"date": p["date"], "type": "Purchase", "doc_id": p["purchase_id"], "reference": {}, "amount": amount, "amount_effect": amount})
         for pay in self.ppay.list_payments_for_vendor(vendor_id, date_from, date_to):
             if str(pay["clearing_state"] or "").lower() != "cleared":
                 continue
             amt = float(pay["amount"])
-            row_type = "Cash Payment" if amt > 0 else "Refund"
-            rows.append({"date": pay["date"], "type": row_type, "doc_id": pay["purchase_id"], "reference": {"payment_id": pay["payment_id"], "method": pay["method"], "instrument_no": pay["instrument_no"], "instrument_type": pay["instrument_type"], "bank_account_id": pay["bank_account_id"], "vendor_bank_account_id": pay["vendor_bank_account_id"], "ref_no": pay["ref_no"], "clearing_state": pay["clearing_state"]}, "amount_effect": (-abs(amt) if amt < 0 else -amt)})
+            row_type = "Cash Payment" if amt >= 0 else "Refund"
+            rows.append({"date": pay["date"], "type": row_type, "doc_id": pay["purchase_id"], "reference": {"payment_id": pay["payment_id"], "method": pay["method"], "instrument_no": pay["instrument_no"], "instrument_type": pay["instrument_type"], "bank_account_id": pay["bank_account_id"], "vendor_bank_account_id": pay["vendor_bank_account_id"], "ref_no": pay["ref_no"], "clearing_state": pay["clearing_state"]}, "amount": abs(amt), "amount_effect": -amt})
         credit_note_rows_to_enrich: list[tuple[int, dict]] = []
         for a in self.vadv.list_ledger(vendor_id, date_from, date_to):
             amt = float(a["amount"])
             src_type = (a["source_type"] or "").lower()
             if src_type == "return_credit":
-                row = {"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount_effect": -amt}
+                row = {"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount": abs(amt), "amount_effect": 0.0}
                 rows.append(row)
                 if show_return_origins and a["source_id"]:
                     credit_note_rows_to_enrich.append((a["tx_id"], row))
             elif src_type == "applied_to_purchase":
-                rows.append({"date": a["tx_date"], "type": "Credit Applied", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount_effect": -abs(amt)})
+                rows.append({"date": a["tx_date"], "type": "Credit Applied", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount": abs(amt), "amount_effect": 0.0})
             else:
-                rows.append({"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount_effect": -amt})
+                rows.append({"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount": abs(amt), "amount_effect": -amt})
         if show_return_origins and credit_note_rows_to_enrich:
             for _tx_id, row in credit_note_rows_to_enrich:
                 pid = row.get("doc_id")
@@ -590,15 +602,15 @@ class VendorController(BaseModule):
             rr["balance_after"] = balance
             out_rows.append(rr)
             if r["type"] == "Purchase":
-                totals["purchases"] += abs(float(r["amount_effect"]))
+                totals["purchases"] += abs(float(r["amount"]))
             elif r["type"] == "Cash Payment":
-                totals["cash_paid"] += abs(float(r["amount_effect"]))
+                totals["cash_paid"] += abs(float(r["amount"]))
             elif r["type"] == "Refund":
-                totals["refunds"] += abs(float(r["amount_effect"]))
+                totals["refunds"] += abs(float(r["amount"]))
             elif r["type"] == "Credit Note":
-                totals["credit_notes"] += abs(float(r["amount_effect"]))
+                totals["credit_notes"] += abs(float(r["amount"]))
             elif r["type"] == "Credit Applied":
-                totals["credit_applied"] += abs(float(r["amount_effect"]))
+                totals["credit_applied"] += abs(float(r["amount"]))
         closing_balance = balance
         return {
             "vendor_id": vendor_id,

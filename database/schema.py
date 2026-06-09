@@ -1340,6 +1340,11 @@ CREATE TRIGGER trg_pp_method_checks_ins
 BEFORE INSERT ON purchase_payments
 FOR EACH ROW
 BEGIN
+  SELECT CASE
+    WHEN CAST(NEW.amount AS REAL) > 0 AND NEW.clearing_state <> 'cleared'
+    THEN RAISE(ABORT, 'Positive vendor payments must have clearing_state=cleared')
+    ELSE 1 END;
+
   /* BANK TRANSFER (direct deposit) */
   SELECT CASE
     WHEN NEW.method = 'Bank Transfer' AND (
@@ -1399,6 +1404,11 @@ CREATE TRIGGER trg_pp_method_checks_upd
 BEFORE UPDATE ON purchase_payments
 FOR EACH ROW
 BEGIN
+  SELECT CASE
+    WHEN CAST(NEW.amount AS REAL) > 0 AND NEW.clearing_state <> 'cleared'
+    THEN RAISE(ABORT, 'Positive vendor payments must have clearing_state=cleared')
+    ELSE 1 END;
+
   /* Apply same rules on UPDATE */
   SELECT CASE
     WHEN NEW.method = 'Bank Transfer' AND (
