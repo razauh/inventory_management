@@ -18,8 +18,8 @@ class VendorView(QWidget):
         self.btn_edit = QPushButton("Edit")
         # self.btn_del = QPushButton("Delete")
 
-        # New: apply advance action (from vendor profile to an open purchase)
-        self.btn_apply_advance = QPushButton("Apply Advance…")
+        # New: record advance action (creates vendor credit)
+        self.btn_apply_advance = QPushButton("Record Advance…")
         # New: unified history view (similar to customer History)
         self.btn_history = QPushButton("History")
 

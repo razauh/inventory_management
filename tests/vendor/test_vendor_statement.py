@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from inventory_management.database.repositories.purchases_repo import PurchasesRepo
+from inventory_management.database.repositories.purchase_payments_repo import PurchasePaymentsRepo
+from inventory_management.database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from inventory_management.database.schema import SQL
 from inventory_management.modules.vendor import controller as controller_module
 from inventory_management.modules.vendor.controller import VendorController
@@ -180,21 +182,105 @@ def test_statement_settlement_rows_follow_confirmed_effects(monkeypatch, payment
     conn.close()
 
 
-def test_statement_opening_credit_counts_only_preperiod_deposits(monkeypatch):
-    conn, statement = _build_statement(
-        monkeypatch,
-        purchases=[],
-        opening_advances=[
-            ("2026-05-01", 40, "deposit"),
-            ("2026-05-02", 20, "return_credit"),
-            ("2026-05-03", -10, "applied_to_purchase"),
-        ],
-        date_from="2026-06-01",
+def test_statement_opening_payable_uses_complete_preperiod_equation():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SQL)
+
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Product')").lastrowid
+    conn.execute(
+        "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+        (product_id, uom_id),
+    )
+    vendor_id = conn.execute(
+        "INSERT INTO vendors (name, contact_info) VALUES ('Vendor', 'Contact')"
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO purchases (
+            purchase_id, vendor_id, date, total_amount, payment_status
+        ) VALUES ('PO-OPEN', ?, '2026-05-01', 100, 'unpaid')
+        """,
+        (vendor_id,),
+    )
+    item_id = conn.execute(
+        """
+        INSERT INTO purchase_items (
+            purchase_id, product_id, quantity, uom_id,
+            purchase_price, sale_price, item_discount
+        ) VALUES ('PO-OPEN', ?, 10, ?, 10, 10, 0)
+        """,
+        (product_id, uom_id),
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (
+            product_id, quantity, uom_id, transaction_type,
+            reference_table, reference_id, reference_item_id, date
+        ) VALUES (?, 2, ?, 'purchase_return', 'purchases', 'PO-OPEN', ?, '2026-05-10')
+        """,
+        (product_id, uom_id, item_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, clearing_state
+        ) VALUES ('PO-OPEN', '2026-05-15', 30, 'Cash', 'cleared')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, clearing_state
+        ) VALUES ('PO-OPEN', '2026-05-16', -5, 'Cash', 'cleared')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, clearing_state
+        ) VALUES ('PO-OPEN', '2026-05-17', -99, 'Cash', 'pending')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO vendor_advances (
+            vendor_id, tx_date, amount, source_type
+        ) VALUES (?, '2026-05-18', 20, 'deposit')
+        """,
+        (vendor_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO purchases (
+            purchase_id, vendor_id, date, total_amount, payment_status
+        ) VALUES ('PO-IN', ?, '2026-06-02', 12, 'unpaid')
+        """,
+        (vendor_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO purchase_items (
+            purchase_id, product_id, quantity, uom_id,
+            purchase_price, sale_price, item_discount
+        ) VALUES ('PO-IN', ?, 1, ?, 12, 12, 0)
+        """,
+        (product_id, uom_id),
     )
 
-    assert statement["opening_credit"] == pytest.approx(40.0)
-    assert statement["opening_payable"] == pytest.approx(-40.0)
-    assert statement["closing_balance"] == pytest.approx(-40.0)
+    controller = VendorController.__new__(VendorController)
+    controller.conn = conn
+    controller.ppay = PurchasePaymentsRepo(conn)
+    controller.vadv = VendorAdvancesRepo(conn)
+
+    statement = controller.build_vendor_statement(vendor_id, date_from="2026-06-01")
+
+    assert statement["opening_credit"] == pytest.approx(20.0)
+    assert statement["opening_payable"] == pytest.approx(35.0)
+    assert [(row["type"], row["doc_id"]) for row in statement["rows"]] == [("Purchase", "PO-IN")]
+    assert statement["closing_balance"] == pytest.approx(47.0)
     conn.close()
 
 

@@ -560,19 +560,49 @@ class VendorController(BaseModule):
         opening_credit = 0.0
         opening_payable = 0.0
         if include_opening and date_from:
-            opening_credit = float(
-                self.conn.execute(
-                    """
-                    SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0)
-                    FROM vendor_advances
-                    WHERE vendor_id = ?
-                      AND source_type = 'deposit'
-                      AND DATE(tx_date) < DATE(?)
-                    """,
-                    (vendor_id, date_from),
-                ).fetchone()[0]
-            )
-            opening_payable -= opening_credit
+            row = self.conn.execute(
+                """
+                WITH pre_period_purchases AS (
+                    SELECT COALESCE(
+                        SUM(CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS REAL)),
+                        0.0
+                    ) AS amount
+                    FROM purchases p
+                    LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                    WHERE p.vendor_id = ?
+                      AND DATE(p.date) < DATE(?)
+                ),
+                pre_period_payments AS (
+                    SELECT COALESCE(SUM(CAST(pp.amount AS REAL)), 0.0) AS amount
+                    FROM purchase_payments pp
+                    JOIN purchases p ON p.purchase_id = pp.purchase_id
+                    WHERE p.vendor_id = ?
+                      AND LOWER(COALESCE(pp.clearing_state, '')) = 'cleared'
+                      AND DATE(pp.date) < DATE(?)
+                ),
+                pre_period_deposits AS (
+                    SELECT COALESCE(SUM(CAST(va.amount AS REAL)), 0.0) AS amount
+                    FROM vendor_advances va
+                    WHERE va.vendor_id = ?
+                      AND va.source_type = 'deposit'
+                      AND DATE(va.tx_date) < DATE(?)
+                )
+                SELECT
+                    pre_period_deposits.amount AS opening_credit,
+                    pre_period_purchases.amount
+                      - pre_period_payments.amount
+                      - pre_period_deposits.amount AS opening_payable
+                FROM pre_period_purchases, pre_period_payments, pre_period_deposits
+                """,
+                (vendor_id, date_from, vendor_id, date_from, vendor_id, date_from),
+            ).fetchone()
+            if row:
+                if isinstance(row, sqlite3.Row):
+                    opening_credit = float(row["opening_credit"])
+                    opening_payable = float(row["opening_payable"])
+                else:
+                    opening_credit = float(row[0])
+                    opening_payable = float(row[1])
         rows: list[dict] = []
         prep = PurchasesRepo(self.conn)
         for p in prep.list_purchases_by_vendor(vendor_id, date_from, date_to):
