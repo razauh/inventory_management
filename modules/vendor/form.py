@@ -41,7 +41,7 @@ class VendorForm(QDialog):
         ops_bar.addStretch(1)
 
         self.btn_manage_accounts = QPushButton("Manage Bank Accounts…")
-        self.btn_grant_credit = QPushButton("Grant Credit…")
+        self.btn_grant_credit = QPushButton("Grant Credit and Auto-Apply…")
 
         # Always enabled; _ensure_and_open(...) will save-on-demand if needed
         self.btn_manage_accounts.setEnabled(True)

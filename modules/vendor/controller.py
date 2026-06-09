@@ -18,10 +18,6 @@ from ...database.repositories.purchases_repo import PurchasesRepo
 from ...utils import ui_helpers as uih
 from ...utils.helpers import today_str
 try:
-    from ...database.repositories.vendor_advances_repo import OverapplyVendorAdvanceError
-except Exception:
-    OverapplyVendorAdvanceError = None
-try:
     from ...database.repositories.purchase_payments_repo import OverpayPurchaseError
 except Exception:
     OverpayPurchaseError = None
@@ -180,6 +176,87 @@ class VendorController(BaseModule):
             return float(self.vadv.get_balance(vendor_id))
         except Exception:
             return 0.0
+    def _build_grant_credit_allocation_preview(self, vendor_id: int, amount: float) -> dict:
+        remaining_credit = max(0.0, float(amount or 0.0))
+        open_purchases = sorted(
+            self.repo.get_open_purchases_for_vendor(vendor_id),
+            key=lambda purchase: (
+                str(purchase["date"] or ""),
+                str(purchase["purchase_id"] or ""),
+            ),
+        )
+        rows = []
+        for purchase in open_purchases:
+            if remaining_credit <= _EPS:
+                break
+            purchase_id = purchase["purchase_id"]
+            remaining_due = self._remaining_due_for_purchase(purchase_id)
+            if remaining_due <= _EPS:
+                continue
+            amount_to_apply = min(remaining_due, remaining_credit)
+            if amount_to_apply <= _EPS:
+                continue
+            rows.append(
+                {
+                    "purchase_id": purchase_id,
+                    "date": purchase["date"],
+                    "remaining_due": remaining_due,
+                    "amount_to_apply": amount_to_apply,
+                    "remaining_due_after": max(0.0, remaining_due - amount_to_apply),
+                }
+            )
+            remaining_credit -= amount_to_apply
+        return {
+            "total_credit": max(0.0, float(amount or 0.0)),
+            "rows": rows,
+            "remaining_credit": max(0.0, remaining_credit),
+        }
+    def _grant_credit_and_auto_apply(
+        self,
+        vendor_id: int,
+        amount: float,
+        grant_date: str,
+        memo: Optional[str],
+    ) -> dict:
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            preview = self._build_grant_credit_allocation_preview(vendor_id, amount)
+            tx_id = self.vadv.grant_credit(
+                vendor_id=vendor_id,
+                amount=amount,
+                date=grant_date,
+                notes=memo,
+                created_by=None,
+                source_id=None,
+            )
+
+            for row in preview["rows"]:
+                self.vadv.apply_credit_to_purchase(
+                    vendor_id=vendor_id,
+                    purchase_id=row["purchase_id"],
+                    amount=row["amount_to_apply"],
+                    date=grant_date,
+                    notes=f"Auto-applied from vendor advance (Tx #{tx_id})",
+                    created_by=None,
+                )
+                _log.info(
+                    f"Auto-applied {row['amount_to_apply']:.2f} of vendor advance "
+                    f"to purchase {row['purchase_id']}"
+                )
+
+            self.conn.execute("COMMIT")
+            return {
+                "tx_id": tx_id,
+                "applied_amount": amount - preview["remaining_credit"],
+                "remaining_credit": preview["remaining_credit"],
+                "rows": preview["rows"],
+            }
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
     def _current_vendor_id(self):
         try:
             vid = self._selected_id()
@@ -823,9 +900,21 @@ class VendorController(BaseModule):
             return
         from PySide6 import QtWidgets, QtCore
         dlg = QtWidgets.QDialog(self.view)
-        dlg.setWindowTitle("Grant Credit")
+        dlg.setWindowTitle("Grant Credit and Auto-Apply")
         dlg.setModal(True)
-        form = QtWidgets.QFormLayout(dlg)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        description = QtWidgets.QLabel(
+            "Grant Credit and Auto-Apply will create vendor credit and apply it to open "
+            "purchases before any unused amount remains available."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        policy = QtWidgets.QLabel(
+            "FIFO allocation: oldest purchase date first, then purchase ID ascending."
+        )
+        policy.setWordWrap(True)
+        layout.addWidget(policy)
+        form = QtWidgets.QFormLayout()
         amt_edit = QtWidgets.QLineEdit(dlg)
         amt_edit.setPlaceholderText("Amount (e.g., 1000.00)")
         amt_edit.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
@@ -837,8 +926,64 @@ class VendorController(BaseModule):
         form.addRow("Amount", amt_edit)
         form.addRow("Memo", memo_edit)
         form.addRow("Date", date_edit)
-        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=dlg)
-        form.addRow(btn_box)
+        layout.addLayout(form)
+        summary_label = QtWidgets.QLabel("Total credit: 0.00")
+        layout.addWidget(summary_label)
+        preview_table = QtWidgets.QTableWidget(0, 5, dlg)
+        preview_table.setHorizontalHeaderLabels(
+            ["Purchase", "Date", "Current due", "Apply credit", "Due after"]
+        )
+        preview_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        preview_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        preview_table.verticalHeader().setVisible(False)
+        preview_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(preview_table)
+        remaining_label = QtWidgets.QLabel("Remaining available credit after allocation: 0.00")
+        layout.addWidget(remaining_label)
+        btn_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dlg,
+        )
+        layout.addWidget(btn_box)
+        def _set_preview_item(row: int, col: int, value: str, align_right: bool = False):
+            item = QtWidgets.QTableWidgetItem(value)
+            if align_right:
+                item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            preview_table.setItem(row, col, item)
+        def _refresh_preview():
+            raw = amt_edit.text().strip()
+            try:
+                amount = float(raw)
+            except Exception:
+                amount = 0.0
+            if amount <= 0:
+                preview = {
+                    "total_credit": max(0.0, amount),
+                    "rows": [],
+                    "remaining_credit": max(0.0, amount),
+                }
+            else:
+                preview = self._build_grant_credit_allocation_preview(vendor_id, amount)
+            summary_label.setText(f"Total credit being granted: {preview['total_credit']:.2f}")
+            preview_table.setRowCount(len(preview["rows"]))
+            for row_idx, row in enumerate(preview["rows"]):
+                _set_preview_item(row_idx, 0, str(row["purchase_id"]))
+                _set_preview_item(row_idx, 1, str(row["date"] or ""))
+                _set_preview_item(row_idx, 2, f"{row['remaining_due']:.2f}", True)
+                _set_preview_item(row_idx, 3, f"{row['amount_to_apply']:.2f}", True)
+                _set_preview_item(row_idx, 4, f"{row['remaining_due_after']:.2f}", True)
+            preview_table.resizeColumnsToContents()
+            if preview["rows"]:
+                remaining_label.setText(
+                    f"Remaining available vendor credit after allocation: {preview['remaining_credit']:.2f}"
+                )
+            else:
+                remaining_label.setText(
+                    f"No open purchases will receive credit. Remaining available vendor credit: {preview['remaining_credit']:.2f}"
+                )
+        amt_edit.textChanged.connect(_refresh_preview)
+        _refresh_preview()
         def _on_ok():
             raw = amt_edit.text().strip()
             try:
@@ -857,60 +1002,17 @@ class VendorController(BaseModule):
             except Exception:
                 grant_date = None
             try:
-                # Begin transaction to ensure atomicity and prevent race conditions
-                self.conn.execute("BEGIN IMMEDIATE")
-                
-                # Grant the credit first
-                tx_id = self.vadv.grant_credit(vendor_id=vendor_id, amount=amount, date=(grant_date or (today_str() if callable(today_str) else today_str)), notes=memo, created_by=None, source_id=None)
-                
-                # Now automatically apply the credit to open purchase orders for this vendor
-                # Use row locking to prevent concurrent modifications during this operation
-                open_purchases = self.repo.get_open_purchases_for_vendor(vendor_id)
-                remaining_credit = amount  # Start with the full amount granted
-                
-                for purchase in open_purchases:
-                    if remaining_credit <= _EPS:  # Use epsilon comparison for floating point precision
-                        break  # No more credit to apply
-                    
-                    purchase_id = purchase['purchase_id']
-                    
-                    # Re-check remaining due inside the transaction to prevent race conditions
-                    # We need to ensure the purchase hasn't been modified by another process
-                    remaining_due = self._remaining_due_for_purchase(purchase_id)
-                    
-                    if remaining_due > _EPS:  # Only apply to purchases that have remaining balance (epsilon tolerance)
-                        # Apply as much as possible to this purchase (limited by remaining due and remaining credit)
-                        amount_to_apply = min(remaining_due, remaining_credit)
-                        
-                        try:
-                            self.vadv.apply_credit_to_purchase(
-                                vendor_id=vendor_id,
-                                purchase_id=purchase_id,
-                                amount=amount_to_apply,
-                                date=(grant_date or (today_str() if callable(today_str) else today_str)),
-                                notes=f"Auto-applied from vendor advance (Tx #{tx_id})",
-                                created_by=None,
-                            )
-                            remaining_credit -= amount_to_apply
-                            _log.info(f"Auto-applied {amount_to_apply:.2f} of vendor advance to purchase {purchase_id}")
-                        except Exception as apply_error:
-                            # If we can't apply to this purchase (e.g., due to business rules), continue with next
-                            # Only continue silently for known advance application errors
-                            if OverapplyVendorAdvanceError and isinstance(apply_error, OverapplyVendorAdvanceError):
-                                _log.warning(f"Could not auto-apply advance to purchase {purchase_id}: {apply_error}")
-                                continue
-                            elif isinstance(apply_error, (ValueError, sqlite3.IntegrityError)):
-                                _log.warning(f"Could not auto-apply advance to purchase {purchase_id}: {apply_error}")
-                                continue
-                            else:
-                                # Re-raise unexpected errors, which will cause transaction rollback
-                                _log.error(f"Unexpected error when auto-applying advance to purchase {purchase_id}: {apply_error}")
-                                raise
-                
-                # Commit the transaction to persist all changes
-                self.conn.execute("COMMIT")
-                
-                uih.info(self.view, "Success", f"Credit granted and {amount - remaining_credit:.2f} applied to open purchase orders.")
+                result = self._grant_credit_and_auto_apply(
+                    vendor_id=vendor_id,
+                    amount=amount,
+                    grant_date=(grant_date or (today_str() if callable(today_str) else today_str)),
+                    memo=memo,
+                )
+                uih.info(
+                    self.view,
+                    "Success",
+                    f"Credit granted and {result['applied_amount']:.2f} applied to open purchase orders.",
+                )
                 try:
                     if hasattr(self, "_update_details"):
                         self._update_details()
@@ -919,10 +1021,7 @@ class VendorController(BaseModule):
                     # Continue with accepting the dialog even if UI update fails
                 dlg.accept()
             except Exception as e:
-                # Rollback the transaction in case of any error
-                try:
-                    self.conn.execute("ROLLBACK")
-                except Exception:
-                    pass  # Ignore rollback errors
                 uih.info(self.view, "Error", f"Unable to grant credit: {e}")
+        btn_box.accepted.connect(_on_ok)
+        btn_box.rejected.connect(dlg.reject)
         dlg.exec()

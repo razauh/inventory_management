@@ -59,6 +59,7 @@ def test_controller_add_flow(controller, monkeypatch, ids):
         
         # Call _add
         controller._add()
+        controller._handle_add_dialog_accept()
         
         # Verify DB insertion
         repo = PurchasesRepo(controller.conn)
@@ -124,6 +125,7 @@ def test_auto_apply_vendor_credit(controller, ids, conn):
         instance.payload.return_value = payload
         
         controller._add()
+        controller._handle_add_dialog_accept()
         
     # 3. Verify purchase is paid (via credit)
     repo = PurchasesRepo(controller.conn)

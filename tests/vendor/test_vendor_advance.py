@@ -1,6 +1,6 @@
 import sqlite3
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -276,3 +276,105 @@ def test_apply_advance_rolls_back_when_credit_cannot_be_recorded():
         "Not recorded",
         "credit rejected",
     )
+
+
+def test_grant_credit_preview_uses_fifo_purchase_date_then_purchase_id():
+    controller = make_controller()
+    controller.repo.get_open_purchases_for_vendor.return_value = [
+        {"purchase_id": "P-103", "date": "2026-01-10"},
+        {"purchase_id": "P-102", "date": "2026-01-05"},
+        {"purchase_id": "P-101", "date": "2026-01-01"},
+        {"purchase_id": "P-100", "date": "2026-01-01"},
+    ]
+    dues = {
+        "P-100": 100.0,
+        "P-101": 300.0,
+        "P-102": 500.0,
+        "P-103": 400.0,
+    }
+    controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
+
+    preview = controller._build_grant_credit_allocation_preview(7, 700.0)
+
+    assert [row["purchase_id"] for row in preview["rows"]] == ["P-100", "P-101", "P-102"]
+    assert [row["amount_to_apply"] for row in preview["rows"]] == pytest.approx([100.0, 300.0, 300.0])
+    assert preview["remaining_credit"] == pytest.approx(0.0)
+
+
+def test_grant_credit_preview_leaves_excess_credit_available():
+    controller = make_controller()
+    controller.repo.get_open_purchases_for_vendor.return_value = [
+        {"purchase_id": "P-101", "date": "2026-01-01"},
+        {"purchase_id": "P-102", "date": "2026-01-05"},
+    ]
+    dues = {"P-101": 300.0, "P-102": 500.0}
+    controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
+
+    preview = controller._build_grant_credit_allocation_preview(7, 1000.0)
+
+    assert [row["amount_to_apply"] for row in preview["rows"]] == pytest.approx([300.0, 500.0])
+    assert preview["remaining_credit"] == pytest.approx(200.0)
+
+
+def test_grant_credit_and_auto_apply_saves_in_preview_order_atomically():
+    controller = make_controller()
+    controller.repo.get_open_purchases_for_vendor.return_value = [
+        {"purchase_id": "P-102", "date": "2026-01-05"},
+        {"purchase_id": "P-101", "date": "2026-01-01"},
+    ]
+    dues = {"P-101": 300.0, "P-102": 500.0}
+    controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
+    controller.vadv.grant_credit.return_value = 42
+
+    result = controller._grant_credit_and_auto_apply(7, 700.0, "2026-06-09", "Credit memo")
+
+    assert [statement for statement, _ in controller.conn.statements] == [
+        "BEGIN IMMEDIATE",
+        "COMMIT",
+    ]
+    assert controller.vadv.method_calls == [
+        call.grant_credit(
+            vendor_id=7,
+            amount=700.0,
+            date="2026-06-09",
+            notes="Credit memo",
+            created_by=None,
+            source_id=None,
+        ),
+        call.apply_credit_to_purchase(
+            vendor_id=7,
+            purchase_id="P-101",
+            amount=300.0,
+            date="2026-06-09",
+            notes="Auto-applied from vendor advance (Tx #42)",
+            created_by=None,
+        ),
+        call.apply_credit_to_purchase(
+            vendor_id=7,
+            purchase_id="P-102",
+            amount=400.0,
+            date="2026-06-09",
+            notes="Auto-applied from vendor advance (Tx #42)",
+            created_by=None,
+        ),
+    ]
+    assert result["applied_amount"] == pytest.approx(700.0)
+    assert result["remaining_credit"] == pytest.approx(0.0)
+
+
+def test_grant_credit_and_auto_apply_rolls_back_when_application_fails():
+    controller = make_controller()
+    controller.repo.get_open_purchases_for_vendor.return_value = [
+        {"purchase_id": "P-101", "date": "2026-01-01"},
+    ]
+    controller._remaining_due_for_purchase = MagicMock(return_value=300.0)
+    controller.vadv.grant_credit.return_value = 42
+    controller.vadv.apply_credit_to_purchase.side_effect = ValueError("cannot apply")
+
+    with pytest.raises(ValueError, match="cannot apply"):
+        controller._grant_credit_and_auto_apply(7, 100.0, "2026-06-09", None)
+
+    assert [statement for statement, _ in controller.conn.statements] == [
+        "BEGIN IMMEDIATE",
+        "ROLLBACK",
+    ]
