@@ -442,24 +442,9 @@ class VendorController(BaseModule):
             info(self.view, "Unavailable", f"Vendor payment dialog is not available:\n{e}")
             return
 
-        def submit_advance(advance_data):
-            """Callback to record a new vendor advance/payment"""
-            # Use the VendorAdvancesRepo to record the vendor advance as a credit
-            tx_id = self.vadv.grant_credit(
-                vendor_id=advance_data["vendor_id"],
-                amount=advance_data["amount"],
-                date=advance_data["date"],
-                notes=advance_data.get("notes"),
-                created_by=advance_data.get("created_by"),
-                source_id=None,  # No specific source for direct advances
-                source_type="deposit"  # Mark as a direct deposit/advance
-            )
-            return tx_id
-
         defaults = {
             "list_company_bank_accounts": self._list_company_bank_accounts,
             "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
-            "submit_advance": submit_advance,  # Provide the callback to save advances
             "today": today_str,
             "vendor_display": str(vid),
             # Don't set default amount to allow null values in the amount field
@@ -483,18 +468,16 @@ class VendorController(BaseModule):
             return
 
         try:
-            # Use a savepoint to handle potential nested transactions
-            # This allows the operation to be atomic even if there's already a transaction
             self.conn.execute("SAVEPOINT apply_advance")
-
-            # Record the vendor advance using the submit_advance callback
-            tx_id = defaults["submit_advance"](payload)
-            
-            # Commit the transaction to persist the advance
-            self.conn.commit()
-
-            # Release the savepoint to commit the changes
-            # Note: Since we already committed above, this is just for savepoint cleanup
+            tx_id = self.vadv.grant_credit(
+                vendor_id=payload["vendor_id"],
+                amount=payload["amount"],
+                date=payload["date"],
+                notes=payload.get("notes"),
+                created_by=payload.get("created_by"),
+                source_id=None,
+                source_type="deposit",
+            )
             self.conn.execute("RELEASE apply_advance")
 
             info(self.view, "Recorded", f"Advance payment of {amount:.2f} recorded successfully (Tx #{tx_id}).")
@@ -503,8 +486,9 @@ class VendorController(BaseModule):
             # Rollback to the savepoint in case of any error
             try:
                 self.conn.execute("ROLLBACK TO apply_advance")
+                self.conn.execute("RELEASE apply_advance")
             except Exception:
-                pass  # Ignore rollback errors
+                pass
             if isinstance(e, (ValueError, sqlite3.IntegrityError)):
                 info(self.view, "Not recorded", str(e))
                 return
