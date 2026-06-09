@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 import sqlite3
 
+
+class DomainError(Exception):
+    pass
+
 @dataclass
 class Vendor:
     vendor_id: int | None
@@ -13,6 +17,17 @@ class VendorsRepo:
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
         self.conn = conn
+
+    @staticmethod
+    def _normalize_text(value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @staticmethod
+    def _ensure_non_empty(value: str | None, field_label: str) -> None:
+        if value is None or value.strip() == "":
+            raise DomainError(f"{field_label} cannot be empty.")
 
     def list_vendors(self) -> list[Vendor]:
         rows = self.conn.execute(
@@ -28,17 +43,27 @@ class VendorsRepo:
         return Vendor(**dict(r)) if r else None
 
     def create(self, name: str, contact_info: str, address: str | None) -> int:
+        self._ensure_non_empty(name, "Name")
+        self._ensure_non_empty(contact_info, "Contact")
+        name_n = self._normalize_text(name)
+        contact_n = self._normalize_text(contact_info)
+        address_n = self._normalize_text(address)
         cur = self.conn.execute(
             "INSERT INTO vendors(name, contact_info, address) VALUES (?, ?, ?)",
-            (name, contact_info, address)
+            (name_n, contact_n, address_n)
         )
         self.conn.commit()
         return int(cur.lastrowid)
 
     def update(self, vendor_id: int, name: str, contact_info: str, address: str | None):
+        self._ensure_non_empty(name, "Name")
+        self._ensure_non_empty(contact_info, "Contact")
+        name_n = self._normalize_text(name)
+        contact_n = self._normalize_text(contact_info)
+        address_n = self._normalize_text(address)
         self.conn.execute(
             "UPDATE vendors SET name=?, contact_info=?, address=? WHERE vendor_id=?",
-            (name, contact_info, address, vendor_id)
+            (name_n, contact_n, address_n, vendor_id)
         )
         self.conn.commit()
 

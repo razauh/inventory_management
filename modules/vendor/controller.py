@@ -10,7 +10,7 @@ from .view import VendorView
 from .form import VendorForm
 from .model import VendorsTableModel
 from .bank_accounts_dialog import AccountEditDialog
-from ...database.repositories.vendors_repo import VendorsRepo
+from ...database.repositories.vendors_repo import DomainError as VendorsDomainError, VendorsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
@@ -862,13 +862,17 @@ class VendorController(BaseModule):
         payload = form.payload()
         if not payload:
             return
-        existing_vid = getattr(form, "_vendor_id", None)
-        if existing_vid:
-            self.repo.update(existing_vid, **payload)
-            info(self.view, "Saved", f"Vendor #{existing_vid} updated.")
-        else:
-            vid = self.repo.create(**payload)
-            info(self.view, "Saved", f"Vendor #{vid} created.")
+        try:
+            existing_vid = getattr(form, "_vendor_id", None)
+            if existing_vid:
+                self.repo.update(existing_vid, **payload)
+                info(self.view, "Saved", f"Vendor #{existing_vid} updated.")
+            else:
+                vid = self.repo.create(**payload)
+                info(self.view, "Saved", f"Vendor #{vid} created.")
+        except (VendorsDomainError, sqlite3.IntegrityError) as e:
+            info(self.view, "Not saved", f"Could not save vendor:\n{e}")
+            return
         self._reload()
     def _ensure_vendor_exists_for_form(self, form, payload: dict):
         try:
@@ -893,7 +897,11 @@ class VendorController(BaseModule):
         payload = form.payload()
         if not payload:
             return
-        self.repo.update(vid, **payload)
+        try:
+            self.repo.update(vid, **payload)
+        except (VendorsDomainError, sqlite3.IntegrityError) as e:
+            info(self.view, "Not saved", f"Could not save vendor:\n{e}")
+            return
         info(self.view, "Saved", f"Vendor #{vid} updated.")
         self._reload()
     def _delete(self):

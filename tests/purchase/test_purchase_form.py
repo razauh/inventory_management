@@ -113,21 +113,13 @@ def test_po_calculations(purchase_form, ids):
 
 def test_initial_payment_toggles(purchase_form):
     """PO-UI-008: Change the 'Initial Payment' amount."""
-    # Initially disabled/hidden logic is handled by _toggle_ip_fields_by_amount
-    
-    # Set amount > 0
-    purchase_form.ip_amount.setText("100")
-    # 1. Initial state: Amount is empty/0 -> fields disabled
-    # Note: setText triggers textChanged
     purchase_form.ip_amount.setText("0")
-    print(f"DEBUG: ip_amount text: '{purchase_form.ip_amount.text()}'")
-    print(f"DEBUG: ip_method enabled: {purchase_form.ip_method.isEnabled()}")
     assert not purchase_form.ip_method.isEnabled()
-    
-    # Check if fields enabled
+
+    purchase_form.ip_amount.setText("100")
     assert purchase_form.ip_method.isEnabled()
-    
-    # Check if fields disabled
+
+    purchase_form.ip_amount.setText("0")
     assert not purchase_form.ip_method.isEnabled()
 
 def test_initial_payment_methods(purchase_form):

@@ -46,10 +46,24 @@ CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 /* -------- parties -------- */
 CREATE TABLE IF NOT EXISTS vendors (
     vendor_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT NOT NULL,
-    contact_info TEXT NOT NULL,
+    name         TEXT NOT NULL CHECK (TRIM(name) <> ''),
+    contact_info TEXT NOT NULL CHECK (TRIM(contact_info) <> ''),
     address      TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_name
+ON vendors(TRIM(name));
+CREATE TRIGGER IF NOT EXISTS trg_vendors_non_empty_ins
+BEFORE INSERT ON vendors
+WHEN TRIM(NEW.name) = '' OR TRIM(NEW.contact_info) = ''
+BEGIN
+  SELECT RAISE(ABORT, 'Vendor name and contact cannot be empty');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_vendors_non_empty_upd
+BEFORE UPDATE OF name, contact_info ON vendors
+WHEN TRIM(NEW.name) = '' OR TRIM(NEW.contact_info) = ''
+BEGIN
+  SELECT RAISE(ABORT, 'Vendor name and contact cannot be empty');
+END;
 
 CREATE TABLE IF NOT EXISTS customers (
     customer_id  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2293,6 +2307,33 @@ def _ensure_customer_is_active(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_vendor_constraints(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_name "
+        "ON vendors(TRIM(name));"
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_vendors_non_empty_ins
+        BEFORE INSERT ON vendors
+        WHEN TRIM(NEW.name) = '' OR TRIM(NEW.contact_info) = ''
+        BEGIN
+          SELECT RAISE(ABORT, 'Vendor name and contact cannot be empty');
+        END;
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_vendors_non_empty_upd
+        BEFORE UPDATE OF name, contact_info ON vendors
+        WHEN TRIM(NEW.name) = '' OR TRIM(NEW.contact_info) = ''
+        BEGIN
+          SELECT RAISE(ABORT, 'Vendor name and contact cannot be empty');
+        END;
+        """
+    )
+
+
 def _ensure_sale_payments_overpayment_converted(conn: sqlite3.Connection) -> None:
     """
     Safe migration for older DBs that created `sale_payments` before `overpayment_converted` existed.
@@ -2361,6 +2402,7 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         # Apply (idempotent) schema
         conn.executescript(SQL)
         # Backfill migrations for existing DBs missing columns
+        _ensure_vendor_constraints(conn)
         _ensure_customer_is_active(conn)
         _ensure_sale_payments_overpayment_converted(conn)
         _ensure_sale_payments_converted_to_credit(conn)

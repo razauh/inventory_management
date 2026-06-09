@@ -2,7 +2,7 @@
 Unit tests to verify window properties and functionality for SO and PO windows
 """
 import unittest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 import sys
@@ -14,22 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Add the main package to sys.path for proper imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Use importlib to properly import the modules
-import importlib.util
-spec = importlib.util.spec_from_file_location("SaleForm", "/home/pc/Desktop/inventory_management/modules/sales/form.py")
-SaleForm_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(SaleForm_module)
-SaleForm = SaleForm_module.SaleForm
-
-spec2 = importlib.util.spec_from_file_location("PurchaseForm", "/home/pc/Desktop/inventory_management/modules/purchase/form.py")
-PurchaseForm_module = importlib.util.module_from_spec(spec2)
-spec2.loader.exec_module(PurchaseForm_module)
-PurchaseForm = PurchaseForm_module.PurchaseForm
-
-# Import repositories directly
-from database.repositories.customers_repo import CustomersRepo
-from database.repositories.products_repo import ProductsRepo
-from database.repositories.vendors_repo import VendorsRepo
+from inventory_management.database.repositories.customers_repo import CustomersRepo
+from inventory_management.database.repositories.products_repo import ProductsRepo
+from inventory_management.database.repositories.vendors_repo import VendorsRepo
+from inventory_management.modules.purchase.form import PurchaseForm
+from inventory_management.modules.sales.form import SaleForm
 
 
 class TestWindowProperties(unittest.TestCase):
