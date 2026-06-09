@@ -144,9 +144,8 @@ class VendorBankAccountsRepo:
         params.append(account_id)
 
         sql = f"UPDATE vendor_bank_accounts SET {', '.join(sets)} WHERE vendor_bank_account_id = ?"
-        with self.conn:
-            cur = self.conn.execute(sql, params)
-            return cur.rowcount
+        cur = self.conn.execute(sql, params)
+        return cur.rowcount
 
     # -------------------------
     # Deactivate / Primary
@@ -194,14 +193,13 @@ class VendorBankAccountsRepo:
         """
         Flip helper for UI: unset all, then set one. This will never raise due to the unique index.
         """
-        with self.conn:
-            self.conn.execute(
-                "UPDATE vendor_bank_accounts SET is_primary = 0 WHERE vendor_id = ?",
-                (vendor_id,),
-            )
-            self.conn.execute(
-                "UPDATE vendor_bank_accounts "
-                "SET is_primary = 1 "
-                "WHERE vendor_id = ? AND vendor_bank_account_id = ?",
-                (vendor_id, vba_id),
-            )
+        self.conn.execute(
+            "UPDATE vendor_bank_accounts SET is_primary = 0 WHERE vendor_id = ?",
+            (vendor_id,),
+        )
+        self.conn.execute(
+            "UPDATE vendor_bank_accounts "
+            "SET is_primary = 1 "
+            "WHERE vendor_id = ? AND vendor_bank_account_id = ?",
+            (vendor_id, vba_id),
+        )

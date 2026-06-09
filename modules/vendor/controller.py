@@ -196,6 +196,19 @@ class VendorController(BaseModule):
         row_dict = getattr(model, "row_at", lambda r: None)(index.row())
         return row_dict
 
+    def _with_bank_account_savepoint(self, operation):
+        self.conn.execute("SAVEPOINT vendor_bank_account_mutation")
+        try:
+            result = operation()
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK TO vendor_bank_account_mutation")
+            finally:
+                self.conn.execute("RELEASE vendor_bank_account_mutation")
+            raise
+        self.conn.execute("RELEASE vendor_bank_account_mutation")
+        return result
+
     def _acc_add(self):
         vendor_id = self._current_vendor_id()
         if not vendor_id:
@@ -205,7 +218,9 @@ class VendorController(BaseModule):
         if dlg.exec():
             data = dlg.payload()
             try:
-                self.vbank.create(int(vendor_id), data)
+                self._with_bank_account_savepoint(
+                    lambda: self.vbank.create(int(vendor_id), data)
+                )
                 uih.info(self.view, "Added", "Bank account added.")
                 self._reload_accounts(vendor_id)
             except Exception as e:
@@ -221,7 +236,9 @@ class VendorController(BaseModule):
         if dlg.exec():
             data = dlg.payload()
             try:
-                self.vbank.update(account_id, data)
+                self._with_bank_account_savepoint(
+                    lambda: self.vbank.update(account_id, data)
+                )
                 uih.info(self.view, "Updated", "Bank account updated.")
                 self._reload_accounts(vendor_id, keep_account_id=account_id)
             except Exception as e:
@@ -234,7 +251,7 @@ class VendorController(BaseModule):
             return
         account_id = int(row.get("vendor_bank_account_id"))
         try:
-            self.vbank.deactivate(account_id)
+            self._with_bank_account_savepoint(lambda: self.vbank.deactivate(account_id))
             uih.info(self.view, "Deactivated", "Bank account deactivated.")
             self._reload_accounts(vendor_id)
         except Exception as e:
@@ -248,7 +265,7 @@ class VendorController(BaseModule):
             return
         account_id = int(row.get("vendor_bank_account_id"))
         try:
-            self.vbank.activate(account_id)
+            self._with_bank_account_savepoint(lambda: self.vbank.activate(account_id))
             uih.info(self.view, "Activated", "Bank account activated.")
             self._reload_accounts(vendor_id)
         except Exception as e:
@@ -268,7 +285,9 @@ class VendorController(BaseModule):
             
         account_id = int(row.get("vendor_bank_account_id"))
         try:
-            self.vbank.force_set_primary(int(vendor_id), account_id)
+            self._with_bank_account_savepoint(
+                lambda: self.vbank.force_set_primary(int(vendor_id), account_id)
+            )
             uih.info(self.view, "Updated", "Primary bank account updated.")
             self._reload_accounts(vendor_id, keep_account_id=account_id)
         except Exception as e:
@@ -650,19 +669,23 @@ class VendorController(BaseModule):
             info(self.view, "Select", "Please select a vendor first.")
             return None
         try:
-            return self.vbank.create(vid, data)
+            return self._with_bank_account_savepoint(lambda: self.vbank.create(vid, data))
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not create bank account:\n{e}")
             return None
     def update_bank_account(self, account_id: int, data: dict) -> bool:
         try:
-            return self.vbank.update(account_id, data) > 0
+            return self._with_bank_account_savepoint(
+                lambda: self.vbank.update(account_id, data)
+            ) > 0
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not update bank account:\n{e}")
             return False
     def deactivate_bank_account(self, account_id: int) -> bool:
         try:
-            return self.vbank.deactivate(account_id) > 0
+            return self._with_bank_account_savepoint(
+                lambda: self.vbank.deactivate(account_id)
+            ) > 0
         except sqlite3.OperationalError as e:
             info(self.view, "Not saved", f"Could not deactivate bank account:\n{e}")
             return False
@@ -672,7 +695,9 @@ class VendorController(BaseModule):
             info(self.view, "Select", "Please select a vendor first.")
             return False
         try:
-            return self.vbank.set_primary(vid, account_id) > 0
+            return self._with_bank_account_savepoint(
+                lambda: self.vbank.set_primary(vid, account_id)
+            ) > 0
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not set primary account:\n{e}")
             return False

@@ -179,6 +179,19 @@ class VendorBankAccountsDialog(QDialog):
         active_text = self.tbl.item(row, 5).text()
         self.btn_toggle.setText("Deactivate" if active_text == "Active" else "Activate")
 
+    def _with_bank_account_savepoint(self, operation):
+        self.conn.execute("SAVEPOINT vendor_bank_account_mutation")
+        try:
+            result = operation()
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK TO vendor_bank_account_mutation")
+            finally:
+                self.conn.execute("RELEASE vendor_bank_account_mutation")
+            raise
+        self.conn.execute("RELEASE vendor_bank_account_mutation")
+        return result
+
     # ---- Actions ----
     def _add(self):
         dlg = AccountEditDialog(self)
@@ -188,7 +201,9 @@ class VendorBankAccountsDialog(QDialog):
         if not data:
             return
         try:
-            self.repo.create(self.vendor_id, data)
+            self._with_bank_account_savepoint(
+                lambda: self.repo.create(self.vendor_id, data)
+            )
         except sqlite3.IntegrityError as e:
             # likely duplicate (vendor_id, label) unique hit or 'one primary' check
             QMessageBox.warning(self, "Not saved", f"Could not add account:\n{e}")
@@ -219,17 +234,7 @@ class VendorBankAccountsDialog(QDialog):
             return
 
         try:
-            # Prefer repo.update if available; else direct SQL
-            if hasattr(self.repo, "update"):
-                self.repo.update(acc_id, data)
-            else:
-                with self.conn:
-                    self.conn.execute("""
-                        UPDATE vendor_bank_accounts
-                           SET label=?, bank_name=?, account_no=?, iban=?, routing_no=?, is_active=?
-                         WHERE vendor_bank_account_id=? AND vendor_id=?
-                    """, (data["label"], data["bank_name"], data["account_no"], data["iban"], data["routing_no"],
-                          int(data["is_active"]), acc_id, self.vendor_id))
+            self._with_bank_account_savepoint(lambda: self.repo.update(acc_id, data))
         except sqlite3.IntegrityError as e:
             QMessageBox.warning(self, "Not saved", f"Could not update account:\n{e}")
             return
@@ -247,10 +252,9 @@ class VendorBankAccountsDialog(QDialog):
         if not row:
             return
         new_flag = 0 if int(row["is_active"]) else 1
-        with self.conn:
-            self.conn.execute("""
-                UPDATE vendor_bank_accounts SET is_active=? WHERE vendor_bank_account_id=? AND vendor_id=?
-            """, (new_flag, acc_id, self.vendor_id))
+        self._with_bank_account_savepoint(
+            lambda: self.repo.deactivate(acc_id) if new_flag == 0 else self.repo.activate(acc_id)
+        )
         self._reload()
 
     def _make_primary(self):
@@ -258,16 +262,10 @@ class VendorBankAccountsDialog(QDialog):
         if not acc_id:
             QMessageBox.information(self, "Select", "Select an account to make primary.")
             return
-        # Force-flip primary in one transaction to satisfy the partial-unique constraint
         try:
-            with self.conn:
-                self.conn.execute(
-                    "UPDATE vendor_bank_accounts SET is_primary=0 WHERE vendor_id=?", (self.vendor_id,)
-                )
-                self.conn.execute(
-                    "UPDATE vendor_bank_accounts SET is_primary=1 WHERE vendor_bank_account_id=? AND vendor_id=?",
-                    (acc_id, self.vendor_id)
-                )
+            self._with_bank_account_savepoint(
+                lambda: self.repo.force_set_primary(self.vendor_id, acc_id)
+            )
         except sqlite3.IntegrityError as e:
             QMessageBox.warning(self, "Not updated", f"Could not make primary:\n{e}")
             return
