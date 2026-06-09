@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT_DIR="$ROOT_DIR/graphify-out"
+MAIN_GRAPH="$OUT_DIR/graph.json"
+MERGED_GRAPH="$OUT_DIR/merged-graph.json"
+TMP_MERGED="$OUT_DIR/.merged-graph.tmp.json"
+LOCAL_GRAPHIFY_BIN="$ROOT_DIR/.conda/bin/graphify"
+SPLIT_MERGE_SCRIPT="$ROOT_DIR/scripts/graphify_split_merge.py"
+SEMANTIC_REFRESH_SCRIPT="$ROOT_DIR/scripts/graphify_semantic_refresh.py"
+GRAPHIFY_BIN="${GRAPHIFY_BIN:-}"
+PYTHON_BIN="${PYTHON_BIN:-}"
+SEMANTIC_NEEDED=0
+
+cd "$ROOT_DIR"
+
+if [[ ! -f "$SPLIT_MERGE_SCRIPT" ]]; then
+  echo "Error: expected split/merge pass script at $SPLIT_MERGE_SCRIPT." >&2
+  exit 1
+fi
+
+if [[ ! -f "$SEMANTIC_REFRESH_SCRIPT" ]]; then
+  echo "Error: expected semantic refresh script at $SEMANTIC_REFRESH_SCRIPT." >&2
+  exit 1
+fi
+
+if [[ -z "$GRAPHIFY_BIN" ]]; then
+  if [[ -x "$LOCAL_GRAPHIFY_BIN" ]]; then
+    GRAPHIFY_BIN="$LOCAL_GRAPHIFY_BIN"
+  fi
+fi
+
+if [[ -z "$GRAPHIFY_BIN" ]]; then
+  GRAPHIFY_BIN="$(command -v graphify || true)"
+fi
+
+if [[ ! -x "$GRAPHIFY_BIN" ]]; then
+  echo "Error: graphify command not found in PATH." >&2
+  exit 1
+fi
+
+export GRAPHIFY_BIN
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  SHEBANG="$(head -n 1 "$GRAPHIFY_BIN" 2>/dev/null || true)"
+  if [[ "$SHEBANG" == '#!'* ]]; then
+    CANDIDATE="${SHEBANG#\#!}"
+    CANDIDATE="${CANDIDATE%% *}"
+    if [[ -x "$CANDIDATE" ]]; then
+      PYTHON_BIN="$CANDIDATE"
+    fi
+  fi
+fi
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="python3"
+fi
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Error: python runtime not found: $PYTHON_BIN" >&2
+  exit 1
+fi
+
+if "$PYTHON_BIN" "$SEMANTIC_REFRESH_SCRIPT" --check-needed .; then
+  SEMANTIC_NEEDED=0
+else
+  STATUS=$?
+  if [[ "$STATUS" -eq 10 ]]; then
+    SEMANTIC_NEEDED=1
+  else
+    echo "Error: failed to determine whether semantic refresh is needed." >&2
+    exit "$STATUS"
+  fi
+fi
+
+echo "[update_graphify] Pass 1/3: static AST/code graph update"
+"$GRAPHIFY_BIN" update .
+
+if [[ ! -f "$MAIN_GRAPH" ]]; then
+  echo "Error: expected main graph at $MAIN_GRAPH after static update." >&2
+  exit 1
+fi
+
+echo "[update_graphify] Pass 2/3: dependency/relationship scope build + merged graph"
+"$PYTHON_BIN" "$SPLIT_MERGE_SCRIPT"
+
+if [[ ! -f "$MERGED_GRAPH" ]]; then
+  echo "Error: expected merged graph at $MERGED_GRAPH after split/merge pass." >&2
+  exit 1
+fi
+
+echo "[update_graphify] Pass 3/3: semantic refresh + community analysis"
+if [[ "$SEMANTIC_NEEDED" -eq 1 ]]; then
+  echo "[update_graphify] Semantic/doc changes detected; refreshing semantic graph data."
+  "$PYTHON_BIN" "$SEMANTIC_REFRESH_SCRIPT" .
+else
+  echo "[update_graphify] No semantic/doc refresh needed."
+  "$GRAPHIFY_BIN" cluster-only .
+fi
+
+mkdir -p "$OUT_DIR"
+
+if [[ -f "$MERGED_GRAPH" ]]; then
+  echo "[update_graphify] Reconciling merged graph with freshly updated main graph..."
+  "$GRAPHIFY_BIN" merge-graphs "$MERGED_GRAPH" "$MAIN_GRAPH" --out "$TMP_MERGED"
+  mv "$TMP_MERGED" "$MERGED_GRAPH"
+  "$PYTHON_BIN" "$SPLIT_MERGE_SCRIPT" --refresh-merged-views
+else
+  echo "[update_graphify] No merged graph found; creating one from main graph..."
+  cp "$MAIN_GRAPH" "$MERGED_GRAPH"
+  "$PYTHON_BIN" "$SPLIT_MERGE_SCRIPT" --refresh-merged-views
+fi
+
+echo "[update_graphify] Done."
+echo "  main:   $MAIN_GRAPH"
+echo "  merged: $MERGED_GRAPH"

@@ -173,11 +173,9 @@ class ProductForm(QDialog):
         
         self.uom_layout.addWidget(sales)
         
-        # shared actions for base/alt swapping
+        # Alternate actions
         actrow = QHBoxLayout()
-        self.btn_set_base = QPushButton("Set Selected as Base")
         self.btn_remove = QPushButton("Remove Selected Alternate")
-        actrow.addWidget(self.btn_set_base)
         actrow.addWidget(self.btn_remove)
         actrow.addStretch(1)
         self.uom_layout.addLayout(actrow)
@@ -197,7 +195,6 @@ class ProductForm(QDialog):
         self.chk_sales.toggled.connect(self._toggle_blocks)
         self.btn_sales_add.clicked.connect(self._add_sales_alt)
         self.btn_remove.clicked.connect(self._remove_selected_alt)
-        self.btn_set_base.clicked.connect(self._set_selected_as_base)
         
         # Connect textChanged signals to clear error messages
         self.name.textChanged.connect(lambda: self.name_error.clear())
@@ -234,7 +231,6 @@ class ProductForm(QDialog):
         on_s = self.chk_sales.isChecked()
         # Base is ALWAYS available (decoupled from toggles)
         self.cmb_base.setEnabled(True)
-        self.btn_set_base.setEnabled(True)  # action itself requires a row selection
         # Alternates still depend on toggles
         for w in (self.cmb_sales_alt, self.txt_sales_factor, self.btn_sales_add, self.tbl_sales):
             w.setEnabled(on_s)
@@ -268,7 +264,7 @@ class ProductForm(QDialog):
             return 'sales', sels[0].row()
         return None, None
             
-    # ---------- add/remove/set-base ----------
+    # ---------- add/remove ----------
     def _ensure_base_selected(self):
         if self._base_id is None:
             self._base_id = self.cmb_base.current_uom_id()
@@ -311,35 +307,6 @@ class ProductForm(QDialog):
             if self._uom_name(a["uom_id"]) == name:
                 del lst[i]
                 break
-        self._refresh_tables()
-        
-    def _set_selected_as_base(self):
-        which, row = self._selected_table_and_row()
-        if which is None:
-            info(self, "Select", "Please select a Sales alternate to set as Base.")
-            return
-        tbl = self.tbl_sales if which == 'sales' else None
-        if tbl is None: return
-        name = tbl.item(row, 0).text()
-        # find the target uom_id from the sales list
-        target = None
-        for a in self._sales_alts:
-            if self._uom_name(a["uom_id"]) == name:
-                target = a["uom_id"]
-                break
-        if target is None:
-            return
-        old_base = self._base_id
-        self._base_id = target
-        # ensure old base appears as 1.0 alt in the sales list
-        if old_base is not None:
-            self._append_unique(self._sales_alts, old_base, 1.0)
-        # remove new base from the sales alt list
-        self._sales_alts = [a for a in self._sales_alts if a["uom_id"] != self._base_id]
-        # reflect in base combo
-        i = self.cmb_base.findText(name, Qt.MatchFixedString)
-        if i >= 0:
-            self.cmb_base.setCurrentIndex(i)
         self._refresh_tables()
         
     # ---------- payload & validation ----------

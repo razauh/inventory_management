@@ -15,17 +15,47 @@ A comprehensive inventory management application built with Python and PySide6.
 
 ## Installation
 
-1. Make sure you have Python 3.8+ installed
-2. Install the required dependencies:
+1. Create or activate the local conda environment for this repo.
+2. Run the one-shot bootstrap helper:
    ```bash
-   pip install -r requirements.txt
+   ./scripts/bootstrap_repo.sh --from-dir /path/to/trusted/wheels
+   # or, if you have explicitly approved an index:
+   ./scripts/bootstrap_repo.sh --index-url https://your.trusted.index/simple
    ```
-3. Run the application:
+   If `.conda/` already exists and `.wheelhouse-app/` is already seeded, the script will reuse them.
+3. If you prefer the manual flow, seed `.wheelhouse-app/` from a vetted source, then run the secure installer:
+   ```bash
+   ./scripts/seed_wheelhouse.sh --from-dir /path/to/trusted/wheels
+   # or, if you have explicitly approved an index:
+   ./scripts/seed_wheelhouse.sh --index-url https://your.trusted.index/simple
+   ```
+4. Run the secure installer:
+   ```bash
+   ./scripts/install_requirements_secure.sh
+   ```
+5. Run the application:
    ```bash
    python -m inventory_management.main
    ```
 
+`requirements.in` is the editable manifest. `requirements.txt` is the secure pip driver and installs only from `.wheelhouse-app/` with hash checking.
+The secure installer also verifies the app wheelhouse against `requirements.lock.txt` before it calls `pip`.
+`scripts/bootstrap_repo.sh` combines env creation, seeding, install, and final version verification.
+
+Bootstrap help:
+```bash
+./scripts/bootstrap_repo.sh --from-dir /path/to/trusted/wheels
+./scripts/bootstrap_repo.sh --index-url https://your.trusted.index/simple
+./scripts/bootstrap_repo.sh --help
+```
+
 ## Development Notes
+
+### Graphify Update Flow
+
+The `scripts/update_graphify` entry point expects `graphify` to be available on
+`PATH`. If your shell does not expose it yet, set `GRAPHIFY_BIN` to the full
+path of the executable before running the script.
 
 ### Removing Python Cache Files
 

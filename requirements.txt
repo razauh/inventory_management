@@ -1,0 +1,4 @@
+--no-index
+--find-links=.wheelhouse-app
+--require-hashes
+-r requirements.lock.txt

@@ -36,6 +36,12 @@ data/*.sqlite3
 .pytest_cache/
 .tox/
 .mypy_cache/
+.ruff_cache/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
 
 # Build and packaging
 build/
@@ -44,12 +50,20 @@ dist/
 
 # Repository mapping output
 _repo_map_out/
+graphify-out/
+**/graphify-out/
+scripts/__pycache__/
+scripts/graphify-out/
+scripts/*.pyc
+scripts/*.pyo
 
 # Virtual environments
+.venv/
 venv/
 env/
 ENV/
 virtualenv/
+.conda/
 
 # IDE and editor files
 .idea/
@@ -68,6 +82,11 @@ QWEN.md
 
 # Backup files
 *.bak
+.wheelhouse/
+.wheelhouse-app/
+.codex/
+.agents/
+.docs/
 
 # Obsidian folder
 .obsidian/

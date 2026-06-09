@@ -1,0 +1,61 @@
+# AGENTS.md
+
+Operating instructions for AI coding agents working in this repository.
+
+## Project Scope
+
+- This is an inventory management desktop application built with Python and PySide6.
+- Keep changes aligned with products, inventory, purchases, sales, customers, vendors, expenses, reporting, backup/restore, and the UI around those flows.
+- Prefer the existing application structure over introducing new frameworks or major architectural changes.
+- Keep the app practical for local desktop use.
+
+## Data and Artifacts
+
+- Never commit local database files, exports, logs, caches, backups, virtual environments, wheel caches, or generated graph artifacts.
+- Keep `data/raw/` and `data/processed/` local if they exist.
+- Do not inspect local data directories unless the user explicitly asks and the task requires it.
+- Keep generated outputs free of sensitive local data and machine-specific paths unless they are intentionally part of docs or tracked reports.
+- Do not commit `.conda/`, `.wheelhouse/`, `.codex/`, or `graphify-out/`.
+
+## Development Rules
+
+- Prefer existing modules, controllers, repositories, and views instead of adding parallel implementations.
+- Keep dependencies minimal. If a new dependency is necessary, explain why the standard library or current packages are insufficient.
+- Avoid adding telemetry, remote logging, or cloud tracking.
+- Keep UI behavior and naming consistent with the surrounding code.
+- Avoid broad refactors unless the user asked for them.
+- If you need to touch database logic, preserve existing data and migration behavior.
+
+## Comments and Docstrings
+
+- Avoid adding new comments or docstrings unless they clarify non-obvious logic that cannot be expressed cleanly in code.
+- Preserve existing comments and docstrings unless the task explicitly requires changing them.
+
+## Security and Privacy
+
+- Do not expose or commit secrets, tokens, `.env` files, local database files, generated model artifacts, or user-specific machine paths.
+- Treat dependency installation as code execution. Do not install packages unless the user explicitly asks.
+- Do not use networked commands unless the user explicitly asks.
+
+## Verification
+
+- Do not run tests, builds, linters, formatters, type checkers, notebook execution, or benchmarks unless the user explicitly asks.
+- If you make changes, report the exact minimal commands the user should run to verify them.
+- If a dependency or local artifact is missing, report the blocker and the exact setup step expected from the user.
+
+## Git Hygiene
+
+- Check `git status --short` before editing and before the final response.
+- Do not commit or stage files unless the user explicitly asks.
+- Preserve unrelated user changes.
+- Keep `.gitignore` aligned with the project data and artifact rules.
+
+## graphify
+
+This project has a graphify knowledge graph at `graphify-out/` with community structure and cross-file relationships.
+
+Rules:
+- For codebase questions, use `graphify query "<question>"` when `graphify-out/graph.json` exists.
+- Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts.
+- If `graphify-out/wiki/index.md` exists, use it for broad navigation instead of raw source browsing.
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain do not surface enough context.

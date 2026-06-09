@@ -221,7 +221,6 @@ class ProductController(BaseModule):
             return
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_edit.clicked.connect(self._edit)
-        self.view.btn_set_price.clicked.connect(self._set_price)
         # self.view.btn_del.clicked.connect(self._delete)
         self.view.search.textChanged.connect(self._apply_filter)
         self._wired = True
