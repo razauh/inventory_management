@@ -213,6 +213,23 @@ def test_force_set_primary_switches_to_active_same_vendor_account():
     conn.close()
 
 
+def test_set_primary_switches_to_active_same_vendor_account():
+    conn, vendor_id, primary_id, secondary_id = make_bank_account_db()
+    repo = VendorBankAccountsRepo(conn)
+
+    assert repo.set_primary(vendor_id, secondary_id) == 1
+
+    assert conn.execute(
+        "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (primary_id,),
+    ).fetchone()["is_primary"] == 0
+    assert conn.execute(
+        "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (secondary_id,),
+    ).fetchone()["is_primary"] == 1
+    conn.close()
+
+
 class TrackingConnection:
     def __init__(self):
         self.statements = []
@@ -266,7 +283,7 @@ def test_controller_rolls_back_savepoint_when_bank_account_update_fails():
     ("method_name", "repo_method"),
     [
         ("deactivate_bank_account", "deactivate"),
-        ("set_primary_bank_account", "set_primary"),
+        ("set_primary_bank_account", "force_set_primary"),
     ],
 )
 def test_controller_bank_account_helpers_release_savepoint_on_success(

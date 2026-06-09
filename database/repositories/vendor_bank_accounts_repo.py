@@ -188,30 +188,14 @@ class VendorBankAccountsRepo:
 
     def set_primary(self, vendor_id: int, vba_id: int) -> int:
         """
-        Strict/naive setter: attempts to set this account as primary.
-        If another account is already primary, the DB's partial unique index
-        will raise sqlite3.IntegrityError. Callers who want to flip should use
-        force_set_primary(...).
+        Set this active vendor account as the only primary account.
         """
-        cur = self.conn.execute(
-            """
-            UPDATE vendor_bank_accounts
-               SET is_primary = 1
-             WHERE vendor_id = ?
-               AND vendor_bank_account_id = ?
-               AND is_active = 1
-            """,
-            (vendor_id, vba_id),
-        )
-        if int(cur.rowcount) == 0:
-            raise sqlite3.IntegrityError(
-                "Primary vendor bank account must belong to the vendor and be active"
-            )
-        return int(cur.rowcount)
+        self.force_set_primary(vendor_id, vba_id)
+        return 1
 
     def force_set_primary(self, vendor_id: int, vba_id: int) -> None:
         """
-        Flip helper for UI: unset all, then set one active account for the vendor.
+        Unset all primaries, then set one active account for the vendor.
         """
         target = self.conn.execute(
             """

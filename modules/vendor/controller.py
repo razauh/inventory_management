@@ -102,25 +102,43 @@ class VendorController(BaseModule):
         vid = self._selected_id()
         self.view.details.set_data(self._current_vendor_row())
         credit = 0.0
+        credit_error = None
         try:
             if vid:
                 raw = self.vadv.get_balance(int(vid))
                 credit = float(raw) if raw is not None else 0.0
-        except Exception:
+        except Exception as e:
+            _log.exception("Failed to load vendor credit balance for vendor_id=%s", vid)
+            credit_error = f"Available advance could not be loaded: {e}"
             credit = 0.0
         if hasattr(self.view, "details") and hasattr(self.view.details, "set_credit"):
-            self.view.details.set_credit(credit)
+            if credit_error and hasattr(self.view.details, "set_credit_error"):
+                self.view.details.set_credit_error(credit_error)
+            else:
+                self.view.details.set_credit(credit)
         self._reload_accounts(vid)
         self._hook_acc_selection_enablement()
         self._update_acc_buttons_enabled()
     def _list_company_bank_accounts(self) -> List[Dict[str, Any]]:
         try:
-            # Use the repository to get company bank accounts
-            from ...database.repositories.company_bank_accounts_repo import CompanyBankAccountsRepo
-            repo = CompanyBankAccountsRepo(self.conn)
-            rows = repo.list_active()
-            return [{"id": int(r["account_id"]), "name": r.get("label") or (r.get("bank_name", "") + " " + r.get("account_no", ""))} for r in rows]
-        except Exception:
+            rows = self.conn.execute(
+                """
+                SELECT account_id, label, bank_name, account_no
+                FROM company_bank_accounts
+                WHERE is_active = 1
+                ORDER BY label ASC, account_id ASC
+                """
+            ).fetchall()
+            return [
+                {
+                    "id": int(r["account_id"]),
+                    "name": r["label"] or f"{r['bank_name'] or ''} {r['account_no'] or ''}".strip(),
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            _log.exception("Failed to load company bank accounts for vendor payment flow")
+            info(self.view, "Data unavailable", f"Company bank accounts could not be loaded:\n{e}")
             return []
     def _list_vendor_bank_accounts(self, vendor_id: int) -> List[Dict[str, Any]]:
         try:
@@ -129,7 +147,9 @@ class VendorController(BaseModule):
             for r in rows:
                 out.append({"id": int(r["vendor_bank_account_id"]), "name": r.get("label") or (r.get("bank_name") or "") + " " + (r.get("account_no") or "")})
             return out
-        except Exception:
+        except Exception as e:
+            _log.exception("Failed to load vendor bank accounts for vendor_id=%s", vendor_id)
+            info(self.view, "Data unavailable", f"Vendor bank accounts could not be loaded:\n{e}")
             return []
     def _open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
         return self.repo.get_open_purchases_for_vendor(vendor_id)
@@ -142,7 +162,9 @@ class VendorController(BaseModule):
                 paid = float(r["paid_amount"] or 0.0)
                 out.append({"purchase_id": r["purchase_id"], "doc_no": r["purchase_id"], "date": r["date"], "total": total, "paid": paid})
             return out
-        except Exception:
+        except Exception as e:
+            _log.exception("Failed to load open purchases for vendor_id=%s", vendor_id)
+            info(self.view, "Data unavailable", f"Open purchases could not be loaded:\n{e}")
             return []
     def list_open_purchases(self) -> list[dict]:
         vid = self._selected_id()
@@ -171,7 +193,9 @@ class VendorController(BaseModule):
     def _vendor_credit_balance(self, vendor_id: int) -> float:
         try:
             return float(self.vadv.get_balance(vendor_id))
-        except Exception:
+        except Exception as e:
+            _log.exception("Failed to load vendor credit balance for vendor_id=%s", vendor_id)
+            info(self.view, "Data unavailable", f"Vendor credit balance could not be loaded:\n{e}")
             return 0.0
     def _build_grant_credit_allocation_preview(self, vendor_id: int, amount: float) -> dict:
         remaining_credit = max(0.0, float(amount or 0.0))
@@ -699,6 +723,7 @@ class VendorController(BaseModule):
                         if lines:
                             row.setdefault("reference", {})["lines"] = list(lines)
                     except Exception:
+                        _log.exception("Failed to load return-origin lines for purchase_id=%s", pid)
                         pass
         type_order = {"Purchase": 1, "Cash Payment": 2, "Refund": 3, "Credit Note": 4, "Credit Applied": 5}
         def tie_value(r: dict):
@@ -788,9 +813,10 @@ class VendorController(BaseModule):
             info(self.view, "Select", "Please select a vendor first.")
             return False
         try:
-            return self._with_bank_account_savepoint(
-                lambda: self.vbank.set_primary(vid, account_id)
-            ) > 0
+            self._with_bank_account_savepoint(
+                lambda: self.vbank.force_set_primary(vid, account_id)
+            )
+            return True
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not set primary account:\n{e}")
             return False

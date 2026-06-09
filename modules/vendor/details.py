@@ -30,6 +30,8 @@ class VendorDetails(QWidget):
         self.lab_contact.setText("-")
         self.lab_address.setText("-")
         self.lblAvailableAdvanceValue.setText("0.00")
+        self.lblAvailableAdvanceValue.setToolTip("")
+        self.lblAvailableAdvanceValue.setStyleSheet("")
 
     def set_data(self, vendor: dict | None):
         if not vendor:
@@ -40,10 +42,15 @@ class VendorDetails(QWidget):
         self.lab_address.setText(vendor.get("address") or "")
 
     def set_credit(self, amount: float) -> None:
-        # Defensive: normalize None/invalid to 0.00
         try:
             val = 0.0 if amount is None else float(amount)
         except Exception:
             val = 0.0
-        # Two-decimal formatting (thousands separators if you prefer)
+        self.lblAvailableAdvanceValue.setToolTip("")
+        self.lblAvailableAdvanceValue.setStyleSheet("")
         self.lblAvailableAdvanceValue.setText(f"{val:,.2f}")
+
+    def set_credit_error(self, message: str) -> None:
+        self.lblAvailableAdvanceValue.setText("Unavailable")
+        self.lblAvailableAdvanceValue.setToolTip(message)
+        self.lblAvailableAdvanceValue.setStyleSheet("color:#b00020; font-weight:600;")
