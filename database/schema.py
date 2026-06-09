@@ -402,6 +402,44 @@ BEGIN
   SELECT RAISE(ABORT, 'Primary vendor bank account must be active');
 END;
 
+DROP TRIGGER IF EXISTS trg_pp_vendor_account_vendor_match_ins;
+CREATE TRIGGER trg_pp_vendor_account_vendor_match_ins
+BEFORE INSERT ON purchase_payments
+FOR EACH ROW
+WHEN NEW.vendor_bank_account_id IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM purchases p
+      JOIN vendor_bank_accounts vba
+        ON vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+       AND vba.vendor_id = p.vendor_id
+      WHERE p.purchase_id = NEW.purchase_id
+    )
+    THEN RAISE(ABORT, 'Vendor bank account must belong to the purchase vendor')
+    ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pp_vendor_account_vendor_match_upd;
+CREATE TRIGGER trg_pp_vendor_account_vendor_match_upd
+BEFORE UPDATE ON purchase_payments
+FOR EACH ROW
+WHEN NEW.vendor_bank_account_id IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM purchases p
+      JOIN vendor_bank_accounts vba
+        ON vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+       AND vba.vendor_id = p.vendor_id
+      WHERE p.purchase_id = NEW.purchase_id
+    )
+    THEN RAISE(ABORT, 'Vendor bank account must belong to the purchase vendor')
+    ELSE 1 END;
+END;
+
 /* ======================== BACK-DATED REBUILD SUPPORT (Option 2) ======================== */
 CREATE TABLE IF NOT EXISTS valuation_dirty (
   product_id        INTEGER PRIMARY KEY,

@@ -35,6 +35,9 @@ def vendor_payment_db():
     vendor_id = conn.execute(
         "INSERT INTO vendors (name, contact_info) VALUES ('Payment Vendor', 'Test')"
     ).lastrowid
+    other_vendor_id = conn.execute(
+        "INSERT INTO vendors (name, contact_info) VALUES ('Other Payment Vendor', 'Test')"
+    ).lastrowid
     conn.execute(
         """
         INSERT INTO company_bank_accounts (label, bank_name, account_no)
@@ -47,6 +50,13 @@ def vendor_payment_db():
         VALUES (?, 'Payment Vendor Bank', 'Vendor Bank', '222')
         """,
         (vendor_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO vendor_bank_accounts (vendor_id, label, bank_name, account_no)
+        VALUES (?, 'Other Vendor Bank', 'Other Vendor Bank', '333')
+        """,
+        (other_vendor_id,),
     )
     conn.execute(
         """
@@ -99,6 +109,14 @@ def payment_bank_ids(conn):
         "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = 'Payment Vendor Bank'"
     ).fetchone()[0]
     return int(company_bank_id), int(vendor_bank_id)
+
+
+def other_vendor_bank_id(conn):
+    return int(
+        conn.execute(
+            "SELECT vendor_bank_account_id FROM vendor_bank_accounts WHERE label = 'Other Vendor Bank'"
+        ).fetchone()[0]
+    )
 
 
 def record_outgoing_bank_payment(
@@ -234,6 +252,27 @@ def test_outgoing_bank_payment_still_accepts_saved_vendor_account(
 
 
 @pytest.mark.parametrize("method", ["Bank Transfer", "Cross Cheque", "Cash Deposit"])
+def test_repository_rejects_vendor_bank_account_from_different_purchase_vendor(
+    vendor_payment_db, method
+):
+    conn, repo, _vendor_id = vendor_payment_db
+    company_bank_id, _vendor_bank_id = payment_bank_ids(conn)
+
+    with pytest.raises(
+        ValueError,
+        match="Vendor bank account does not belong to the purchase vendor",
+    ):
+        record_outgoing_bank_payment(
+            repo,
+            method=method,
+            bank_account_id=company_bank_id,
+            vendor_bank_account_id=other_vendor_bank_id(conn),
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM purchase_payments").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("method", ["Bank Transfer", "Cross Cheque", "Cash Deposit"])
 def test_schema_update_accepts_complete_temporary_vendor_account(
     vendor_payment_db, method
 ):
@@ -268,6 +307,71 @@ def test_schema_update_accepts_complete_temporary_vendor_account(
     assert payment["vendor_bank_account_id"] is None
     assert payment["temp_vendor_bank_name"] == "Updated Temporary Bank"
     assert payment["temp_vendor_bank_number"] == "UPDATED-123"
+
+
+@pytest.mark.parametrize("method", ["Bank Transfer", "Cross Cheque", "Cash Deposit"])
+def test_schema_rejects_wrong_vendor_bank_account_insert(vendor_payment_db, method):
+    conn, _repo, _vendor_id = vendor_payment_db
+    company_bank_id, _vendor_bank_id = payment_bank_ids(conn)
+    bank_account_id = None if method == "Cash Deposit" else company_bank_id
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="Vendor bank account must belong to the purchase vendor",
+    ):
+        conn.execute(
+            """
+            INSERT INTO purchase_payments (
+                purchase_id, date, amount, method, bank_account_id,
+                vendor_bank_account_id, instrument_type, instrument_no,
+                instrument_date, cleared_date, clearing_state
+            ) VALUES (
+                'PO-PAY', '2026-06-09', 10, ?, ?, ?, ?, 'INST-1',
+                '2026-06-09', '2026-06-09', 'cleared'
+            )
+            """,
+            (
+                method,
+                bank_account_id,
+                other_vendor_bank_id(conn),
+                {
+                    "Bank Transfer": "online",
+                    "Cross Cheque": "cross_cheque",
+                    "Cash Deposit": "cash_deposit",
+                }[method],
+            ),
+        )
+
+
+@pytest.mark.parametrize("method", ["Bank Transfer", "Cross Cheque", "Cash Deposit"])
+def test_schema_rejects_wrong_vendor_bank_account_update(vendor_payment_db, method):
+    conn, repo, _vendor_id = vendor_payment_db
+    company_bank_id, vendor_bank_id = payment_bank_ids(conn)
+    payment_id = record_outgoing_bank_payment(
+        repo,
+        method=method,
+        bank_account_id=company_bank_id,
+        vendor_bank_account_id=vendor_bank_id,
+    )
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="Vendor bank account must belong to the purchase vendor",
+    ):
+        conn.execute(
+            """
+            UPDATE purchase_payments
+               SET vendor_bank_account_id = ?
+             WHERE payment_id = ?
+            """,
+            (other_vendor_bank_id(conn), payment_id),
+        )
+
+    payment = conn.execute(
+        "SELECT vendor_bank_account_id FROM purchase_payments WHERE payment_id = ?",
+        (payment_id,),
+    ).fetchone()
+    assert int(payment["vendor_bank_account_id"]) == vendor_bank_id
 
 
 @pytest.mark.parametrize("method", ["Bank Transfer", "Cross Cheque", "Cash Deposit"])

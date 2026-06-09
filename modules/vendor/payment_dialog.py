@@ -718,7 +718,33 @@ class _VendorMoneyDialog(QDialog):
         return len(errors) == 0, errors
 
     def _validate_payment(self) -> tuple[bool, list[str]]:
-        return self._validate_advance()
+        _, errors = self._validate_advance()
+        errors.extend(self._validate_purchase_vendor_ownership())
+        return len(errors) == 0, errors
+
+    def _validate_purchase_vendor_ownership(self) -> list[str]:
+        if self._mode != "payment" or not self._purchase_id:
+            return []
+        if not self.vendors or not hasattr(self.vendors, "conn"):
+            return []
+
+        try:
+            row = self.vendors.conn.execute(
+                "SELECT vendor_id FROM purchases WHERE purchase_id = ?",
+                (self._purchase_id,),
+            ).fetchone()
+        except Exception as e:
+            logging.error(f"Error validating purchase vendor ownership: {e}")
+            return ["Could not validate the purchase vendor."]
+
+        if not row:
+            return ["Purchase not found."]
+        purchase_vendor_id = (
+            row["vendor_id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
+        )
+        if int(purchase_vendor_id) != int(self._vendor_id):
+            return ["Selected purchase does not belong to this vendor."]
+        return []
 
     def _validate_method_specific_fields(self) -> list[str]:
         errors = []

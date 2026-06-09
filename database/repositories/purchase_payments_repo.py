@@ -41,27 +41,41 @@ class PurchasePaymentsRepo:
         if amount > 0 and state != "cleared":
             raise ValueError("Positive vendor payments must have clearing_state='cleared'")
 
-        if amount > 0:
-            purchase_info = self.conn.execute(
-                """
-                SELECT 
-                    COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-                    COALESCE(p.paid_amount, 0.0)              AS paid_amount,
-                    COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
-                    p.vendor_id
-                FROM purchases p
-                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-                WHERE p.purchase_id = ?
-                """,
-                (purchase_id,),
-            ).fetchone()
-            if not purchase_info:
-                raise ValueError(f"Purchase not found: {purchase_id}")
+        purchase_info = self.conn.execute(
+            """
+            SELECT 
+                COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+                COALESCE(p.paid_amount, 0.0)              AS paid_amount,
+                COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
+                p.vendor_id
+            FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+            WHERE p.purchase_id = ?
+            """,
+            (purchase_id,),
+        ).fetchone()
+        if not purchase_info:
+            raise ValueError(f"Purchase not found: {purchase_id}")
 
+        vendor_id = int(purchase_info["vendor_id"])
+        if vendor_bank_account_id is not None:
+            account = self.conn.execute(
+                """
+                SELECT vendor_id
+                  FROM vendor_bank_accounts
+                 WHERE vendor_bank_account_id = ?
+                """,
+                (vendor_bank_account_id,),
+            ).fetchone()
+            if not account:
+                raise ValueError(f"Vendor bank account not found: {vendor_bank_account_id}")
+            if int(account["vendor_id"]) != vendor_id:
+                raise ValueError("Vendor bank account does not belong to the purchase vendor")
+
+        if amount > 0:
             total_amount = float(purchase_info["total_calc"] or 0.0)
             current_paid = float(purchase_info["paid_amount"] or 0.0)
             current_advance = float(purchase_info["advance_payment_applied"] or 0.0)
-            vendor_id = int(purchase_info["vendor_id"])
             amount_due = total_amount - current_paid - current_advance
 
             if amount > amount_due + 1e-9:
