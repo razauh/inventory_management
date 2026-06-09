@@ -107,11 +107,13 @@ def record_outgoing_bank_payment(
     method,
     bank_account_id,
     vendor_bank_account_id=None,
+    instrument_no="INST-1",
     temp_vendor_bank_name=None,
     temp_vendor_bank_number=None,
 ):
     instrument_types = {
         "Bank Transfer": "online",
+        "Cheque": "cheque",
         "Cross Cheque": "cross_cheque",
         "Cash Deposit": "cash_deposit",
     }
@@ -122,7 +124,7 @@ def record_outgoing_bank_payment(
         bank_account_id=bank_account_id if method != "Cash Deposit" else None,
         vendor_bank_account_id=vendor_bank_account_id,
         instrument_type=instrument_types[method],
-        instrument_no="INST-1",
+        instrument_no=instrument_no,
         instrument_date="2026-06-09",
         deposited_date=None,
         cleared_date="2026-06-09",
@@ -295,6 +297,53 @@ def test_schema_rejects_incomplete_temporary_vendor_account_for_outgoing_bank_pa
             temp_vendor_bank_name=temp_name,
             temp_vendor_bank_number=temp_number,
         )
+
+
+@pytest.mark.parametrize(
+    "method", ["Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"]
+)
+@pytest.mark.parametrize("instrument_no", ["", "   "])
+def test_schema_rejects_blank_instrument_for_outgoing_bank_payment(
+    vendor_payment_db, method, instrument_no
+):
+    conn, repo, _vendor_id = vendor_payment_db
+    company_bank_id, vendor_bank_id = payment_bank_ids(conn)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        record_outgoing_bank_payment(
+            repo,
+            method=method,
+            bank_account_id=company_bank_id,
+            vendor_bank_account_id=vendor_bank_id if method != "Cheque" else None,
+            instrument_no=instrument_no,
+        )
+
+
+@pytest.mark.parametrize(
+    "method", ["Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit"]
+)
+def test_schema_rejects_blank_instrument_on_payment_update(
+    vendor_payment_db, method
+):
+    conn, repo, _vendor_id = vendor_payment_db
+    company_bank_id, vendor_bank_id = payment_bank_ids(conn)
+    payment_id = record_outgoing_bank_payment(
+        repo,
+        method=method,
+        bank_account_id=company_bank_id,
+        vendor_bank_account_id=vendor_bank_id if method != "Cheque" else None,
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "UPDATE purchase_payments SET instrument_no = '   ' WHERE payment_id = ?",
+            (payment_id,),
+        )
+
+    assert conn.execute(
+        "SELECT instrument_no FROM purchase_payments WHERE payment_id = ?",
+        (payment_id,),
+    ).fetchone()[0] == "INST-1"
 
 
 @pytest.mark.parametrize("clearing_state", ["posted", "pending", "bounced"])

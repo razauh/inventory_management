@@ -712,24 +712,16 @@ class _VendorMoneyDialog(QDialog):
 
         if amount < 0:
             errors.append("Payment amount cannot be negative.")
-        # For advances, allow all methods (Cash, Bank Transfer, Cheque, Cross Cheque,
-        # Cash Deposit, Other) without enforcing bank/instrument fields. Advances are
-        # stored purely as vendor credit, so banking details are optional for the user
-        # but not required for persistence.
+        elif amount > 0:
+            errors.extend(self._validate_method_specific_fields())
 
         return len(errors) == 0, errors
 
     def _validate_payment(self) -> tuple[bool, list[str]]:
-        errors = []
-        
-        ok, amount_errors = self._validate_advance()
-        if not ok:
-            return ok, amount_errors
+        return self._validate_advance()
 
-        amount_result = self._to_float_safe(self.amount.text())
-        amount = float(amount_result or 0)
-        if amount <= 0:
-            return True, errors
+    def _validate_method_specific_fields(self) -> list[str]:
+        errors = []
 
         method = self.method.currentText()
         company_id = self._resolve_company_account_id()
@@ -782,7 +774,7 @@ class _VendorMoneyDialog(QDialog):
 
         rule = validation_rules.get(method)
         if not rule:
-            return True, errors
+            return errors
 
         if rule.get('requires_company_acct', False) and company_id is None:
             errors.append(rule['error_msg_company'])
@@ -799,7 +791,7 @@ class _VendorMoneyDialog(QDialog):
         if rule.get('requires_instr_no', False) and not self.instr_no.text().strip():
             errors.append(rule['error_msg_instr'])
 
-        return len(errors) == 0, errors
+        return errors
 
     def _validate_live_payment(self) -> None:
         ok, errors = self._validate_payment() if self._mode == "payment" else self._validate_advance()
@@ -897,6 +889,10 @@ class _VendorMoneyDialog(QDialog):
             logging.error(f"Error parsing date string: {s}")
             pass
 
+    def _blank_to_none(self, value: object) -> str | None:
+        text = "" if value is None else str(value).strip()
+        return text or None
+
     def _build_payload_advance(self) -> dict | None:
         amount, method, company_id, vendor_bank_id, instr_no, instr_date, notes, date_str, instr_type, clearing_state, is_temp_account = self._build_common_payload_parts()
         
@@ -918,8 +914,8 @@ class _VendorMoneyDialog(QDialog):
             "ref_no": None,  # ref_no field was removed from UI
             "notes": notes,
             "date": date_str,
-            "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
-            "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
+            "temp_vendor_bank_name": self._blank_to_none(self.temp_bank_name.text()) if is_temp_account else None,
+            "temp_vendor_bank_number": self._blank_to_none(self.temp_bank_number.text()) if is_temp_account else None,
         }
 
         return payload
@@ -937,12 +933,12 @@ class _VendorMoneyDialog(QDialog):
         company_id = self._resolve_company_account_id()
         vendor_bank_id = self._resolve_vendor_account_id()
         
-        instr_no = self.instr_no.text().strip()
+        instr_no = self._blank_to_none(self.instr_no.text())
         # Since instr_date field was removed, use the main payment date
         instr_date = self.date.date().toString("yyyy-MM-dd")
         # ref_no field was removed, set to None
         ref_no = None
-        notes = self.notes.text().strip()
+        notes = self._blank_to_none(self.notes.text())
         date_str = self.date.date().toString("yyyy-MM-dd")
 
         if method == self.PAYMENT_METHODS['BANK_TRANSFER']:
@@ -963,14 +959,14 @@ class _VendorMoneyDialog(QDialog):
             clearing_state = "cleared"
             company_id = None
             vendor_bank_id = None
-            instr_no = ""
+            instr_no = None
             instr_date = date_str
         else:  # OTHER
             instr_type = "other"
             clearing_state = "cleared"
             company_id = None
             vendor_bank_id = None
-            instr_no = ""
+            instr_no = None
             instr_date = date_str
 
         selected_vendor_account = self.vendor_acct.currentData()
@@ -999,8 +995,8 @@ class _VendorMoneyDialog(QDialog):
             "ref_no": None,  # ref_no field was removed from UI
             "notes": notes,
             "date": date_str,
-            "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
-            "temp_vendor_bank_number": self.temp_bank_number.text().strip() if is_temp_account else None,
+            "temp_vendor_bank_name": self._blank_to_none(self.temp_bank_name.text()) if is_temp_account else None,
+            "temp_vendor_bank_number": self._blank_to_none(self.temp_bank_number.text()) if is_temp_account else None,
         }
 
         return payload
