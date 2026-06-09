@@ -911,14 +911,6 @@ class VendorController(BaseModule):
             return
         info(self.view, "Saved", f"Vendor #{vid} updated.")
         self._reload()
-    def _delete(self):
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor to delete.")
-            return
-        self.repo.delete(vid)
-        info(self.view, "Deleted", f"Vendor #{vid} removed.")
-        self._reload()
     def _open_vendor_bank_accounts_dialog(self, vendor_id: int):
         try:
             from .bank_accounts_dialog import VendorBankAccountsDialog
