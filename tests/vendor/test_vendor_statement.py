@@ -135,10 +135,10 @@ def test_statement_uses_net_purchase_payment_refund_and_advance_equation(monkeyp
     conn, statement = _build_statement(
         monkeypatch,
         purchases=[{"purchase_id": "PO-1", "date": "2026-06-01", "total_amount": 100, "net_total_amount": 80}],
-        payments=[_payment(30, payment_id=1), _payment(-10, payment_id=2), _payment(99, payment_id=3, state="pending")],
+        payments=[_payment(30, payment_id=1), _payment(99, payment_id=3, state="pending")],
         advances=[
             _advance(1, 20, "deposit"),
-            _advance(2, 15, "return_credit"),
+            _advance(2, 25, "return_credit"),
             _advance(3, -5, "applied_to_purchase"),
         ],
     )
@@ -147,18 +147,17 @@ def test_statement_uses_net_purchase_payment_refund_and_advance_equation(monkeyp
     assert effects == {
         "Purchase": pytest.approx(80.0),
         "Cash Payment": pytest.approx(-30.0),
-        "Refund": pytest.approx(10.0),
         "Credit Note": pytest.approx(0.0),
         "Credit Applied": pytest.approx(0.0),
     }
     deposit_row = next(row for row in statement["rows"] if row["type"] == "Credit Note" and row["amount_effect"] < 0)
     assert deposit_row["amount_effect"] == pytest.approx(-20.0)
-    assert statement["closing_balance"] == pytest.approx(40.0)
+    assert statement["closing_balance"] == pytest.approx(30.0)
     assert statement["totals"] == {
         "purchases": pytest.approx(80.0),
         "cash_paid": pytest.approx(30.0),
-        "refunds": pytest.approx(10.0),
-        "credit_notes": pytest.approx(35.0),
+        "refunds": pytest.approx(0.0),
+        "credit_notes": pytest.approx(45.0),
         "credit_applied": pytest.approx(5.0),
     }
     conn.close()
@@ -167,7 +166,6 @@ def test_statement_uses_net_purchase_payment_refund_and_advance_equation(monkeyp
 @pytest.mark.parametrize(
     ("payments", "advances", "expected"),
     [
-        ([_payment(-50)], [], 100.0),
         ([], [_advance(1, 50, "return_credit")], 50.0),
         ([], [_advance(1, 100, "deposit"), _advance(2, -100, "applied_to_purchase")], -50.0),
     ],
@@ -274,23 +272,17 @@ def test_statement_opening_payable_uses_complete_preperiod_equation():
     )
     conn.execute(
         """
-        INSERT INTO purchase_payments (
-            purchase_id, date, amount, method, clearing_state
-        ) VALUES ('PO-OPEN', '2026-05-16', -5, 'Cash', 'cleared')
-        """
-    )
-    conn.execute(
-        """
-        INSERT INTO purchase_payments (
-            purchase_id, date, amount, method, clearing_state
-        ) VALUES ('PO-OPEN', '2026-05-17', -99, 'Cash', 'pending')
-        """
+        INSERT INTO vendor_advances (
+            vendor_id, tx_date, amount, source_type
+        ) VALUES (?, '2026-05-18', 20, 'deposit')
+        """,
+        (vendor_id,),
     )
     conn.execute(
         """
         INSERT INTO vendor_advances (
-            vendor_id, tx_date, amount, source_type
-        ) VALUES (?, '2026-05-18', 20, 'deposit')
+            vendor_id, tx_date, amount, source_type, source_id
+        ) VALUES (?, '2026-05-19', 5, 'return_credit', 'PO-OPEN')
         """,
         (vendor_id,),
     )
@@ -320,9 +312,9 @@ def test_statement_opening_payable_uses_complete_preperiod_equation():
     statement = controller.build_vendor_statement(vendor_id, date_from="2026-06-01")
 
     assert statement["opening_credit"] == pytest.approx(20.0)
-    assert statement["opening_payable"] == pytest.approx(35.0)
+    assert statement["opening_payable"] == pytest.approx(30.0)
     assert [(row["type"], row["doc_id"]) for row in statement["rows"]] == [("Purchase", "PO-IN")]
-    assert statement["closing_balance"] == pytest.approx(47.0)
+    assert statement["closing_balance"] == pytest.approx(42.0)
     conn.close()
 
 
@@ -334,17 +326,15 @@ def test_fallback_history_uses_refund_and_zero_effect_credit_semantics():
     rows = _VendorHistoryDialog._build_tx_rows(
         helper,
         {
-            "payments": [_payment(-25)],
             "advances": [
                 _advance(1, 30, "deposit"),
-                _advance(2, 20, "return_credit"),
+                _advance(2, 45, "return_credit"),
                 _advance(3, -10, "applied_to_purchase"),
             ],
         },
     )
 
     assert [(row["type"], row["amount_effect"]) for row in rows] == [
-        ("Refund", pytest.approx(25.0)),
         ("Credit Note", pytest.approx(-30.0)),
         ("Credit Note", pytest.approx(0.0)),
         ("Credit Applied", pytest.approx(0.0)),

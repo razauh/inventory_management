@@ -356,8 +356,8 @@ CREATE TABLE IF NOT EXISTS purchase_payments (
   payment_id      INTEGER PRIMARY KEY AUTOINCREMENT,
   purchase_id     TEXT    NOT NULL,
   date            DATE    NOT NULL DEFAULT CURRENT_DATE,
-  amount          NUMERIC NOT NULL,  -- +ve = payment to vendor, -ve = refund from vendor
-  method          TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cross Cheque','Cash Deposit','Other')),
+  amount          NUMERIC NOT NULL CHECK (CAST(amount AS REAL) > 0),  -- +ve = payment to vendor
+  method          TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Cheque','Cross Cheque','Cash Deposit','Other')),
   bank_account_id INTEGER,
   vendor_bank_account_id INTEGER,
   instrument_type TEXT    CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other','cheque')),
@@ -471,7 +471,7 @@ CREATE TABLE IF NOT EXISTS vendor_advances (
   amount      NUMERIC NOT NULL,  -- +ve = credit granted, -ve = credit applied
   source_type TEXT    NOT NULL CHECK (source_type IN ('deposit','applied_to_purchase','return_credit')),
   source_id   TEXT,              -- e.g., purchase_id (for application), or return ref
-  method      TEXT    CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cross Cheque','Cash Deposit','Other')),
+  method      TEXT    CHECK (method IN ('Cash','Bank Transfer','Cheque','Cross Cheque','Cash Deposit','Other')),
   bank_account_id INTEGER,
   vendor_bank_account_id INTEGER,
   instrument_type TEXT CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other','cheque')),
@@ -493,6 +493,24 @@ CREATE TABLE IF NOT EXISTS vendor_advances (
 CREATE INDEX IF NOT EXISTS idx_vadv_vendor     ON vendor_advances(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_vadv_vendor_dt  ON vendor_advances(vendor_id, tx_date);
 CREATE INDEX IF NOT EXISTS idx_vadv_source     ON vendor_advances(source_id);
+
+DROP TRIGGER IF EXISTS trg_vadv_card_method_ins;
+CREATE TRIGGER trg_vadv_card_method_ins
+BEFORE INSERT ON vendor_advances
+FOR EACH ROW
+WHEN NEW.method = 'Card'
+BEGIN
+  SELECT RAISE(ABORT, 'Card is not a supported vendor payment method');
+END;
+
+DROP TRIGGER IF EXISTS trg_vadv_card_method_upd;
+CREATE TRIGGER trg_vadv_card_method_upd
+BEFORE UPDATE ON vendor_advances
+FOR EACH ROW
+WHEN NEW.method = 'Card'
+BEGIN
+  SELECT RAISE(ABORT, 'Card is not a supported vendor payment method');
+END;
 
 /* -------- customers: indexes to speed list/search -------- */
 
@@ -1421,8 +1439,18 @@ BEFORE INSERT ON purchase_payments
 FOR EACH ROW
 BEGIN
   SELECT CASE
-    WHEN CAST(NEW.amount AS REAL) > 0 AND NEW.clearing_state <> 'cleared'
-    THEN RAISE(ABORT, 'Positive vendor payments must have clearing_state=cleared')
+    WHEN NEW.method = 'Card'
+    THEN RAISE(ABORT, 'Card is not a supported vendor payment method')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN CAST(NEW.amount AS REAL) <= 0
+    THEN RAISE(ABORT, 'Vendor purchase payment amount must be greater than zero')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN NEW.clearing_state <> 'cleared'
+    THEN RAISE(ABORT, 'Vendor purchase payments must have clearing_state=cleared')
     ELSE 1 END;
 
   /* BANK TRANSFER (direct deposit) */
@@ -1497,8 +1525,18 @@ BEFORE UPDATE ON purchase_payments
 FOR EACH ROW
 BEGIN
   SELECT CASE
-    WHEN CAST(NEW.amount AS REAL) > 0 AND NEW.clearing_state <> 'cleared'
-    THEN RAISE(ABORT, 'Positive vendor payments must have clearing_state=cleared')
+    WHEN NEW.method = 'Card'
+    THEN RAISE(ABORT, 'Card is not a supported vendor payment method')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN CAST(NEW.amount AS REAL) <= 0
+    THEN RAISE(ABORT, 'Vendor purchase payment amount must be greater than zero')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN NEW.clearing_state <> 'cleared'
+    THEN RAISE(ABORT, 'Vendor purchase payments must have clearing_state=cleared')
     ELSE 1 END;
 
   /* Apply same rules on UPDATE */
@@ -2368,7 +2406,7 @@ def _ensure_vendor_advances_payment_metadata(conn: sqlite3.Connection) -> None:
     migrations = {
         "method": (
             "ALTER TABLE vendor_advances "
-            "ADD COLUMN method TEXT CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cross Cheque','Cash Deposit','Other'));"
+            "ADD COLUMN method TEXT CHECK (method IN ('Cash','Bank Transfer','Cheque','Cross Cheque','Cash Deposit','Other'));"
         ),
         "bank_account_id": "ALTER TABLE vendor_advances ADD COLUMN bank_account_id INTEGER;",
         "vendor_bank_account_id": "ALTER TABLE vendor_advances ADD COLUMN vendor_bank_account_id INTEGER;",

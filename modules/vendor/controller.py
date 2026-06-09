@@ -1,5 +1,5 @@
-from PySide6.QtWidgets import QWidget, QDialog, QFormLayout, QDialogButtonBox, QLineEdit, QDateEdit, QVBoxLayout, QLabel, QComboBox
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QDate, QItemSelectionModel
+from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QItemSelectionModel
 import sqlite3
 import logging
 from typing import Optional, Any, Dict, List
@@ -52,16 +52,6 @@ class VendorController(BaseModule):
 
         if hasattr(self.view, "btn_apply_advance"):
             self.view.btn_apply_advance.clicked.connect(self._on_apply_advance_dialog)
-        if hasattr(self.view, "btn_grant_credit"):
-            try:
-                self.view.btn_grant_credit.clicked.disconnect()
-            except Exception:
-                pass
-            self.view.btn_grant_credit.clicked.connect(self._open_grant_credit_dialog)
-        if hasattr(self.view, "btn_list_vendor_payments"):
-            self.view.btn_list_vendor_payments.clicked.connect(self._on_list_vendor_payments)
-        if hasattr(self.view, "btn_list_purchase_payments"):
-            self.view.btn_list_purchase_payments.clicked.connect(self._on_list_purchase_payments)
         if hasattr(self.view, "btn_history"):
             self.view.btn_history.clicked.connect(self._on_history)
         self.view.btn_acc_add.clicked.connect(self._acc_add)
@@ -555,10 +545,8 @@ class VendorController(BaseModule):
 
         # Use the payment form to record a new vendor advance (not tied to a specific purchase)
         payload = open_vendor_money_form(
-            mode="advance",  # Record a new advance (creates vendor credit)
             vendor_id=vid,
             vendors=self.repo,
-            purchase_id=None,  # Not tied to a specific purchase
             defaults=defaults
         )
 
@@ -611,47 +599,6 @@ class VendorController(BaseModule):
             return
 
         self._reload()
-    def _on_list_vendor_payments(self):
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor first.")
-            return
-        rows = self.ppay.list_payments_for_vendor(vid, date_from=None, date_to=None)
-        info(self.view, "Payments", f"Found {len(rows)} payment(s) for vendor.")
-    def _on_list_purchase_payments(self):
-        vid = self._selected_id()
-        if not vid:
-            info(self.view, "Select", "Please select a vendor first.")
-            return
-        pid = self._prompt_text("Enter Purchase ID")
-        if not pid:
-            return
-        rows = self.ppay.list_payments_for_purchase(pid)
-        info(self.view, "Payments", f"Found {len(rows)} payment(s) for purchase {pid}.")
-    def _prompt_text(self, title: str) -> Optional[str]:
-        class _Prompt(QDialog):
-            def __init__(self, parent=None, title="Enter"):
-                super().__init__(parent)
-                self.setWindowTitle(title)
-                self._val = None
-                self.line = QLineEdit()
-                form = QFormLayout()
-                form.addRow(QLabel(title), self.line)
-                btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-                btns.accepted.connect(self._on_ok)
-                btns.rejected.connect(self.reject)
-                lay = QVBoxLayout(self)
-                lay.addLayout(form)
-                lay.addWidget(btns)
-            def _on_ok(self):
-                self._val = self.line.text().strip()
-                self.accept()
-            def value(self):
-                return self._val
-        dlg = _Prompt(self.view, title=title)
-        if not dlg.exec():
-            return None
-        return dlg.value()
     def build_vendor_statement(self, vendor_id: int, *, date_from: Optional[str] = None, date_to: Optional[str] = None, include_opening: bool = True, show_return_origins: bool = False) -> dict:
         opening_credit = 0.0
         opening_payable = 0.0

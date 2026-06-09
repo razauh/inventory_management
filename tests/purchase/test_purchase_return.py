@@ -1,4 +1,5 @@
 import pytest
+from PySide6.QtWidgets import QDialogButtonBox
 from unittest.mock import MagicMock, patch
 from inventory_management.modules.purchase.return_form import PurchaseReturnForm
 from inventory_management.modules.purchase.controller import PurchaseController
@@ -54,23 +55,20 @@ def test_return_ui_validation(qtbot, conn, ids):
     qtbot.addWidget(form)
     
     # Try to return more than purchased
-    # Row 0, col 4 is 'Return Qty' (assuming based on typical layout, need to verify if possible)
+    # Use the form's column constant so the test follows the current table layout.
     # But better to use the internal method or widget if accessible
     
     # The form populates a table. Let's find the return qty cell.
-    # Based on return_form.py analysis:
-    # Col 4 is Return Qty (editable)
-    
-    form.tbl.item(0, 4).setText("20") # Max is 10
+    form.tbl.item(0, form.COL_QTY_RETURN).setText("20") # Max is 10
     
     # Trigger validation (usually on save or change)
     # The form has _validate_return_qty
     
     # Mock warning
     with patch("PySide6.QtWidgets.QMessageBox.warning") as mock_warn:
-        form.btn_save.click()
+        form.buttons.button(QDialogButtonBox.Ok).click()
         assert mock_warn.called
-        assert "cannot exceed" in mock_warn.call_args[0][2]
+        assert "exceeds max returnable" in mock_warn.call_args[0][2]
 
 def test_return_logic_credit(controller, conn, ids):
     """Test recording a return with vendor credit."""
@@ -98,36 +96,30 @@ def test_return_logic_credit(controller, conn, ids):
     
     # 2. Perform Return via Controller (mocking form)
     payload = {
-        "items": [
+        "date": "2023-01-02",
+        "lines": [
             {
-                "item_id": 1, # Assuming auto-increment starts at 1
-                "return_qty": 5,
-                "return_amount": 50.0
+                "item_id": 1,
+                "qty_return": 5,
             }
         ],
-        "date": "2023-01-02",
-        "settlement_mode": "credit",
+        "settlement": {"mode": "credit_note"},
         "notes": "Return 5 items"
     }
     
     # We need to fetch the item_id correctly
     items = repo.list_items(pid)
     item_id = items[0]["item_id"]
-    payload["items"][0]["item_id"] = item_id
+    payload["lines"][0]["item_id"] = item_id
     
     with patch("inventory_management.modules.purchase.controller.PurchaseReturnForm") as MockForm:
         instance = MockForm.return_value
+        instance.set_purchase_id.return_value = None
         instance.exec.return_value = True
-        instance.get_data.return_value = payload
+        instance.payload.return_value = payload
         
-        # We need to select the row in the view to return
-        # But controller._return() uses self.view.table.currentIndex()
-        # We can mock the view and table
-        mock_view = MagicMock()
-        mock_view.table.currentIndex.return_value.data.return_value = pid
-        # Also need selected purchase data
-        mock_view.get_selected_purchase_id.return_value = pid
-        controller.view = mock_view
+        controller._selected_row_dict = MagicMock(return_value={"purchase_id": pid})
+        controller._reload = MagicMock()
         
         # Mock repo.get_purchase_by_id to return something valid so controller proceeds
         # (It actually calls it inside _return)

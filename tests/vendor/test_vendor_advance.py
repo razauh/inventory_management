@@ -237,6 +237,22 @@ def test_grant_credit_persists_advance_payment_metadata(vendor_credit_db):
     assert ledger_row["instrument_no"] == "TRX-100"
 
 
+def test_grant_credit_rejects_card_vendor_payment_method(vendor_credit_db):
+    conn, repo, vendor_a, _vendor_b = vendor_credit_db
+
+    with pytest.raises(ValueError, match="Invalid vendor advance payment method: Card"):
+        repo.grant_credit(
+            vendor_id=vendor_a,
+            amount=25.0,
+            date="2026-06-09",
+            notes="Card should not be accepted",
+            created_by=None,
+            method="Card",
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM vendor_advances").fetchone()[0] == 0
+
+
 def test_grant_credit_persists_temporary_vendor_bank_metadata(vendor_credit_db):
     conn, repo, vendor_a, _vendor_b = vendor_credit_db
 

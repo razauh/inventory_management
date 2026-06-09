@@ -6,6 +6,8 @@ from .vendor_advances_repo import VendorAdvancesRepo
 
 
 class PurchasePaymentsRepo:
+    METHODS = {"Cash", "Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit", "Other"}
+
     def __init__(self, conn: sqlite3.Connection):
         conn.row_factory = sqlite3.Row
         self.conn = conn
@@ -33,13 +35,18 @@ class PurchasePaymentsRepo:
     ) -> int:
         """
         Insert one row into purchase_payments.
-        amount > 0 => payment to vendor; amount < 0 => refund from vendor.
+        amount > 0 => payment to vendor.
         Only 'cleared' rows roll into header totals via DB triggers.
         If a positive payment exceeds amount due, convert the excess to vendor credit.
         """
-        state = clearing_state or "posted"
-        if amount > 0 and state != "cleared":
-            raise ValueError("Positive vendor payments must have clearing_state='cleared'")
+        if amount <= 0:
+            raise ValueError("Vendor purchase payment amount must be greater than zero")
+        if method not in self.METHODS:
+            raise ValueError(f"Invalid vendor purchase payment method: {method}")
+
+        state = clearing_state or "cleared"
+        if state != "cleared":
+            raise ValueError("Vendor purchase payments must have clearing_state='cleared'")
 
         purchase_info = self.conn.execute(
             """
@@ -83,7 +90,7 @@ class PurchasePaymentsRepo:
                 adjusted_amount = amount_due
                 if excess_amount > 1e-9:
                     vadv = VendorAdvancesRepo(self.conn)
-                    vadv.grant_credit(
+                    credit_tx_id = vadv.grant_credit(
                         vendor_id=vendor_id,
                         amount=excess_amount,
                         date=date,
@@ -93,6 +100,8 @@ class PurchasePaymentsRepo:
                         source_type="deposit",
                     )
                 amount = adjusted_amount
+                if amount <= 1e-9:
+                    return int(credit_tx_id)
 
         cur = self.conn.execute(
             """
@@ -164,6 +173,8 @@ class PurchasePaymentsRepo:
         notes: Optional[str] = None,
     ) -> int:
         """Update clearing status for a payment. This method does not commit."""
+        if clearing_state != "cleared":
+            raise ValueError("Vendor purchase payments must remain cleared")
         sets = ["clearing_state = ?"]
         params: list[object] = [clearing_state]
         if cleared_date is not None:

@@ -5,6 +5,7 @@ import pytest
 from inventory_management.database.repositories.purchase_payments_repo import (
     PurchasePaymentsRepo,
 )
+from inventory_management.database.repositories.purchases_repo import PurchasesRepo
 from inventory_management.database.repositories.vendor_advances_repo import (
     VendorAdvancesRepo,
 )
@@ -65,7 +66,7 @@ def vendor_payment_db():
         """,
         (vendor_id,),
     )
-    conn.execute(
+    item_id = conn.execute(
         """
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
@@ -73,6 +74,15 @@ def vendor_payment_db():
         ) VALUES ('PO-PAY', ?, 1, ?, 100, 100, 0)
         """,
         (product_id, uom_id),
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (
+            product_id, quantity, uom_id, transaction_type,
+            reference_table, reference_id, reference_item_id, date, txn_seq
+        ) VALUES (?, 1, ?, 'purchase', 'purchases', 'PO-PAY', ?, '2026-06-09', 10)
+        """,
+        (product_id, uom_id, item_id),
     )
 
     try:
@@ -156,7 +166,7 @@ def record_outgoing_bank_payment(
     )
 
 
-@pytest.mark.parametrize("clearing_state", [None, "posted", "pending", "bounced"])
+@pytest.mark.parametrize("clearing_state", ["posted", "pending", "bounced"])
 def test_repository_rejects_uncleared_positive_vendor_payment(
     vendor_payment_db, clearing_state
 ):
@@ -164,12 +174,25 @@ def test_repository_rejects_uncleared_positive_vendor_payment(
 
     with pytest.raises(
         ValueError,
-        match="Positive vendor payments must have clearing_state='cleared'",
+        match="Vendor purchase payments must have clearing_state='cleared'",
     ):
         record_cash_payment(repo, amount=125.0, clearing_state=clearing_state)
 
     assert conn.execute("SELECT COUNT(*) FROM purchase_payments").fetchone()[0] == 0
     assert VendorAdvancesRepo(conn).get_balance(vendor_id) == pytest.approx(0.0)
+
+
+def test_repository_defaults_vendor_purchase_payment_to_cleared(vendor_payment_db):
+    conn, repo, _vendor_id = vendor_payment_db
+
+    payment_id = record_cash_payment(repo, amount=10.0, clearing_state=None)
+
+    payment = conn.execute(
+        "SELECT amount, clearing_state FROM purchase_payments WHERE payment_id = ?",
+        (payment_id,),
+    ).fetchone()
+    assert float(payment["amount"]) == pytest.approx(10.0)
+    assert payment["clearing_state"] == "cleared"
 
 
 def test_cleared_overpayment_creates_only_excess_vendor_credit(vendor_payment_db):
@@ -189,17 +212,83 @@ def test_cleared_overpayment_creates_only_excess_vendor_credit(vendor_payment_db
     ).fetchone()[0] == pytest.approx(100.0)
 
 
-def test_negative_vendor_refund_can_remain_pending(vendor_payment_db):
+def test_repository_rejects_negative_vendor_purchase_payment(vendor_payment_db):
     conn, repo, _vendor_id = vendor_payment_db
 
-    payment_id = record_cash_payment(repo, amount=-10.0, clearing_state="pending")
+    with pytest.raises(
+        ValueError,
+        match="Vendor purchase payment amount must be greater than zero",
+    ):
+        record_cash_payment(repo, amount=-10.0, clearing_state="cleared")
 
-    payment = conn.execute(
-        "SELECT amount, clearing_state FROM purchase_payments WHERE payment_id = ?",
-        (payment_id,),
+    assert conn.execute("SELECT COUNT(*) FROM purchase_payments").fetchone()[0] == 0
+
+
+def test_repository_rejects_card_vendor_purchase_payment(vendor_payment_db):
+    conn, repo, _vendor_id = vendor_payment_db
+
+    with pytest.raises(
+        ValueError,
+        match="Invalid vendor purchase payment method: Card",
+    ):
+        repo.record_payment(
+            purchase_id="PO-PAY",
+            amount=10.0,
+            method="Card",
+            bank_account_id=None,
+            vendor_bank_account_id=None,
+            instrument_type=None,
+            instrument_no=None,
+            instrument_date=None,
+            deposited_date=None,
+            cleared_date="2026-06-09",
+            clearing_state="cleared",
+            ref_no=None,
+            notes=None,
+            date="2026-06-09",
+            created_by=None,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM purchase_payments").fetchone()[0] == 0
+
+
+def test_purchase_return_refund_creates_vendor_credit_not_negative_payment(
+    vendor_payment_db,
+):
+    conn, _repo, vendor_id = vendor_payment_db
+    item_id = conn.execute(
+        "SELECT item_id FROM purchase_items WHERE purchase_id = 'PO-PAY'"
+    ).fetchone()[0]
+
+    PurchasesRepo(conn).record_return(
+        pid="PO-PAY",
+        date="2026-06-10",
+        created_by=None,
+        lines=[{"item_id": item_id, "qty_return": 0.2}],
+        notes="Returned goods refund",
+        settlement={
+            "mode": "refund_now",
+            "method": "Cash",
+            "clearing_state": "cleared",
+            "notes": "Vendor refunded returned goods",
+        },
+    )
+
+    assert conn.execute("SELECT COUNT(*) FROM purchase_payments").fetchone()[0] == 0
+    credit = conn.execute(
+        """
+        SELECT amount, source_type, source_id, method, clearing_state, notes
+        FROM vendor_advances
+        WHERE vendor_id = ?
+        """,
+        (vendor_id,),
     ).fetchone()
-    assert float(payment["amount"]) == pytest.approx(-10.0)
-    assert payment["clearing_state"] == "pending"
+    assert float(credit["amount"]) == pytest.approx(20.0)
+    assert credit["source_type"] == "return_credit"
+    assert credit["source_id"] == "PO-PAY"
+    assert credit["method"] == "Cash"
+    assert credit["clearing_state"] == "cleared"
+    assert credit["notes"] == "Vendor refunded returned goods"
 
 
 @pytest.mark.parametrize("method", ["Bank Transfer", "Cross Cheque", "Cash Deposit"])
@@ -458,7 +547,7 @@ def test_schema_rejects_uncleared_positive_vendor_payment_insert(
 
     with pytest.raises(
         sqlite3.IntegrityError,
-        match="Positive vendor payments must have clearing_state=cleared",
+        match="Vendor purchase payments must have clearing_state=cleared",
     ):
         conn.execute(
             """
@@ -478,7 +567,7 @@ def test_schema_rejects_changing_positive_vendor_payment_from_cleared(
 
     with pytest.raises(
         sqlite3.IntegrityError,
-        match="Positive vendor payments must have clearing_state=cleared",
+        match="Vendor purchase payments must have clearing_state=cleared",
     ):
         conn.execute(
             "UPDATE purchase_payments SET clearing_state = 'pending' WHERE payment_id = ?",
@@ -489,3 +578,29 @@ def test_schema_rejects_changing_positive_vendor_payment_from_cleared(
         "SELECT clearing_state FROM purchase_payments WHERE payment_id = ?",
         (payment_id,),
     ).fetchone()[0] == "cleared"
+
+
+def test_schema_rejects_negative_vendor_purchase_payment_insert(vendor_payment_db):
+    conn, _repo, _vendor_id = vendor_payment_db
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO purchase_payments (
+                purchase_id, date, amount, method, clearing_state
+            ) VALUES ('PO-PAY', '2026-06-09', -10, 'Cash', 'cleared')
+            """
+        )
+
+
+def test_schema_rejects_card_vendor_purchase_payment_insert(vendor_payment_db):
+    conn, _repo, _vendor_id = vendor_payment_db
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO purchase_payments (
+                purchase_id, date, amount, method, clearing_state
+            ) VALUES ('PO-PAY', '2026-06-09', 10, 'Card', 'cleared')
+            """
+        )

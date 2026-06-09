@@ -30,7 +30,7 @@ class ConstraintViolationError(VendorAdvancesError):
 
 
 class VendorAdvancesRepo:
-    METHODS = {"Cash", "Bank Transfer", "Card", "Cheque", "Cross Cheque", "Cash Deposit", "Other"}
+    METHODS = {"Cash", "Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit", "Other"}
     ITYPES = {"online", "cheque", "cross_cheque", "cash_deposit", "pay_order", "other"}
     CLEARING_STATES = {"posted", "pending", "cleared", "bounced"}
 
@@ -167,40 +167,48 @@ class VendorAdvancesRepo:
             clearing_state=clearing_state,
         )
 
+        metadata_values = {
+            "method": method,
+            "bank_account_id": bank_account_id,
+            "vendor_bank_account_id": vendor_bank_account_id,
+            "instrument_type": instrument_type,
+            "instrument_no": instrument_no,
+            "instrument_date": instrument_date,
+            "deposited_date": deposited_date,
+            "cleared_date": cleared_date,
+            "clearing_state": clearing_state,
+            "ref_no": ref_no,
+            "temp_vendor_bank_name": temp_vendor_bank_name,
+            "temp_vendor_bank_number": temp_vendor_bank_number,
+        }
+        existing_cols = self._vendor_advances_columns()
+        metadata_cols = [col for col, value in metadata_values.items() if value is not None]
+        missing_cols = [col for col in metadata_cols if col not in existing_cols]
+        if missing_cols:
+            raise ValueError(
+                "Vendor advance payment metadata columns are missing: "
+                + ", ".join(sorted(missing_cols))
+            )
+
         try:
+            columns = ["vendor_id", "tx_date", "amount", "source_type", "source_id"]
+            values: list[object] = [vendor_id, date, float(amount), st, source_id]
+            for col, value in metadata_values.items():
+                if col in existing_cols:
+                    columns.append(col)
+                    values.append(value)
+            columns.extend(["notes", "created_by"])
+            values.extend([notes, created_by])
+
+            placeholders = ", ".join("?" for _ in columns)
             cur = self.conn.execute(
-                """
+                f"""
                 INSERT INTO vendor_advances (
-                    vendor_id, tx_date, amount, source_type, source_id,
-                    method, bank_account_id, vendor_bank_account_id,
-                    instrument_type, instrument_no, instrument_date,
-                    deposited_date, cleared_date, clearing_state, ref_no,
-                    temp_vendor_bank_name, temp_vendor_bank_number,
-                    notes, created_by
+                    {", ".join(columns)}
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ({placeholders})
                 """,
-                (
-                    vendor_id,
-                    date,
-                    float(amount),
-                    st,
-                    source_id,
-                    method,
-                    bank_account_id,
-                    vendor_bank_account_id,
-                    instrument_type,
-                    instrument_no,
-                    instrument_date,
-                    deposited_date,
-                    cleared_date,
-                    clearing_state,
-                    ref_no,
-                    temp_vendor_bank_name,
-                    temp_vendor_bank_number,
-                    notes,
-                    created_by,
-                ),
+                values,
             )
             return int(cur.lastrowid)
         except sqlite3.IntegrityError as e:
@@ -455,6 +463,10 @@ class VendorAdvancesRepo:
                 raise ValueError(f"Vendor bank account not found: {vendor_bank_account_id}")
             if int(row["vendor_id"]) != int(vendor_id):
                 raise ValueError("Vendor bank account does not belong to the advance vendor")
+
+    def _vendor_advances_columns(self) -> set[str]:
+        rows = self.conn.execute("PRAGMA table_info(vendor_advances);").fetchall()
+        return {str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows}
 
     def _get_purchase_remaining_due(self, purchase_id: str, vendor_id: int) -> Optional[float]:
         """

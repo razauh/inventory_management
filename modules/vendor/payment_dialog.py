@@ -2,22 +2,18 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable, Optional, Literal
+from typing import Callable, Optional
 
 try:
     from PySide6.QtCore import Qt, QDate
-    from PySide6.QtGui import QIntValidator, QKeySequence
     from PySide6.QtWidgets import (
         QApplication,
         QDialog,
         QDialogButtonBox,
-        QDoubleSpinBox,
         QFormLayout,
         QLabel,
         QLineEdit,
         QMessageBox,
-        QPlainTextEdit,
-        QPushButton,
         QVBoxLayout,
         QWidget,
         QDateEdit,
@@ -30,7 +26,6 @@ except Exception:
     raise
 
 from ...database.repositories.vendors_repo import VendorsRepo
-from ...utils.helpers import today_str
 
 
 def _t(s: str) -> str:
@@ -39,10 +34,8 @@ def _t(s: str) -> str:
 
 def open_vendor_money_form(
     *,
-    mode: Literal["payment", "advance"] = "advance",
     vendor_id: int,
     vendors: VendorsRepo | None = None,
-    purchase_id: Optional[str] = None,
     defaults: dict | None = None,
 ) -> dict | None:
     app = QApplication.instance()
@@ -50,7 +43,7 @@ def open_vendor_money_form(
     if owns_app:
         app = QApplication([])
 
-    dlg = _VendorMoneyDialog(mode=mode, vendor_id=int(vendor_id), vendors=vendors, purchase_id=purchase_id, defaults=defaults or {})
+    dlg = _VendorMoneyDialog(vendor_id=int(vendor_id), vendors=vendors, defaults=defaults or {})
     result = dlg.exec()
     payload = dlg.payload() if result == QDialog.Accepted else None
 
@@ -85,19 +78,16 @@ class _VendorMoneyDialog(QDialog):
         """Convert a payment method display value to its corresponding key."""
         return self._method_display_to_key.get(display_value)
 
-    def __init__(self, *, mode: str, vendor_id: int, vendors: VendorsRepo | None = None, purchase_id: Optional[str] = None, defaults: dict) -> None:
+    def __init__(self, *, vendor_id: int, vendors: VendorsRepo | None = None, defaults: dict) -> None:
         super().__init__(None)
-        self._mode = mode
-        self.setWindowTitle(_t("Record Vendor Payment" if self._mode == "payment" else "Record Vendor Advance"))
+        self.setWindowTitle(_t("Record Vendor Advance"))
         self.setModal(True)
 
         self._payload: Optional[dict] = None
         self._vendor_id = int(vendor_id)
         self._defaults = defaults or {}
         self.vendors = vendors  # Added vendors connection
-        self._purchase_id = purchase_id
 
-        self._submit_payment: Optional[Callable[[dict], None]] = self._defaults.get("submit_payment")
         self._submit_advance: Optional[Callable[[dict], None]] = self._defaults.get("submit_advance")
 
         self._prefill_amount: Optional[float] = self._defaults.get("amount")
@@ -118,10 +108,6 @@ class _VendorMoneyDialog(QDialog):
         self._refresh_visibility()
         self._toggle_fields_by_amount()
         
-        # Calculate and display remaining amount if in payment mode
-        if self._mode == "payment":
-            self._calculate_remaining_amount()
-
     def _build_ui(self) -> None:
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
@@ -141,7 +127,6 @@ class _VendorMoneyDialog(QDialog):
         payment_layout.setHorizontalSpacing(10)  # Reduced horizontal spacing
         payment_layout.setVerticalSpacing(2)   # Further reduced vertical spacing
 
-        # Use QLineEdit instead of QDoubleSpinBox to match the original payment form
         self.amount = QLineEdit()
         self.amount.setPlaceholderText("Enter amount")
         self.amount.clear()  # Explicitly clear the text field to ensure it's empty
@@ -216,36 +201,6 @@ class _VendorMoneyDialog(QDialog):
         # Keep the labels visible but not required initially
         # We will handle their requirement state separately
         
-        # Purchase information display (only for payment mode)
-        purchase_info_box = None
-        remaining_info_box = None
-        if self._mode == "payment" and self._purchase_id:
-            purchase_info_box = QGroupBox("Purchase Information")
-            purchase_info_layout = QHBoxLayout(purchase_info_box)
-            self.lbl_purchase_id = QLabel(f"Purchase ID: {self._purchase_id}")
-            purchase_info_layout.addWidget(self.lbl_purchase_id)
-            main_layout.addWidget(purchase_info_box)
-
-            # Add remaining amount info
-            remaining_info_box = QGroupBox("Payment Summary")
-            remaining_info_layout = QHBoxLayout(remaining_info_box)
-            self.lbl_remaining = QLabel("Calculating...")
-            remaining_info_layout.addWidget(self.lbl_remaining)
-            main_layout.addWidget(remaining_info_box)
-        else:
-            # For advance mode, make sure we initialize the labels to avoid AttributeError
-            self.lbl_purchase_id = QLabel("")
-            self.lbl_remaining = QLabel("")
-
-        # Make purchase info fields available even if not visible for payment mode
-        if self._mode == "payment" and purchase_info_box and remaining_info_box:
-            purchase_info_box.setVisible(True)
-            remaining_info_box.setVisible(True)
-        else:
-            # For advance mode, hide purchase-related fields
-            self.lbl_purchase_id.setParent(None)
-            self.lbl_remaining.setParent(None)
-
         # Add payment notes
         payment_layout.addWidget(QLabel("Payment Notes"), 5, 0)
         payment_layout.addWidget(self.notes, 5, 1, 1, 3)
@@ -657,49 +612,6 @@ class _VendorMoneyDialog(QDialog):
         
         return vendor_bank_id
 
-    def _calculate_remaining_amount(self):
-        """Calculate and display the remaining amount for the purchase."""
-        if not self._purchase_id or self._mode != "payment":
-            if hasattr(self, 'lbl_remaining'):
-                self.lbl_remaining.setText("Purchase ID not provided" if self._mode == "payment" else "N/A for advances")
-            return
-        
-        # Early guard: Check if vendors repository is available before accessing connection
-        if not self.vendors or not hasattr(self.vendors, 'conn'):
-            logging.warning("Vendors repository not available for calculating remaining amount")
-            if hasattr(self, 'lbl_remaining'):
-                self.lbl_remaining.setText("Vendors repository not available")
-            return
-            
-        try:
-            # Fetch purchase header data to get total amount
-            row = self.vendors.conn.execute(
-                """
-                SELECT 
-                    COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-                    COALESCE(p.paid_amount, 0.0) AS paid_amount,
-                    COALESCE(p.advance_payment_applied, 0.0) AS advance_applied
-                FROM purchases p
-                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-                WHERE p.purchase_id = ?
-                """,
-                (self._purchase_id,)
-            ).fetchone()
-            
-            if row:
-                total_calc = float(row["total_calc"] or 0.0)
-                paid_amount = float(row["paid_amount"] or 0.0)
-                advance_applied = float(row["advance_payment_applied"] or 0.0)
-                
-                remaining = total_calc - paid_amount - advance_applied
-                self.lbl_remaining.setText(f"Remaining: {remaining:.2f}")
-            else:
-                self.lbl_remaining.setText("Purchase not found")
-                
-        except Exception as e:
-            logging.error(f"Error calculating remaining amount: {e}")
-            self.lbl_remaining.setText("Error calculating remaining amount")
-
     def _validate_advance(self) -> tuple[bool, list[str]]:
         """Validate advance payment details and return (is_valid, errors)"""
         errors = []
@@ -721,35 +633,6 @@ class _VendorMoneyDialog(QDialog):
             errors.extend(self._validate_method_specific_fields())
 
         return len(errors) == 0, errors
-
-    def _validate_payment(self) -> tuple[bool, list[str]]:
-        _, errors = self._validate_advance()
-        errors.extend(self._validate_purchase_vendor_ownership())
-        return len(errors) == 0, errors
-
-    def _validate_purchase_vendor_ownership(self) -> list[str]:
-        if self._mode != "payment" or not self._purchase_id:
-            return []
-        if not self.vendors or not hasattr(self.vendors, "conn"):
-            return []
-
-        try:
-            row = self.vendors.conn.execute(
-                "SELECT vendor_id FROM purchases WHERE purchase_id = ?",
-                (self._purchase_id,),
-            ).fetchone()
-        except Exception as e:
-            logging.error(f"Error validating purchase vendor ownership: {e}")
-            return ["Could not validate the purchase vendor."]
-
-        if not row:
-            return ["Purchase not found."]
-        purchase_vendor_id = (
-            row["vendor_id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
-        )
-        if int(purchase_vendor_id) != int(self._vendor_id):
-            return ["Selected purchase does not belong to this vendor."]
-        return []
 
     def _validate_method_specific_fields(self) -> list[str]:
         errors = []
@@ -825,7 +708,7 @@ class _VendorMoneyDialog(QDialog):
         return errors
 
     def _validate_live_payment(self) -> None:
-        ok, errors = self._validate_payment() if self._mode == "payment" else self._validate_advance()
+        ok, errors = self._validate_advance()
         if not ok:
             error_message = "\n".join(errors)
             self.errorLabel.setText(error_message)
@@ -835,27 +718,17 @@ class _VendorMoneyDialog(QDialog):
             self.saveBtn.setEnabled(True)
 
     def _on_save(self) -> None:
-        is_valid, errors = self._validate_payment() if self._mode == "payment" else self._validate_advance()
+        is_valid, errors = self._validate_advance()
         if not is_valid:
             error_message = "\n".join(errors)
             self._warn(error_message)
             return
 
-        if self._mode == "payment":
-            # For payment mode, we use the original validation and payload building
-            payload = self._build_payload_payment()
-            if payload is None:
-                self._warn("Please enter a valid payment amount greater than 0.")
-                return
-
-            cb = self._submit_payment
-        else:  # advance mode
-            payload = self._build_payload_advance()
-            if payload is None:
-                self._warn("Please enter a valid payment amount greater than 0.")
-                return
-
-            cb = self._submit_advance
+        payload = self._build_payload_advance()
+        if payload is None:
+            self._warn("Please enter a valid payment amount greater than 0.")
+            return
+        cb = self._submit_advance
 
         # If submit callback provided, use it to persist and surface any DB constraint errors.
         if callable(cb):
@@ -931,7 +804,7 @@ class _VendorMoneyDialog(QDialog):
             return None
 
         payload = {
-            "vendor_id": self._vendor_id,  # Changed from purchase_id to vendor_id
+            "vendor_id": self._vendor_id,
             "amount": amount,
             "method": method,
             "bank_account_id": int(company_id) if company_id else None,
@@ -965,10 +838,7 @@ class _VendorMoneyDialog(QDialog):
         vendor_bank_id = self._resolve_vendor_account_id()
         
         instr_no = self._blank_to_none(self.instr_no.text())
-        # Since instr_date field was removed, use the main payment date
         instr_date = self.date.date().toString("yyyy-MM-dd")
-        # ref_no field was removed, set to None
-        ref_no = None
         notes = self._blank_to_none(self.notes.text())
         date_str = self.date.date().toString("yyyy-MM-dd")
 
@@ -1004,30 +874,3 @@ class _VendorMoneyDialog(QDialog):
         is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
         
         return amount, method, company_id, vendor_bank_id, instr_no, instr_date, notes, date_str, instr_type, clearing_state, is_temp_account
-
-    def _build_payload_payment(self) -> dict | None:
-        amount, method, company_id, vendor_bank_id, instr_no, instr_date, notes, date_str, instr_type, clearing_state, is_temp_account = self._build_common_payload_parts()
-        
-        if amount is None:
-            return None
-
-        payload = {
-            "purchase_id": self._purchase_id,  # For payment mode, this links to purchase
-            "amount": amount,
-            "method": method,
-            "bank_account_id": int(company_id) if company_id else None,
-            "vendor_bank_account_id": int(vendor_bank_id) if vendor_bank_id and not is_temp_account else None,
-            "instrument_type": instr_type,
-            "instrument_no": instr_no,
-            "instrument_date": instr_date,
-            "deposited_date": None,
-            "cleared_date": None,
-            "clearing_state": clearing_state,
-            "ref_no": None,  # ref_no field was removed from UI
-            "notes": notes,
-            "date": date_str,
-            "temp_vendor_bank_name": self._blank_to_none(self.temp_bank_name.text()) if is_temp_account else None,
-            "temp_vendor_bank_number": self._blank_to_none(self.temp_bank_number.text()) if is_temp_account else None,
-        }
-
-        return payload

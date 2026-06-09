@@ -4,7 +4,6 @@ import sqlite3
 from typing import Iterable, Optional
 
 # For settlements
-from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 
 
@@ -328,7 +327,7 @@ class PurchasesRepo:
             (100, 110, ... for that date).
           - Computes monetary return value via purchase_return_valuations for inserted txns.
           - Settlement:
-              * {'mode':'refund', ...} => negative purchase_payment
+              * {'mode':'refund', ...} => vendor credit (return_credit)
               * {'mode':'credit_note'} => vendor credit (return_credit)
         """
         if not lines:
@@ -463,12 +462,17 @@ class PurchasesRepo:
         if settlement and return_value > 0:
             mode = (settlement.get("mode") or "").lower()
 
-            if mode in ("refund", "refund_now"):
-                payments = PurchasePaymentsRepo(self.conn)
-                payments.record_payment(
-                    purchase_id=pid,
-                    amount=-return_value,  # incoming refund
-                    method=settlement.get("method") or "Cash",
+            if mode in ("refund", "refund_now", "credit_note"):
+                vadv = VendorAdvancesRepo(self.conn)
+                vadv.grant_credit(
+                    vendor_id=vendor_id,
+                    amount=return_value,
+                    date=date,
+                    notes=settlement.get("notes") or notes,
+                    created_by=created_by,
+                    source_id=pid,
+                    source_type="return_credit",
+                    method=settlement.get("method"),
                     bank_account_id=settlement.get("bank_account_id"),
                     vendor_bank_account_id=settlement.get("vendor_bank_account_id"),
                     instrument_type=settlement.get("instrument_type"),
@@ -478,22 +482,8 @@ class PurchasesRepo:
                     cleared_date=settlement.get("cleared_date"),
                     clearing_state=settlement.get("clearing_state"),
                     ref_no=settlement.get("ref_no"),
-                    notes=settlement.get("notes") or notes,
-                    date=date,
-                    created_by=created_by,
-                )
-
-            elif mode == "credit_note":
-                vadv = VendorAdvancesRepo(self.conn)
-                vadv.grant_credit(
-                    vendor_id=vendor_id,
-                    amount=return_value,
-                    date=date,
-                    notes=notes,
-                    created_by=created_by,
-                    source_id=pid,
-                    # Keep return credits explicitly labeled
-                    source_type="return_credit",
+                    temp_vendor_bank_name=settlement.get("temp_vendor_bank_name"),
+                    temp_vendor_bank_number=settlement.get("temp_vendor_bank_number"),
                 )
 
         # Audit logging for the return

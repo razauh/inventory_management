@@ -777,6 +777,7 @@ def method_compatible_instrument(method: str) -> str:
 
 def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_bank_by_vendor, users_ids):
     pay = CONFIG["PAYMENTS"]
+    purchase_methods = ["Cash", "Bank Transfer", "Cheque", "Cash Deposit", "Other"]
     
     # Calculate proportions based on original config but scale to actual purchase_ids count
     total_original = pay["purchases_paid_one"] + pay["purchases_partial_two"] + pay["purchases_unpaid"]
@@ -812,37 +813,35 @@ def seed_purchase_payments(conn, rng, purchase_ids, company_bank_ids, vendor_ban
 
     # paid (1 payment, mostly 'cleared')
     for i, pid in enumerate(ids_paid):
-        method = rng.choice(pay["methods"])
+        method = rng.choice(purchase_methods)
         inst = method_compatible_instrument(method)
-        bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
+        bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit") else None
         vendor_id = pick_vendor_for_purchase(pid)
         vba_ids = vendor_bank_by_vendor.get(vendor_id, [])
         vba_id = rng.choice(vba_ids) if (method in ("Bank Transfer","Cheque","Cash Deposit") and vba_ids) else None
         amount = max(10.0, money(rng.uniform(50.0, 1200.0)))
         amount = min(amount, max(10.0, remaining_due(pid)))
         date = random_date_within(CONFIG["DATES"]["days_back"], rng)
-        clearing = rng.choices(pay["clearing_states"], weights=[1,1,8,1], k=1)[0]
-        instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
-        # Set cleared_date if clearing_state is 'cleared', otherwise None
-        cleared_date = date if clearing == 'cleared' else None
+        clearing = "cleared"
+        instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit") else None
+        cleared_date = date
         rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
 
     # partial (2 payments each)
     for i, pid in enumerate(ids_partial):
         for _ in range(2):
-            method = rng.choice(pay["methods"])
+            method = rng.choice(purchase_methods)
             inst = method_compatible_instrument(method)
-            bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
+            bank_id = rng.choice(company_bank_ids) if method in ("Bank Transfer","Cheque","Cash Deposit") else None
             vendor_id = pick_vendor_for_purchase(pid)
             vba_ids = vendor_bank_by_vendor.get(vendor_id, [])
             vba_id = rng.choice(vba_ids) if (method in ("Bank Transfer","Cheque","Cash Deposit") and vba_ids) else None
             amount = max(5.0, money(rng.uniform(20.0, 400.0)))
             amount = min(amount, max(5.0, remaining_due(pid)))
             date = random_date_within(CONFIG["DATES"]["days_back"], rng)
-            clearing = rng.choices(pay["clearing_states"], weights=[2,4,3,1], k=1)[0]
-            instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit","Card") else None
-            # Set cleared_date if clearing_state is 'cleared', otherwise None
-            cleared_date = date if clearing == 'cleared' else None
+            clearing = "cleared"
+            instrument_no = f"TX-{rng.randint(100000,999999)}" if method in ("Bank Transfer","Cheque","Cash Deposit") else None
+            cleared_date = date
             rows.append((pid, date, amount, method, bank_id, vba_id, inst, instrument_no, None, None, cleared_date, clearing, None, None, rng.choice(users_ids)))
 
     conn.executemany(
