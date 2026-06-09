@@ -294,13 +294,18 @@ class _VendorMoneyDialog(QDialog):
         self.setMinimumSize(600, 550)
 
     def _to_float_safe(self, txt: str) -> float | None:
-        if txt is None or txt == "":
+        if txt is None:
+            return None
+        text = str(txt).strip()
+        if text == "":
+            return None
+        if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", text):
+            logging.warning("Could not convert amount text to float, returning None")
             return None
         try:
-            cleaned = re.sub(r"[^0-9.\-]", "", txt)
-            return float(cleaned) if cleaned and cleaned not in ['-', '.', '-.'] else None
+            return float(text)
         except ValueError:
-            logging.warning(f"Could not convert '{txt}' to float, returning None")
+            logging.warning("Could not convert amount text to float, returning None")
             return None
         except Exception as e:
             logging.error(f"Unexpected error in _to_float_safe with input '{txt}': {e}")
