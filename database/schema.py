@@ -1476,9 +1476,14 @@ BEFORE INSERT ON vendor_advances
 FOR EACH ROW
 WHEN NEW.source_type = 'applied_to_purchase' AND NEW.source_id IS NOT NULL
 BEGIN
-  /* Ensure referenced purchase exists */
+  /* Ensure referenced purchase exists and belongs to this vendor */
   SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM purchases p WHERE p.purchase_id = NEW.source_id)
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM purchases p
+      WHERE p.purchase_id = NEW.source_id
+        AND p.vendor_id = NEW.vendor_id
+    )
       THEN RAISE(ABORT, 'Invalid purchase reference for vendor credit application')
     ELSE 1
   END;
@@ -1510,9 +1515,14 @@ BEFORE UPDATE ON vendor_advances
 FOR EACH ROW
 WHEN NEW.source_type = 'applied_to_purchase' AND NEW.source_id IS NOT NULL
 BEGIN
-  /* Ensure referenced purchase exists */
+  /* Ensure referenced purchase exists and belongs to this vendor */
   SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM purchases p WHERE p.purchase_id = NEW.source_id)
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM purchases p
+      WHERE p.purchase_id = NEW.source_id
+        AND p.vendor_id = NEW.vendor_id
+    )
       THEN RAISE(ABORT, 'Invalid purchase reference for vendor credit application')
     ELSE 1
   END;

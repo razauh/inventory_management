@@ -55,7 +55,7 @@ class VendorAdvancesRepo:
 
         Raises:
             ValueError                        : if amount <= 0
-            InvalidPurchaseReferenceError     : if purchase_id is unknown
+            InvalidPurchaseReferenceError     : if purchase_id is unknown or belongs to another vendor
             InsufficientVendorCreditError     : if vendor credit < amount
             OverapplyVendorAdvanceError       : if amount > remaining due on purchase
             ConstraintViolationError          : other DB constraint violations
@@ -64,9 +64,11 @@ class VendorAdvancesRepo:
             raise ValueError("amount must be positive when applying credit")
 
         # --- pre-validate against DB state (friendly errors) ---
-        remaining_due = self._get_purchase_remaining_due(purchase_id)
+        remaining_due = self._get_purchase_remaining_due(purchase_id, vendor_id)
         if remaining_due is None:
-            raise InvalidPurchaseReferenceError(f"Unknown purchase_id: {purchase_id!r}")
+            raise InvalidPurchaseReferenceError(
+                "Invalid purchase reference for vendor credit application"
+            )
 
         # Current available vendor credit (from view)
         available_credit = self.get_balance(vendor_id)
@@ -330,11 +332,11 @@ class VendorAdvancesRepo:
     # ----------------------------
     # Internal helpers
     # ----------------------------
-    def _get_purchase_remaining_due(self, purchase_id: str) -> Optional[float]:
+    def _get_purchase_remaining_due(self, purchase_id: str, vendor_id: int) -> Optional[float]:
         """
         Returns remaining due for the purchase as:
             total_amount - paid_amount - advance_payment_applied
-        or None if the purchase is missing.
+        or None if the purchase is missing or belongs to another vendor.
         """
         row = self.conn.execute(
             """
@@ -342,9 +344,10 @@ class VendorAdvancesRepo:
               CAST(total_amount AS REAL)            AS total_amount,
               CAST(paid_amount AS REAL)             AS paid_amount,
               CAST(advance_payment_applied AS REAL) AS advance_applied
-            FROM purchases WHERE purchase_id = ?
+            FROM purchases
+            WHERE purchase_id = ? AND vendor_id = ?
             """,
-            (purchase_id,),
+            (purchase_id, vendor_id),
         ).fetchone()
         if not row:
             return None
