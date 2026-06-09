@@ -247,20 +247,40 @@ class VendorBankAccountsDialog(QDialog):
             QMessageBox.information(self, "Select", "Select an account to activate/deactivate.")
             return
         row = self.conn.execute("""
-            SELECT is_active FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?
+            SELECT is_active, is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?
         """, (acc_id, self.vendor_id)).fetchone()
         if not row:
             return
         new_flag = 0 if int(row["is_active"]) else 1
-        self._with_bank_account_savepoint(
-            lambda: self.repo.deactivate(acc_id) if new_flag == 0 else self.repo.activate(acc_id)
-        )
+        if new_flag == 0 and int(row["is_primary"]):
+            QMessageBox.warning(
+                self,
+                "Not updated",
+                "Choose another active primary account before deactivating this account.",
+            )
+            return
+        try:
+            self._with_bank_account_savepoint(
+                lambda: self.repo.deactivate(acc_id) if new_flag == 0 else self.repo.activate(acc_id)
+            )
+        except sqlite3.IntegrityError as e:
+            QMessageBox.warning(self, "Not updated", f"Could not update account:\n{e}")
+            return
         self._reload()
 
     def _make_primary(self):
         acc_id = self._selected_id()
         if not acc_id:
             QMessageBox.information(self, "Select", "Select an account to make primary.")
+            return
+        row = self.conn.execute("""
+            SELECT is_active FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?
+        """, (acc_id, self.vendor_id)).fetchone()
+        if not row:
+            QMessageBox.warning(self, "Not found", "Account not found.")
+            return
+        if not int(row["is_active"]):
+            QMessageBox.warning(self, "Inactive", "Activate this account before making it primary.")
             return
         try:
             self._with_bank_account_savepoint(

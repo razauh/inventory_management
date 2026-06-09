@@ -119,9 +119,9 @@ class VendorBankAccountsRepo:
         Updatable keys:
             label, bank_name, account_no, iban, routing_no, is_primary, is_active
 
-        RAW update: this method does NOT normalize primaries or unset others.
-        If you set is_primary=1 while another account for the same vendor is
-        already primary, the partial UNIQUE index should raise IntegrityError.
+        RAW update: this method does NOT unset other primaries.
+        Primary rows must be active. If you set is_primary=1 while another account
+        for the same vendor is already primary, the partial UNIQUE index should raise IntegrityError.
         Use force_set_primary(...) to safely toggle a single primary.
         """
         allowed = {"label", "bank_name", "account_no", "iban", "routing_no", "is_primary", "is_active"}
@@ -156,9 +156,23 @@ class VendorBankAccountsRepo:
         Returns number of affected rows.
         """
         cur = self.conn.execute(
-            "UPDATE vendor_bank_accounts SET is_active = 0 WHERE vendor_bank_account_id = ?",
+            """
+            UPDATE vendor_bank_accounts
+               SET is_active = 0
+             WHERE vendor_bank_account_id = ?
+               AND is_primary = 0
+            """,
             (account_id,),
         )
+        if int(cur.rowcount) == 0:
+            row = self.conn.execute(
+                "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+                (account_id,),
+            ).fetchone()
+            if row and int(row["is_primary"]) == 1:
+                raise sqlite3.IntegrityError(
+                    "Cannot deactivate primary vendor bank account; choose another active primary first"
+                )
         return int(cur.rowcount)
 
     def activate(self, account_id: int) -> int:
@@ -183,23 +197,48 @@ class VendorBankAccountsRepo:
             """
             UPDATE vendor_bank_accounts
                SET is_primary = 1
-             WHERE vendor_id = ? AND vendor_bank_account_id = ?
+             WHERE vendor_id = ?
+               AND vendor_bank_account_id = ?
+               AND is_active = 1
             """,
             (vendor_id, vba_id),
         )
+        if int(cur.rowcount) == 0:
+            raise sqlite3.IntegrityError(
+                "Primary vendor bank account must belong to the vendor and be active"
+            )
         return int(cur.rowcount)
 
     def force_set_primary(self, vendor_id: int, vba_id: int) -> None:
         """
-        Flip helper for UI: unset all, then set one. This will never raise due to the unique index.
+        Flip helper for UI: unset all, then set one active account for the vendor.
         """
+        target = self.conn.execute(
+            """
+            SELECT vendor_bank_account_id
+              FROM vendor_bank_accounts
+             WHERE vendor_id = ?
+               AND vendor_bank_account_id = ?
+               AND is_active = 1
+            """,
+            (vendor_id, vba_id),
+        ).fetchone()
+        if not target:
+            raise sqlite3.IntegrityError(
+                "Primary vendor bank account must belong to the vendor and be active"
+            )
+
         self.conn.execute(
             "UPDATE vendor_bank_accounts SET is_primary = 0 WHERE vendor_id = ?",
             (vendor_id,),
         )
-        self.conn.execute(
+        cur = self.conn.execute(
             "UPDATE vendor_bank_accounts "
             "SET is_primary = 1 "
-            "WHERE vendor_id = ? AND vendor_bank_account_id = ?",
+            "WHERE vendor_id = ? AND vendor_bank_account_id = ? AND is_active = 1",
             (vendor_id, vba_id),
         )
+        if int(cur.rowcount) == 0:
+            raise sqlite3.IntegrityError(
+                "Primary vendor bank account must belong to the vendor and be active"
+            )

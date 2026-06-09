@@ -686,7 +686,7 @@ class VendorController(BaseModule):
             return self._with_bank_account_savepoint(
                 lambda: self.vbank.deactivate(account_id)
             ) > 0
-        except sqlite3.OperationalError as e:
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not deactivate bank account:\n{e}")
             return False
     def set_primary_bank_account(self, account_id: int) -> bool:

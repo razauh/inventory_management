@@ -96,6 +96,123 @@ def test_force_set_primary_does_not_commit_unrelated_pending_work():
     conn.close()
 
 
+def test_schema_rejects_inactive_primary_insert():
+    conn, vendor_id, _primary_id, _secondary_id = make_bank_account_db()
+
+    with pytest.raises(sqlite3.IntegrityError, match="Primary vendor bank account must be active"):
+        conn.execute(
+            """
+            INSERT INTO vendor_bank_accounts (
+                vendor_id, label, bank_name, account_no, is_primary, is_active
+            ) VALUES (?, 'Inactive Primary', 'Bank C', '333', 1, 0)
+            """,
+            (vendor_id,),
+        )
+
+    conn.close()
+
+
+def test_schema_rejects_primary_update_to_inactive():
+    conn, _vendor_id, primary_id, _secondary_id = make_bank_account_db()
+
+    with pytest.raises(sqlite3.IntegrityError, match="Primary vendor bank account must be active"):
+        conn.execute(
+            "UPDATE vendor_bank_accounts SET is_active = 0 WHERE vendor_bank_account_id = ?",
+            (primary_id,),
+        )
+
+    row = conn.execute(
+        "SELECT is_primary, is_active FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (primary_id,),
+    ).fetchone()
+    assert row["is_primary"] == 1
+    assert row["is_active"] == 1
+    conn.close()
+
+
+def test_deactivate_rejects_primary_account():
+    conn, _vendor_id, primary_id, _secondary_id = make_bank_account_db()
+    repo = VendorBankAccountsRepo(conn)
+
+    with pytest.raises(sqlite3.IntegrityError, match="Cannot deactivate primary"):
+        repo.deactivate(primary_id)
+
+    row = conn.execute(
+        "SELECT is_primary, is_active FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (primary_id,),
+    ).fetchone()
+    assert row["is_primary"] == 1
+    assert row["is_active"] == 1
+    conn.close()
+
+
+def test_force_set_primary_rejects_inactive_account_without_clearing_existing_primary():
+    conn, vendor_id, primary_id, secondary_id = make_bank_account_db()
+    repo = VendorBankAccountsRepo(conn)
+    repo.deactivate(secondary_id)
+
+    with pytest.raises(sqlite3.IntegrityError, match="belong to the vendor and be active"):
+        repo.force_set_primary(vendor_id, secondary_id)
+
+    assert conn.execute(
+        "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (primary_id,),
+    ).fetchone()["is_primary"] == 1
+    secondary_row = conn.execute(
+        "SELECT is_primary, is_active FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (secondary_id,),
+    ).fetchone()
+    assert secondary_row["is_primary"] == 0
+    assert secondary_row["is_active"] == 0
+    conn.close()
+
+
+def test_force_set_primary_rejects_wrong_vendor_account_without_clearing_existing_primary():
+    conn, vendor_id, primary_id, _secondary_id = make_bank_account_db()
+    other_vendor_id = conn.execute(
+        "INSERT INTO vendors (name, contact_info) VALUES ('Other Vendor', 'Test')"
+    ).lastrowid
+    other_account_id = conn.execute(
+        """
+        INSERT INTO vendor_bank_accounts (
+            vendor_id, label, bank_name, account_no, is_primary, is_active
+        ) VALUES (?, 'Other Account', 'Bank D', '444', 0, 1)
+        """,
+        (other_vendor_id,),
+    ).lastrowid
+    repo = VendorBankAccountsRepo(conn)
+
+    with pytest.raises(sqlite3.IntegrityError, match="belong to the vendor and be active"):
+        repo.force_set_primary(vendor_id, int(other_account_id))
+
+    assert conn.execute(
+        "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (primary_id,),
+    ).fetchone()["is_primary"] == 1
+    assert conn.execute(
+        "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (other_account_id,),
+    ).fetchone()["is_primary"] == 0
+    conn.close()
+
+
+def test_force_set_primary_switches_to_active_same_vendor_account():
+    conn, vendor_id, primary_id, secondary_id = make_bank_account_db()
+    repo = VendorBankAccountsRepo(conn)
+
+    repo.force_set_primary(vendor_id, secondary_id)
+
+    assert conn.execute(
+        "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (primary_id,),
+    ).fetchone()["is_primary"] == 0
+    assert conn.execute(
+        "SELECT is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id = ?",
+        (secondary_id,),
+    ).fetchone()["is_primary"] == 1
+    conn.close()
+
+
 class TrackingConnection:
     def __init__(self):
         self.statements = []

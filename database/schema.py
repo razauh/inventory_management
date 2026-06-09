@@ -388,6 +388,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_vba_one_primary
 CREATE INDEX IF NOT EXISTS idx_vba_vendor_active
   ON vendor_bank_accounts(vendor_id, is_active);
 
+CREATE TRIGGER IF NOT EXISTS trg_vba_primary_must_be_active_ins
+BEFORE INSERT ON vendor_bank_accounts
+WHEN NEW.is_primary = 1 AND NEW.is_active = 0
+BEGIN
+  SELECT RAISE(ABORT, 'Primary vendor bank account must be active');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_vba_primary_must_be_active_upd
+BEFORE UPDATE ON vendor_bank_accounts
+WHEN NEW.is_primary = 1 AND NEW.is_active = 0
+BEGIN
+  SELECT RAISE(ABORT, 'Primary vendor bank account must be active');
+END;
+
 /* ======================== BACK-DATED REBUILD SUPPORT (Option 2) ======================== */
 CREATE TABLE IF NOT EXISTS valuation_dirty (
   product_id        INTEGER PRIMARY KEY,
