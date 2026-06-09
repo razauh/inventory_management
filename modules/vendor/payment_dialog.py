@@ -719,8 +719,90 @@ class _VendorMoneyDialog(QDialog):
 
         return len(errors) == 0, errors
 
+    def _validate_payment(self) -> tuple[bool, list[str]]:
+        errors = []
+        
+        ok, amount_errors = self._validate_advance()
+        if not ok:
+            return ok, amount_errors
+
+        amount_result = self._to_float_safe(self.amount.text())
+        amount = float(amount_result or 0)
+        if amount <= 0:
+            return True, errors
+
+        method = self.method.currentText()
+        company_id = self._resolve_company_account_id()
+        vendor_bank_id = self._resolve_vendor_account_id()
+        selected_vendor_account = self.vendor_acct.currentData()
+        is_temp_account = selected_vendor_account == self.TEMP_BANK_KEY
+
+        validation_rules = {
+            self.PAYMENT_METHODS['BANK_TRANSFER']: {
+                'requires_company_acct': True,
+                'requires_vendor_acct': True,
+                'requires_instr_no': True,
+                'requires_temp_details': True,
+                'error_msg_company': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a company bank account.",
+                'error_msg_vendor': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please select a vendor bank account.",
+                'error_msg_instr': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']}, please enter the instrument/cheque number.",
+                'error_msg_temp_name': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter bank name.",
+                'error_msg_temp_number': f"For {self.PAYMENT_METHODS['BANK_TRANSFER']} with temporary account, please enter account number.",
+            },
+            self.PAYMENT_METHODS['CHEQUE']: {
+                'requires_company_acct': True,
+                'requires_vendor_acct': False,
+                'requires_instr_no': True,
+                'requires_temp_details': False,
+                'error_msg_company': f"For {self.PAYMENT_METHODS['CHEQUE']}, please select a company bank account.",
+                'error_msg_instr': f"For {self.PAYMENT_METHODS['CHEQUE']}, please enter the instrument/cheque number.",
+            },
+            self.PAYMENT_METHODS['CROSS_CHEQUE']: {
+                'requires_company_acct': True,
+                'requires_vendor_acct': True,
+                'requires_instr_no': True,
+                'requires_temp_details': True,
+                'error_msg_company': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a company bank account.",
+                'error_msg_vendor': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please select a vendor bank account.",
+                'error_msg_instr': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']}, please enter the instrument/cheque number.",
+                'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']} with temporary account, please enter bank name.",
+                'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CROSS_CHEQUE']} with temporary account, please enter account number.",
+            },
+            self.PAYMENT_METHODS['CASH_DEPOSIT']: {
+                'requires_company_acct': False,
+                'requires_vendor_acct': True,
+                'requires_instr_no': True,
+                'requires_temp_details': True,
+                'error_msg_vendor': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please select a vendor bank account.",
+                'error_msg_instr': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']}, please enter the deposit slip number.",
+                'error_msg_temp_name': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter bank name.",
+                'error_msg_temp_number': f"For {self.PAYMENT_METHODS['CASH_DEPOSIT']} with temporary account, please enter account number.",
+            },
+        }
+
+        rule = validation_rules.get(method)
+        if not rule:
+            return True, errors
+
+        if rule.get('requires_company_acct', False) and company_id is None:
+            errors.append(rule['error_msg_company'])
+
+        if rule.get('requires_vendor_acct', False):
+            if vendor_bank_id is None and not is_temp_account:
+                errors.append(rule['error_msg_vendor'])
+            elif is_temp_account and rule.get('requires_temp_details', False):
+                if not self.temp_bank_name.text().strip():
+                    errors.append(rule['error_msg_temp_name'])
+                if not self.temp_bank_number.text().strip():
+                    errors.append(rule['error_msg_temp_number'])
+
+        if rule.get('requires_instr_no', False) and not self.instr_no.text().strip():
+            errors.append(rule['error_msg_instr'])
+
+        return len(errors) == 0, errors
+
     def _validate_live_payment(self) -> None:
-        ok, errors = self._validate_advance()
+        ok, errors = self._validate_payment() if self._mode == "payment" else self._validate_advance()
         if not ok:
             error_message = "\n".join(errors)
             self.errorLabel.setText(error_message)
@@ -730,7 +812,7 @@ class _VendorMoneyDialog(QDialog):
             self.saveBtn.setEnabled(True)
 
     def _on_save(self) -> None:
-        is_valid, errors = self._validate_advance()
+        is_valid, errors = self._validate_payment() if self._mode == "payment" else self._validate_advance()
         if not is_valid:
             error_message = "\n".join(errors)
             self._warn(error_message)
@@ -922,4 +1004,3 @@ class _VendorMoneyDialog(QDialog):
         }
 
         return payload
-

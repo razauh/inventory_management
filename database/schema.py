@@ -1365,9 +1365,13 @@ BEGIN
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'online') OR
-         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
+         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL
+          AND (
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_name, '')), '') IS NULL OR
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_number, '')), '') IS NULL
+          ))
     )
-    THEN RAISE(ABORT, 'Bank Transfer requires company account, transaction #, instrument_type=online; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Bank Transfer requires company account, transaction #, instrument_type=online; vendor account or complete temporary account required for outgoing')
     ELSE 1 END;
 
   /* CHEQUE (regular incoming) - no vendor bank required */
@@ -1386,9 +1390,13 @@ BEGIN
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cross_cheque') OR
-         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
+         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL
+          AND (
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_name, '')), '') IS NULL OR
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_number, '')), '') IS NULL
+          ))
     )
-    THEN RAISE(ABORT, 'Cross Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Cross Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account or complete temporary account required for outgoing')
     ELSE 1 END;
 
   /* CASH DEPOSIT to vendor’s bank */
@@ -1396,9 +1404,13 @@ BEGIN
     WHEN NEW.method = 'Cash Deposit' AND (
          NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cash_deposit') OR
-         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
+         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL
+          AND (
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_name, '')), '') IS NULL OR
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_number, '')), '') IS NULL
+          ))
     )
-    THEN RAISE(ABORT, 'Cash Deposit requires deposit slip #, instrument_type=cash_deposit; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Cash Deposit requires deposit slip #, instrument_type=cash_deposit; vendor account or complete temporary account required for outgoing')
     ELSE 1 END;
 
   /* CASH (hand cash; not a bank movement) */
@@ -1429,9 +1441,13 @@ BEGIN
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'online') OR
-         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
+         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL
+          AND (
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_name, '')), '') IS NULL OR
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_number, '')), '') IS NULL
+          ))
     )
-    THEN RAISE(ABORT, 'Bank Transfer requires company account, transaction #, instrument_type=online; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Bank Transfer requires company account, transaction #, instrument_type=online; vendor account or complete temporary account required for outgoing')
     ELSE 1 END;
 
   SELECT CASE
@@ -1448,18 +1464,26 @@ BEGIN
          NEW.bank_account_id IS NULL OR
          NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cross_cheque') OR
-         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
+         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL
+          AND (
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_name, '')), '') IS NULL OR
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_number, '')), '') IS NULL
+          ))
     )
-    THEN RAISE(ABORT, 'Cross Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Cross Cheque requires company account, cheque #, instrument_type=cross_cheque; vendor account or complete temporary account required for outgoing')
     ELSE 1 END;
 
   SELECT CASE
     WHEN NEW.method = 'Cash Deposit' AND (
          NEW.instrument_no IS NULL OR
          (NEW.instrument_type IS NOT NULL AND NEW.instrument_type <> 'cash_deposit') OR
-         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL)
+         (CAST(NEW.amount AS REAL) > 0 AND NEW.vendor_bank_account_id IS NULL
+          AND (
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_name, '')), '') IS NULL OR
+              NULLIF(TRIM(COALESCE(NEW.temp_vendor_bank_number, '')), '') IS NULL
+          ))
     )
-    THEN RAISE(ABORT, 'Cash Deposit requires deposit slip #, instrument_type=cash_deposit; vendor account required for outgoing')
+    THEN RAISE(ABORT, 'Cash Deposit requires deposit slip #, instrument_type=cash_deposit; vendor account or complete temporary account required for outgoing')
     ELSE 1 END;
 
   /* CASH (hand cash; not a bank movement) */
