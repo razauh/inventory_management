@@ -29,6 +29,7 @@ class VendorDetails(QWidget):
         self.lab_name.setText("-")
         self.lab_contact.setText("-")
         self.lab_address.setText("-")
+        self.lblAvailableAdvanceValue.setText("0.00")
 
     def set_data(self, vendor: dict | None):
         if not vendor:

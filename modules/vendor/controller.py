@@ -90,8 +90,15 @@ class VendorController(BaseModule):
             self.view.table.selectRow(0)
         else:
             self.view.details.clear()
+            self._reload_accounts(None)
     def _apply_filter(self, text: str):
         self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
+        if self.proxy.rowCount() > 0:
+            if not self.view.table.selectionModel().selectedRows():
+                self.view.table.selectRow(0)
+        else:
+            self.view.details.clear()
+            self._reload_accounts(None)
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()
         if not idxs:
@@ -481,7 +488,7 @@ class VendorController(BaseModule):
         if sm and not getattr(self, "_acc_details_hooked", False):
             sm.selectionChanged.connect(self._update_account_details)
             self._acc_details_hooked = True
-    def _reload_accounts(self, vendor_id: int, keep_account_id: int | None = None):
+    def _reload_accounts(self, vendor_id: int | None, keep_account_id: int | None = None):
         if not vendor_id:
             if self.view.accounts_table.model():
                 self.view.accounts_table.model().set_rows([])
