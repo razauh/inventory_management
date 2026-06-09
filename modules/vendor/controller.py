@@ -573,6 +573,18 @@ class VendorController(BaseModule):
                 created_by=payload.get("created_by"),
                 source_id=None,
                 source_type="deposit",
+                method=payload.get("method"),
+                bank_account_id=payload.get("bank_account_id"),
+                vendor_bank_account_id=payload.get("vendor_bank_account_id"),
+                instrument_type=payload.get("instrument_type"),
+                instrument_no=payload.get("instrument_no"),
+                instrument_date=payload.get("instrument_date"),
+                deposited_date=payload.get("deposited_date"),
+                cleared_date=payload.get("cleared_date"),
+                clearing_state=payload.get("clearing_state"),
+                ref_no=payload.get("ref_no"),
+                temp_vendor_bank_name=payload.get("temp_vendor_bank_name"),
+                temp_vendor_bank_number=payload.get("temp_vendor_bank_number"),
             )
             self.conn.execute("RELEASE apply_advance")
 
@@ -692,18 +704,38 @@ class VendorController(BaseModule):
             row_type = "Cash Payment" if amt >= 0 else "Refund"
             rows.append({"date": pay["date"], "type": row_type, "doc_id": pay["purchase_id"], "reference": {"payment_id": pay["payment_id"], "method": pay["method"], "instrument_no": pay["instrument_no"], "instrument_type": pay["instrument_type"], "bank_account_id": pay["bank_account_id"], "vendor_bank_account_id": pay["vendor_bank_account_id"], "ref_no": pay["ref_no"], "clearing_state": pay["clearing_state"]}, "amount": abs(amt), "amount_effect": -amt})
         credit_note_rows_to_enrich: list[tuple[int, dict]] = []
+        def advance_reference(a) -> dict:
+            ref = {"tx_id": a["tx_id"]}
+            keys = set(a.keys()) if hasattr(a, "keys") else set()
+            for key in (
+                "method",
+                "bank_account_id",
+                "vendor_bank_account_id",
+                "instrument_type",
+                "instrument_no",
+                "instrument_date",
+                "deposited_date",
+                "cleared_date",
+                "clearing_state",
+                "ref_no",
+                "temp_vendor_bank_name",
+                "temp_vendor_bank_number",
+            ):
+                if key in keys:
+                    ref[key] = a[key]
+            return ref
         for a in self.vadv.list_ledger(vendor_id, date_from, date_to):
             amt = float(a["amount"])
             src_type = (a["source_type"] or "").lower()
             if src_type == "return_credit":
-                row = {"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount": abs(amt), "amount_effect": 0.0}
+                row = {"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": advance_reference(a), "amount": abs(amt), "amount_effect": 0.0}
                 rows.append(row)
                 if show_return_origins and a["source_id"]:
                     credit_note_rows_to_enrich.append((a["tx_id"], row))
             elif src_type == "applied_to_purchase":
-                rows.append({"date": a["tx_date"], "type": "Credit Applied", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount": abs(amt), "amount_effect": 0.0})
+                rows.append({"date": a["tx_date"], "type": "Credit Applied", "doc_id": a["source_id"], "reference": advance_reference(a), "amount": abs(amt), "amount_effect": 0.0})
             else:
-                rows.append({"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": {"tx_id": a["tx_id"]}, "amount": abs(amt), "amount_effect": -amt})
+                rows.append({"date": a["tx_date"], "type": "Credit Note", "doc_id": a["source_id"], "reference": advance_reference(a), "amount": abs(amt), "amount_effect": -amt})
         if show_return_origins and credit_note_rows_to_enrich:
             for _tx_id, row in credit_note_rows_to_enrich:
                 pid = row.get("doc_id")

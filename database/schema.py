@@ -457,9 +457,23 @@ CREATE TABLE IF NOT EXISTS vendor_advances (
   amount      NUMERIC NOT NULL,  -- +ve = credit granted, -ve = credit applied
   source_type TEXT    NOT NULL CHECK (source_type IN ('deposit','applied_to_purchase','return_credit')),
   source_id   TEXT,              -- e.g., purchase_id (for application), or return ref
+  method      TEXT    CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cross Cheque','Cash Deposit','Other')),
+  bank_account_id INTEGER,
+  vendor_bank_account_id INTEGER,
+  instrument_type TEXT CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other','cheque')),
+  instrument_no   TEXT,
+  instrument_date DATE,
+  deposited_date  DATE,
+  cleared_date    DATE,
+  clearing_state  TEXT CHECK (clearing_state IN ('posted','pending','cleared','bounced')),
+  ref_no          TEXT,
+  temp_vendor_bank_name   TEXT,
+  temp_vendor_bank_number TEXT,
   notes       TEXT,
   created_by  INTEGER,
   FOREIGN KEY (vendor_id)  REFERENCES vendors(vendor_id),
+  FOREIGN KEY (bank_account_id) REFERENCES company_bank_accounts(account_id),
+  FOREIGN KEY (vendor_bank_account_id) REFERENCES vendor_bank_accounts(vendor_bank_account_id),
   FOREIGN KEY (created_by) REFERENCES users(user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_vadv_vendor     ON vendor_advances(vendor_id);
@@ -2306,6 +2320,38 @@ def _ensure_sale_payments_converted_to_credit(conn: sqlite3.Connection) -> None:
             "ADD COLUMN converted_to_credit NUMERIC DEFAULT 0;"
         )
 
+
+def _ensure_vendor_advances_payment_metadata(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA table_info(vendor_advances);")
+    cols = {row[1] for row in cur.fetchall()}
+    migrations = {
+        "method": (
+            "ALTER TABLE vendor_advances "
+            "ADD COLUMN method TEXT CHECK (method IN ('Cash','Bank Transfer','Card','Cheque','Cross Cheque','Cash Deposit','Other'));"
+        ),
+        "bank_account_id": "ALTER TABLE vendor_advances ADD COLUMN bank_account_id INTEGER;",
+        "vendor_bank_account_id": "ALTER TABLE vendor_advances ADD COLUMN vendor_bank_account_id INTEGER;",
+        "instrument_type": (
+            "ALTER TABLE vendor_advances "
+            "ADD COLUMN instrument_type TEXT CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other','cheque'));"
+        ),
+        "instrument_no": "ALTER TABLE vendor_advances ADD COLUMN instrument_no TEXT;",
+        "instrument_date": "ALTER TABLE vendor_advances ADD COLUMN instrument_date DATE;",
+        "deposited_date": "ALTER TABLE vendor_advances ADD COLUMN deposited_date DATE;",
+        "cleared_date": "ALTER TABLE vendor_advances ADD COLUMN cleared_date DATE;",
+        "clearing_state": (
+            "ALTER TABLE vendor_advances "
+            "ADD COLUMN clearing_state TEXT CHECK (clearing_state IN ('posted','pending','cleared','bounced'));"
+        ),
+        "ref_no": "ALTER TABLE vendor_advances ADD COLUMN ref_no TEXT;",
+        "temp_vendor_bank_name": "ALTER TABLE vendor_advances ADD COLUMN temp_vendor_bank_name TEXT;",
+        "temp_vendor_bank_number": "ALTER TABLE vendor_advances ADD COLUMN temp_vendor_bank_number TEXT;",
+    }
+    for col, sql in migrations.items():
+        if col not in cols:
+            conn.execute(sql)
+
+
 def init_schema(db_path: Path | str = "myshop.db") -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2318,6 +2364,7 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         _ensure_customer_is_active(conn)
         _ensure_sale_payments_overpayment_converted(conn)
         _ensure_sale_payments_converted_to_credit(conn)
+        _ensure_vendor_advances_payment_metadata(conn)
         conn.commit()
     print(f"✓ DB applied to {db_path}")
 

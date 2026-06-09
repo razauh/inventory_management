@@ -257,10 +257,13 @@ class _VendorHistoryDialog(QDialog):
                     "method": p.get("method"),
                     "instrument_no": p.get("instrument_no"),
                     "instrument_type": p.get("instrument_type"),
+                    "instrument_date": p.get("instrument_date"),
                     "bank_account_id": p.get("bank_account_id"),
                     "vendor_bank_account_id": p.get("vendor_bank_account_id"),
                     "ref_no": p.get("ref_no"),
                     "clearing_state": p.get("clearing_state"),
+                    "temp_vendor_bank_name": p.get("temp_vendor_bank_name"),
+                    "temp_vendor_bank_number": p.get("temp_vendor_bank_number"),
                 }),
             })
         for a in advs:
@@ -275,6 +278,16 @@ class _VendorHistoryDialog(QDialog):
                     "amount_effect": 0.0,
                     "balance_after": None,
                     "tx_id": a.get("tx_id"),
+                    "method": a.get("method"),
+                    "instrument_no": a.get("instrument_no"),
+                    "instrument_type": a.get("instrument_type"),
+                    "instrument_date": a.get("instrument_date"),
+                    "clearing_state": a.get("clearing_state"),
+                    "ref_no": a.get("ref_no"),
+                    "bank_account_id": a.get("bank_account_id"),
+                    "vendor_bank_account_id": a.get("vendor_bank_account_id"),
+                    "temp_vendor_bank_name": a.get("temp_vendor_bank_name"),
+                    "temp_vendor_bank_number": a.get("temp_vendor_bank_number"),
                 })
             else:
                 amount_effect = 0.0 if src_type == "return_credit" else -amt
@@ -286,6 +299,16 @@ class _VendorHistoryDialog(QDialog):
                     "amount_effect": amount_effect,
                     "balance_after": None,
                     "tx_id": a.get("tx_id"),
+                    "method": a.get("method"),
+                    "instrument_no": a.get("instrument_no"),
+                    "instrument_type": a.get("instrument_type"),
+                    "instrument_date": a.get("instrument_date"),
+                    "clearing_state": a.get("clearing_state"),
+                    "ref_no": a.get("ref_no"),
+                    "bank_account_id": a.get("bank_account_id"),
+                    "vendor_bank_account_id": a.get("vendor_bank_account_id"),
+                    "temp_vendor_bank_name": a.get("temp_vendor_bank_name"),
+                    "temp_vendor_bank_number": a.get("temp_vendor_bank_number"),
                 })
         return rows
 
@@ -302,10 +325,13 @@ class _VendorHistoryDialog(QDialog):
             "method",
             "instrument_no",
             "instrument_type",
+            "instrument_date",
             "clearing_state",
             "ref_no",
             "bank_account_id",
             "vendor_bank_account_id",
+            "temp_vendor_bank_name",
+            "temp_vendor_bank_number",
             "tx_id",
         ]
         seen = {k for r in rows for k in r.keys()}

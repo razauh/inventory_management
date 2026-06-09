@@ -30,6 +30,10 @@ class ConstraintViolationError(VendorAdvancesError):
 
 
 class VendorAdvancesRepo:
+    METHODS = {"Cash", "Bank Transfer", "Card", "Cheque", "Cross Cheque", "Cash Deposit", "Other"}
+    ITYPES = {"online", "cheque", "cross_cheque", "cash_deposit", "pay_order", "other"}
+    CLEARING_STATES = {"posted", "pending", "cleared", "bounced"}
+
     def __init__(self, conn: sqlite3.Connection):
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
@@ -118,6 +122,18 @@ class VendorAdvancesRepo:
         source_id: Optional[str] = None,
         # Default to manual credit (deposit); callers may pass 'return_credit' for returns.
         source_type: str = "deposit",
+        method: Optional[str] = None,
+        bank_account_id: Optional[int] = None,
+        vendor_bank_account_id: Optional[int] = None,
+        instrument_type: Optional[str] = None,
+        instrument_no: Optional[str] = None,
+        instrument_date: Optional[str] = None,
+        deposited_date: Optional[str] = None,
+        cleared_date: Optional[str] = None,
+        clearing_state: Optional[str] = None,
+        ref_no: Optional[str] = None,
+        temp_vendor_bank_name: Optional[str] = None,
+        temp_vendor_bank_number: Optional[str] = None,
         **_ignore,
     ) -> int:
         """
@@ -142,16 +158,49 @@ class VendorAdvancesRepo:
         st = (source_type or "deposit").lower()
         if st not in allowed_types:
             raise ValueError(f"source_type must be one of {allowed_types}, got {source_type!r}")
+        self._validate_payment_metadata(
+            vendor_id=vendor_id,
+            method=method,
+            bank_account_id=bank_account_id,
+            vendor_bank_account_id=vendor_bank_account_id,
+            instrument_type=instrument_type,
+            clearing_state=clearing_state,
+        )
 
         try:
             cur = self.conn.execute(
                 """
                 INSERT INTO vendor_advances (
-                    vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+                    vendor_id, tx_date, amount, source_type, source_id,
+                    method, bank_account_id, vendor_bank_account_id,
+                    instrument_type, instrument_no, instrument_date,
+                    deposited_date, cleared_date, clearing_state, ref_no,
+                    temp_vendor_bank_name, temp_vendor_bank_number,
+                    notes, created_by
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (vendor_id, date, float(amount), st, source_id, notes, created_by),
+                (
+                    vendor_id,
+                    date,
+                    float(amount),
+                    st,
+                    source_id,
+                    method,
+                    bank_account_id,
+                    vendor_bank_account_id,
+                    instrument_type,
+                    instrument_no,
+                    instrument_date,
+                    deposited_date,
+                    cleared_date,
+                    clearing_state,
+                    ref_no,
+                    temp_vendor_bank_name,
+                    temp_vendor_bank_number,
+                    notes,
+                    created_by,
+                ),
             )
             return int(cur.lastrowid)
         except sqlite3.IntegrityError as e:
@@ -250,6 +299,18 @@ class VendorAdvancesRepo:
               CAST(va.amount AS REAL) AS amount,
               va.source_type,
               va.source_id,
+              va.method,
+              va.bank_account_id,
+              va.vendor_bank_account_id,
+              va.instrument_type,
+              va.instrument_no,
+              va.instrument_date,
+              va.deposited_date,
+              va.cleared_date,
+              va.clearing_state,
+              va.ref_no,
+              va.temp_vendor_bank_name,
+              va.temp_vendor_bank_number,
               va.notes,
               va.created_by
             FROM vendor_advances va
@@ -282,6 +343,18 @@ class VendorAdvancesRepo:
               CAST(va.amount AS REAL) AS amount,
               va.source_type,
               va.source_id,
+              va.method,
+              va.bank_account_id,
+              va.vendor_bank_account_id,
+              va.instrument_type,
+              va.instrument_no,
+              va.instrument_date,
+              va.deposited_date,
+              va.cleared_date,
+              va.clearing_state,
+              va.ref_no,
+              va.temp_vendor_bank_name,
+              va.temp_vendor_bank_number,
               va.notes,
               va.created_by
             FROM vendor_advances va
@@ -310,6 +383,18 @@ class VendorAdvancesRepo:
               CAST(va.amount AS REAL) AS amount,
               va.source_type,
               va.source_id,
+              va.method,
+              va.bank_account_id,
+              va.vendor_bank_account_id,
+              va.instrument_type,
+              va.instrument_no,
+              va.instrument_date,
+              va.deposited_date,
+              va.cleared_date,
+              va.clearing_state,
+              va.ref_no,
+              va.temp_vendor_bank_name,
+              va.temp_vendor_bank_number,
               va.notes,
               va.created_by
             FROM vendor_advances va
@@ -332,6 +417,45 @@ class VendorAdvancesRepo:
     # ----------------------------
     # Internal helpers
     # ----------------------------
+    def _validate_payment_metadata(
+        self,
+        *,
+        vendor_id: int,
+        method: Optional[str],
+        bank_account_id: Optional[int],
+        vendor_bank_account_id: Optional[int],
+        instrument_type: Optional[str],
+        clearing_state: Optional[str],
+    ) -> None:
+        if method is not None and method not in self.METHODS:
+            raise ValueError(f"Invalid vendor advance payment method: {method}")
+        if instrument_type is not None and instrument_type not in self.ITYPES:
+            raise ValueError(f"Invalid vendor advance instrument type: {instrument_type}")
+        if clearing_state is not None and clearing_state not in self.CLEARING_STATES:
+            raise ValueError(f"Invalid vendor advance clearing state: {clearing_state}")
+
+        if bank_account_id is not None:
+            row = self.conn.execute(
+                "SELECT account_id FROM company_bank_accounts WHERE account_id = ?",
+                (bank_account_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Company bank account not found: {bank_account_id}")
+
+        if vendor_bank_account_id is not None:
+            row = self.conn.execute(
+                """
+                SELECT vendor_id
+                  FROM vendor_bank_accounts
+                 WHERE vendor_bank_account_id = ?
+                """,
+                (vendor_bank_account_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Vendor bank account not found: {vendor_bank_account_id}")
+            if int(row["vendor_id"]) != int(vendor_id):
+                raise ValueError("Vendor bank account does not belong to the advance vendor")
+
     def _get_purchase_remaining_due(self, purchase_id: str, vendor_id: int) -> Optional[float]:
         """
         Returns remaining due for the purchase as:

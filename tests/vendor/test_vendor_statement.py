@@ -29,14 +29,16 @@ def _payment(amount, *, payment_id=1, state="cleared", date="2026-06-09"):
     }
 
 
-def _advance(tx_id, amount, source_type, *, date="2026-06-09"):
-    return {
+def _advance(tx_id, amount, source_type, *, date="2026-06-09", **metadata):
+    row = {
         "tx_id": tx_id,
         "tx_date": date,
         "amount": amount,
         "source_type": source_type,
         "source_id": "PO-1",
     }
+    row.update(metadata)
+    return row
 
 
 def _build_statement(
@@ -182,6 +184,46 @@ def test_statement_settlement_rows_follow_confirmed_effects(monkeypatch, payment
     conn.close()
 
 
+def test_statement_exposes_vendor_advance_payment_metadata(monkeypatch):
+    conn, statement = _build_statement(
+        monkeypatch,
+        purchases=[],
+        advances=[
+            _advance(
+                1,
+                125,
+                "deposit",
+                method="Bank Transfer",
+                bank_account_id=10,
+                vendor_bank_account_id=20,
+                instrument_type="online",
+                instrument_no="TRX-100",
+                instrument_date="2026-06-09",
+                clearing_state="cleared",
+                ref_no=None,
+                temp_vendor_bank_name=None,
+                temp_vendor_bank_number=None,
+            )
+        ],
+    )
+
+    row = statement["rows"][0]
+    assert row["reference"] == {
+        "tx_id": 1,
+        "method": "Bank Transfer",
+        "bank_account_id": 10,
+        "vendor_bank_account_id": 20,
+        "instrument_type": "online",
+        "instrument_no": "TRX-100",
+        "instrument_date": "2026-06-09",
+        "clearing_state": "cleared",
+        "ref_no": None,
+        "temp_vendor_bank_name": None,
+        "temp_vendor_bank_number": None,
+    }
+    conn.close()
+
+
 def test_statement_opening_payable_uses_complete_preperiod_equation():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -307,3 +349,37 @@ def test_fallback_history_uses_refund_and_zero_effect_credit_semantics():
         ("Credit Note", pytest.approx(0.0)),
         ("Credit Applied", pytest.approx(0.0)),
     ]
+
+
+def test_fallback_history_includes_vendor_advance_payment_metadata():
+    helper = SimpleNamespace(
+        _safe_float=_VendorHistoryDialog._safe_float,
+        _flatten_reference=lambda ref: _VendorHistoryDialog._flatten_reference(None, ref),
+    )
+    rows = _VendorHistoryDialog._build_tx_rows(
+        helper,
+        {
+            "advances": [
+                _advance(
+                    1,
+                    125,
+                    "deposit",
+                    method="Cash Deposit",
+                    instrument_no="SLIP-1",
+                    instrument_type="cash_deposit",
+                    instrument_date="2026-06-09",
+                    clearing_state="cleared",
+                    bank_account_id=None,
+                    vendor_bank_account_id=None,
+                    temp_vendor_bank_name="Walk-in Bank",
+                    temp_vendor_bank_number="TEMP-123",
+                ),
+            ],
+        },
+    )
+
+    row = rows[0]
+    assert row["method"] == "Cash Deposit"
+    assert row["instrument_no"] == "SLIP-1"
+    assert row["temp_vendor_bank_name"] == "Walk-in Bank"
+    assert row["temp_vendor_bank_number"] == "TEMP-123"

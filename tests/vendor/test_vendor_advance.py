@@ -188,6 +188,110 @@ def test_same_vendor_credit_application_still_succeeds(vendor_credit_db):
     ).fetchone()[0] == pytest.approx(40.0)
 
 
+def test_grant_credit_persists_advance_payment_metadata(vendor_credit_db):
+    conn, repo, vendor_a, _vendor_b = vendor_credit_db
+    conn.execute(
+        "INSERT INTO company_info (company_id, company_name) VALUES (1, 'Test Company')"
+    )
+    company_account_id = conn.execute(
+        "INSERT INTO company_bank_accounts (label, bank_name, account_no) VALUES ('Main', 'Bank A', '001')"
+    ).lastrowid
+    vendor_account_id = conn.execute(
+        """
+        INSERT INTO vendor_bank_accounts (vendor_id, label, bank_name, account_no)
+        VALUES (?, 'Vendor Main', 'Bank B', '002')
+        """,
+        (vendor_a,),
+    ).lastrowid
+
+    tx_id = repo.grant_credit(
+        vendor_id=vendor_a,
+        amount=125.0,
+        date="2026-06-09",
+        notes="Advance",
+        created_by=None,
+        method="Bank Transfer",
+        bank_account_id=company_account_id,
+        vendor_bank_account_id=vendor_account_id,
+        instrument_type="online",
+        instrument_no="TRX-100",
+        instrument_date="2026-06-09",
+        clearing_state="cleared",
+        temp_vendor_bank_name=None,
+        temp_vendor_bank_number=None,
+    )
+
+    row = conn.execute("SELECT * FROM vendor_advances WHERE tx_id = ?", (tx_id,)).fetchone()
+    assert row["method"] == "Bank Transfer"
+    assert row["bank_account_id"] == company_account_id
+    assert row["vendor_bank_account_id"] == vendor_account_id
+    assert row["instrument_type"] == "online"
+    assert row["instrument_no"] == "TRX-100"
+    assert row["instrument_date"] == "2026-06-09"
+    assert row["clearing_state"] == "cleared"
+
+    ledger_row = repo.list_ledger(vendor_a)[0]
+    assert ledger_row["method"] == "Bank Transfer"
+    assert ledger_row["bank_account_id"] == company_account_id
+    assert ledger_row["vendor_bank_account_id"] == vendor_account_id
+    assert ledger_row["instrument_no"] == "TRX-100"
+
+
+def test_grant_credit_persists_temporary_vendor_bank_metadata(vendor_credit_db):
+    conn, repo, vendor_a, _vendor_b = vendor_credit_db
+
+    tx_id = repo.grant_credit(
+        vendor_id=vendor_a,
+        amount=75.0,
+        date="2026-06-09",
+        notes=None,
+        created_by=None,
+        method="Cash Deposit",
+        bank_account_id=None,
+        vendor_bank_account_id=None,
+        instrument_type="cash_deposit",
+        instrument_no="SLIP-1",
+        instrument_date="2026-06-09",
+        clearing_state="cleared",
+        temp_vendor_bank_name="Walk-in Bank",
+        temp_vendor_bank_number="TEMP-123",
+    )
+
+    row = conn.execute("SELECT * FROM vendor_advances WHERE tx_id = ?", (tx_id,)).fetchone()
+    assert row["vendor_bank_account_id"] is None
+    assert row["temp_vendor_bank_name"] == "Walk-in Bank"
+    assert row["temp_vendor_bank_number"] == "TEMP-123"
+
+
+def test_grant_credit_rejects_vendor_bank_account_for_another_vendor(vendor_credit_db):
+    conn, repo, vendor_a, vendor_b = vendor_credit_db
+    other_vendor_account_id = conn.execute(
+        """
+        INSERT INTO vendor_bank_accounts (vendor_id, label, bank_name, account_no)
+        VALUES (?, 'Other Main', 'Bank B', '002')
+        """,
+        (vendor_b,),
+    ).lastrowid
+
+    with pytest.raises(ValueError, match="does not belong"):
+        repo.grant_credit(
+            vendor_id=vendor_a,
+            amount=125.0,
+            date="2026-06-09",
+            notes="Advance",
+            created_by=None,
+            method="Bank Transfer",
+            vendor_bank_account_id=other_vendor_account_id,
+            instrument_type="online",
+            clearing_state="cleared",
+        )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM vendor_advances WHERE vendor_id = ?",
+        (vendor_a,),
+    ).fetchone()[0] == 0
+
+
 def test_unknown_purchase_keeps_invalid_reference_error(vendor_credit_db):
     _conn, repo, vendor_a, _vendor_b = vendor_credit_db
     grant_credit(repo, vendor_a)
@@ -209,6 +313,18 @@ def test_apply_advance_records_credit_once_after_dialog_accepts():
         "amount": 125.0,
         "date": "2026-06-09",
         "notes": "Advance",
+        "method": "Bank Transfer",
+        "bank_account_id": 3,
+        "vendor_bank_account_id": 4,
+        "instrument_type": "online",
+        "instrument_no": "TRX-100",
+        "instrument_date": "2026-06-09",
+        "deposited_date": None,
+        "cleared_date": None,
+        "clearing_state": "cleared",
+        "ref_no": None,
+        "temp_vendor_bank_name": None,
+        "temp_vendor_bank_number": None,
     }
     controller = make_controller()
     controller.vadv.grant_credit.return_value = 42
@@ -232,6 +348,18 @@ def test_apply_advance_records_credit_once_after_dialog_accepts():
         created_by=None,
         source_id=None,
         source_type="deposit",
+        method="Bank Transfer",
+        bank_account_id=3,
+        vendor_bank_account_id=4,
+        instrument_type="online",
+        instrument_no="TRX-100",
+        instrument_date="2026-06-09",
+        deposited_date=None,
+        cleared_date=None,
+        clearing_state="cleared",
+        ref_no=None,
+        temp_vendor_bank_name=None,
+        temp_vendor_bank_number=None,
     )
     assert [statement for statement, _ in controller.conn.statements] == [
         "SAVEPOINT apply_advance",
