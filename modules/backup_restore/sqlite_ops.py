@@ -326,13 +326,13 @@ def foreign_key_check(db_path: str) -> List[sqlite3.Row]:
     """
     p = Path(db_path)
     if not p.exists() or not p.is_file():
-        return []
+        raise FileNotFoundError(f"database file does not exist: {p}")
     try:
         with _connect_ro(str(p)) as con:
             cur = con.execute("PRAGMA foreign_key_check;")
             return cur.fetchall()
-    except Exception:
-        return []
+    except Exception as exc:
+        raise RuntimeError(f"foreign_key_check failed: {exc}") from exc
 
 
 def verify_database(
@@ -373,15 +373,25 @@ def verify_database(
         ok = False
 
     if fk_check:
-        fkv = foreign_key_check(db_path)
+        try:
+            fkv = foreign_key_check(db_path)
+        except Exception as exc:
+            ok = False
+            details.append(f"foreign_key_check failed: {exc}")
+            fkv = []
         if fkv:
             ok = False
             details.append(f"foreign_key_check violations: {len(fkv)}")
             # include a few for readability
             for r in fkv[:min(5, len(fkv))]:
                 if hasattr(r, "keys"):
+                    keys = set(r.keys())
+                    table = r["table"] if "table" in keys else r[0]
+                    rowid = r["rowid"] if "rowid" in keys else r[1]
+                    parent = r["parent"] if "parent" in keys else r[2]
+                    fkid = r["fkid"] if "fkid" in keys else r[3]
                     details.append(
-                        f"- table={r.get('table')}, rowid={r.get('rowid')}, parent={r.get('parent')}, fkid={r.get('fkid')}"
+                        f"- table={table}, rowid={rowid}, parent={parent}, fkid={fkid}"
                     )
                 else:
                     t, rowid, parent, fkid = (r + (None, None, None, None))[:4]

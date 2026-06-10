@@ -6,6 +6,7 @@ from typing import Iterable, Optional
 # For settlements
 from .sale_payments_repo import SalePaymentsRepo
 from .customer_advances_repo import CustomerAdvancesRepo
+from .inventory_repo import rebuild_dirty_valuations
 
 
 @dataclass
@@ -243,6 +244,7 @@ class SalesRepo:
                     created_by=header.created_by,
                     notes=header.notes,
                 )
+            rebuild_dirty_valuations(self.conn)
 
     def update_sale(self, header: SaleHeader, items: Iterable[SaleItem]):
         """
@@ -300,11 +302,13 @@ class SalesRepo:
                     created_by=header.created_by,
                     notes=header.notes,
                 )
+            rebuild_dirty_valuations(self.conn)
 
     def delete_sale(self, sid: str):
         with self.conn:
             self._delete_sale_content(sid)
             self.conn.execute("DELETE FROM sales WHERE sale_id=?", (sid,))
+            rebuild_dirty_valuations(self.conn)
 
     # ---------------------------------------------------------------------
     # WRITE — QUOTATIONS (doc_type='quotation')
@@ -639,6 +643,7 @@ class SalesRepo:
                         created_by,
                     ),
                 )
+            rebuild_dirty_valuations(self.conn)
 
             # Settlement handling (if applicable)
             if settlement and final_return_value > 0:

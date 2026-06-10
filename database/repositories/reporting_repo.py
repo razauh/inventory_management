@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional, Sequence
+from typing import Iterable, Optional, Sequence
+
+from .inventory_repo import rebuild_dirty_valuations
 
 
 class ReportingRepo:
     """
-    Read-only queries for Reporting tabs, aligned with schema.py.
+    Queries for Reporting tabs, aligned with schema.py.
 
     Uses only objects your schema defines:
       - Tables: sales, sale_items, customers, products,
@@ -344,6 +346,7 @@ class ReportingRepo:
         We also join products to provide product_name and alias qty_in_base -> qty_base
         to match the UI layer.
         """
+        rebuild_dirty_valuations(self.conn)
         sql = """
         SELECT
           v.product_id,
@@ -363,6 +366,7 @@ class ReportingRepo:
         Generator version of stock_on_hand_current that yields rows one at a time.
         This prevents loading all results into memory at once for large datasets.
         """
+        rebuild_dirty_valuations(self.conn)
         sql = """
         SELECT
           v.product_id,
@@ -384,6 +388,7 @@ class ReportingRepo:
         Latest valuation row per product where valuation_date <= as_of.
         stock_valuation_history columns: product_id, valuation_date, quantity, unit_value, total_value
         """
+        rebuild_dirty_valuations(self.conn)
         sql = """
         WITH latest AS (
           SELECT svh.product_id,
@@ -411,6 +416,7 @@ class ReportingRepo:
         Generator version of stock_on_hand_as_of that yields rows one at a time.
         This prevents loading all results into memory at once for large datasets.
         """
+        rebuild_dirty_valuations(self.conn)
         sql = """
         WITH latest AS (
           SELECT svh.product_id,
@@ -502,6 +508,7 @@ class ReportingRepo:
         """
         Latest N valuation rows for a product.
         """
+        rebuild_dirty_valuations(self.conn, int(product_id))
         sql = """
         SELECT
           svh.product_id,

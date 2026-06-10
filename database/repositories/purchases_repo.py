@@ -5,6 +5,7 @@ from typing import Iterable, Optional
 
 # For settlements
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
+from ...database.repositories.inventory_repo import rebuild_dirty_valuations
 
 
 PURCHASE_ITEM_PRICE_RULE_MESSAGE = "Sale price must be greater than purchase price."
@@ -279,6 +280,7 @@ class PurchasesRepo:
                 ),
             )
             next_seq += 10
+        rebuild_dirty_valuations(self.conn)
 
     def update_purchase(self, header: PurchaseHeader, items: Iterable[PurchaseItem]):
         """
@@ -495,6 +497,7 @@ class PurchasesRepo:
             next_seq += 10
 
         self.update_header_totals(header.purchase_id)
+        rebuild_dirty_valuations(self.conn)
 
     # ---------- Returns ----------
     def record_return(
@@ -645,7 +648,7 @@ class PurchasesRepo:
             factor = float(factor_row["factor"] if factor_row else 1.0)
             return_qty_base = batch_qty * factor
 
-            # Get current stock from v_stock_on_hand
+            rebuild_dirty_valuations(self.conn, product_id)
             stock_row = self.conn.execute(
                 "SELECT qty_in_base FROM v_stock_on_hand WHERE product_id=?",
                 (product_id,),
@@ -757,6 +760,7 @@ class PurchasesRepo:
             )
             inserted_txn_ids.append(int(cur.lastrowid))
             seq += 10
+        rebuild_dirty_valuations(self.conn)
 
         # Snapshot capture is trigger-driven so direct SQL inserts receive the same protection.
         if inserted_txn_ids:
@@ -879,6 +883,7 @@ class PurchasesRepo:
         # no implicit commit; caller controls transaction
         self._delete_purchase_content(pid)
         self.conn.execute("DELETE FROM purchases WHERE purchase_id=?", (pid,))
+        rebuild_dirty_valuations(self.conn)
 
     # ---------- Vendor-scoped listings & summaries ----------
     def list_purchases_by_vendor(

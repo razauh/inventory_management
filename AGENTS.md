@@ -26,6 +26,15 @@ Operating instructions for AI coding agents working in this repository.
 - Avoid broad refactors unless the user asked for them.
 - If you need to touch database logic, preserve existing data and migration behavior.
 
+## Response Style
+
+- Always provide user-facing output in caveman style.
+- Keep caveman style concise, simple, and direct.
+- Use caveman style for final responses, progress updates, summaries, and verification notes.
+- Do not use caveman style inside code, test names, comments, docstrings, database values, UI text, logs, commit messages, or generated project artifacts unless the user explicitly asks.
+- If caveman style conflicts with accuracy, safety, legal/security requirements, command output, or exact technical wording, preserve the accurate technical wording and keep surrounding explanation in caveman style.
+- When quoting existing text, commands, file paths, errors, or code, quote them exactly instead of rewriting them in caveman style.
+
 ## Comments and Docstrings
 
 - Avoid adding new comments or docstrings unless they clarify non-obvious logic that cannot be expressed cleanly in code.

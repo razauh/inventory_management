@@ -22,6 +22,135 @@ class DomainError(Exception):
     pass
 
 
+def rebuild_dirty_valuations(conn: sqlite3.Connection, product_id: int | None = None) -> int:
+    rows = conn.execute(
+        """
+        SELECT product_id, earliest_impacted
+        FROM valuation_dirty
+        WHERE (? IS NULL OR product_id = ?)
+        ORDER BY earliest_impacted, product_id
+        """,
+        (product_id, product_id),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    was_in_transaction = conn.in_transaction
+    rebuilt = 0
+    try:
+        for dirty in rows:
+            pid = int(_cell(dirty, "product_id", 0))
+            earliest = _cell(dirty, "earliest_impacted", 1)
+            _rebuild_product_valuation(conn, pid, earliest)
+            conn.execute("DELETE FROM valuation_dirty WHERE product_id = ?", (pid,))
+            rebuilt += 1
+        if not was_in_transaction:
+            conn.commit()
+        return rebuilt
+    except Exception:
+        if not was_in_transaction:
+            conn.rollback()
+        raise
+
+
+def _rebuild_product_valuation(conn: sqlite3.Connection, product_id: int, earliest: str) -> None:
+    prior = conn.execute(
+        """
+        SELECT quantity, unit_value
+        FROM stock_valuation_history
+        WHERE product_id = ?
+          AND DATE(valuation_date) < DATE(?)
+        ORDER BY DATE(valuation_date) DESC, valuation_id DESC
+        LIMIT 1
+        """,
+        (product_id, earliest),
+    ).fetchone()
+    quantity = float(_cell(prior, "quantity", 0)) if prior else 0.0
+    unit_value = float(_cell(prior, "unit_value", 1)) if prior else 0.0
+
+    conn.execute(
+        """
+        DELETE FROM stock_valuation_history
+        WHERE product_id = ?
+          AND DATE(valuation_date) >= DATE(?)
+        """,
+        (product_id, earliest),
+    )
+
+    txns = conn.execute(
+        """
+        SELECT
+          it.transaction_id,
+          it.date,
+          it.transaction_type,
+          CAST(it.quantity AS REAL) AS quantity,
+          COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS factor_to_base,
+          CASE
+            WHEN it.transaction_type = 'purchase' THEN
+              COALESCE(
+                (CAST(pi.purchase_price AS REAL) - COALESCE(CAST(pi.item_discount AS REAL), 0.0))
+                / COALESCE(CAST(pi_uom.factor_to_base AS REAL), 1.0),
+                0.0
+              )
+            ELSE NULL
+          END AS purchase_unit_value
+        FROM inventory_transactions it
+        LEFT JOIN product_uoms pu
+          ON pu.product_id = it.product_id
+         AND pu.uom_id = it.uom_id
+        LEFT JOIN purchase_items pi
+          ON pi.item_id = it.reference_item_id
+        LEFT JOIN product_uoms pi_uom
+          ON pi_uom.product_id = pi.product_id
+         AND pi_uom.uom_id = pi.uom_id
+        WHERE it.product_id = ?
+          AND DATE(it.date) >= DATE(?)
+        ORDER BY DATE(it.date), it.txn_seq, it.posted_at, it.transaction_id
+        """,
+        (product_id, earliest),
+    ).fetchall()
+
+    for txn in txns:
+        txn_type = _cell(txn, "transaction_type", 2)
+        movement = float(_cell(txn, "quantity", 3) or 0.0) * float(_cell(txn, "factor_to_base", 4) or 1.0)
+        next_quantity = quantity
+        next_unit_value = unit_value
+
+        if txn_type in ("purchase", "sale_return", "adjustment"):
+            next_quantity = quantity + movement
+            if txn_type == "purchase":
+                purchase_unit = _cell(txn, "purchase_unit_value", 5)
+                purchase_unit_value = float(purchase_unit or 0.0)
+                if next_quantity > 0:
+                    next_unit_value = ((quantity * unit_value) + (movement * purchase_unit_value)) / next_quantity
+                else:
+                    next_unit_value = purchase_unit_value if purchase_unit is not None else unit_value
+            next_total_value = next_quantity * next_unit_value if next_quantity > 0 else 0.0
+        elif txn_type in ("sale", "purchase_return"):
+            next_quantity = quantity - movement
+            next_total_value = next_quantity * next_unit_value
+        else:
+            next_total_value = next_quantity * next_unit_value
+
+        conn.execute(
+            """
+            INSERT INTO stock_valuation_history
+              (product_id, valuation_date, quantity, unit_value, total_value, valuation_method)
+            VALUES (?, ?, ?, ?, ?, 'moving_average')
+            """,
+            (product_id, _cell(txn, "date", 1), next_quantity, next_unit_value, next_total_value),
+        )
+        quantity = next_quantity
+        unit_value = next_unit_value
+
+
+def _cell(row, key: str, index: int):
+    try:
+        return row[key]
+    except (TypeError, KeyError, IndexError):
+        return row[index]
+
+
 class InventoryRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -150,8 +279,9 @@ class InventoryRepo:
         fills what it can and computes total_value = on_hand_qty * unit_value
         when both pieces are available. Returns None if the product isn't found.
 
-        NOTE: This method is read-only and does not update any costing.
+        Reconciles pending valuation_dirty rows for this product before reading.
         """
+        rebuild_dirty_valuations(self.conn, int(product_id))
         # NOTE: We rely on the schema-level UNIQUE index
         # `idx_product_uoms_one_base` (product_id WHERE is_base = 1) to ensure
         # there is at most one base UoM row per product.
@@ -243,6 +373,7 @@ class InventoryRepo:
             """,
             (int(product_id), float(quantity), int(uom_id), date, notes, created_by),
         )
+        rebuild_dirty_valuations(self.conn, int(product_id))
         self.conn.commit()
         return int(cur.lastrowid)
 
