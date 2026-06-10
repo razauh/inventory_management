@@ -514,6 +514,40 @@ BEGIN
   ) THEN RAISE(ABORT, 'Vendor bank account must belong to the purchase vendor') ELSE 1 END;
 END;
 
+DROP TRIGGER IF EXISTS trg_purchase_refunds_active_accounts_ins;
+CREATE TRIGGER trg_purchase_refunds_active_accounts_ins
+BEFORE INSERT ON purchase_refunds
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM company_bank_accounts cba
+    WHERE cba.account_id = NEW.bank_account_id
+      AND cba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected company bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected vendor bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_purchase_refunds_active_accounts_upd;
+CREATE TRIGGER trg_purchase_refunds_active_accounts_upd
+BEFORE UPDATE OF bank_account_id, vendor_bank_account_id, vendor_id ON purchase_refunds
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM company_bank_accounts cba
+    WHERE cba.account_id = NEW.bank_account_id
+      AND cba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected company bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected vendor bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+END;
+
 CREATE TRIGGER IF NOT EXISTS trg_vba_primary_must_be_active_ins
 BEFORE INSERT ON vendor_bank_accounts
 WHEN NEW.is_primary = 1 AND NEW.is_active = 0
@@ -564,6 +598,40 @@ BEGIN
     )
     THEN RAISE(ABORT, 'Vendor bank account must belong to the purchase vendor')
     ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pp_active_accounts_ins;
+CREATE TRIGGER trg_pp_active_accounts_ins
+BEFORE INSERT ON purchase_payments
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM company_bank_accounts cba
+    WHERE cba.account_id = NEW.bank_account_id
+      AND cba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected company bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected vendor bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pp_active_accounts_upd;
+CREATE TRIGGER trg_pp_active_accounts_upd
+BEFORE UPDATE OF bank_account_id, vendor_bank_account_id, purchase_id ON purchase_payments
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM company_bank_accounts cba
+    WHERE cba.account_id = NEW.bank_account_id
+      AND cba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected company bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected vendor bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
 END;
 
 /* ======================== BACK-DATED REBUILD SUPPORT (Option 2) ======================== */
@@ -640,6 +708,66 @@ FOR EACH ROW
 WHEN NEW.clearing_state IS NOT NULL AND NEW.clearing_state <> 'cleared'
 BEGIN
   SELECT RAISE(ABORT, 'Vendor outgoing payments must have clearing_state=cleared');
+END;
+
+DROP TRIGGER IF EXISTS trg_vadv_vendor_account_vendor_match_ins;
+CREATE TRIGGER trg_vadv_vendor_account_vendor_match_ins
+BEFORE INSERT ON vendor_advances
+FOR EACH ROW
+WHEN NEW.vendor_bank_account_id IS NOT NULL
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.vendor_id = NEW.vendor_id
+  ) THEN RAISE(ABORT, 'Vendor bank account must belong to the advance vendor') ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_vadv_vendor_account_vendor_match_upd;
+CREATE TRIGGER trg_vadv_vendor_account_vendor_match_upd
+BEFORE UPDATE OF vendor_bank_account_id, vendor_id ON vendor_advances
+FOR EACH ROW
+WHEN NEW.vendor_bank_account_id IS NOT NULL
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.vendor_id = NEW.vendor_id
+  ) THEN RAISE(ABORT, 'Vendor bank account must belong to the advance vendor') ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_vadv_active_accounts_ins;
+CREATE TRIGGER trg_vadv_active_accounts_ins
+BEFORE INSERT ON vendor_advances
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM company_bank_accounts cba
+    WHERE cba.account_id = NEW.bank_account_id
+      AND cba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected company bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected vendor bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_vadv_active_accounts_upd;
+CREATE TRIGGER trg_vadv_active_accounts_upd
+BEFORE UPDATE OF bank_account_id, vendor_bank_account_id, vendor_id ON vendor_advances
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM company_bank_accounts cba
+    WHERE cba.account_id = NEW.bank_account_id
+      AND cba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected company bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.is_active = 1
+  ) THEN RAISE(ABORT, 'Selected vendor bank account is inactive and cannot be used for new transactions.') ELSE 1 END;
 END;
 
 /* -------- customers: indexes to speed list/search -------- */

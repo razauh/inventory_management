@@ -444,16 +444,20 @@ class VendorAdvancesRepo:
 
         if bank_account_id is not None:
             row = self.conn.execute(
-                "SELECT account_id FROM company_bank_accounts WHERE account_id = ?",
+                "SELECT is_active FROM company_bank_accounts WHERE account_id = ?",
                 (bank_account_id,),
             ).fetchone()
             if not row:
                 raise ValueError(f"Company bank account not found: {bank_account_id}")
+            if int(row["is_active"]) != 1:
+                raise ValueError(
+                    "Selected company bank account is inactive and cannot be used for new transactions."
+                )
 
         if vendor_bank_account_id is not None:
             row = self.conn.execute(
                 """
-                SELECT vendor_id
+                SELECT vendor_id, is_active
                   FROM vendor_bank_accounts
                  WHERE vendor_bank_account_id = ?
                 """,
@@ -463,6 +467,10 @@ class VendorAdvancesRepo:
                 raise ValueError(f"Vendor bank account not found: {vendor_bank_account_id}")
             if int(row["vendor_id"]) != int(vendor_id):
                 raise ValueError("Vendor bank account does not belong to the advance vendor")
+            if int(row["is_active"]) != 1:
+                raise ValueError(
+                    "Selected vendor bank account is inactive and cannot be used for new transactions."
+                )
 
     def _vendor_advances_columns(self) -> set[str]:
         rows = self.conn.execute("PRAGMA table_info(vendor_advances);").fetchall()

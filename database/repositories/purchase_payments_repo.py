@@ -66,10 +66,26 @@ class PurchasePaymentsRepo:
             raise ValueError(f"Purchase not found: {purchase_id}")
 
         vendor_id = int(purchase_info["vendor_id"])
+        if bank_account_id is not None:
+            account = self.conn.execute(
+                """
+                SELECT is_active
+                  FROM company_bank_accounts
+                 WHERE account_id = ?
+                """,
+                (bank_account_id,),
+            ).fetchone()
+            if not account:
+                raise ValueError(f"Company bank account not found: {bank_account_id}")
+            if int(account["is_active"]) != 1:
+                raise ValueError(
+                    "Selected company bank account is inactive and cannot be used for new transactions."
+                )
+
         if vendor_bank_account_id is not None:
             account = self.conn.execute(
                 """
-                SELECT vendor_id
+                SELECT vendor_id, is_active
                   FROM vendor_bank_accounts
                  WHERE vendor_bank_account_id = ?
                 """,
@@ -79,6 +95,10 @@ class PurchasePaymentsRepo:
                 raise ValueError(f"Vendor bank account not found: {vendor_bank_account_id}")
             if int(account["vendor_id"]) != vendor_id:
                 raise ValueError("Vendor bank account does not belong to the purchase vendor")
+            if int(account["is_active"]) != 1:
+                raise ValueError(
+                    "Selected vendor bank account is inactive and cannot be used for new transactions."
+                )
 
         if amount > 0:
             total_amount = float(purchase_info["total_calc"] or 0.0)
