@@ -83,7 +83,7 @@ class PurchasePaymentsRepo:
             total_amount = float(purchase_info["total_calc"] or 0.0)
             current_paid = float(purchase_info["paid_amount"] or 0.0)
             current_advance = float(purchase_info["advance_payment_applied"] or 0.0)
-            amount_due = total_amount - current_paid - current_advance
+            amount_due = max(0.0, total_amount - current_paid - current_advance)
 
             if amount > amount_due + 1e-9:
                 excess_amount = amount - amount_due
