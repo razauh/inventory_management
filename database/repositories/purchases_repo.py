@@ -416,8 +416,8 @@ class PurchasesRepo:
           - Verifies immutable valuation snapshots were captured for every inserted transaction.
           - Computes monetary return value exclusively from those snapshots.
           - Settlement:
-              * {'mode':'refund', ...} => vendor credit (return_credit)
-              * {'mode':'credit_note'} => vendor credit (return_credit)
+              * {'mode':'refund', ...} => excess funded amount as vendor credit
+              * {'mode':'credit_note'} => excess funded amount as vendor credit
         """
         if not lines:
             return
@@ -553,33 +553,68 @@ class PurchasesRepo:
         else:
             return_value = 0.0
 
+        settlement_amount = 0.0
+
         # Settlement handling (no commit here)
         if settlement and return_value > 0:
             mode = (settlement.get("mode") or "").lower()
 
             if mode in ("refund", "refund_now", "credit_note"):
-                vadv = VendorAdvancesRepo(self.conn)
-                vadv.grant_credit(
-                    vendor_id=vendor_id,
-                    amount=return_value,
-                    date=date,
-                    notes=settlement.get("notes") or notes,
-                    created_by=created_by,
-                    source_id=pid,
-                    source_type="return_credit",
-                    method=settlement.get("method"),
-                    bank_account_id=settlement.get("bank_account_id"),
-                    vendor_bank_account_id=settlement.get("vendor_bank_account_id"),
-                    instrument_type=settlement.get("instrument_type"),
-                    instrument_no=settlement.get("instrument_no"),
-                    instrument_date=settlement.get("instrument_date"),
-                    deposited_date=settlement.get("deposited_date"),
-                    cleared_date=settlement.get("cleared_date"),
-                    clearing_state=settlement.get("clearing_state"),
-                    ref_no=settlement.get("ref_no"),
-                    temp_vendor_bank_name=settlement.get("temp_vendor_bank_name"),
-                    temp_vendor_bank_number=settlement.get("temp_vendor_bank_number"),
+                position = self.conn.execute(
+                    """
+                    SELECT
+                      COALESCE(pdt.calculated_total_amount, p.total_amount, 0.0) AS net_total,
+                      COALESCE(p.paid_amount, 0.0) AS paid_amount,
+                      COALESCE(p.advance_payment_applied, 0.0) AS advance_applied,
+                      COALESCE((
+                        SELECT SUM(CAST(va.amount AS REAL))
+                        FROM vendor_advances va
+                        WHERE va.source_type = 'return_credit'
+                          AND va.source_id = p.purchase_id
+                      ), 0.0) AS prior_return_settlement
+                    FROM purchases p
+                    LEFT JOIN purchase_detailed_totals pdt
+                      ON pdt.purchase_id = p.purchase_id
+                    WHERE p.purchase_id = ?
+                    """,
+                    (pid,),
+                ).fetchone()
+                funded_amount = (
+                    float(position["paid_amount"] or 0.0)
+                    + float(position["advance_applied"] or 0.0)
                 )
+                total_excess = max(
+                    0.0,
+                    funded_amount - float(position["net_total"] or 0.0),
+                )
+                settlement_amount = max(
+                    0.0,
+                    total_excess - float(position["prior_return_settlement"] or 0.0),
+                )
+
+                if settlement_amount > 1e-9:
+                    vadv = VendorAdvancesRepo(self.conn)
+                    vadv.grant_credit(
+                        vendor_id=vendor_id,
+                        amount=settlement_amount,
+                        date=date,
+                        notes=settlement.get("notes") or notes,
+                        created_by=created_by,
+                        source_id=pid,
+                        source_type="return_credit",
+                        method=settlement.get("method"),
+                        bank_account_id=settlement.get("bank_account_id"),
+                        vendor_bank_account_id=settlement.get("vendor_bank_account_id"),
+                        instrument_type=settlement.get("instrument_type"),
+                        instrument_no=settlement.get("instrument_no"),
+                        instrument_date=settlement.get("instrument_date"),
+                        deposited_date=settlement.get("deposited_date"),
+                        cleared_date=settlement.get("cleared_date"),
+                        clearing_state=settlement.get("clearing_state"),
+                        ref_no=settlement.get("ref_no"),
+                        temp_vendor_bank_name=settlement.get("temp_vendor_bank_name"),
+                        temp_vendor_bank_number=settlement.get("temp_vendor_bank_number"),
+                    )
 
         # Audit logging for the return
         self.conn.execute(
@@ -592,7 +627,8 @@ class PurchasesRepo:
                 "return",
                 "purchases",
                 pid,
-                f"Returned items with total value of {return_value:g}. Lines: {len(lines)}",
+                f"Returned items with total value of {return_value:g}. "
+                f"Settlement amount: {settlement_amount:g}. Lines: {len(lines)}",
             ),
         )
 
