@@ -9,8 +9,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QHBoxLayout,
     QSizePolicy,
+    QMenu,
 )
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction
 from pathlib import Path
 import sys
 import traceback
@@ -249,6 +251,7 @@ class MainWindow(QMainWindow):
 
         # ---- Backup & Restore (replace previous placeholder) ----
         self._add_backup_restore_module_deferred()
+        self._register_backup_restore_file_actions()
 
         # Ensure first page is visible
         if self.nav.count():
@@ -337,7 +340,7 @@ class MainWindow(QMainWindow):
             self.add_module(module_title, controller)
 
             # Register File menu actions (controller wires actions to Backup/Restore dialogs)
-            if hasattr(controller, "register_menu_actions"):
+            if not getattr(self, "_backup_restore_file_actions_registered", False) and hasattr(controller, "register_menu_actions"):
                 controller.register_menu_actions(self.menuBar())
 
         except Exception as e:
@@ -419,6 +422,67 @@ class MainWindow(QMainWindow):
         # Store module info for later loading
         self.module_info.append(module_info)
         self.modules.append(('Backup & Restore', None))
+
+    def _register_backup_restore_file_actions(self) -> None:
+        if getattr(self, "_backup_restore_file_actions_registered", False):
+            return
+
+        file_menu = None
+        for action in self.menuBar().actions():
+            try:
+                menu = action.menu()
+                if menu and menu.title().replace("&", "").lower() == "file":
+                    file_menu = menu
+                    break
+            except RuntimeError:
+                continue
+
+        if file_menu is None:
+            file_menu = QMenu("&File", self.menuBar())
+            self.menuBar().addMenu(file_menu)
+
+        self._backup_restore_file_menu = file_menu
+        self._backup_restore_backup_action = QAction("Backup Database…", self)
+        self._backup_restore_backup_action.triggered.connect(self._open_backup_restore_backup_from_menu)
+        self._backup_restore_restore_action = QAction("Restore Database…", self)
+        self._backup_restore_restore_action.triggered.connect(self._open_backup_restore_restore_from_menu)
+
+        if file_menu.actions() and not file_menu.actions()[-1].isSeparator():
+            file_menu.addSeparator()
+        file_menu.addAction(self._backup_restore_backup_action)
+        file_menu.addAction(self._backup_restore_restore_action)
+        self._backup_restore_file_actions_registered = True
+
+    def _get_backup_restore_controller(self):
+        idx = self._find_module_info_index("Backup & Restore")
+        if idx is None:
+            QMessageBox.warning(self, "Missing", "Backup & Restore module is not available.")
+            return None
+
+        if self.nav.currentRow() != idx:
+            self.nav.setCurrentRow(idx)
+        else:
+            self._load_module_at_index(idx)
+
+        if idx >= len(self.modules):
+            QMessageBox.warning(self, "Missing", "Backup & Restore module could not be loaded.")
+            return None
+
+        controller = self.modules[idx][1]
+        if controller is None:
+            QMessageBox.warning(self, "Missing", "Backup & Restore module could not be loaded.")
+            return None
+        return controller
+
+    def _open_backup_restore_backup_from_menu(self) -> None:
+        controller = self._get_backup_restore_controller()
+        if controller and hasattr(controller, "open_backup_dialog"):
+            controller.open_backup_dialog()
+
+    def _open_backup_restore_restore_from_menu(self) -> None:
+        controller = self._get_backup_restore_controller()
+        if controller and hasattr(controller, "open_restore_dialog"):
+            controller.open_restore_dialog()
 
     def _on_nav_item_changed(self, index: int):
         """Load module when navigating to it."""
@@ -531,7 +595,7 @@ class MainWindow(QMainWindow):
             self.modules[index] = (module_title, controller)
 
             # Register File menu actions (controller wires actions to Backup/Restore dialogs)
-            if hasattr(controller, 'register_menu_actions'):
+            if not getattr(self, "_backup_restore_file_actions_registered", False) and hasattr(controller, 'register_menu_actions'):
                 controller.register_menu_actions(self.menuBar())
 
         except Exception as e:

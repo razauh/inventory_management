@@ -117,11 +117,11 @@ class BackupRestoreController(QObject):
         # Create or reuse actions
         if self._act_backup is None:
             self._act_backup = QAction("Backup Database…", self._widget or None)
-            self._act_backup.triggered.connect(self._open_backup_dialog)
+            self._act_backup.triggered.connect(self.open_backup_dialog)
 
         if self._act_restore is None:
             self._act_restore = QAction("Restore Database…", self._widget or None)
-            self._act_restore.triggered.connect(self._open_restore_dialog)
+            self._act_restore.triggered.connect(self.open_restore_dialog)
 
         # Put actions under File menu (create if missing)
         file_menu = self._file_menu
@@ -161,6 +161,12 @@ class BackupRestoreController(QObject):
     def teardown(self) -> None:
         # Nothing long-lived besides QSettings and signals
         self._widget = None
+
+    def open_backup_dialog(self) -> None:
+        self._open_backup_dialog()
+
+    def open_restore_dialog(self) -> None:
+        self._open_restore_dialog()
 
     # -------- UI construction --------
 
