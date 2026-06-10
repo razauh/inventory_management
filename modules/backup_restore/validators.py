@@ -91,6 +91,8 @@ def validate_backup_destination(
     backup_path = path
     if backup_path.suffix.lower() != ".imsdb":
         backup_path = backup_path.with_suffix(".imsdb")
+    if backup_path.exists() and backup_path.is_dir():
+        raise RuntimeError("Destination path points to a directory, not a file.")
 
     if active_db_path:
         db_path = Path(active_db_path).expanduser().resolve()

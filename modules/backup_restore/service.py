@@ -31,6 +31,8 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
 
+from .validators import validate_backup_destination, validate_backup_source
+
 
 # ----------------------------
 # Utilities
@@ -62,12 +64,6 @@ def _backup_destination(dest: Path) -> Path:
     if dest.name and dest.suffix.lower() != ".imsdb":
         return dest.with_suffix(".imsdb")
     return dest
-
-
-def _reject_active_db_destination(dest: Path, db_path: Path, *alternates: Path) -> None:
-    active_family = _active_db_family(db_path)
-    if dest.resolve() in active_family or any(path.resolve() in active_family for path in alternates):
-        raise RuntimeError("Backup destination must not be the active database or its WAL/SHM files.")
 
 
 @dataclass
@@ -197,22 +193,15 @@ class BackupJob(QObject):
 
             # Gather stats
             db_path = Path(sqlite_ops.get_db_path())
-            _reject_active_db_destination(dest, db_path, raw_dest)
+            validate_backup_source(str(db_path))
             db_size = int(sqlite_ops.get_db_size_bytes(str(db_path)))
             free_bytes = int(fsops.get_free_space_bytes(str(dest_parent)))
-
-            needed = int(db_size * 1.5)
-            if free_bytes < needed:
-                raise RuntimeError(
-                    f"Not enough free space in destination folder.\n"
-                    f"Required (approx): {self._human_size(needed)}, Available: {self._human_size(free_bytes)}."
-                )
-
-            if not dest_parent.exists():
-                raise RuntimeError("Destination folder does not exist.")
-            if dest.exists() and dest.is_dir():
-                raise RuntimeError("Destination path refers to a directory, not a file.")
-
+            validate_backup_destination(
+                str(raw_dest),
+                db_size=db_size,
+                free_space=free_bytes,
+                active_db_path=str(db_path),
+            )
             # Snapshot (uses WAL checkpoint + Online Backup API inside sqlite_ops)
             _safe_call(cb.phase, "Snapshotting database")
             _safe_call(cb.log, f"Reading from: {db_path}")
@@ -250,16 +239,6 @@ class BackupJob(QObject):
                     Path(tmp_snapshot).unlink(missing_ok=True)
                 except Exception:
                     self._log.debug("Unable to remove temporary backup snapshot: %s", tmp_snapshot, exc_info=True)
-
-    # ---- helpers ----
-    @staticmethod
-    def _human_size(num: int) -> str:
-        units = ["B", "KB", "MB", "GB", "TB"]
-        size = float(num)
-        for u in units:
-            if size < 1024.0 or u == units[-1]:
-                return f"{size:.1f} {u}"
-            size /= 1024.0
 
     @staticmethod
     def _import_sqlite_ops():
