@@ -3,26 +3,19 @@
 """
 Purchase module package exports.
 
-Always available:
-- PurchaseController
-
-Optional UI/model components (imported defensively so environments
-without Qt can still import this package):
-- PurchaseView
-- PurchasesTableModel
-- PurchaseItemsModel
-- PurchaseForm
-- PurchaseReturnForm
-- PurchasePaymentDialog
-- PurchaseDetails
-- PurchaseItemForm
-- PurchaseItemsView
+When PySide6 is installed, all purchase UI/model/controller exports are
+available. Without PySide6, exports are set to None so non-UI import checks can
+still import this package.
 """
 
-from .controller import PurchaseController
 
-# UI/model pieces are optional to avoid a hard Qt dependency during headless tests
+def _is_missing_qt_import(exc: ImportError) -> bool:
+    name = getattr(exc, "name", "") or ""
+    return name == "PySide6" or name.startswith("PySide6.") or "PySide6" in str(exc)
+
+
 try:
+    from .controller import PurchaseController  # type: ignore
     from .view import PurchaseView  # type: ignore
     from .model import PurchasesTableModel, PurchaseItemsModel  # type: ignore
     from .form import PurchaseForm  # type: ignore
@@ -32,7 +25,10 @@ try:
     from .item_form import PurchaseItemForm  # type: ignore
     from .items import PurchaseItemsView  # type: ignore
     from .payment_form import PaymentForm  # type: ignore
-except Exception:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
+    if not _is_missing_qt_import(exc):
+        raise
+    PurchaseController = None  # type: ignore
     PurchaseView = None  # type: ignore
     PurchasesTableModel = None  # type: ignore
     PurchaseItemsModel = None  # type: ignore
