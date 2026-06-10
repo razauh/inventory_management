@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QFrame,
     QMessageBox,
@@ -95,6 +96,7 @@ class BackupRestoreController(QObject):
         # Menu actions (created on demand)
         self._act_backup: Optional[QAction] = None
         self._act_restore: Optional[QAction] = None
+        self._file_menu: Optional[QMenu] = None
 
     # -------- Public API expected by the shell --------
 
@@ -122,18 +124,39 @@ class BackupRestoreController(QObject):
             self._act_restore.triggered.connect(self._open_restore_dialog)
 
         # Put actions under File menu (create if missing)
-        file_menu = None
-        for menu in menu_bar.findChildren(type(menu_bar.addMenu("tmp"))):
-            if menu.title().replace("&", "").lower() == "file":
-                file_menu = menu
-                break
+        file_menu = self._file_menu
+        if file_menu is not None:
+            try:
+                file_menu.actions()
+            except RuntimeError:
+                file_menu = None
 
         if file_menu is None:
-            file_menu = menu_bar.addMenu("&File")
+            for action in menu_bar.actions():
+                try:
+                    menu = action.menu()
+                    if menu and menu.title().replace("&", "").lower() == "file":
+                        file_menu = menu
+                        break
+                except RuntimeError:
+                    continue
 
-        file_menu.addSeparator()
-        file_menu.addAction(self._act_backup)
-        file_menu.addAction(self._act_restore)
+        if file_menu is None:
+            file_menu = QMenu("&File", menu_bar)
+            menu_bar.addMenu(file_menu)
+        self._file_menu = file_menu
+
+        actions = file_menu.actions()
+        actions_to_add = [
+            action
+            for action in (self._act_backup, self._act_restore)
+            if action not in actions
+        ]
+        if actions_to_add:
+            if actions and not actions[-1].isSeparator():
+                file_menu.addSeparator()
+            for action in actions_to_add:
+                file_menu.addAction(action)
 
     def teardown(self) -> None:
         # Nothing long-lived besides QSettings and signals
