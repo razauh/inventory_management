@@ -207,6 +207,22 @@ class InventoryReports:
         return [(int(r["product_id"]), str(r["name"])) for r in rows]
 
     @classmethod
+    def _reload_product_cache(cls, conn: sqlite3.Connection) -> None:
+        rows = list(conn.execute(
+            "SELECT product_id, name FROM products ORDER BY name COLLATE NOCASE"
+        ))
+        cls._product_cache = {int(r["product_id"]): str(r["name"]) for r in rows}
+        cls._cache_initialized = True
+
+    @classmethod
+    def refresh_product_cache(cls, conn: sqlite3.Connection) -> None:
+        """
+        Refresh the shared product name cache from the current database state.
+        """
+        with cls._cache_lock:
+            cls._reload_product_cache(conn)
+
+    @classmethod
     def _ensure_product_cache(cls, conn: sqlite3.Connection) -> None:
         """
         Ensure the product cache is initialized in a thread-safe manner.
@@ -214,12 +230,7 @@ class InventoryReports:
         """
         with cls._cache_lock:
             if not cls._cache_initialized:
-                # Fetch all products in a single query for the cache
-                rows = list(conn.execute(
-                    "SELECT product_id, name FROM products ORDER BY name COLLATE NOCASE"
-                ))
-                cls._product_cache = {int(r["product_id"]): str(r["name"]) for r in rows}
-                cls._cache_initialized = True
+                cls._reload_product_cache(conn)
 
     def _product_name_map(self) -> dict[int, str]:
         """
@@ -517,6 +528,7 @@ class InventoryReportsTab(QWidget):
 
     @Slot()
     def refresh_stock(self) -> None:
+        self.logic.refresh_product_cache(self.conn)
         if self.rad_stock_current.isChecked():
             self._rows_stock = self.logic.stock_on_hand_current()
         else:
@@ -547,6 +559,7 @@ class InventoryReportsTab(QWidget):
 
     @Slot()
     def refresh_txn(self) -> None:
+        self.logic.refresh_product_cache(self.conn)
         date_from = self.dt_txn_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_txn_to.date().toString("yyyy-MM-dd")
         pid = self.cmb_txn_product.currentData()
@@ -578,6 +591,7 @@ class InventoryReportsTab(QWidget):
 
     @Slot()
     def refresh_val(self) -> None:
+        self.logic.refresh_product_cache(self.conn)
         pid = self.cmb_val_product.currentData()
         if not isinstance(pid, int):
             self.model_val.set_rows([])
