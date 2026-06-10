@@ -7,9 +7,6 @@ Features:
 - Live reload on filter changes + an explicit Refresh button
 - CSV export of the current table
 - Reuses TransactionsTableModel (columns: ID, Date, Type, Product, Qty, UoM, Notes)
-
-Update:
-- Date editors now default to today's date instead of the 1900-01-01 sentinel.
 """
 
 from __future__ import annotations
@@ -111,6 +108,9 @@ class TransactionsView(QWidget):
 
         root.addLayout(row)
 
+        self.lbl_filter_summary = QLabel(self)
+        root.addWidget(self.lbl_filter_summary)
+
         # ------------------------------------------------------------------
         # Table
         # ------------------------------------------------------------------
@@ -146,13 +146,13 @@ class TransactionsView(QWidget):
     def _setup_date_edit(self, w: QDateEdit) -> None:
         """
         Configure a date edit. We keep a sentinel minimum date (to allow 'no filter'
-        if needed) but default the visible date to 'today' instead of the minimum.
+        by default).
         """
         w.setCalendarPopup(True)
         w.setDisplayFormat("yyyy-MM-dd")
         w.setSpecialValueText("")                # blank text for min date
         w.setMinimumDate(QDate(1900, 1, 1))      # sentinel
-        w.setDate(QDate.currentDate())           # <-- default to current date
+        w.setDate(w.minimumDate())
         w.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def _load_products(self) -> None:
@@ -240,6 +240,22 @@ class TransactionsView(QWidget):
         model = TransactionsTableModel(rows)
         self.tbl_txn.setModel(model)
         self.tbl_txn.resizeColumnsToContents()
+        self._update_filter_summary(model.rowCount())
+
+    def _update_filter_summary(self, row_count: int) -> None:
+        parts = []
+        product = self.cmb_product.currentText().strip()
+        if self.selected_product_id is not None and product:
+            parts.append(f"product: {product}")
+        if self.date_from_str:
+            parts.append(f"from: {self.date_from_str}")
+        if self.date_to_str:
+            parts.append(f"to: {self.date_to_str}")
+
+        filters = ", ".join(parts) if parts else "no date or product filter"
+        self.lbl_filter_summary.setText(
+            f"Showing {row_count} transaction(s), limit {self.limit_value}, {filters}."
+        )
 
     def _on_export_csv(self) -> None:
         """
