@@ -142,8 +142,8 @@ class MainWindow(QMainWindow):
         # Store module information for lazy loading
         self.module_info: list[dict] = []
 
-        # Store loaded modules
-        self.modules: list[tuple[str, BaseModule]] = []
+        # Store modules aligned with module_info/nav/stack indexes.
+        self.modules: list[tuple[str, BaseModule | None]] = []
 
         # nav wiring - connect to our lazy loading function
         self.nav.currentRowChanged.connect(self._on_nav_item_changed)
@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
 
         # Store module info for later loading
         self.module_info.append(module_info)
+        self.modules.append((title, None))
 
     def _add_backup_restore_module_deferred(self) -> None:
         """Add Backup & Restore module info for deferred loading."""
@@ -417,6 +418,7 @@ class MainWindow(QMainWindow):
 
         # Store module info for later loading
         self.module_info.append(module_info)
+        self.modules.append(('Backup & Restore', None))
 
     def _on_nav_item_changed(self, index: int):
         """Load module when navigating to it."""
@@ -428,15 +430,12 @@ class MainWindow(QMainWindow):
 
     def _load_module_at_index(self, index: int):
         """Load the module at the specified index if not already loaded."""
-        if index < len(self.modules):
+        if index < len(self.modules) and self.modules[index][1] is not None:
             # Module is already loaded, just show it
             self.stack.setCurrentIndex(index)
             return
 
-        # Check if we've already loaded this module
-        if index >= len(self.modules):
-            # Load the module
-            self._load_module(index)
+        self._load_module(index)
 
         # Set the current index to show the module
         self.stack.setCurrentIndex(index)
@@ -489,8 +488,8 @@ class MainWindow(QMainWindow):
             # Add the actual module widget to the stack
             self.stack.insertWidget(index, widget)
 
-            # Add to loaded modules list
-            self.modules.append((module_info['title'], controller))
+            # Mark this nav index as loaded.
+            self.modules[index] = (module_info['title'], controller)
 
         except Exception as e:
             # === DEBUG Reporting only ===
@@ -528,8 +527,8 @@ class MainWindow(QMainWindow):
             # Add the actual module widget to the stack
             self.stack.insertWidget(index, widget)
 
-            # Add to loaded modules list
-            self.modules.append((module_title, controller))
+            # Mark this nav index as loaded.
+            self.modules[index] = (module_title, controller)
 
             # Register File menu actions (controller wires actions to Backup/Restore dialogs)
             if hasattr(controller, 'register_menu_actions'):
@@ -557,8 +556,8 @@ class MainWindow(QMainWindow):
         # Add the new widget to the stack
         self.stack.insertWidget(index, new_widget)
 
-        # Add a placeholder module entry so the index doesn't get out of sync
-        self.modules.append((self.module_info[index]['title'], None))
+        if index < len(self.modules):
+            self.modules[index] = (self.module_info[index]['title'], None)
 
     def _find_module_index(self, title: str) -> int | None:
         for i, (t, _m) in enumerate(self.modules):
