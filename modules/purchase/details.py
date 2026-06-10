@@ -15,6 +15,8 @@ class PurchaseDetails(QWidget):
         self.lab_returned = QLabel("-")
         self.lab_net_after = QLabel("-")
         self.lab_paid = QLabel("-")
+        self.lab_credit_applied = QLabel("-")
+        self.lab_total_settled = QLabel("-")
         self.lab_remain = QLabel("-")
         self.lab_status = QLabel("-")
         # Payment info fields added to main summary
@@ -31,7 +33,9 @@ class PurchaseDetails(QWidget):
         f.addRow("Total:", self.lab_total)
         f.addRow("Returned:", self.lab_returned)
         f.addRow("Net (after returns):", self.lab_net_after)
-        f.addRow("Paid:", self.lab_paid)
+        f.addRow("Cash Paid:", self.lab_paid)
+        f.addRow("Credit Applied:", self.lab_credit_applied)
+        f.addRow("Total Settled:", self.lab_total_settled)
         f.addRow("Remaining:", self.lab_remain)
         f.addRow("Status:", self.lab_status)
         f.addRow("Method:", self.lblPayMethod)
@@ -88,6 +92,9 @@ class PurchaseDetails(QWidget):
             advance_payment_applied = float(row.get("advance_payment_applied", 0.0))
         except (TypeError, ValueError):
             advance_payment_applied = 0.0
+        self.lab_credit_applied.setText(fmt_money(advance_payment_applied))
+        self.lab_total_settled.setText(fmt_money(paid_amount + advance_payment_applied))
+
         # Prefer precomputed remaining_due if present, otherwise derive from net total
         if "remaining_due" in row:
             try:
@@ -111,6 +118,8 @@ class PurchaseDetails(QWidget):
             self.lab_returned,
             self.lab_net_after,
             self.lab_paid,
+            self.lab_credit_applied,
+            self.lab_total_settled,
             self.lab_remain,
             self.lab_status,
         ):
