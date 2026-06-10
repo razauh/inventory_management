@@ -976,6 +976,30 @@ BEGIN
       THEN RAISE(ABORT, 'Quantity must be > 0 (except adjustments)')
     ELSE 1 END;
 
+  SELECT CASE
+    WHEN NEW.transaction_type = 'adjustment' AND CAST(NEW.quantity AS REAL) = 0
+      THEN RAISE(ABORT, 'Adjustment quantity must be non-zero')
+    ELSE 1 END;
+
+  SELECT CASE
+    WHEN NEW.transaction_type = 'adjustment'
+     AND CAST(NEW.quantity AS REAL) < 0
+     AND ABS(
+       CAST(NEW.quantity AS REAL) * COALESCE((
+         SELECT CAST(pu.factor_to_base AS REAL)
+         FROM product_uoms pu
+         WHERE pu.product_id = NEW.product_id
+           AND pu.uom_id = NEW.uom_id
+         LIMIT 1
+       ), 1.0)
+     ) > COALESCE((
+       SELECT CAST(v.qty_in_base AS REAL)
+       FROM v_stock_on_hand v
+       WHERE v.product_id = NEW.product_id
+     ), 0.0) + 1e-9
+      THEN RAISE(ABORT, 'Adjustment quantity exceeds available stock')
+    ELSE 1 END;
+
   -- ensure referenced rows exist + correct table
   SELECT CASE
     WHEN NEW.transaction_type = 'purchase' AND (

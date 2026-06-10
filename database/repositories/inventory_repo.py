@@ -360,15 +360,39 @@ class InventoryRepo:
         """
         # Pre-validate product↔UoM mapping to prevent silent stock corruption.
         # (The schema triggers will also guard this, but we fail early with a clear message.)
-        exists = self.conn.execute(
-            "SELECT 1 FROM product_uoms WHERE product_id=? AND uom_id=? LIMIT 1",
+        uom_row = self.conn.execute(
+            """
+            SELECT CAST(factor_to_base AS REAL) AS factor_to_base
+            FROM product_uoms
+            WHERE product_id=? AND uom_id=?
+            LIMIT 1
+            """,
             (int(product_id), int(uom_id)),
         ).fetchone()
-        if not exists:
+        if not uom_row:
             raise DomainError(
                 "Selected unit of measure does not belong to the chosen product. "
                 "Please pick a valid UoM for this product."
             )
+        qty = float(quantity)
+        if qty == 0.0:
+            raise DomainError("Adjustment quantity must be non-zero.")
+
+        if qty < 0.0:
+            rebuild_dirty_valuations(self.conn, int(product_id))
+            factor_to_base = float(_cell(uom_row, "factor_to_base", 0) or 1.0)
+            on_hand_row = self.conn.execute(
+                """
+                SELECT CAST(qty_in_base AS REAL) AS qty_in_base
+                FROM v_stock_on_hand
+                WHERE product_id = ?
+                """,
+                (int(product_id),),
+            ).fetchone()
+            on_hand_base = float(_cell(on_hand_row, "qty_in_base", 0) or 0.0) if on_hand_row else 0.0
+            reduction_base = abs(qty) * factor_to_base
+            if reduction_base > on_hand_base + 1e-9:
+                raise DomainError("Adjustment quantity exceeds available stock for this product.")
 
         cur = self.conn.execute(
             """
@@ -383,7 +407,7 @@ class InventoryRepo:
             """,
             (
                 int(product_id),
-                float(quantity),
+                qty,
                 int(uom_id),
                 date,
                 next_inventory_txn_seq(self.conn, date),
