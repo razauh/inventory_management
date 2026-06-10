@@ -201,6 +201,12 @@ class PurchaseController(BaseModule):
             if value is None:
                 return ""
             return str(value).lower()
+
+        def row_value(row, key):
+            try:
+                return row[key]
+            except (KeyError, IndexError):
+                return None
         
         if self.view.rb_all.isChecked():
             # Search across all columns - filter in memory for better performance
@@ -212,7 +218,10 @@ class PurchaseController(BaseModule):
                     search_lower in safe_lower(row["date"]) or
                     search_lower in safe_lower(row["vendor_name"]) or
                     search_lower in safe_lower(row["total_amount"]) or
+                    search_lower in safe_lower(row_value(row, "returned_value")) or
+                    search_lower in safe_lower(row_value(row, "calculated_total_amount")) or
                     search_lower in safe_lower(row["paid_amount"]) or
+                    search_lower in safe_lower(row_value(row, "remaining_due")) or
                     search_lower in safe_lower(row["payment_status"])):
                     filtered_rows.append(row)
         elif self.view.rb_id.isChecked():

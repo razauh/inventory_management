@@ -56,12 +56,26 @@ class PurchasesRepo:
         sql = """
         SELECT p.purchase_id, p.date, p.vendor_id, v.name AS vendor_name,
                CAST(p.total_amount AS REAL) AS total_amount,
+               COALESCE(CAST(pr.returned_value AS REAL), 0.0) AS returned_value,
+               COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS calculated_total_amount,
                CAST(p.order_discount AS REAL) AS order_discount,
                p.payment_status, CAST(p.paid_amount AS REAL) AS paid_amount,
                CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
+               MAX(
+                   0.0,
+                   COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
+                   - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                   - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+               ) AS remaining_due,
                p.notes
         FROM purchases p
         JOIN vendors v ON v.vendor_id = p.vendor_id
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        LEFT JOIN (
+            SELECT purchase_id, SUM(CAST(return_value AS REAL)) AS returned_value
+            FROM purchase_return_valuations
+            GROUP BY purchase_id
+        ) pr ON pr.purchase_id = p.purchase_id
         ORDER BY DATE(p.date) DESC, p.purchase_id DESC
         """
         return self.conn.execute(sql).fetchall()

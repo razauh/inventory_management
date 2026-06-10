@@ -2,7 +2,7 @@ from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
 from ...utils.helpers import fmt_money
 
 class PurchasesTableModel(QAbstractTableModel):
-    HEADERS = ["ID", "Date", "Vendor", "Total", "Paid", "Status"]  # removed Notes
+    HEADERS = ["ID", "Date", "Vendor", "Gross Total", "Returned", "Net Total", "Paid", "Due", "Status"]
     def __init__(self, rows: list[dict]):
         super().__init__()
         self._rows = rows
@@ -13,9 +13,18 @@ class PurchasesTableModel(QAbstractTableModel):
         r = self._rows[index.row()]
         if role in (Qt.DisplayRole, Qt.EditRole):
             c = index.column()
+            keys = r.keys() if hasattr(r, "keys") else r
+            paid_total = float(r["paid_amount"] or 0.0) + float(r["advance_payment_applied"] or 0.0)
+            returned_value = r["returned_value"] if "returned_value" in keys else 0.0
+            net_total = r["calculated_total_amount"] if "calculated_total_amount" in keys else r["total_amount"]
+            remaining_due = r["remaining_due"] if "remaining_due" in keys else 0.0
             mapping = [
                 r["purchase_id"], r["date"], r["vendor_name"],
-                fmt_money(r["total_amount"]), fmt_money(r["paid_amount"] + r["advance_payment_applied"]),
+                fmt_money(r["total_amount"]),
+                fmt_money(returned_value),
+                fmt_money(net_total),
+                fmt_money(paid_total),
+                fmt_money(remaining_due),
                 r["payment_status"]
             ]
             return mapping[c]
