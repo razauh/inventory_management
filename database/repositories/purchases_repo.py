@@ -57,6 +57,35 @@ class PurchasesRepo:
     def get_header(self, pid: str) -> dict | None:
         return self.conn.execute("SELECT * FROM purchases WHERE purchase_id=?", (pid,)).fetchone()
 
+    def has_vendor_locking_activity(self, purchase_id: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT CASE WHEN
+              EXISTS (
+                SELECT 1 FROM purchase_payments pp
+                WHERE pp.purchase_id = ?
+              )
+              OR EXISTS (
+                SELECT 1 FROM vendor_advances va
+                WHERE va.source_id = ?
+                  AND va.source_type IN ('applied_to_purchase', 'return_credit')
+              )
+              OR EXISTS (
+                SELECT 1 FROM inventory_transactions it
+                WHERE it.transaction_type = 'purchase_return'
+                  AND it.reference_table = 'purchases'
+                  AND it.reference_id = ?
+              )
+              OR EXISTS (
+                SELECT 1 FROM purchase_refunds pr
+                WHERE pr.purchase_id = ?
+              )
+            THEN 1 ELSE 0 END AS locked
+            """,
+            (purchase_id, purchase_id, purchase_id, purchase_id),
+        ).fetchone()
+        return bool(row and row["locked"])
+
     def list_items(self, pid: str) -> list[dict]:
         sql = """
         SELECT pi.item_id, pi.purchase_id, pi.product_id, pr.name AS product_name,
@@ -230,6 +259,17 @@ class PurchasesRepo:
         product/UoM, or reduced below the quantity already returned.
         """
         items_list = list(items)
+
+        current_header = self.get_header(header.purchase_id)
+        if not current_header:
+            raise ValueError(f"Unknown purchase_id: {header.purchase_id}")
+        if (
+            int(current_header["vendor_id"]) != int(header.vendor_id)
+            and self.has_vendor_locking_activity(header.purchase_id)
+        ):
+            raise ValueError(
+                "Cannot change the purchase vendor after payments, credits, or returns exist"
+            )
 
         existing_rows = self.conn.execute(
             """

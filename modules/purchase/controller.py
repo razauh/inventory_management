@@ -866,10 +866,25 @@ class PurchaseController(BaseModule):
         }
         
         dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products, initial=init)
+        if self.repo.has_vendor_locking_activity(row["purchase_id"]):
+            dlg.cmb_vendor.setEnabled(False)
+            dlg.cmb_vendor.setToolTip(
+                "Vendor cannot be changed after payments, credits, or returns exist."
+            )
         if not dlg.exec():
             return
         p = dlg.payload()
         if not p:
+            return
+        if (
+            int(p["vendor_id"]) != int(row["vendor_id"])
+            and self.repo.has_vendor_locking_activity(row["purchase_id"])
+        ):
+            info(
+                self.view,
+                "Vendor change blocked",
+                "Vendor cannot be changed after payments, credits, or returns exist.",
+            )
             return
         # Check if this was called from print button in edit flow
         should_print_after_save = p.get("_should_print", False)

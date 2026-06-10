@@ -747,6 +747,36 @@ BEGIN
   SELECT RAISE(ABORT, 'Cannot change identity of a purchase item referenced by returns');
 END;
 
+DROP TRIGGER IF EXISTS trg_purchases_vendor_change_guard;
+CREATE TRIGGER trg_purchases_vendor_change_guard
+BEFORE UPDATE OF vendor_id ON purchases
+FOR EACH ROW
+WHEN NEW.vendor_id <> OLD.vendor_id
+ AND (
+   EXISTS (
+     SELECT 1 FROM purchase_payments pp
+     WHERE pp.purchase_id = OLD.purchase_id
+   )
+   OR EXISTS (
+     SELECT 1 FROM vendor_advances va
+     WHERE va.source_id = OLD.purchase_id
+       AND va.source_type IN ('applied_to_purchase', 'return_credit')
+   )
+   OR EXISTS (
+     SELECT 1 FROM inventory_transactions it
+     WHERE it.transaction_type = 'purchase_return'
+       AND it.reference_table = 'purchases'
+       AND it.reference_id = OLD.purchase_id
+   )
+   OR EXISTS (
+     SELECT 1 FROM purchase_refunds pr
+     WHERE pr.purchase_id = OLD.purchase_id
+   )
+ )
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot change the purchase vendor after payments, credits, or returns exist');
+END;
+
 /* ======================== INVENTORY VALIDATION TRIGGERS ======================== */
 DROP TRIGGER IF EXISTS trg_inventory_ref_validate;
 CREATE TRIGGER trg_inventory_ref_validate
