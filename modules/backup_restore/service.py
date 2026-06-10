@@ -58,6 +58,18 @@ def _active_db_family(db_path: Path) -> tuple[Path, Path, Path]:
     return (db_path, Path(str(db_path) + "-wal").resolve(), Path(str(db_path) + "-shm").resolve())
 
 
+def _backup_destination(dest: Path) -> Path:
+    if dest.name and dest.suffix.lower() != ".imsdb":
+        return dest.with_suffix(".imsdb")
+    return dest
+
+
+def _reject_active_db_destination(dest: Path, db_path: Path, *alternates: Path) -> None:
+    active_family = _active_db_family(db_path)
+    if dest.resolve() in active_family or any(path.resolve() in active_family for path in alternates):
+        raise RuntimeError("Backup destination must not be the active database or its WAL/SHM files.")
+
+
 @dataclass
 class _Callbacks:
     phase: Optional[Callable[[str], None]] = None
@@ -177,13 +189,15 @@ class BackupJob(QObject):
             sqlite_ops = self._sqlite_ops or self._import_sqlite_ops()
             fsops = self._fsops or self._import_fsops()
 
-            dest = Path(dest_file)
+            raw_dest = Path(dest_file)
+            dest = _backup_destination(raw_dest)
             dest_parent = dest.parent if dest.parent != Path("") else Path.cwd()
             _safe_call(cb.phase, "Preflight")
             _safe_call(cb.progress, -1)
 
             # Gather stats
             db_path = Path(sqlite_ops.get_db_path())
+            _reject_active_db_destination(dest, db_path, raw_dest)
             db_size = int(sqlite_ops.get_db_size_bytes(str(db_path)))
             free_bytes = int(fsops.get_free_space_bytes(str(dest_parent)))
 
@@ -221,9 +235,6 @@ class BackupJob(QObject):
 
             # Save atomically
             _safe_call(cb.phase, "Saving")
-            # enforce .imsdb extension
-            if dest.suffix.lower() != ".imsdb":
-                dest = dest.with_suffix(".imsdb")
             fsops.atomic_move(tmp_snapshot, str(dest))
             _safe_call(cb.progress, 100)
             _safe_call(cb.log, f"Backup written to: {dest}")

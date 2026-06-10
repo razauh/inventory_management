@@ -7,7 +7,7 @@ Centralize common preflight checks with clear, user-friendly error messages.
 
 Public API
 ---------
-- validate_backup_destination(dest_file: str, db_size: int, free_space: int) -> None
+- validate_backup_destination(dest_file: str, db_size: int, free_space: int, active_db_path: str | None = None) -> None
 - validate_backup_source(db_path: str) -> None
 """
 
@@ -43,13 +43,19 @@ def _windows_reserved_names() -> Iterable[str]:
     }
 
 
-def validate_backup_destination(dest_file: str, db_size: int, free_space: int) -> None:
+def validate_backup_destination(
+    dest_file: str,
+    db_size: int,
+    free_space: int,
+    active_db_path: str | None = None,
+) -> None:
     """
     Validate that the destination path can receive a backup file.
 
     Rules:
       - Parent folder must exist and be writable.
       - Filename must be non-empty and not a directory.
+      - Destination must not be the active database or its WAL/SHM files.
       - Recommend .imsdb extension (not strictly required here).
       - Require at least 1.5x DB size in free space (caller passes free_space).
     Raises:
@@ -81,6 +87,20 @@ def validate_backup_destination(dest_file: str, db_size: int, free_space: int) -
 
     if path.exists() and path.is_dir():
         raise RuntimeError("Destination path points to a directory, not a file.")
+
+    backup_path = path
+    if backup_path.suffix.lower() != ".imsdb":
+        backup_path = backup_path.with_suffix(".imsdb")
+
+    if active_db_path:
+        db_path = Path(active_db_path).expanduser().resolve()
+        active_family = (
+            db_path,
+            Path(str(db_path) + "-wal").resolve(),
+            Path(str(db_path) + "-shm").resolve(),
+        )
+        if path.expanduser().resolve() in active_family or backup_path.expanduser().resolve() in active_family:
+            raise RuntimeError("Backup destination must not be the active database or its WAL/SHM files.")
 
     # Space check: require ~1.5x DB size buffer
     required = int(max(0, db_size) * 1.5)
