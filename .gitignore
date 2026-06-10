@@ -48,6 +48,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+packaging/inno/Output/
 
 # Repository mapping output
 _repo_map_out/

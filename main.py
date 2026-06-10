@@ -252,6 +252,7 @@ class MainWindow(QMainWindow):
         # ---- Backup & Restore (replace previous placeholder) ----
         self._add_backup_restore_module_deferred()
         self._register_backup_restore_file_actions()
+        self._register_updater_actions()
 
         # Ensure first page is visible
         if self.nav.count():
@@ -490,6 +491,36 @@ class MainWindow(QMainWindow):
             if action is not None:
                 action.setEnabled(enabled)
 
+    def _register_updater_actions(self) -> None:
+        help_menu = None
+        for action in self.menuBar().actions():
+            try:
+                menu = action.menu()
+                if menu and menu.title().replace("&", "").lower() == "help":
+                    help_menu = menu
+                    break
+            except RuntimeError:
+                continue
+
+        if help_menu is None:
+            help_menu = QMenu("&Help", self.menuBar())
+            self.menuBar().addMenu(help_menu)
+
+        self._check_updates_action = QAction("Check for Updates…", self)
+        self._check_updates_action.triggered.connect(self._check_for_updates)
+        help_menu.addAction(self._check_updates_action)
+
+    def _get_updater_controller(self):
+        controller = getattr(self, "_updater_controller", None)
+        if controller is None:
+            from modules.updater import UpdaterController
+            controller = UpdaterController(self)
+            self._updater_controller = controller
+        return controller
+
+    def _check_for_updates(self) -> None:
+        self._get_updater_controller().check_now(manual=True)
+
     def _on_nav_item_changed(self, index: int):
         """Load module when navigating to it."""
         if index < 0 or index >= len(self.module_info):
@@ -699,6 +730,7 @@ def main():
     if app is None:
         app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setOrganizationName(APP_NAME)
 
     # DB connection (ensure schema, etc.)
     conn = get_connection()
@@ -780,6 +812,7 @@ def main():
     # Show UI (smaller default)
     win.resize(900, 560)
     win.show()
+    win._get_updater_controller().check_on_startup()
     
     # Only call exec_ if we're running standalone (not under dev_launcher.py)
     # When running under dev_launcher.py, just return and let it handle the event loop

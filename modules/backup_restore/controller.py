@@ -20,10 +20,11 @@ Public Interface (called by app shell)
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
 
-from PySide6.QtCore import Qt, QObject, Signal, Slot, QCoreApplication, QTimer, QSettings
+from PySide6.QtCore import Qt, QObject, Signal, Slot, QCoreApplication, QTimer, QSettings, QEventLoop
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
@@ -70,7 +71,7 @@ class BackupRestoreController(QObject):
     operation_controls_enabled_changed = Signal(bool)
 
     TITLE = "Backup & Restore"
-    SETTINGS_SCOPE = ("YourCompany", "YourApp")  # override via ctor args if needed
+    SETTINGS_SCOPE = ("Al Husnain", "Al Husnain")
     SETTINGS_KEY_LAST_BACKUP = "backup_restore/last_backup_path"
 
     def __init__(
@@ -170,6 +171,53 @@ class BackupRestoreController(QObject):
 
     def open_restore_dialog(self) -> None:
         self._open_restore_dialog()
+
+    def create_backup_for_update(self, dest_dir: Optional[str] = None) -> bool:
+        if self._is_job_active():
+            self._show_active_job_message()
+            return False
+
+        from .service import BackupJob
+        from .views import ProgressDialog
+
+        base_dir = Path(dest_dir) if dest_dir else Path.home() / "Al Husnain Backups"
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.critical(self._widget, "Backup Error", str(exc))
+            return False
+
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        dest = base_dir / f"Al_Husnain_pre_update_{stamp}.imsdb"
+        prog = ProgressDialog(parent=self._widget or None)
+        loop = QEventLoop()
+        result = {"ok": False}
+
+        def _finished(ok: bool, message: str, out_path: Optional[str]) -> None:
+            result["ok"] = bool(ok and out_path)
+            self._on_backup_finished(ok, message, out_path, prog)
+            loop.quit()
+
+        if not self._begin_job("backup"):
+            return False
+
+        cb = _Callbacks(
+            phase=prog.on_phase,
+            progress=prog.on_progress,
+            log=prog.on_log,
+            finished=_finished,
+        )
+        prog.on_phase("Starting backup...")
+        prog.on_progress(0)
+        prog.show()
+        try:
+            BackupJob(db_locator=None, sqlite_ops=None, fsops=None, logger=None).run_async(str(dest), callbacks=cb)
+            loop.exec()
+        except Exception as exc:
+            self._finish_job("backup")
+            QMessageBox.critical(self._widget, "Backup Error", str(exc))
+            return False
+        return bool(result["ok"])
 
     # -------- UI construction --------
 

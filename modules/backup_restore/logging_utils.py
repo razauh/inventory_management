@@ -20,10 +20,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
+from config import DATA_PATH
+
 __all__ = ["get_logger", "log_event"]
 
-# Default log file location (relative to app working directory)
-_DEFAULT_LOG_DIR = Path("logs")
+_DEFAULT_LOG_DIR = DATA_PATH / "logs"
 _DEFAULT_LOG_FILE = _DEFAULT_LOG_DIR / "backup_restore.log"
 
 # Singleton cache so multiple calls don't add duplicate handlers
