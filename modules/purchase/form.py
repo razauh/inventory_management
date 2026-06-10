@@ -1489,7 +1489,7 @@ class PurchaseForm(QDialog):
                 "instrument_no": instr_no,
                 "instrument_date": instr_date,
                 "deposited_date": None,
-                "cleared_date": None,
+                "cleared_date": date_str,
                 "clearing_state": clearing_state,
                 "ref_no": ref_no,
                 "notes": notes,

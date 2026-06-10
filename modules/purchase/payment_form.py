@@ -702,7 +702,7 @@ class PaymentForm(QDialog):
             "instrument_no": instr_no,
             "instrument_date": instr_date,
             "deposited_date": None,
-            "cleared_date": None,
+            "cleared_date": date_str,
             "clearing_state": clearing_state,
             "ref_no": None,  # ref_no field was removed from UI
             "notes": notes,

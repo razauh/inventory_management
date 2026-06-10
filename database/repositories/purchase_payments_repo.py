@@ -47,6 +47,7 @@ class PurchasePaymentsRepo:
         state = clearing_state or "cleared"
         if state != "cleared":
             raise ValueError("Vendor purchase payments must have clearing_state='cleared'")
+        effective_cleared_date = cleared_date or date
 
         purchase_info = self.conn.execute(
             """
@@ -137,7 +138,7 @@ class PurchasePaymentsRepo:
                 instrument_no,
                 instrument_date,
                 deposited_date,
-                cleared_date,
+                effective_cleared_date,
                 state,
                 ref_no,
                 notes,

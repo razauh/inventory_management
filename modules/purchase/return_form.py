@@ -700,6 +700,7 @@ class PurchaseReturnForm(QDialog):
                 "instrument_type": instr_type,
                 "instrument_no": instr_no,
                 "instrument_date": instr_date,
+                "cleared_date": date_str,
                 "clearing_state": clearing_state,
                 "date": date_str,
                 "temp_vendor_bank_name": self.temp_bank_name.text().strip() if is_temp_account else None,
