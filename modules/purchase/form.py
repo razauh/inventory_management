@@ -933,6 +933,8 @@ class PurchaseForm(QDialog):
 
         num = QTableWidgetItem(str(r + 1))
         num.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        if pre and pre.get("item_id") is not None:
+            num.setData(Qt.UserRole + 1, int(pre["item_id"]))
         self.tbl.setItem(r, 0, num)
 
         cmb_prod = QComboBox()
@@ -1123,6 +1125,7 @@ class PurchaseForm(QDialog):
         if uom_id is None:
             return None  
         return {
+            "item_id": self.tbl.item(r, 0).data(Qt.UserRole + 1),
             "product_id": int(pid),
             "uom_id": int(uom_id),
             "quantity": qty,
@@ -1405,6 +1408,7 @@ class PurchaseForm(QDialog):
                     uom_id = self._base_uom_id(product_id)
             
             rows.append({
+                "item_id": self.tbl.item(r, 0).data(Qt.UserRole + 1),
                 "product_id": int(product_id),
                 "uom_id": int(uom_id),
                 "quantity": qty,

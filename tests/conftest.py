@@ -137,29 +137,21 @@ def _apply_common_seed():
     # Ensure data directory exists
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     
-    # Import schema SQL
+    # Import the targeted migration for this existing shared test database.
     try:
         sys.path.insert(0, str(PROJECT_ROOT.parent))
-        from inventory_management.database.schema import SQL as SCHEMA_SQL
+        from inventory_management.database.schema import migrate_purchase_return_snapshots
     except ImportError as e:
-        # Fallback if import fails (though it shouldn't with correct path)
-        SCHEMA_SQL = None
-        print(f"Warning: Could not import schema SQL: {e}")
+        migrate_purchase_return_snapshots = None
+        print(f"Warning: Could not import schema migration: {e}")
 
     con = sqlite3.connect(DB_PATH)
     try:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON;")
         
-        # Apply schema if table 'users' doesn't exist (simple check for empty/new DB)
-        # Also check for 'customer_advances' to ensure we have the latest schema
-        table_check = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='customer_advances'").fetchone()
-        print(f"DEBUG: table_check for customer_advances: {table_check}")
-        if not table_check and SCHEMA_SQL:
-            print("DEBUG: Applying SCHEMA_SQL")
-            con.executescript(SCHEMA_SQL)
-        else:
-            print("DEBUG: Skipping SCHEMA_SQL")
+        if migrate_purchase_return_snapshots:
+            migrate_purchase_return_snapshots(con)
             
         # Apply seed
         if SEED_SQL.exists():

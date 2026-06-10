@@ -138,3 +138,13 @@ def test_return_logic_credit(controller, conn, ids):
     # But we can check total credit
     total_credit = controller.vadv.get_balance(ids["vendor_id"])
     assert total_credit == 50.0
+
+    snapshot = conn.execute(
+        "SELECT * FROM purchase_return_snapshots WHERE transaction_id=?",
+        (txns[0]["transaction_id"],),
+    ).fetchone()
+    assert float(snapshot["returned_quantity"]) == 5.0
+    assert float(snapshot["unit_purchase_price"]) == 10.0
+    assert float(snapshot["unit_discount"]) == 0.0
+    assert snapshot["return_date"] == "2023-01-02"
+    assert float(snapshot["return_value"]) == 50.0

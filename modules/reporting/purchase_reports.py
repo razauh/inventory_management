@@ -493,20 +493,22 @@ class PurchaseReportsTab(QWidget):
         # Prefer the prebuilt view if present; else graceful degrade.
         rows: List[Dict[str, Any]] = []
         try:
-            # purchase_return_valuations: transaction_id, purchase_id, item_id, product_id, qty_returned, unit_buy_price, unit_discount, return_value
             sql = """
                 SELECT
                   SUM(CAST(qty_returned AS REAL)) AS qty_returned,
-                  SUM(CAST(return_value AS REAL)) AS return_value
-                FROM purchase_return_valuations prv
-                JOIN inventory_transactions it ON it.transaction_id = prv.transaction_id
-                WHERE DATE(it.date) BETWEEN DATE(?) AND DATE(?)
+                  SUM(CASE WHEN valuation_status = 'resolved'
+                           THEN CAST(return_value AS REAL) END) AS return_value,
+                  SUM(CASE WHEN valuation_status = 'unresolved' THEN 1 ELSE 0 END) AS unresolved_count
+                FROM purchase_return_valuations
+                WHERE DATE(return_date) BETWEEN DATE(?) AND DATE(?)
             """
             r = self.conn.execute(sql, (df, dt)).fetchone()
-            qty = float((r or {}).get("qty_returned", 0.0) or 0.0)
-            val = float((r or {}).get("return_value", 0.0) or 0.0)
+            qty = float(r["qty_returned"] or 0.0) if r else 0.0
+            val = float(r["return_value"] or 0.0) if r else 0.0
+            unresolved = int(r["unresolved_count"] or 0) if r else 0
             rows = [{"metric": "Returned Qty (base)", "value": qty},
-                    {"metric": "Return Value", "value": val}]
+                    {"metric": "Return Value", "value": val},
+                    {"metric": "Unresolved Legacy Returns", "value": unresolved}]
         except Exception:
             rows = [{"metric": "Info", "value": "purchase_return_valuations view not found"}]
         set_rows("returns_summary", rows)

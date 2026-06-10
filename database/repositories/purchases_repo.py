@@ -225,15 +225,59 @@ class PurchasesRepo:
 
     def update_purchase(self, header: PurchaseHeader, items: Iterable[PurchaseItem]):
         """
-        Modify behavior:
-          - Recompute totals from provided items.
-          - Update header fields (vendor_id, date, order_discount, notes, total_amount).
-          - Delete ONLY inventory_transactions for this purchase with transaction_type='purchase'.
-          - Delete and re-insert purchase_items.
-          - Re-insert corresponding inventory_transactions with new sequential txn_seq.
-          - Do NOT commit here. Do NOT touch 'purchase_return' rows.
+        Update retained purchase items in place so return transactions keep their
+        reference_item_id. Returned lines cannot be removed, switched to another
+        product/UoM, or reduced below the quantity already returned.
         """
         items_list = list(items)
+
+        existing_rows = self.conn.execute(
+            """
+            SELECT
+              pi.item_id,
+              pi.product_id,
+              pi.uom_id,
+              COALESCE((
+                SELECT SUM(CAST(it.quantity AS REAL))
+                FROM inventory_transactions it
+                WHERE it.transaction_type='purchase_return'
+                  AND it.reference_table='purchases'
+                  AND it.reference_id=pi.purchase_id
+                  AND it.reference_item_id=pi.item_id
+              ), 0.0) AS returned_qty
+            FROM purchase_items pi
+            WHERE pi.purchase_id=?
+            """,
+            (header.purchase_id,),
+        ).fetchall()
+        existing = {int(row["item_id"]): row for row in existing_rows}
+        retained_ids: set[int] = set()
+
+        for it in items_list:
+            if it.item_id is None:
+                continue
+            item_id = int(it.item_id)
+            if item_id in retained_ids:
+                raise ValueError(f"Duplicate purchase item: {item_id}")
+            row = existing.get(item_id)
+            if row is None:
+                raise ValueError(f"Invalid purchase item: {item_id} for purchase {header.purchase_id}")
+            retained_ids.add(item_id)
+
+            returned_qty = float(row["returned_qty"])
+            if float(it.quantity) + 1e-9 < returned_qty:
+                raise ValueError(
+                    f"Purchase item {item_id} quantity cannot be below already returned quantity {returned_qty:g}"
+                )
+            if returned_qty > 1e-9 and (
+                int(it.product_id) != int(row["product_id"])
+                or int(it.uom_id) != int(row["uom_id"])
+            ):
+                raise ValueError(f"Cannot change product or UoM for returned purchase item {item_id}")
+
+        for item_id, row in existing.items():
+            if item_id not in retained_ids and float(row["returned_qty"]) > 1e-9:
+                raise ValueError(f"Cannot remove returned purchase item {item_id}")
 
         # Totals
         order_disc = float(header.order_discount or 0.0)
@@ -257,7 +301,7 @@ class PurchasesRepo:
             (header.vendor_id, header.date, order_disc, header.notes, total_amount, header.purchase_id),
         )
 
-        # 2) Remove ONLY purchase-line inventory rows (keep returns)
+        # Rebuild purchase inventory rows while preserving purchase item identity.
         self.conn.execute(
             """
             DELETE FROM inventory_transactions
@@ -268,8 +312,11 @@ class PurchasesRepo:
             (header.purchase_id,),
         )
 
-        # 3) Delete items (full rebuild)
-        self.conn.execute("DELETE FROM purchase_items WHERE purchase_id=?", (header.purchase_id,))
+        for item_id in set(existing) - retained_ids:
+            self.conn.execute(
+                "DELETE FROM purchase_items WHERE item_id=? AND purchase_id=?",
+                (item_id, header.purchase_id),
+            )
 
         # 4) Next txn_seq for the (possibly new) date
         row = self.conn.execute(
@@ -278,18 +325,32 @@ class PurchasesRepo:
         ).fetchone()
         next_seq = int(row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) + 10
 
-        # 5) Re-insert items + inventory rows
+        # Update retained items and insert new items, then rebuild purchase inventory rows.
         for it in items_list:
             it.purchase_id = header.purchase_id
-            cur = self.conn.execute(
-                """
-                INSERT INTO purchase_items (
-                    purchase_id, product_id, quantity, uom_id, purchase_price, sale_price, item_discount
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (header.purchase_id, it.product_id, it.quantity, it.uom_id, it.purchase_price, it.sale_price, it.item_discount or 0.0),
-            )
-            item_id = int(cur.lastrowid)
+            if it.item_id is None:
+                cur = self.conn.execute(
+                    """
+                    INSERT INTO purchase_items (
+                        purchase_id, product_id, quantity, uom_id, purchase_price, sale_price, item_discount
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (header.purchase_id, it.product_id, it.quantity, it.uom_id, it.purchase_price, it.sale_price, it.item_discount or 0.0),
+                )
+                item_id = int(cur.lastrowid)
+            else:
+                item_id = int(it.item_id)
+                self.conn.execute(
+                    """
+                    UPDATE purchase_items
+                       SET product_id=?, quantity=?, uom_id=?, purchase_price=?, sale_price=?, item_discount=?
+                     WHERE item_id=? AND purchase_id=?
+                    """,
+                    (
+                        it.product_id, it.quantity, it.uom_id, it.purchase_price,
+                        it.sale_price, it.item_discount or 0.0, item_id, header.purchase_id,
+                    ),
+                )
 
             self.conn.execute(
                 """
@@ -320,12 +381,40 @@ class PurchasesRepo:
         notes: Optional[str],
         settlement: Optional[dict] = None,
     ):
+        savepoint = "purchase_return_record"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            self._record_return(
+                pid=pid,
+                date=date,
+                created_by=created_by,
+                lines=lines,
+                notes=notes,
+                settlement=settlement,
+            )
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+
+    def _record_return(
+        self,
+        *,
+        pid: str,
+        date: str,
+        created_by: Optional[int],
+        lines: list[dict],
+        notes: Optional[str],
+        settlement: Optional[dict] = None,
+    ):
         """
         Enhanced returns (no implicit commit):
           - Validates qty_return per line: qty_return <= (purchased - returned_so_far).
           - Inserts inventory_transactions with transaction_type='purchase_return' using a high txn_seq bucket
             (100, 110, ... for that date).
-          - Computes monetary return value via purchase_return_valuations for inserted txns.
+          - Verifies immutable valuation snapshots were captured for every inserted transaction.
+          - Computes monetary return value exclusively from those snapshots.
           - Settlement:
               * {'mode':'refund', ...} => vendor credit (return_credit)
               * {'mode':'credit_note'} => vendor credit (return_credit)
@@ -443,18 +532,24 @@ class PurchasesRepo:
             inserted_txn_ids.append(int(cur.lastrowid))
             seq += 10
 
-        # Compute return monetary value using the view for the inserted txns
+        # Snapshot capture is trigger-driven so direct SQL inserts receive the same protection.
         if inserted_txn_ids:
             placeholders = ",".join("?" for _ in inserted_txn_ids)
             val_row = self.conn.execute(
                 f"""
-                SELECT COALESCE(SUM(return_value), 0.0)
-                FROM purchase_return_valuations
+                SELECT COUNT(*) AS snapshot_count,
+                       COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS return_value
+                FROM purchase_return_snapshots
                 WHERE transaction_id IN ({placeholders})
                 """,
                 inserted_txn_ids,
             ).fetchone()
-            return_value = float(val_row[0] if val_row else 0.0)
+            snapshot_count = int(val_row["snapshot_count"] if val_row else 0)
+            if snapshot_count != len(inserted_txn_ids):
+                raise sqlite3.IntegrityError(
+                    "Purchase return valuation snapshot capture failed"
+                )
+            return_value = float(val_row["return_value"] if val_row else 0.0)
         else:
             return_value = 0.0
 
@@ -598,6 +693,8 @@ class PurchasesRepo:
           CAST(qty_returned  AS REAL) AS qty_returned,
           CAST(unit_buy_price AS REAL) AS unit_buy_price,
           CAST(unit_discount  AS REAL) AS unit_discount,
+          return_date,
+          valuation_status,
           CAST(return_value   AS REAL) AS return_value,
           CAST(return_value   AS REAL) AS line_value,   -- alias for tests
           CAST(return_value   AS REAL) AS value         -- alias for tests

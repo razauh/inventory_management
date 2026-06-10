@@ -54,6 +54,11 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def get_unresolved_purchase_return_count(conn: sqlite3.Connection) -> int:
+    return schema_module.unresolved_purchase_return_count(conn)
+
+
 __all__ = [
     "get_connection",
+    "get_unresolved_purchase_return_count",
 ]

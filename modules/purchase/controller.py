@@ -853,6 +853,7 @@ class PurchaseController(BaseModule):
             "notes": row["notes"] if "notes" in row.keys() else None,
             "items": [
                 {
+                    "item_id": it["item_id"],
                     "product_id": it["product_id"],
                     "uom_id": it["uom_id"],
                     "quantity": it["quantity"],
@@ -887,7 +888,7 @@ class PurchaseController(BaseModule):
         )
         items = [
             PurchaseItem(
-                None,
+                it.get("item_id"),
                 pid,
                 it["product_id"],
                 it["quantity"],
@@ -899,40 +900,36 @@ class PurchaseController(BaseModule):
             for it in p["items"]
         ]
         
-        # Update the purchase header and items first
-        self.repo.update_purchase(h, items)
-        
-        # After updating the purchase, automatically apply any available vendor advances
-        # Skip auto-apply if the user provided manual initial credit
-        initial_manual_credit = p.get("initial_credit_amount")
-        if initial_manual_credit is None:
-            initial_manual_credit = 0.0
-        else:
-            initial_manual_credit = float(initial_manual_credit)
-            
-        vendor_id = int(p["vendor_id"])
-        credit_bal = self._vendor_credit_balance(vendor_id)
-        remaining = self._remaining_due_header(pid)
-        auto_apply_amount = min(credit_bal, remaining)
-        
-        if auto_apply_amount > _EPS and initial_manual_credit <= _EPS:  # Only apply if there's a meaningful amount and no manual credit was provided
-            try:
-                self.vadv.apply_credit_to_purchase(
-                    vendor_id=vendor_id,
-                    purchase_id=pid,
-                    amount=auto_apply_amount,
-                    date=p["date"],
-                    notes=f"Auto-applied vendor advance from available credit (after edit)",
-                    created_by=(self.user["user_id"] if self.user else None),
-                )
-                _log.info("Auto-applied vendor credit after edit for %s amount=%.4f", pid, auto_apply_amount)
-                # The apply_credit_to_purchase method should update the header totals automatically
-            except Exception as e:
-                if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
-                    _log.warning("Auto-apply after edit skipped: %s", str(e))
-                    # It's okay to skip auto-application if it would exceed limits
-                else:
-                    raise
+        with self.conn:
+            self.repo.update_purchase(h, items)
+
+            initial_manual_credit = p.get("initial_credit_amount")
+            if initial_manual_credit is None:
+                initial_manual_credit = 0.0
+            else:
+                initial_manual_credit = float(initial_manual_credit)
+
+            vendor_id = int(p["vendor_id"])
+            credit_bal = self._vendor_credit_balance(vendor_id)
+            remaining = self._remaining_due_header(pid)
+            auto_apply_amount = min(credit_bal, remaining)
+
+            if auto_apply_amount > _EPS and initial_manual_credit <= _EPS:
+                try:
+                    self.vadv.apply_credit_to_purchase(
+                        vendor_id=vendor_id,
+                        purchase_id=pid,
+                        amount=auto_apply_amount,
+                        date=p["date"],
+                        notes=f"Auto-applied vendor advance from available credit (after edit)",
+                        created_by=(self.user["user_id"] if self.user else None),
+                    )
+                    _log.info("Auto-applied vendor credit after edit for %s amount=%.4f", pid, auto_apply_amount)
+                except Exception as e:
+                    if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
+                        _log.warning("Auto-apply after edit skipped: %s", str(e))
+                    else:
+                        raise
 
         info(self.view, "Saved", f"Purchase {pid} updated.")
 
@@ -989,7 +986,9 @@ class PurchaseController(BaseModule):
             )
 
         settlement = payload.get("settlement")
+        savepoint = "purchase_return_operation"
         try:
+            self.conn.execute(f"SAVEPOINT {savepoint}")
             self.repo.record_return(
                 pid=pid,
                 date=payload["date"],
@@ -998,11 +997,16 @@ class PurchaseController(BaseModule):
                 notes=payload.get("notes"),
                 settlement=settlement,
             )
-            
-            # Update the purchase header totals to reflect the return
-            # This is important for purchase balance calculations
             self._recompute_header_totals_from_rows(pid)
-        except (ValueError, sqlite3.IntegrityError, sqlite3.OperationalError) as e:
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception as e:
+            try:
+                self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except sqlite3.Error:
+                pass
+            if not isinstance(e, (ValueError, sqlite3.IntegrityError, sqlite3.OperationalError)):
+                raise
             info(self.view, "Return not recorded", f"Could not record return:\n{e}")
             return
 

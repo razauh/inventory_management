@@ -255,6 +255,24 @@ CREATE INDEX IF NOT EXISTS idx_inventory_type     ON inventory_transactions(tran
 CREATE INDEX IF NOT EXISTS idx_it_product_order
   ON inventory_transactions(product_id, date, txn_seq, posted_at, transaction_id);
 
+/* -------- immutable purchase-return valuation snapshots -------- */
+CREATE TABLE IF NOT EXISTS purchase_return_snapshots (
+    transaction_id      INTEGER PRIMARY KEY,
+    purchase_id         TEXT    NOT NULL,
+    item_id             INTEGER NOT NULL,
+    product_id          INTEGER NOT NULL,
+    uom_id              INTEGER NOT NULL,
+    returned_quantity   NUMERIC NOT NULL CHECK (CAST(returned_quantity AS REAL) > 0),
+    unit_purchase_price NUMERIC NOT NULL CHECK (CAST(unit_purchase_price AS REAL) >= 0),
+    unit_discount       NUMERIC NOT NULL CHECK (CAST(unit_discount AS REAL) >= 0),
+    return_date         DATE    NOT NULL,
+    return_value        NUMERIC NOT NULL,
+    captured_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (transaction_id) REFERENCES inventory_transactions(transaction_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_purchase_return_snapshots_purchase
+  ON purchase_return_snapshots(purchase_id);
+
 /* -------- stock valuation history (running average) -------- */
 CREATE TABLE IF NOT EXISTS stock_valuation_history (
     valuation_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -634,6 +652,37 @@ BEGIN
   END;
 END;
 
+DROP TRIGGER IF EXISTS trg_purchase_items_return_delete_guard;
+CREATE TRIGGER trg_purchase_items_return_delete_guard
+BEFORE DELETE ON purchase_items
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM inventory_transactions it
+  WHERE it.transaction_type = 'purchase_return'
+    AND it.reference_table = 'purchases'
+    AND it.reference_id = OLD.purchase_id
+    AND it.reference_item_id = OLD.item_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot delete a purchase item referenced by returns');
+END;
+
+DROP TRIGGER IF EXISTS trg_purchase_items_return_identity_guard;
+CREATE TRIGGER trg_purchase_items_return_identity_guard
+BEFORE UPDATE OF purchase_id, product_id, uom_id ON purchase_items
+FOR EACH ROW
+WHEN (NEW.purchase_id <> OLD.purchase_id OR NEW.product_id <> OLD.product_id OR NEW.uom_id <> OLD.uom_id)
+ AND EXISTS (
+  SELECT 1 FROM inventory_transactions it
+  WHERE it.transaction_type = 'purchase_return'
+    AND it.reference_table = 'purchases'
+    AND it.reference_id = OLD.purchase_id
+    AND it.reference_item_id = OLD.item_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot change identity of a purchase item referenced by returns');
+END;
+
 /* ======================== INVENTORY VALIDATION TRIGGERS ======================== */
 DROP TRIGGER IF EXISTS trg_inventory_ref_validate;
 CREATE TRIGGER trg_inventory_ref_validate
@@ -713,6 +762,68 @@ BEGIN
     ) THEN RAISE(ABORT, 'Inventory must reference a SALE (doc_type=sale), not a quotation')
 
     ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_purchase_return_snapshot_insert;
+CREATE TRIGGER trg_purchase_return_snapshot_insert
+AFTER INSERT ON inventory_transactions
+FOR EACH ROW
+WHEN NEW.transaction_type = 'purchase_return'
+BEGIN
+  INSERT INTO purchase_return_snapshots (
+    transaction_id, purchase_id, item_id, product_id, uom_id,
+    returned_quantity, unit_purchase_price, unit_discount,
+    return_date, return_value
+  )
+  SELECT
+    NEW.transaction_id,
+    NEW.reference_id,
+    NEW.reference_item_id,
+    NEW.product_id,
+    NEW.uom_id,
+    CAST(NEW.quantity AS REAL),
+    CAST(pi.purchase_price AS REAL),
+    CAST(pi.item_discount AS REAL),
+    NEW.date,
+    CAST(NEW.quantity AS REAL) *
+      (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+  FROM purchase_items pi
+  WHERE pi.item_id = NEW.reference_item_id
+    AND pi.purchase_id = NEW.reference_id;
+END;
+
+DROP TRIGGER IF EXISTS trg_purchase_return_snapshot_update_guard;
+CREATE TRIGGER trg_purchase_return_snapshot_update_guard
+BEFORE UPDATE ON purchase_return_snapshots
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'Purchase return snapshots are immutable');
+END;
+
+DROP TRIGGER IF EXISTS trg_purchase_return_snapshot_delete_guard;
+CREATE TRIGGER trg_purchase_return_snapshot_delete_guard
+AFTER DELETE ON purchase_return_snapshots
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM inventory_transactions it
+  WHERE it.transaction_id = OLD.transaction_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Delete the source purchase return transaction instead');
+END;
+
+DROP TRIGGER IF EXISTS trg_purchase_return_transaction_update_guard;
+CREATE TRIGGER trg_purchase_return_transaction_update_guard
+BEFORE UPDATE OF product_id, quantity, uom_id, transaction_type,
+                 reference_table, reference_id, reference_item_id, date
+ON inventory_transactions
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM purchase_return_snapshots prs
+  WHERE prs.transaction_id = OLD.transaction_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Snapshotted purchase return financial fields are immutable');
 END;
 
 /* Block converting a posted sale back to quotation */
@@ -2066,7 +2177,7 @@ SELECT
   pp.purchase_id        AS doc_id
 FROM purchase_payments pp;
 
-/* Value of purchase returns based on original purchase item pricing */
+/* Immutable value of purchase returns, including unresolved legacy rows. */
 DROP VIEW IF EXISTS purchase_return_valuations;
 CREATE VIEW purchase_return_valuations AS
 SELECT
@@ -2074,15 +2185,29 @@ SELECT
   it.reference_id      AS purchase_id,
   it.reference_item_id AS item_id,
   it.product_id,
-  CAST(it.quantity AS REAL)                        AS qty_returned,     -- purchase_items are base UoM by design
-  CAST(pi.purchase_price AS REAL)                  AS unit_buy_price,
-  CAST(pi.item_discount  AS REAL)                  AS unit_discount,
-  (CAST(it.quantity AS REAL) *
-   (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
-  )                                                AS return_value
+  it.uom_id,
+  CAST(it.quantity AS REAL) AS qty_returned,
+  CAST(prs.unit_purchase_price AS REAL) AS unit_buy_price,
+  CAST(prs.unit_discount AS REAL) AS unit_discount,
+  COALESCE(prs.return_date, it.date) AS return_date,
+  CAST(prs.return_value AS REAL) AS return_value,
+  CASE WHEN prs.transaction_id IS NULL THEN 'unresolved' ELSE 'resolved' END AS valuation_status
 FROM inventory_transactions it
-JOIN purchase_items pi ON pi.item_id = it.reference_item_id
+LEFT JOIN purchase_return_snapshots prs ON prs.transaction_id = it.transaction_id
 WHERE it.transaction_type = 'purchase_return';
+
+DROP VIEW IF EXISTS v_unresolved_purchase_returns;
+CREATE VIEW v_unresolved_purchase_returns AS
+SELECT
+  transaction_id,
+  purchase_id,
+  item_id,
+  product_id,
+  uom_id,
+  qty_returned,
+  return_date
+FROM purchase_return_valuations
+WHERE valuation_status = 'unresolved';
 
 
 /* Extended bank ledger with vendor destination account (keeps old view intact) */
@@ -2431,6 +2556,176 @@ def _ensure_vendor_advances_payment_metadata(conn: sqlite3.Connection) -> None:
             conn.execute(sql)
 
 
+def _backfill_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        INSERT INTO purchase_return_snapshots (
+            transaction_id, purchase_id, item_id, product_id, uom_id,
+            returned_quantity, unit_purchase_price, unit_discount,
+            return_date, return_value
+        )
+        SELECT
+            it.transaction_id,
+            it.reference_id,
+            it.reference_item_id,
+            it.product_id,
+            it.uom_id,
+            CAST(it.quantity AS REAL),
+            CAST(pi.purchase_price AS REAL),
+            CAST(pi.item_discount AS REAL),
+            it.date,
+            CAST(it.quantity AS REAL) *
+                (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+        FROM inventory_transactions it
+        JOIN purchase_items pi
+          ON pi.item_id = it.reference_item_id
+         AND pi.purchase_id = it.reference_id
+         AND pi.product_id = it.product_id
+         AND pi.uom_id = it.uom_id
+        LEFT JOIN purchase_return_snapshots prs
+          ON prs.transaction_id = it.transaction_id
+        WHERE it.transaction_type = 'purchase_return'
+          AND it.reference_table = 'purchases'
+          AND prs.transaction_id IS NULL
+        """
+    )
+
+
+def migrate_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS purchase_return_snapshots (
+            transaction_id      INTEGER PRIMARY KEY,
+            purchase_id         TEXT    NOT NULL,
+            item_id             INTEGER NOT NULL,
+            product_id          INTEGER NOT NULL,
+            uom_id              INTEGER NOT NULL,
+            returned_quantity   NUMERIC NOT NULL CHECK (CAST(returned_quantity AS REAL) > 0),
+            unit_purchase_price NUMERIC NOT NULL CHECK (CAST(unit_purchase_price AS REAL) >= 0),
+            unit_discount       NUMERIC NOT NULL CHECK (CAST(unit_discount AS REAL) >= 0),
+            return_date         DATE    NOT NULL,
+            return_value        NUMERIC NOT NULL,
+            captured_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (transaction_id) REFERENCES inventory_transactions(transaction_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_purchase_return_snapshots_purchase
+          ON purchase_return_snapshots(purchase_id);
+
+        DROP TRIGGER IF EXISTS trg_purchase_return_snapshot_insert;
+        CREATE TRIGGER trg_purchase_return_snapshot_insert
+        AFTER INSERT ON inventory_transactions
+        FOR EACH ROW
+        WHEN NEW.transaction_type = 'purchase_return'
+        BEGIN
+          INSERT INTO purchase_return_snapshots (
+            transaction_id, purchase_id, item_id, product_id, uom_id,
+            returned_quantity, unit_purchase_price, unit_discount,
+            return_date, return_value
+          )
+          SELECT
+            NEW.transaction_id, NEW.reference_id, NEW.reference_item_id,
+            NEW.product_id, NEW.uom_id, CAST(NEW.quantity AS REAL),
+            CAST(pi.purchase_price AS REAL), CAST(pi.item_discount AS REAL),
+            NEW.date,
+            CAST(NEW.quantity AS REAL) *
+              (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+          FROM purchase_items pi
+          WHERE pi.item_id = NEW.reference_item_id
+            AND pi.purchase_id = NEW.reference_id;
+        END;
+
+        DROP TRIGGER IF EXISTS trg_purchase_return_snapshot_update_guard;
+        CREATE TRIGGER trg_purchase_return_snapshot_update_guard
+        BEFORE UPDATE ON purchase_return_snapshots
+        FOR EACH ROW
+        BEGIN
+          SELECT RAISE(ABORT, 'Purchase return snapshots are immutable');
+        END;
+
+        DROP TRIGGER IF EXISTS trg_purchase_return_snapshot_delete_guard;
+        CREATE TRIGGER trg_purchase_return_snapshot_delete_guard
+        AFTER DELETE ON purchase_return_snapshots
+        FOR EACH ROW
+        WHEN EXISTS (
+          SELECT 1 FROM inventory_transactions it
+          WHERE it.transaction_id = OLD.transaction_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Delete the source purchase return transaction instead');
+        END;
+
+        DROP TRIGGER IF EXISTS trg_purchase_return_transaction_update_guard;
+        CREATE TRIGGER trg_purchase_return_transaction_update_guard
+        BEFORE UPDATE OF product_id, quantity, uom_id, transaction_type,
+                         reference_table, reference_id, reference_item_id, date
+        ON inventory_transactions
+        FOR EACH ROW
+        WHEN EXISTS (
+          SELECT 1 FROM purchase_return_snapshots prs
+          WHERE prs.transaction_id = OLD.transaction_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Snapshotted purchase return financial fields are immutable');
+        END;
+
+        DROP VIEW IF EXISTS purchase_detailed_totals;
+        DROP VIEW IF EXISTS v_unresolved_purchase_returns;
+        DROP VIEW IF EXISTS purchase_return_valuations;
+        CREATE VIEW purchase_return_valuations AS
+        SELECT
+          it.transaction_id,
+          it.reference_id AS purchase_id,
+          it.reference_item_id AS item_id,
+          it.product_id,
+          it.uom_id,
+          CAST(it.quantity AS REAL) AS qty_returned,
+          CAST(prs.unit_purchase_price AS REAL) AS unit_buy_price,
+          CAST(prs.unit_discount AS REAL) AS unit_discount,
+          COALESCE(prs.return_date, it.date) AS return_date,
+          CAST(prs.return_value AS REAL) AS return_value,
+          CASE WHEN prs.transaction_id IS NULL THEN 'unresolved' ELSE 'resolved' END AS valuation_status
+        FROM inventory_transactions it
+        LEFT JOIN purchase_return_snapshots prs ON prs.transaction_id = it.transaction_id
+        WHERE it.transaction_type = 'purchase_return';
+
+        CREATE VIEW v_unresolved_purchase_returns AS
+        SELECT transaction_id, purchase_id, item_id, product_id, uom_id,
+               qty_returned, return_date
+        FROM purchase_return_valuations
+        WHERE valuation_status = 'unresolved';
+
+        CREATE VIEW purchase_detailed_totals AS
+        SELECT p.purchase_id,
+               CAST(p.order_discount AS REAL) AS order_discount,
+               COALESCE((
+                 SELECT SUM(CAST(pi.quantity AS REAL) *
+                            (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
+                 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
+               ), 0.0) AS subtotal_before_order_discount,
+               COALESCE((
+                 SELECT SUM(CAST(pi.quantity AS REAL) *
+                            (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
+                 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
+               ), 0.0)
+               - CAST(p.order_discount AS REAL)
+               - COALESCE((
+                 SELECT SUM(CAST(prv.return_value AS REAL))
+                 FROM purchase_return_valuations prv
+                 WHERE prv.purchase_id = p.purchase_id
+               ), 0.0) AS calculated_total_amount
+        FROM purchases p;
+        """
+    )
+    _backfill_purchase_return_snapshots(conn)
+
+
+def unresolved_purchase_return_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM v_unresolved_purchase_returns"
+    ).fetchone()
+    return int(row[0] if row else 0)
+
+
 def init_schema(db_path: Path | str = "myshop.db") -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2445,6 +2740,7 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         _ensure_sale_payments_overpayment_converted(conn)
         _ensure_sale_payments_converted_to_credit(conn)
         _ensure_vendor_advances_payment_metadata(conn)
+        migrate_purchase_return_snapshots(conn)
         conn.commit()
     print(f"✓ DB applied to {db_path}")
 

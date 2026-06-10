@@ -24,7 +24,7 @@ project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(project_root))
 
 from constants import APP_NAME, STYLE_FILE
-from database import get_connection
+from database import get_connection, get_unresolved_purchase_return_count
 from modules.base_module import BaseModule
 
 
@@ -630,6 +630,14 @@ def main():
 
     # DB connection (ensure schema, etc.)
     conn = get_connection()
+    unresolved_returns = get_unresolved_purchase_return_count(conn)
+    if unresolved_returns:
+        QMessageBox.warning(
+            None,
+            "Purchase return reconciliation required",
+            f"{unresolved_returns} legacy purchase return(s) have no recoverable valuation. "
+            "They remain excluded from financial totals until manually reconciled.",
+        )
 
     # ---- Login (lazy import to avoid circulars) ----
     # Commented out for development: bypass login during development
