@@ -943,7 +943,19 @@ class PurchaseController(BaseModule):
         if not row:
             info(self.view, "Select", "Select a purchase to delete.")
             return
-        self.repo.delete_purchase(row["purchase_id"])
+        savepoint = "purchase_delete_operation"
+        try:
+            self.conn.execute(f"SAVEPOINT {savepoint}")
+            self.repo.delete_purchase(row["purchase_id"])
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception as e:
+            try:
+                self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except sqlite3.Error:
+                pass
+            info(self.view, "Delete failed", f"Could not delete purchase:\n{e}")
+            return
         info(self.view, "Deleted", f'Purchase {row["purchase_id"]} removed.')
         self._reload()
 
@@ -1035,7 +1047,9 @@ class PurchaseController(BaseModule):
             return
 
         when = date or today_str()
+        savepoint = "purchase_vendor_credit_operation"
         try:
+            self.conn.execute(f"SAVEPOINT {savepoint}")
             self.vadv.apply_credit_to_purchase(
                 vendor_id=int(row["vendor_id"]),
                 purchase_id=row["purchase_id"],
@@ -1044,7 +1058,13 @@ class PurchaseController(BaseModule):
                 notes=notes,
                 created_by=(self.user["user_id"] if self.user else None),
             )
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         except Exception as e:
+            try:
+                self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except sqlite3.Error:
+                pass
             if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
                 info(self.view, "Credit not applied", str(e))
                 return
