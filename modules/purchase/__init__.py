@@ -21,7 +21,6 @@ try:
     from .form import PurchaseForm  # type: ignore
     from .return_form import PurchaseReturnForm  # type: ignore
     from .details import PurchaseDetails  # type: ignore
-    from .item_form import PurchaseItemForm  # type: ignore
     from .items import PurchaseItemsView  # type: ignore
     from .payment_form import PaymentForm  # type: ignore
 except ImportError as exc:  # pragma: no cover
@@ -34,7 +33,6 @@ except ImportError as exc:  # pragma: no cover
     PurchaseForm = None  # type: ignore
     PurchaseReturnForm = None  # type: ignore
     PurchaseDetails = None  # type: ignore
-    PurchaseItemForm = None  # type: ignore
     PurchaseItemsView = None  # type: ignore
     PaymentForm = None  # type: ignore
 
@@ -46,7 +44,6 @@ __all__ = [
     "PurchaseForm",
     "PurchaseReturnForm",
     "PurchaseDetails",
-    "PurchaseItemForm",
     "PurchaseItemsView",
     "PaymentForm",
 ]

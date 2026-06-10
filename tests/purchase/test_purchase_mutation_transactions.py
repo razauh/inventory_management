@@ -35,50 +35,6 @@ def _visible_count(path, table):
         return observer.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
-def test_delete_commits_before_reporting_success(database):
-    path, conn = database
-    conn.execute("INSERT INTO purchases VALUES ('PO-1')")
-    conn.commit()
-    controller = _controller(conn)
-    controller._selected_row_dict = lambda: {"purchase_id": "PO-1"}
-    controller.repo = MagicMock()
-    controller.repo.delete_purchase.side_effect = lambda purchase_id: conn.execute(
-        "DELETE FROM purchases WHERE purchase_id=?", (purchase_id,)
-    )
-
-    with patch("inventory_management.modules.purchase.controller.info") as show_info:
-        controller._delete()
-
-    assert not conn.in_transaction
-    assert _visible_count(path, "purchases") == 0
-    show_info.assert_called_once_with(None, "Deleted", "Purchase PO-1 removed.")
-    controller._reload.assert_called_once_with()
-
-
-def test_delete_rolls_back_partial_write_and_does_not_report_success(database):
-    path, conn = database
-    conn.execute("INSERT INTO purchases VALUES ('PO-1')")
-    conn.commit()
-    controller = _controller(conn)
-    controller._selected_row_dict = lambda: {"purchase_id": "PO-1"}
-    controller.repo = MagicMock()
-
-    def fail_after_delete(purchase_id):
-        conn.execute("DELETE FROM purchases WHERE purchase_id=?", (purchase_id,))
-        raise sqlite3.OperationalError("forced delete failure")
-
-    controller.repo.delete_purchase.side_effect = fail_after_delete
-
-    with patch("inventory_management.modules.purchase.controller.info") as show_info:
-        controller._delete()
-
-    assert not conn.in_transaction
-    assert conn.execute("SELECT COUNT(*) FROM purchases").fetchone()[0] == 1
-    assert _visible_count(path, "purchases") == 1
-    assert show_info.call_args.args[1] == "Delete failed"
-    controller._reload.assert_not_called()
-
-
 def test_vendor_credit_commits_before_reporting_success(database):
     path, conn = database
     controller = _controller(conn)

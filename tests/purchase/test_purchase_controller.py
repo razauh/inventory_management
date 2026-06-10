@@ -70,26 +70,8 @@ def test_controller_add_flow(controller, monkeypatch, ids):
 
 def test_controller_delete_not_implemented(controller, monkeypatch):
     """DB-INT-004: Verify delete is not implemented or exposed."""
-    # The view has a btn_del but it might be commented out or not connected
-    # Check if _delete method exists or is connected
-    
-    # In the provided view.py, btn_del is commented out:
-    # self.btn_del = QPushButton("Delete")
-    # row.addWidget(self.btn_add); row.addWidget(self.btn_edit)#; row.addWidget(self.btn_del)
-    
-    # So we verify that there is no active delete button in the layout
-    # or that clicking it (if we could find it) does nothing
-    
-    # Let's check if the controller has a _delete method wired
-    # And check if view has btn_del (it might not)
-    has_btn = hasattr(controller.view, "btn_del")
-    if has_btn:
-        assert not controller.view.btn_del.isVisible()
-    
-    # Also check controller method - it MIGHT exist but shouldn't be exposed
-    # assert not hasattr(controller, "_delete") 
-    # Actually it does exist, but the button is missing.
-    pass
+    assert not hasattr(controller.view, "btn_del")
+    assert not hasattr(controller, "_delete")
 
 def test_auto_apply_vendor_credit(controller, ids, conn):
     """DB-INT-006: Test auto-application of vendor credit."""

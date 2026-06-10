@@ -969,27 +969,6 @@ class PurchaseController(BaseModule):
         if should_print_after_save:
             self._print_purchase_invoice(pid)
 
-    def _delete(self):
-        row = self._selected_row_dict()
-        if not row:
-            info(self.view, "Select", "Select a purchase to delete.")
-            return
-        savepoint = "purchase_delete_operation"
-        try:
-            self.conn.execute(f"SAVEPOINT {savepoint}")
-            self.repo.delete_purchase(row["purchase_id"])
-            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-        except Exception as e:
-            try:
-                self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-                self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-            except sqlite3.Error:
-                pass
-            info(self.view, "Delete failed", f"Could not delete purchase:\n{e}")
-            return
-        info(self.view, "Deleted", f'Purchase {row["purchase_id"]} removed.')
-        self._reload()
-
     def _return(self):
         row = self._selected_row_dict()
         if not row:

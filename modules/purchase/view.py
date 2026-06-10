@@ -13,10 +13,9 @@ class PurchaseView(QWidget):
         row = QHBoxLayout()
         self.btn_add = QPushButton("New")
         self.btn_edit = QPushButton("Edit")
-        # self.btn_del = QPushButton("Delete")
         self.btn_return = QPushButton("Return")
         self.btn_pay = QPushButton("Payment")
-        row.addWidget(self.btn_add); row.addWidget(self.btn_edit)#; row.addWidget(self.btn_del)
+        row.addWidget(self.btn_add); row.addWidget(self.btn_edit)
         row.addWidget(self.btn_return); row.addWidget(self.btn_pay)
         row.addStretch(1)
         

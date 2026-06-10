@@ -11,7 +11,6 @@ from inventory_management.database.repositories.purchases_repo import (
 )
 from inventory_management.database.repositories.vendors_repo import VendorsRepo
 from inventory_management.modules.purchase.form import PurchaseForm
-from inventory_management.modules.purchase.item_form import PurchaseItemForm
 from inventory_management.modules.purchase.payment_form import PaymentForm
 from inventory_management.modules.purchase.return_form import PurchaseReturnForm
 from inventory_management.modules.purchase.validation import (
@@ -80,36 +79,6 @@ def test_purchase_form_rejects_sale_price_not_greater_than_purchase_price(
 
     assert not ok
     assert any(SALE_PRICE_RULE_MESSAGE in err for err in errors)
-
-
-class _Product:
-    product_id = 1
-    name = "Widget"
-
-
-class _ProductRepo:
-    def list_products(self):
-        return [_Product()]
-
-    def get_base_uom(self, product_id):
-        return {"uom_id": 1, "unit_name": "Piece"}
-
-    def product_uoms(self, product_id):
-        return [{"uom_id": 1, "unit_name": "Piece", "is_base": 1}]
-
-
-@pytest.mark.parametrize("sale_price", ["9.99", "10"])
-def test_purchase_item_form_rejects_sale_price_not_greater_than_purchase_price(
-    qtbot, sale_price
-):
-    form = PurchaseItemForm(None, repo=_ProductRepo())
-    qtbot.addWidget(form)
-    form.txt_qty.setText("1")
-    form.txt_buy.setText("10")
-    form.txt_sale.setText(sale_price)
-
-    assert form.get_payload() is None
-    assert form._validation_error == SALE_PRICE_RULE_MESSAGE
 
 
 def test_purchases_repo_rejects_sale_price_not_greater_than_purchase_price(conn, ids):
