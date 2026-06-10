@@ -327,6 +327,61 @@ class PurchasesRepo:
             subtotal += line_total
         total_amount = max(0.0, subtotal - order_disc)
 
+        settlement = self.conn.execute(
+            """
+            SELECT
+              COALESCE((
+                SELECT SUM(CAST(pp.amount AS REAL))
+                FROM purchase_payments pp
+                WHERE pp.purchase_id = ?
+                  AND pp.clearing_state = 'cleared'
+              ), 0.0) AS cleared_paid,
+              COALESCE((
+                SELECT SUM(-CAST(va.amount AS REAL))
+                FROM vendor_advances va
+                WHERE va.source_type = 'applied_to_purchase'
+                  AND va.source_id = ?
+              ), 0.0) AS advance_applied,
+              COALESCE((
+                SELECT SUM(CAST(prv.return_value AS REAL))
+                FROM purchase_return_valuations prv
+                WHERE prv.purchase_id = ?
+              ), 0.0) AS returned_value,
+              COALESCE((
+                SELECT SUM(CAST(pr.amount AS REAL))
+                FROM purchase_refunds pr
+                WHERE pr.purchase_id = ?
+                  AND pr.clearing_state = 'cleared'
+              ), 0.0) AS refunded_value,
+              COALESCE((
+                SELECT SUM(CAST(va.amount AS REAL))
+                FROM vendor_advances va
+                WHERE va.source_type = 'return_credit'
+                  AND va.source_id = ?
+              ), 0.0) AS return_credit_value
+            """,
+            (
+                header.purchase_id,
+                header.purchase_id,
+                header.purchase_id,
+                header.purchase_id,
+                header.purchase_id,
+            ),
+        ).fetchone()
+        proposed_net_total = max(0.0, total_amount - float(settlement["returned_value"] or 0.0))
+        settled_amount = (
+            float(settlement["cleared_paid"] or 0.0)
+            + float(settlement["advance_applied"] or 0.0)
+            - float(settlement["refunded_value"] or 0.0)
+            - float(settlement["return_credit_value"] or 0.0)
+        )
+        if proposed_net_total + 1e-9 < settled_amount:
+            raise ValueError(
+                "Cannot reduce purchase total below settled amount: "
+                f"proposed net total {proposed_net_total:.2f}, "
+                f"settled amount {settled_amount:.2f}"
+            )
+
         # 1) Update header
         self.conn.execute(
             """
