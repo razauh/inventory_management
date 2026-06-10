@@ -55,6 +55,8 @@ class TableEventFilter(QObject):
 
 class PurchaseForm(QDialog):
     COLS = ["#", "Product", "Qty", "Buy Price", "Sale Price", "Line Total", ""]
+    ITEM_ID_ROLE = Qt.UserRole + 1
+    ITEM_DISCOUNT_ROLE = Qt.UserRole + 2
     
     
     PAYMENT_METHODS = {
@@ -934,7 +936,11 @@ class PurchaseForm(QDialog):
         num = QTableWidgetItem(str(r + 1))
         num.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         if pre and pre.get("item_id") is not None:
-            num.setData(Qt.UserRole + 1, int(pre["item_id"]))
+            num.setData(self.ITEM_ID_ROLE, int(pre["item_id"]))
+        num.setData(
+            self.ITEM_DISCOUNT_ROLE,
+            float(pre.get("item_discount", 0.0) or 0.0) if pre else 0.0,
+        )
         self.tbl.setItem(r, 0, num)
 
         cmb_prod = QComboBox()
@@ -1125,14 +1131,18 @@ class PurchaseForm(QDialog):
         if uom_id is None:
             return None  
         return {
-            "item_id": self.tbl.item(r, 0).data(Qt.UserRole + 1),
+            "item_id": self.tbl.item(r, 0).data(self.ITEM_ID_ROLE),
             "product_id": int(pid),
             "uom_id": int(uom_id),
             "quantity": qty,
             "purchase_price": buy,
             "sale_price": sale,
-            "item_discount": 0.0,
+            "item_discount": self._row_item_discount(r),
         }
+
+    def _row_item_discount(self, r: int) -> float:
+        item = self.tbl.item(r, 0)
+        return float(item.data(self.ITEM_DISCOUNT_ROLE) or 0.0) if item else 0.0
 
     def _validate_vendor_selection(self) -> tuple[bool, str]:
         """Validate vendor selection and return (is_valid, error_message)"""
@@ -1212,7 +1222,7 @@ class PurchaseForm(QDialog):
                     "quantity": qty,
                     "purchase_price": buy,
                     "sale_price": sale,
-                    "item_discount": 0.0,
+                    "item_discount": self._row_item_discount(r),
                 })
             else:
                 errors.append(f"Row {r+1}: Unable to determine UOM for product. Please configure UOM settings.")
@@ -1408,19 +1418,21 @@ class PurchaseForm(QDialog):
                     uom_id = self._base_uom_id(product_id)
             
             rows.append({
-                "item_id": self.tbl.item(r, 0).data(Qt.UserRole + 1),
+                "item_id": self.tbl.item(r, 0).data(self.ITEM_ID_ROLE),
                 "product_id": int(product_id),
                 "uom_id": int(uom_id),
                 "quantity": qty,
                 "purchase_price": buy,
                 "sale_price": sale,
-                "item_discount": 0.0,
+                "item_discount": self._row_item_discount(r),
             })
 
         payload = {
             "vendor_id": vendor_id,
             "date": date_str,
-            "order_discount": 0.0,
+            "order_discount": float(
+                self._initial_data.get("order_discount", 0.0) or 0.0
+            ) if self._initial_data else 0.0,
             "notes": (self.txt_notes.text().strip() or None),
             "items": rows,
             "total_amount": total_amount,
