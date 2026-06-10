@@ -49,3 +49,10 @@ class InventoryController(BaseModule):
 
     def get_widget(self) -> QWidget:
         return self._root
+
+    def select_tab(self, name: str) -> bool:
+        index = {"valuation": 0, "transactions": 1}.get(name)
+        if index is None:
+            return False
+        self.tabs.setCurrentIndex(index)
+        return True
