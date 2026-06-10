@@ -484,6 +484,12 @@ class MainWindow(QMainWindow):
         if controller and hasattr(controller, "open_restore_dialog"):
             controller.open_restore_dialog()
 
+    def _set_backup_restore_file_actions_enabled(self, enabled: bool) -> None:
+        for attr in ("_backup_restore_backup_action", "_backup_restore_restore_action"):
+            action = getattr(self, attr, None)
+            if action is not None:
+                action.setEnabled(enabled)
+
     def _on_nav_item_changed(self, index: int):
         """Load module when navigating to it."""
         if index < 0 or index >= len(self.module_info):
@@ -579,6 +585,9 @@ class MainWindow(QMainWindow):
 
             # Attach the lightweight DB manager shim so restore can close/reopen the DB.
             setattr(controller, '_app_db_manager', MainWindow._AppDbManager(self))
+            signal = getattr(controller, "operation_controls_enabled_changed", None)
+            if signal is not None:
+                signal.connect(self._set_backup_restore_file_actions_enabled)
 
             # Replace the placeholder widget with the actual module widget
             widget = controller.get_widget()

@@ -67,6 +67,7 @@ class BackupRestoreController(QObject):
     # Signals for higher-level app (optional; not strictly required by shell)
     backup_completed = Signal(str)        # emits path to created backup
     restore_completed = Signal(str)       # emits path of backup used to restore
+    operation_controls_enabled_changed = Signal(bool)
 
     TITLE = "Backup & Restore"
     SETTINGS_SCOPE = ("YourCompany", "YourApp")  # override via ctor args if needed
@@ -92,6 +93,8 @@ class BackupRestoreController(QObject):
 
         self._widget: Optional[QWidget] = None
         self._last_backup_path: Optional[Path] = self._load_last_backup_path()
+        self._active_job: Optional[str] = None
+        self._operation_buttons: list[QPushButton] = []
 
         # Menu actions (created on demand)
         self._act_backup: Optional[QAction] = None
@@ -240,6 +243,7 @@ class BackupRestoreController(QObject):
         if primary:
             btn.setDefault(True)
         btn.clicked.connect(on_click)
+        self._operation_buttons.append(btn)
         v.addWidget(btn, alignment=Qt.AlignRight)
 
         return card
@@ -264,6 +268,10 @@ class BackupRestoreController(QObject):
 
     @Slot()
     def _open_backup_dialog(self) -> None:
+        if self._is_job_active():
+            self._show_active_job_message()
+            return
+
         from .views import BackupDialog, ProgressDialog  # lazy import
         from . import __init__ as pkg_init  # for module title if needed
 
@@ -276,6 +284,10 @@ class BackupRestoreController(QObject):
 
     @Slot()
     def _open_restore_dialog(self) -> None:
+        if self._is_job_active():
+            self._show_active_job_message()
+            return
+
         from .views import RestoreDialog, ProgressDialog  # lazy import
 
         dlg = RestoreDialog(parent=self._widget or None)
@@ -286,11 +298,49 @@ class BackupRestoreController(QObject):
 
     # -------- Orchestration with service layer --------
 
+    def _is_job_active(self) -> bool:
+        return self._active_job is not None
+
+    def _show_active_job_message(self) -> None:
+        QMessageBox.information(
+            self._widget,
+            "Backup & Restore Busy",
+            "A backup or restore operation is already running.",
+        )
+
+    def _set_operation_controls_enabled(self, enabled: bool) -> None:
+        for action in (self._act_backup, self._act_restore):
+            if action is not None:
+                action.setEnabled(enabled)
+        for button in self._operation_buttons:
+            try:
+                button.setEnabled(enabled)
+            except RuntimeError:
+                continue
+        self.operation_controls_enabled_changed.emit(enabled)
+
+    def _begin_job(self, job_name: str) -> bool:
+        if self._active_job is not None:
+            self._show_active_job_message()
+            return False
+        self._active_job = job_name
+        self._set_operation_controls_enabled(False)
+        return True
+
+    def _finish_job(self, job_name: str) -> None:
+        if self._active_job == job_name:
+            self._active_job = None
+            self._set_operation_controls_enabled(True)
+
     def _start_backup(self, dest_path: str, prog_dialog) -> None:
         """
         Kick off an async backup job to write a single *.imsdb file.
         """
         from .service import BackupJob  # lazy import
+
+        if self._is_job_active():
+            self._show_active_job_message()
+            return
 
         # Basic destination sanity (existence/writability). Service will also validate.
         dest = Path(dest_path)
@@ -301,6 +351,9 @@ class BackupRestoreController(QObject):
                 raise ValueError("Destination path is not a file.")
         except Exception as e:
             QMessageBox.critical(self._widget, "Backup Error", str(e))
+            return
+
+        if not self._begin_job("backup"):
             return
 
         # Progress callbacks
@@ -316,27 +369,34 @@ class BackupRestoreController(QObject):
         prog_dialog.show()
 
         job = BackupJob(db_locator=None, sqlite_ops=None, fsops=None, logger=None)  # real deps are resolved inside service
-        job.run_async(str(dest), callbacks=cb)
+        try:
+            job.run_async(str(dest), callbacks=cb)
+        except Exception as exc:
+            self._finish_job("backup")
+            QMessageBox.critical(self._widget, "Backup Error", str(exc))
 
     def _on_backup_finished(self, ok: bool, message: str, out_path: Optional[str], prog_dialog) -> None:
-        prog_dialog.on_log(message)
-        prog_dialog.on_finished(ok, message, out_path)
-        if ok and out_path:
-            p = Path(out_path)
-            self._save_last_backup_path(p)
-            self.backup_completed.emit(str(p))
+        try:
+            prog_dialog.on_log(message)
+            prog_dialog.on_finished(ok, message, out_path)
+            if ok and out_path:
+                p = Path(out_path)
+                self._save_last_backup_path(p)
+                self.backup_completed.emit(str(p))
 
-            # Offer to open the folder
-            if self._widget:
-                ret = QMessageBox.information(
-                    self._widget,
-                    "Backup Completed",
-                    f"Backup created:\n{p}\n\nOpen containing folder?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.Yes,
-                )
-                if ret == QMessageBox.StandardButton.Yes:
-                    QDesktopServices.openUrl(p.parent.as_uri())
+                # Offer to open the folder
+                if self._widget:
+                    ret = QMessageBox.information(
+                        self._widget,
+                        "Backup Completed",
+                        f"Backup created:\n{p}\n\nOpen containing folder?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes,
+                    )
+                    if ret == QMessageBox.StandardButton.Yes:
+                        QDesktopServices.openUrl(p.parent.as_uri())
+        finally:
+            self._finish_job("backup")
 
     def _start_restore(self, src_file: str, prog_dialog) -> None:
         """
@@ -344,6 +404,10 @@ class BackupRestoreController(QObject):
         """
         from . import sqlite_ops  # lazy import
         from .service import RestoreJob  # lazy import
+
+        if self._is_job_active():
+            self._show_active_job_message()
+            return
 
         # Ensure we have a DB manager to coordinate connections.
         if self._app_db_manager is None:
@@ -367,6 +431,9 @@ class BackupRestoreController(QObject):
         if not self._confirm_restore(src_file, str(target_db_path)):
             return
 
+        if not self._begin_job("restore"):
+            return
+
         # Progress callbacks
         cb = _Callbacks(
             phase=prog_dialog.on_phase,
@@ -386,7 +453,11 @@ class BackupRestoreController(QObject):
             app_db_manager=self._app_db_manager,
             logger=None,
         )
-        job.run_async(str(src_file), callbacks=cb)
+        try:
+            job.run_async(str(src_file), callbacks=cb)
+        except Exception as exc:
+            self._finish_job("restore")
+            QMessageBox.critical(self._widget, "Restore Error", str(exc))
 
     def _confirm_restore(self, src_file: str, target_db_path: str) -> bool:
         ret = QMessageBox.warning(
@@ -405,24 +476,27 @@ class BackupRestoreController(QObject):
     def _on_restore_finished(self, ok: bool, message: str, used_path: Optional[str], prog_dialog) -> None:
         from .service import RESTORE_RESTART_REQUIRED_MARKER
 
-        restart_required = RESTORE_RESTART_REQUIRED_MARKER in message
-        display_message = message.replace(RESTORE_RESTART_REQUIRED_MARKER, "").strip()
+        try:
+            restart_required = RESTORE_RESTART_REQUIRED_MARKER in message
+            display_message = message.replace(RESTORE_RESTART_REQUIRED_MARKER, "").strip()
 
-        prog_dialog.on_log(display_message)
-        prog_dialog.on_finished(ok, display_message, used_path)
+            prog_dialog.on_log(display_message)
+            prog_dialog.on_finished(ok, display_message, used_path)
 
-        if ok:
-            self.restore_completed.emit(used_path or "")
-            if self._widget:
-                QMessageBox.information(
-                    self._widget,
-                    "Restore Completed",
-                    "Database restore completed successfully.\n"
-                    "The application must now close. Please restart it before continuing.",
-                )
-            QTimer.singleShot(0, QCoreApplication.quit)
-        else:
-            if self._widget:
-                QMessageBox.critical(self._widget, "Restore Failed", display_message)
-            if restart_required:
+            if ok:
+                self.restore_completed.emit(used_path or "")
+                if self._widget:
+                    QMessageBox.information(
+                        self._widget,
+                        "Restore Completed",
+                        "Database restore completed successfully.\n"
+                        "The application must now close. Please restart it before continuing.",
+                    )
                 QTimer.singleShot(0, QCoreApplication.quit)
+            else:
+                if self._widget:
+                    QMessageBox.critical(self._widget, "Restore Failed", display_message)
+                if restart_required:
+                    QTimer.singleShot(0, QCoreApplication.quit)
+        finally:
+            self._finish_job("restore")
