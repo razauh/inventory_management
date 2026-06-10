@@ -260,30 +260,6 @@ class PurchasePaymentsRepo:
         """Alias of list_payments(purchase_id) for statement drilldowns."""
         return self.list_payments(purchase_id)
 
-    def list_pending_instruments(self, vendor_id: int) -> list[dict]:
-        """List rows with clearing_state='pending' for that vendor."""
-        sql = """
-        SELECT
-          pp.payment_id,
-          pp.date,
-          CAST(pp.amount AS REAL) AS amount,
-          pp.method,
-          pp.instrument_type,
-          pp.instrument_no,
-          pp.bank_account_id,
-          pp.vendor_bank_account_id,
-          pp.clearing_state,
-          pp.ref_no,
-          pp.notes,
-          pp.purchase_id
-        FROM purchase_payments pp
-        JOIN purchases p ON p.purchase_id = pp.purchase_id
-        WHERE p.vendor_id = ?
-          AND pp.clearing_state = 'pending'
-        ORDER BY DATE(pp.date) ASC, pp.payment_id ASC
-        """
-        return self.conn.execute(sql, (vendor_id,)).fetchall()
-
     def get_latest_payment_for_purchase(self, purchase_id: str) -> dict | None:
         """
         Get the latest payment details for a specific purchase.

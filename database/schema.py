@@ -561,7 +561,7 @@ CREATE TABLE IF NOT EXISTS vendor_advances (
   instrument_date DATE,
   deposited_date  DATE,
   cleared_date    DATE,
-  clearing_state  TEXT CHECK (clearing_state IN ('posted','pending','cleared','bounced')),
+  clearing_state  TEXT CHECK (clearing_state IS NULL OR clearing_state = 'cleared'),
   ref_no          TEXT,
   temp_vendor_bank_name   TEXT,
   temp_vendor_bank_number TEXT,
@@ -592,6 +592,24 @@ FOR EACH ROW
 WHEN NEW.method = 'Card'
 BEGIN
   SELECT RAISE(ABORT, 'Card is not a supported vendor payment method');
+END;
+
+DROP TRIGGER IF EXISTS trg_vadv_cleared_only_ins;
+CREATE TRIGGER trg_vadv_cleared_only_ins
+BEFORE INSERT ON vendor_advances
+FOR EACH ROW
+WHEN NEW.clearing_state IS NOT NULL AND NEW.clearing_state <> 'cleared'
+BEGIN
+  SELECT RAISE(ABORT, 'Vendor outgoing payments must have clearing_state=cleared');
+END;
+
+DROP TRIGGER IF EXISTS trg_vadv_cleared_only_upd;
+CREATE TRIGGER trg_vadv_cleared_only_upd
+BEFORE UPDATE ON vendor_advances
+FOR EACH ROW
+WHEN NEW.clearing_state IS NOT NULL AND NEW.clearing_state <> 'cleared'
+BEGIN
+  SELECT RAISE(ABORT, 'Vendor outgoing payments must have clearing_state=cleared');
 END;
 
 /* -------- customers: indexes to speed list/search -------- */
@@ -2763,7 +2781,7 @@ def _ensure_vendor_advances_payment_metadata(conn: sqlite3.Connection) -> None:
         "cleared_date": "ALTER TABLE vendor_advances ADD COLUMN cleared_date DATE;",
         "clearing_state": (
             "ALTER TABLE vendor_advances "
-            "ADD COLUMN clearing_state TEXT CHECK (clearing_state IN ('posted','pending','cleared','bounced'));"
+            "ADD COLUMN clearing_state TEXT CHECK (clearing_state IS NULL OR clearing_state = 'cleared');"
         ),
         "ref_no": "ALTER TABLE vendor_advances ADD COLUMN ref_no TEXT;",
         "temp_vendor_bank_name": "ALTER TABLE vendor_advances ADD COLUMN temp_vendor_bank_name TEXT;",

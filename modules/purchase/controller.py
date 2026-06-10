@@ -1164,61 +1164,6 @@ class PurchaseController(BaseModule):
                     info(self.view, "Payment not recorded", f"Could not record payment: {str(e)}")
                     return
 
-    def mark_payment_cleared(self, payment_id: int, *, cleared_date: Optional[str] = None, notes: Optional[str] = None):
-        pay = self._get_payment(payment_id)
-        if not pay:
-            info(self.view, "Not found", "Select a purchase and a valid payment to clear.")
-            return
-        if (pay.get("clearing_state") or "posted") != "pending":
-            info(self.view, "Not allowed", "Only pending payments can be marked as cleared.")
-            return
-
-        when = cleared_date or today_str()
-        try:
-            changed = self.payments.update_clearing_state(
-                payment_id=payment_id,
-                clearing_state="cleared",
-                cleared_date=when,
-                notes=notes,
-            )
-            self.conn.commit()  # Commit the transaction to persist the changes
-            if not changed:
-                info(self.view, "No change", "Payment was not updated.")
-                return
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-            info(self.view, "Update failed", f"Could not mark payment cleared:\n{e}")
-            return
-
-        info(self.view, "Saved", f"Payment #{payment_id} marked as cleared.")
-        self._reload()
-
-    def mark_payment_bounced(self, payment_id: int, *, notes: Optional[str] = None):
-        pay = self._get_payment(payment_id)
-        if not pay:
-            info(self.view, "Not found", "Select a purchase and a valid payment to mark bounced.")
-            return
-        if (pay.get("clearing_state") or "posted") != "pending":
-            info(self.view, "Not allowed", "Only pending payments can be marked as bounced.")
-            return
-
-        try:
-            changed = self.payments.update_clearing_state(
-                payment_id=payment_id,
-                clearing_state="bounced",
-                cleared_date=None,
-                notes=notes,
-            )
-            self.conn.commit()  # Commit the transaction to persist the changes
-            if not changed:
-                info(self.view, "No change", "Payment was not updated.")
-                return
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
-            info(self.view, "Update failed", f"Could not mark payment bounced:\n{e}")
-            return
-
-        info(self.view, "Saved", f"Payment #{payment_id} marked as bounced.")
-        self._reload()
-
     def _list_company_bank_accounts(self) -> list[dict]:
         try:
             rows = self.conn.execute(

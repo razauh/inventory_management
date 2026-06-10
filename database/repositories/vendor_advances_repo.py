@@ -32,7 +32,7 @@ class ConstraintViolationError(VendorAdvancesError):
 class VendorAdvancesRepo:
     METHODS = {"Cash", "Bank Transfer", "Cheque", "Cross Cheque", "Cash Deposit", "Other"}
     ITYPES = {"online", "cheque", "cross_cheque", "cash_deposit", "pay_order", "other"}
-    CLEARING_STATES = {"posted", "pending", "cleared", "bounced"}
+    CLEARING_STATES = {"cleared"}
 
     def __init__(self, conn: sqlite3.Connection):
         # ensure rows behave like dicts/tuples
@@ -439,8 +439,8 @@ class VendorAdvancesRepo:
             raise ValueError(f"Invalid vendor advance payment method: {method}")
         if instrument_type is not None and instrument_type not in self.ITYPES:
             raise ValueError(f"Invalid vendor advance instrument type: {instrument_type}")
-        if clearing_state is not None and clearing_state not in self.CLEARING_STATES:
-            raise ValueError(f"Invalid vendor advance clearing state: {clearing_state}")
+        if clearing_state is not None and clearing_state != "cleared":
+            raise ValueError("Vendor outgoing payments must have clearing_state='cleared'")
 
         if bank_account_id is not None:
             row = self.conn.execute(
