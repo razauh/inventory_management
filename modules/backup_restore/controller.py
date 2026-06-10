@@ -351,14 +351,14 @@ class BackupRestoreController(QObject):
 
         if ok:
             self.restore_completed.emit(used_path or "")
-            # Inform the user the DB connection was restarted
             if self._widget:
                 QMessageBox.information(
                     self._widget,
                     "Restore Completed",
                     "Database restore completed successfully.\n"
-                    "The application database connection has been restarted.",
+                    "The application must now close. Please restart it before continuing.",
                 )
+            QTimer.singleShot(0, QCoreApplication.quit)
         else:
             if self._widget:
                 QMessageBox.critical(self._widget, "Restore Failed", message)
