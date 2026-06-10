@@ -8,12 +8,6 @@ from ..base_module import BaseModule
 from .transactions import TransactionsView
 from .stock_valuation import StockValuationWidget
 
-from ...database.repositories.inventory_repo import InventoryRepo
-from ...database.repositories.products_repo import ProductsRepo
-
-from ...utils.ui_helpers import info, error
-from ...utils.helpers import today_str
-
 
 class InventoryController(BaseModule):
     """
@@ -28,10 +22,6 @@ class InventoryController(BaseModule):
         super().__init__()
         self.conn = conn
         self.user = current_user
-
-        # Repos
-        self.inv = InventoryRepo(conn)
-        self.prod = ProductsRepo(conn)
 
         # Root container (tabbed)
         self._root = QWidget()
