@@ -169,6 +169,8 @@ class InventoryReports:
                     "date": str(r["date"]),
                     "product_name": id_to_name.get(pid, f"#{pid}"),
                     "type": str(r["type"]),                        # corrected: repository returns 'type', not 'transaction_type'
+                    "quantity": float(r["quantity"] or 0.0),
+                    "unit_name": str(r["unit_name"] or ""),
                     "qty_base": float(r["qty_base"] or 0.0),
                     "ref_table": str(r["ref_table"] or ""),        # corrected: repository returns 'ref_table', not 'reference_table'
                     "ref_id": str(r["ref_id"] or ""),              # corrected: repository returns 'ref_id', not 'reference_id'

@@ -443,8 +443,9 @@ class ReportingRepo:
 
     def inventory_transactions(self, date_from: str, date_to: str, product_id: int | None) -> list[sqlite3.Row]:
         """
-        Return transactions with base-qty conversion.
-        Columns returned (UI expects): date, product_id, type, qty_base, ref_table, ref_id, notes
+        Return transactions with both posted qty/UoM and base-qty conversion.
+        Columns returned (UI expects): date, product_id, type, quantity, unit_name,
+        qty_base, ref_table, ref_id, notes
         """
         params: list[object] = [date_from, date_to]
         where_extra = ""
@@ -457,6 +458,8 @@ class ReportingRepo:
           it.date AS date,
           it.product_id AS product_id,
           it.transaction_type AS type,
+          CAST(it.quantity AS REAL) AS quantity,
+          COALESCE(u.unit_name, '') AS unit_name,
           (CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base,
           it.reference_table AS ref_table,
           it.reference_id    AS ref_id,
@@ -465,6 +468,8 @@ class ReportingRepo:
         LEFT JOIN product_uoms pu
           ON pu.product_id = it.product_id
          AND pu.uom_id     = it.uom_id
+        LEFT JOIN uoms u
+          ON u.uom_id = it.uom_id
         WHERE it.date >= ? AND it.date <= ?
         {where_extra}
         ORDER BY it.date ASC, it.transaction_id ASC
@@ -488,6 +493,8 @@ class ReportingRepo:
           it.date AS date,
           it.product_id AS product_id,
           it.transaction_type AS type,
+          CAST(it.quantity AS REAL) AS quantity,
+          COALESCE(u.unit_name, '') AS unit_name,
           (CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base,
           it.reference_table AS ref_table,
           it.reference_id    AS ref_id,
@@ -496,6 +503,8 @@ class ReportingRepo:
         LEFT JOIN product_uoms pu
           ON pu.product_id = it.product_id
          AND pu.uom_id     = it.uom_id
+        LEFT JOIN uoms u
+          ON u.uom_id = it.uom_id
         WHERE it.date >= ? AND it.date <= ?
         {where_extra}
         ORDER BY it.date ASC, it.transaction_id ASC

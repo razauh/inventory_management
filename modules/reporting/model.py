@@ -263,7 +263,7 @@ class InventoryStockOnHandTableModel(QAbstractTableModel):
 # ------------------------------ F) Inventory Transactions --------------------
 
 class InventoryTransactionsTableModel(QAbstractTableModel):
-    HEADERS = ("Date", "Product", "Type", "Qty (base)", "Ref Table", "Ref ID", "Notes")
+    HEADERS = ("Date", "Product", "Type", "Qty", "UoM", "Qty (base)", "Ref Table", "Ref ID", "Notes")
 
     def __init__(self, rows: Optional[List[dict]] = None, parent=None) -> None:
         super().__init__(parent)
@@ -278,7 +278,7 @@ class InventoryTransactionsTableModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self._rows)
 
     def columnCount(self, parent=QModelIndex()) -> int:  # type: ignore[override]
-        return 0 if parent.isValid() else 7
+        return 0 if parent.isValid() else 9
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):  # type: ignore[override]
         if role != Qt.DisplayRole:
@@ -302,17 +302,24 @@ class InventoryTransactionsTableModel(QAbstractTableModel):
                 return row.get("type", "")
             if c == 3:
                 try:
-                    return f"{float(row.get('qty_base') or 0.0):,.3f}".rstrip('0').rstrip('.')
+                    return f"{float(row.get('quantity') or 0.0):,.3f}".rstrip('0').rstrip('.')
                 except Exception:
                     return "0"
             if c == 4:
-                return row.get("ref_table", "")
+                return row.get("unit_name", "")
             if c == 5:
-                return row.get("ref_id", "")
+                try:
+                    return f"{float(row.get('qty_base') or 0.0):,.3f}".rstrip('0').rstrip('.')
+                except Exception:
+                    return "0"
             if c == 6:
+                return row.get("ref_table", "")
+            if c == 7:
+                return row.get("ref_id", "")
+            if c == 8:
                 return row.get("notes", "")
         if role == Qt.TextAlignmentRole:
-            return (Qt.AlignRight | Qt.AlignVCenter) if c in (3,) else (Qt.AlignLeft | Qt.AlignVCenter)
+            return (Qt.AlignRight | Qt.AlignVCenter) if c in (3, 5) else (Qt.AlignLeft | Qt.AlignVCenter)
         return None
 
 
