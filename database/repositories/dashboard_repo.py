@@ -99,17 +99,27 @@ class DashboardRepo:
     def vendor_payments_cleared(self, date_from: str, date_to: str) -> float:
         """
         Outgoing payments to vendors that CLEARED in the window.
-        Positive amounts = outflow; negative = refunds (inflow).
-        Returns the signed net (out - refunds).
+        Returns cleared purchase payments minus cleared vendor refunds.
         (Purchase side is already cleared-only in triggers for paid rollups.)
         """
         sql = """
-            SELECT COALESCE(SUM(CAST(pp.amount AS REAL)), 0.0) AS v
-            FROM purchase_payments pp
-            WHERE pp.clearing_state = 'cleared'
-              AND pp.cleared_date >= ? AND pp.cleared_date <= ?
+            SELECT
+              COALESCE((
+                SELECT SUM(CAST(pp.amount AS REAL))
+                FROM purchase_payments pp
+                WHERE pp.clearing_state = 'cleared'
+                  AND pp.cleared_date >= ? AND pp.cleared_date <= ?
+              ), 0.0)
+              - COALESCE((
+                SELECT SUM(CAST(pr.amount AS REAL))
+                FROM purchase_refunds pr
+                WHERE pr.clearing_state = 'cleared'
+                  AND pr.cleared_date >= ? AND pr.cleared_date <= ?
+              ), 0.0) AS v
         """
-        return _to_float(self._scalar(sql, (date_from, date_to)))
+        return _to_float(
+            self._scalar(sql, (date_from, date_to, date_from, date_to))
+        )
 
     def bank_movements_by_account(
         self, date_from: str, date_to: str

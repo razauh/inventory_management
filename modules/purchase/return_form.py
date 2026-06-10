@@ -84,6 +84,9 @@ class PurchaseReturnForm(QDialog):
         self.vba_repo = vendor_bank_accounts_repo
         self.cba_repo = company_bank_accounts_repo
         self.purchases_repo = purchases_repo
+        self._refund_financials_loaded = False
+        self._purchase_fully_paid = False
+        self._remaining_refundable_amount = 0.0
         
         # Create reverse mapping from display values to keys for payment methods
         self._method_display_to_key = {v: k for k, v in self.PAYMENT_METHODS.items()}
@@ -553,6 +556,7 @@ class PurchaseReturnForm(QDialog):
             self.date_instr.setDate(self.date.date())
             # Update visibility of temp bank fields when refund panel becomes visible
             self._update_temp_bank_refund_visibility()
+        self._refresh_refund_visibility()
         self._validate()
 
     def _default_instrument_date(self):
@@ -753,6 +757,8 @@ class PurchaseReturnForm(QDialog):
         """Update the remaining amount label for the purchase."""
         if not self.purchase_id:
             self.lbl_remaining.setText("Purchase ID not set")
+            self._refund_financials_loaded = False
+            self._refresh_refund_availability()
             return
             
         try:
@@ -764,6 +770,11 @@ class PurchaseReturnForm(QDialog):
                     total_calc = float(financials.get("calculated_total_amount", 0.0))
                     paid_amount = float(financials.get("paid_amount", 0.0))
                     advance_applied = float(financials.get("advance_payment_applied", 0.0))
+                    self._refund_financials_loaded = True
+                    self._purchase_fully_paid = bool(financials.get("is_fully_paid", False))
+                    self._remaining_refundable_amount = float(
+                        financials.get("remaining_refundable_amount", 0.0)
+                    )
                     
                     # Calculate current return value to adjust the remaining
                     current_return_value = self._calculate_return_value()
@@ -774,13 +785,41 @@ class PurchaseReturnForm(QDialog):
                     self.lbl_remaining.setText(f"Adjusted Remaining: {new_remaining:.2f} (Original: {original_remaining:.2f})")
                 else:
                     self.lbl_remaining.setText("Purchase financials not found")
+                    self._refund_financials_loaded = False
             else:
                 self.lbl_remaining.setText("Purchases repository not available")
+                self._refund_financials_loaded = False
+            self._refresh_refund_availability()
                 
         except Exception as e:
             import logging
             logging.error(f"Error calculating remaining amount using repository: {e}")
             self.lbl_remaining.setText("Error calculating remaining amount")
+            self._refund_financials_loaded = False
+            self._purchase_fully_paid = False
+            self._remaining_refundable_amount = 0.0
+            self._refresh_refund_availability()
+
+    def _refresh_refund_availability(self):
+        return_value = self._calculate_return_value()
+        available = (
+            self._refund_financials_loaded
+            and self._purchase_fully_paid
+            and return_value <= self._remaining_refundable_amount + EPSILON
+        )
+        self.rb_refund_now.setEnabled(available)
+        if not self._refund_financials_loaded:
+            reason = "Refund availability could not be verified."
+        elif not self._purchase_fully_paid:
+            reason = "Refund Now is available only for fully settled purchases."
+        elif return_value > self._remaining_refundable_amount + EPSILON:
+            reason = (
+                "Return exceeds the remaining refundable direct payment "
+                f"of {fmt_money(self._remaining_refundable_amount)}."
+            )
+        else:
+            reason = ""
+        self.rb_refund_now.setToolTip(reason)
 
     def _refresh_return_value(self):
         """Refresh the return value display."""
@@ -821,22 +860,22 @@ class PurchaseReturnForm(QDialog):
             ok = False
 
         if ok and self.rb_refund_now.isChecked():
-            total_val = 0.0
-            for r in range(self.tbl.rowCount()):
-                it_qty = self.tbl.item(r, self.COL_QTY_RETURN)
-                if not it_qty:
-                    continue
-                try:
-                    q = float(it_qty.text() or 0.0)
-                except ValueError:
-                    continue  # This error is already caught above
-                meta = self._meta_for_row(r)
-                total_val += max(0.0, q * float(meta.get("net_unit") or 0.0))
-            if total_val <= 0.0:
-                errors.append("Refund amount must be greater than zero.")
+            if not self._refund_financials_loaded:
+                errors.append("Refund availability could not be verified.")
                 ok = False
-            if self.cmb_company_acct.currentIndex() < 0:
-                errors.append("Please select a company bank account for refund.")
+            elif not self._purchase_fully_paid:
+                errors.append("Refund Now requires a fully settled purchase.")
+                ok = False
+            elif self._calculate_return_value() > self._remaining_refundable_amount + EPSILON:
+                errors.append(
+                    "Refund exceeds the remaining refundable direct payment "
+                    f"of {fmt_money(self._remaining_refundable_amount)}."
+                )
+                ok = False
+
+            refund_ok, refund_errors = self._validate_refund_details()
+            if not refund_ok:
+                errors.extend(refund_errors)
                 ok = False
 
         return ok, errors
@@ -1121,6 +1160,7 @@ class PurchaseReturnForm(QDialog):
         return vendor_bank_id
 
     def _validate(self):
+        self._refresh_refund_availability()
         # Keep the OK button always enabled to allow users to attempt submission
         btn_ok = self.buttons.button(QDialogButtonBox.Ok)
         if btn_ok:

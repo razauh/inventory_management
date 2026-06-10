@@ -647,6 +647,13 @@ class VendorController(BaseModule):
                       AND LOWER(COALESCE(pp.clearing_state, '')) = 'cleared'
                       AND DATE(pp.date) < DATE(?)
                 ),
+                pre_period_refunds AS (
+                    SELECT COALESCE(SUM(CAST(pr.amount AS REAL)), 0.0) AS amount
+                    FROM purchase_refunds pr
+                    WHERE pr.vendor_id = ?
+                      AND pr.clearing_state = 'cleared'
+                      AND DATE(pr.date) < DATE(?)
+                ),
                 pre_period_deposits AS (
                     SELECT COALESCE(SUM(CAST(va.amount AS REAL)), 0.0) AS amount
                     FROM vendor_advances va
@@ -658,10 +665,17 @@ class VendorController(BaseModule):
                     pre_period_deposits.amount AS opening_credit,
                     pre_period_purchases.amount
                       - pre_period_payments.amount
-                      - pre_period_deposits.amount AS opening_payable
-                FROM pre_period_purchases, pre_period_payments, pre_period_deposits
+                      - pre_period_deposits.amount
+                      + pre_period_refunds.amount AS opening_payable
+                FROM pre_period_purchases, pre_period_payments,
+                     pre_period_refunds, pre_period_deposits
                 """,
-                (vendor_id, date_from, vendor_id, date_from, vendor_id, date_from),
+                (
+                    vendor_id, date_from,
+                    vendor_id, date_from,
+                    vendor_id, date_from,
+                    vendor_id, date_from,
+                ),
             ).fetchone()
             if row:
                 if isinstance(row, sqlite3.Row):
@@ -681,6 +695,49 @@ class VendorController(BaseModule):
             amt = float(pay["amount"])
             row_type = "Cash Payment" if amt >= 0 else "Refund"
             rows.append({"date": pay["date"], "type": row_type, "doc_id": pay["purchase_id"], "reference": {"payment_id": pay["payment_id"], "method": pay["method"], "instrument_no": pay["instrument_no"], "instrument_type": pay["instrument_type"], "bank_account_id": pay["bank_account_id"], "vendor_bank_account_id": pay["vendor_bank_account_id"], "ref_no": pay["ref_no"], "clearing_state": pay["clearing_state"]}, "amount": abs(amt), "amount_effect": -amt})
+        refund_sql = [
+            """
+            SELECT refund_id, purchase_id, date, CAST(amount AS REAL) AS amount,
+                   method, instrument_no, instrument_type, bank_account_id,
+                   vendor_bank_account_id, ref_no, clearing_state
+            FROM purchase_refunds
+            WHERE vendor_id = ? AND clearing_state = 'cleared'
+            """
+        ]
+        refund_params: list[object] = [vendor_id]
+        if date_from:
+            refund_sql.append("AND DATE(date) >= DATE(?)")
+            refund_params.append(date_from)
+        if date_to:
+            refund_sql.append("AND DATE(date) <= DATE(?)")
+            refund_params.append(date_to)
+        try:
+            refund_rows = self.conn.execute(
+                "\n".join(refund_sql), refund_params
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table: purchase_refunds" not in str(exc):
+                raise
+            refund_rows = []
+        for refund in refund_rows:
+            amount = float(refund["amount"])
+            rows.append({
+                "date": refund["date"],
+                "type": "Refund",
+                "doc_id": refund["purchase_id"],
+                "reference": {
+                    "refund_id": refund["refund_id"],
+                    "method": refund["method"],
+                    "instrument_no": refund["instrument_no"],
+                    "instrument_type": refund["instrument_type"],
+                    "bank_account_id": refund["bank_account_id"],
+                    "vendor_bank_account_id": refund["vendor_bank_account_id"],
+                    "ref_no": refund["ref_no"],
+                    "clearing_state": refund["clearing_state"],
+                },
+                "amount": amount,
+                "amount_effect": amount,
+            })
         credit_note_rows_to_enrich: list[tuple[int, dict]] = []
         def advance_reference(a) -> dict:
             ref = {"tx_id": a["tx_id"]}
@@ -728,7 +785,7 @@ class VendorController(BaseModule):
         type_order = {"Purchase": 1, "Cash Payment": 2, "Refund": 3, "Credit Note": 4, "Credit Applied": 5}
         def tie_value(r: dict):
             ref = r.get("reference", {}) or {}
-            return r.get("doc_id") or ref.get("payment_id") or ref.get("tx_id") or ""
+            return r.get("doc_id") or ref.get("payment_id") or ref.get("refund_id") or ref.get("tx_id") or ""
         rows.sort(key=lambda r: (r["date"], type_order.get(r["type"], 9), tie_value(r)))
         balance = opening_payable
         totals = {"purchases": 0.0, "cash_paid": 0.0, "refunds": 0.0, "credit_notes": 0.0, "credit_applied": 0.0}

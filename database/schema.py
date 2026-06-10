@@ -420,6 +420,70 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_vba_one_primary
 CREATE INDEX IF NOT EXISTS idx_vba_vendor_active
   ON vendor_bank_accounts(vendor_id, is_active);
 
+/* === Refunds received from vendors for purchase returns === */
+CREATE TABLE IF NOT EXISTS purchase_refunds (
+  refund_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_id            TEXT    NOT NULL,
+  vendor_id              INTEGER NOT NULL,
+  date                   DATE    NOT NULL DEFAULT CURRENT_DATE,
+  amount                 NUMERIC NOT NULL CHECK (CAST(amount AS REAL) > 0),
+  method                 TEXT    NOT NULL CHECK (method IN ('Cash','Bank Transfer','Cheque','Cross Cheque','Cash Deposit','Other')),
+  bank_account_id        INTEGER,
+  vendor_bank_account_id INTEGER,
+  instrument_type        TEXT    CHECK (instrument_type IN ('online','cross_cheque','cash_deposit','pay_order','other','cheque')),
+  instrument_no          TEXT,
+  instrument_date        DATE,
+  deposited_date         DATE,
+  cleared_date           DATE,
+  clearing_state         TEXT    NOT NULL DEFAULT 'cleared' CHECK (clearing_state = 'cleared'),
+  ref_no                 TEXT,
+  temp_vendor_bank_name   TEXT,
+  temp_vendor_bank_number TEXT,
+  notes                  TEXT,
+  created_by             INTEGER,
+  created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (purchase_id) REFERENCES purchases(purchase_id) ON DELETE CASCADE,
+  FOREIGN KEY (vendor_id) REFERENCES vendors(vendor_id),
+  FOREIGN KEY (bank_account_id) REFERENCES company_bank_accounts(account_id),
+  FOREIGN KEY (vendor_bank_account_id) REFERENCES vendor_bank_accounts(vendor_bank_account_id),
+  FOREIGN KEY (created_by) REFERENCES users(user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_purchase_refunds_purchase ON purchase_refunds(purchase_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_refunds_vendor_date ON purchase_refunds(vendor_id, date);
+CREATE INDEX IF NOT EXISTS idx_purchase_refunds_bank_account ON purchase_refunds(bank_account_id);
+
+DROP TRIGGER IF EXISTS trg_purchase_refunds_ownership_ins;
+CREATE TRIGGER trg_purchase_refunds_ownership_ins
+BEFORE INSERT ON purchase_refunds
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM purchases p
+    WHERE p.purchase_id = NEW.purchase_id AND p.vendor_id = NEW.vendor_id
+  ) THEN RAISE(ABORT, 'Purchase refund vendor must match the purchase vendor') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.vendor_id = NEW.vendor_id
+  ) THEN RAISE(ABORT, 'Vendor bank account must belong to the purchase vendor') ELSE 1 END;
+END;
+
+DROP TRIGGER IF EXISTS trg_purchase_refunds_ownership_upd;
+CREATE TRIGGER trg_purchase_refunds_ownership_upd
+BEFORE UPDATE ON purchase_refunds
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM purchases p
+    WHERE p.purchase_id = NEW.purchase_id AND p.vendor_id = NEW.vendor_id
+  ) THEN RAISE(ABORT, 'Purchase refund vendor must match the purchase vendor') ELSE 1 END;
+  SELECT CASE WHEN NEW.vendor_bank_account_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM vendor_bank_accounts vba
+    WHERE vba.vendor_bank_account_id = NEW.vendor_bank_account_id
+      AND vba.vendor_id = NEW.vendor_id
+  ) THEN RAISE(ABORT, 'Vendor bank account must belong to the purchase vendor') ELSE 1 END;
+END;
+
 CREATE TRIGGER IF NOT EXISTS trg_vba_primary_must_be_active_ins
 BEFORE INSERT ON vendor_bank_accounts
 WHEN NEW.is_primary = 1 AND NEW.is_active = 0
@@ -2175,7 +2239,21 @@ SELECT
   pp.instrument_no,
   pp.bank_account_id,
   pp.purchase_id        AS doc_id
-FROM purchase_payments pp;
+FROM purchase_payments pp
+UNION ALL
+SELECT
+  'purchase_refund' AS src,
+  pr.refund_id AS payment_id,
+  pr.date,
+  pr.amount AS amount_in,
+  0.0 AS amount_out,
+  pr.method,
+  pr.instrument_type,
+  pr.instrument_no,
+  pr.bank_account_id,
+  pr.purchase_id AS doc_id
+FROM purchase_refunds pr
+WHERE pr.clearing_state = 'cleared';
 
 /* Immutable value of purchase returns, including unresolved legacy rows. */
 DROP VIEW IF EXISTS purchase_return_valuations;
@@ -2239,7 +2317,22 @@ SELECT
   pp.bank_account_id,
   pp.vendor_bank_account_id,
   pp.purchase_id        AS doc_id
-FROM purchase_payments pp;
+FROM purchase_payments pp
+UNION ALL
+SELECT
+  'purchase_refund' AS src,
+  pr.refund_id AS payment_id,
+  pr.date,
+  pr.amount AS amount_in,
+  0.0 AS amount_out,
+  pr.method,
+  pr.instrument_type,
+  pr.instrument_no,
+  pr.bank_account_id,
+  pr.vendor_bank_account_id,
+  pr.purchase_id AS doc_id
+FROM purchase_refunds pr
+WHERE pr.clearing_state = 'cleared';
 
 
 DROP VIEW IF EXISTS v_purchase_total_mismatch;

@@ -973,7 +973,17 @@ class PurchaseController(BaseModule):
             it2["returnable"] = float(returnable.get(it["item_id"], 0.0))
             items_for_form.append(it2)
 
-        dlg = PurchaseReturnForm(self.view, items_for_form, vendors=self.vendors, purchases_repo=self.repo)
+        vendor_id = row.get("vendor_id")
+        if vendor_id is None:
+            header = self.repo.get_header(pid)
+            vendor_id = header["vendor_id"] if header else None
+        dlg = PurchaseReturnForm(
+            self.view,
+            items_for_form,
+            vendor_id=vendor_id,
+            vendors=self.vendors,
+            purchases_repo=self.repo,
+        )
         # Set the purchase ID to allow remaining calculation
         dlg.set_purchase_id(pid)
         if not dlg.exec():

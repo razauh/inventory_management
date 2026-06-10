@@ -416,7 +416,7 @@ class PurchasesRepo:
           - Verifies immutable valuation snapshots were captured for every inserted transaction.
           - Computes monetary return value exclusively from those snapshots.
           - Settlement:
-              * {'mode':'refund', ...} => excess funded amount as vendor credit
+              * {'mode':'refund'/'refund_now', ...} => received vendor refund
               * {'mode':'credit_note'} => excess funded amount as vendor credit
         """
         if not lines:
@@ -428,11 +428,17 @@ class PurchasesRepo:
             raise ValueError(f"Unknown purchase_id: {pid}")
         vendor_id = int(hdr["vendor_id"] if isinstance(hdr, sqlite3.Row) else hdr[0])
 
+        mode = (settlement.get("mode") or "").lower() if settlement else ""
+        if mode == "refund":
+            mode = "refund_now"
+
         # Group requested returns per item to validate batch totals
         requested_per_item: dict[int, float] = {}
         for ln in lines:
             iid = int(ln["item_id"])
             requested_per_item[iid] = requested_per_item.get(iid, 0.0) + float(ln["qty_return"])
+
+        requested_return_value = 0.0
 
         # Validate against purchased - already returned
         for item_id, batch_qty in requested_per_item.items():
@@ -448,7 +454,9 @@ class PurchasesRepo:
                       AND it.reference_id = ?
                       AND it.reference_item_id = pi.item_id
                   ), 0.0) AS returned_so_far,
-                  pi.product_id, pi.uom_id
+                  pi.product_id, pi.uom_id,
+                  CAST(pi.purchase_price AS REAL) AS purchase_price,
+                  CAST(pi.item_discount AS REAL) AS item_discount
                 FROM purchase_items pi
                 WHERE pi.item_id = ? AND pi.purchase_id = ?
                 """,
@@ -464,6 +472,12 @@ class PurchasesRepo:
                 raise ValueError(
                     f"Return qty exceeds remaining for item {item_id}: requested {batch_qty:g}, remaining {remaining:g}"
                 )
+
+            requested_return_value += batch_qty * max(
+                0.0,
+                float(row["purchase_price"] or 0.0)
+                - float(row["item_discount"] or 0.0),
+            )
 
             # Additional stock check: ensure return doesn't exceed current on-hand stock
             product_id = int(row["product_id"])
@@ -494,6 +508,68 @@ class PurchasesRepo:
                     f"Cannot return {batch_qty:g} units for product {product_id}: "
                     f"only {on_hand / factor:.2f} available in stock."
                 )
+
+        settlement_amount = 0.0
+        if settlement and requested_return_value > 0 and mode in ("refund_now", "credit_note"):
+            position = self.conn.execute(
+                """
+                SELECT
+                  COALESCE(pdt.calculated_total_amount, p.total_amount, 0.0) AS net_total,
+                  COALESCE((
+                    SELECT SUM(CAST(pp.amount AS REAL))
+                    FROM purchase_payments pp
+                    WHERE pp.purchase_id = p.purchase_id
+                      AND pp.clearing_state = 'cleared'
+                  ), 0.0) AS direct_paid,
+                  COALESCE(p.advance_payment_applied, 0.0) AS advance_applied,
+                  COALESCE((
+                    SELECT SUM(CAST(va.amount AS REAL))
+                    FROM vendor_advances va
+                    WHERE va.source_type = 'return_credit'
+                      AND va.source_id = p.purchase_id
+                  ), 0.0) AS prior_credit_notes,
+                  COALESCE((
+                    SELECT SUM(CAST(pr.amount AS REAL))
+                    FROM purchase_refunds pr
+                    WHERE pr.purchase_id = p.purchase_id
+                      AND pr.clearing_state = 'cleared'
+                  ), 0.0) AS prior_refunds
+                FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt
+                  ON pdt.purchase_id = p.purchase_id
+                WHERE p.purchase_id = ?
+                """,
+                (pid,),
+            ).fetchone()
+            direct_paid = float(position["direct_paid"] or 0.0)
+            advance_applied = float(position["advance_applied"] or 0.0)
+            funded_amount = direct_paid + advance_applied
+            remaining_due = max(0.0, float(position["net_total"] or 0.0) - funded_amount)
+            prior_refunds = float(position["prior_refunds"] or 0.0)
+            prior_settlement = (
+                float(position["prior_credit_notes"] or 0.0) + prior_refunds
+            )
+            post_return_total = max(
+                0.0,
+                float(position["net_total"] or 0.0) - requested_return_value,
+            )
+            settlement_amount = max(
+                0.0,
+                funded_amount - post_return_total - prior_settlement,
+            )
+
+            if mode == "refund_now":
+                if remaining_due > 1e-9:
+                    raise ValueError(
+                        "Refund Now requires a fully settled purchase; "
+                        f"remaining due is {remaining_due:.2f}."
+                    )
+                refundable_direct_payment = max(0.0, direct_paid - prior_refunds)
+                if settlement_amount > refundable_direct_payment + 1e-9:
+                    raise ValueError(
+                        "Refund exceeds the remaining refundable direct payment "
+                        f"of {refundable_direct_payment:.2f}."
+                    )
 
         # Determine starting txn_seq for the date; bump to at least 100
         row = self.conn.execute(
@@ -553,46 +629,10 @@ class PurchasesRepo:
         else:
             return_value = 0.0
 
-        settlement_amount = 0.0
-
         # Settlement handling (no commit here)
         if settlement and return_value > 0:
-            mode = (settlement.get("mode") or "").lower()
-
-            if mode in ("refund", "refund_now", "credit_note"):
-                position = self.conn.execute(
-                    """
-                    SELECT
-                      COALESCE(pdt.calculated_total_amount, p.total_amount, 0.0) AS net_total,
-                      COALESCE(p.paid_amount, 0.0) AS paid_amount,
-                      COALESCE(p.advance_payment_applied, 0.0) AS advance_applied,
-                      COALESCE((
-                        SELECT SUM(CAST(va.amount AS REAL))
-                        FROM vendor_advances va
-                        WHERE va.source_type = 'return_credit'
-                          AND va.source_id = p.purchase_id
-                      ), 0.0) AS prior_return_settlement
-                    FROM purchases p
-                    LEFT JOIN purchase_detailed_totals pdt
-                      ON pdt.purchase_id = p.purchase_id
-                    WHERE p.purchase_id = ?
-                    """,
-                    (pid,),
-                ).fetchone()
-                funded_amount = (
-                    float(position["paid_amount"] or 0.0)
-                    + float(position["advance_applied"] or 0.0)
-                )
-                total_excess = max(
-                    0.0,
-                    funded_amount - float(position["net_total"] or 0.0),
-                )
-                settlement_amount = max(
-                    0.0,
-                    total_excess - float(position["prior_return_settlement"] or 0.0),
-                )
-
-                if settlement_amount > 1e-9:
+            if mode in ("refund_now", "credit_note") and settlement_amount > 1e-9:
+                if mode == "credit_note":
                     vadv = VendorAdvancesRepo(self.conn)
                     vadv.grant_credit(
                         vendor_id=vendor_id,
@@ -614,6 +654,50 @@ class PurchasesRepo:
                         ref_no=settlement.get("ref_no"),
                         temp_vendor_bank_name=settlement.get("temp_vendor_bank_name"),
                         temp_vendor_bank_number=settlement.get("temp_vendor_bank_number"),
+                    )
+                else:
+                    cur = self.conn.execute(
+                        """
+                        INSERT INTO purchase_refunds (
+                            purchase_id, vendor_id, date, amount, method,
+                            bank_account_id, vendor_bank_account_id,
+                            instrument_type, instrument_no, instrument_date,
+                            deposited_date, cleared_date, clearing_state, ref_no,
+                            temp_vendor_bank_name, temp_vendor_bank_number,
+                            notes, created_by
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            pid,
+                            vendor_id,
+                            settlement.get("date") or date,
+                            settlement_amount,
+                            settlement.get("method") or "Other",
+                            settlement.get("bank_account_id"),
+                            settlement.get("vendor_bank_account_id"),
+                            settlement.get("instrument_type"),
+                            settlement.get("instrument_no"),
+                            settlement.get("instrument_date"),
+                            settlement.get("deposited_date"),
+                            settlement.get("cleared_date") or date,
+                            settlement.get("ref_no"),
+                            settlement.get("temp_vendor_bank_name"),
+                            settlement.get("temp_vendor_bank_number"),
+                            settlement.get("notes") or notes,
+                            created_by,
+                        ),
+                    )
+                    refund_id = int(cur.lastrowid)
+                    self.conn.execute(
+                        """
+                        INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
+                        VALUES (?, 'refund', 'purchase_refunds', ?, ?)
+                        """,
+                        (
+                            created_by,
+                            refund_id,
+                            f"Recorded vendor refund of {settlement_amount:g}. Purchase ID: {pid}",
+                        ),
                     )
 
         # Audit logging for the return
@@ -806,7 +890,19 @@ class PurchasesRepo:
           p.total_amount,
           COALESCE(p.paid_amount, 0.0)              AS paid_amount,
           COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
-          COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount
+          COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount,
+          COALESCE((
+            SELECT SUM(CAST(pr.amount AS REAL))
+            FROM purchase_refunds pr
+            WHERE pr.purchase_id = p.purchase_id
+              AND pr.clearing_state = 'cleared'
+          ), 0.0) AS prior_refunded_amount,
+          COALESCE((
+            SELECT SUM(CAST(pp.amount AS REAL))
+            FROM purchase_payments pp
+            WHERE pp.purchase_id = p.purchase_id
+              AND pp.clearing_state = 'cleared'
+          ), 0.0) AS cleared_direct_payments
         FROM purchases p
         LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
         WHERE p.purchase_id = ?;
@@ -819,17 +915,25 @@ class PurchasesRepo:
                 "advance_payment_applied": 0.0,
                 "calculated_total_amount": 0.0,
                 "remaining_due": 0.0,
+                "is_fully_paid": False,
+                "prior_refunded_amount": 0.0,
+                "remaining_refundable_amount": 0.0,
             }
         calc = float(row["calculated_total_amount"] or 0.0)
         paid = float(row["paid_amount"] or 0.0)
         adv = float(row["advance_payment_applied"] or 0.0)
-        rem = max(0.0, calc - paid - adv)
+        prior_refunded = float(row["prior_refunded_amount"] or 0.0)
+        cleared_direct = float(row["cleared_direct_payments"] or 0.0)
+        rem = max(0.0, calc - cleared_direct - adv)
         return {
             "total_amount": float(row["total_amount"] or 0.0),
             "paid_amount": paid,
             "advance_payment_applied": adv,
             "calculated_total_amount": calc,
             "remaining_due": rem,
+            "is_fully_paid": rem <= 1e-9,
+            "prior_refunded_amount": prior_refunded,
+            "remaining_refundable_amount": max(0.0, cleared_direct - prior_refunded),
         }
 
     def get_remaining_due_header(self, purchase_id: str) -> float:
