@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
 
 
 # ----------------------------
@@ -59,6 +59,69 @@ class _Callbacks:
     progress: Optional[Callable[[int], None]] = None
     log: Optional[Callable[[str], None]] = None
     finished: Optional[Callable[[bool, str, Optional[str]], None]] = None
+
+
+_ACTIVE_CALLBACK_BRIDGES: list["_CallbackBridge"] = []
+
+
+class _CallbackBridge(QObject):
+    phase_requested = Signal(str)
+    progress_requested = Signal(int)
+    log_requested = Signal(str)
+    finished_requested = Signal(bool, str, object)
+    completed = Signal(object)
+
+    def __init__(self, callbacks) -> None:
+        super().__init__()
+        self._callbacks = _Callbacks(
+            phase=getattr(callbacks, "phase", None),
+            progress=getattr(callbacks, "progress", None),
+            log=getattr(callbacks, "log", None),
+            finished=getattr(callbacks, "finished", None),
+        )
+        self.phase_requested.connect(self._dispatch_phase, Qt.ConnectionType.QueuedConnection)
+        self.progress_requested.connect(self._dispatch_progress, Qt.ConnectionType.QueuedConnection)
+        self.log_requested.connect(self._dispatch_log, Qt.ConnectionType.QueuedConnection)
+        self.finished_requested.connect(self._dispatch_finished, Qt.ConnectionType.QueuedConnection)
+
+    @Slot(str)
+    def _dispatch_phase(self, text: str) -> None:
+        _safe_call(self._callbacks.phase, text)
+
+    @Slot(int)
+    def _dispatch_progress(self, pct: int) -> None:
+        _safe_call(self._callbacks.progress, pct)
+
+    @Slot(str)
+    def _dispatch_log(self, line: str) -> None:
+        _safe_call(self._callbacks.log, line)
+
+    @Slot(bool, str, object)
+    def _dispatch_finished(self, success: bool, message: str, path: Optional[str]) -> None:
+        _safe_call(self._callbacks.finished, success, message, path)
+        self.completed.emit(self)
+
+    def callbacks(self) -> _Callbacks:
+        return _Callbacks(
+            phase=self.phase_requested.emit,
+            progress=self.progress_requested.emit,
+            log=self.log_requested.emit,
+            finished=self.finished_requested.emit,
+        )
+
+
+def _queued_callbacks(callbacks) -> _Callbacks:
+    bridge = _CallbackBridge(callbacks)
+    _ACTIVE_CALLBACK_BRIDGES.append(bridge)
+    bridge.completed.connect(_release_callback_bridge)
+    return bridge.callbacks()
+
+
+def _release_callback_bridge(bridge: object) -> None:
+    try:
+        _ACTIVE_CALLBACK_BRIDGES.remove(bridge)  # type: ignore[arg-type]
+    except ValueError:
+        pass
 
 
 # ----------------------------
@@ -97,12 +160,7 @@ class BackupJob(QObject):
         self._log = logger or logging.getLogger(__name__)
 
     def run_async(self, dest_file: str, callbacks) -> None:
-        cb = _Callbacks(
-            phase=getattr(callbacks, "phase", None),
-            progress=getattr(callbacks, "progress", None),
-            log=getattr(callbacks, "log", None),
-            finished=getattr(callbacks, "finished", None),
-        )
+        cb = _queued_callbacks(callbacks)
         runnable = _JobRunnable(lambda: self._run(dest_file, cb))
         self._pool.start(runnable)
 
@@ -216,12 +274,7 @@ class RestoreJob(QObject):
         self._log = logger or logging.getLogger(__name__)
 
     def run_async(self, src_file: str, callbacks) -> None:
-        cb = _Callbacks(
-            phase=getattr(callbacks, "phase", None),
-            progress=getattr(callbacks, "progress", None),
-            log=getattr(callbacks, "log", None),
-            finished=getattr(callbacks, "finished", None),
-        )
+        cb = _queued_callbacks(callbacks)
         runnable = _JobRunnable(lambda: self._run(src_file, cb))
         self._pool.start(runnable)
 
