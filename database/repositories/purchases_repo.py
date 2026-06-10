@@ -410,6 +410,8 @@ class PurchasesRepo:
             )
             next_seq += 10
 
+        self.update_header_totals(header.purchase_id)
+
     # ---------- Returns ----------
     def record_return(
         self,
@@ -432,6 +434,7 @@ class PurchasesRepo:
                 notes=notes,
                 settlement=settlement,
             )
+            self.update_header_totals(pid)
             self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         except Exception:
             self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -1032,13 +1035,18 @@ class PurchasesRepo:
         total_calc = float(row["total_calc"] if row and "total_calc" in row.keys() else 0.0)
         adv_applied = float(row["adv_applied"] if row and "adv_applied" in row.keys() else 0.0)
 
-        # Update the purchase record with the new paid amount
-        self.conn.execute("UPDATE purchases SET paid_amount = ? WHERE purchase_id = ?;", (cleared_paid, purchase_id))
+        remaining = total_calc - cleared_paid - adv_applied
+        if remaining <= 1e-9:
+            payment_status = "paid"
+        elif cleared_paid > 1e-9 or adv_applied > 1e-9:
+            payment_status = "partial"
+        else:
+            payment_status = "unpaid"
 
-        # Calculate remaining amount and update payment status if paid in full
-        remaining = max(0.0, total_calc - cleared_paid - adv_applied)
-        if remaining <= 1e-9:  # Using the same epsilon as in the controller
-            self.conn.execute("UPDATE purchases SET payment_status = 'paid' WHERE purchase_id = ?;", (purchase_id,))
+        self.conn.execute(
+            "UPDATE purchases SET paid_amount = ?, payment_status = ? WHERE purchase_id = ?;",
+            (cleared_paid, payment_status, purchase_id),
+        )
 
     def get_open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
         """

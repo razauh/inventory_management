@@ -1543,22 +1543,25 @@ BEGIN
            ), 0.0)
          ),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((
-                 SELECT SUM(CAST(amount AS REAL))
-                 FROM purchase_payments
-                 WHERE purchase_id = NEW.purchase_id
-                   AND clearing_state = 'cleared'
-               ), 0.0)) >= COALESCE((
+            WHEN COALESCE((
                  SELECT CAST(calculated_total_amount AS REAL)
                  FROM purchase_detailed_totals pdt
                  WHERE pdt.purchase_id = NEW.purchase_id
-               ), CAST(total_amount AS REAL)) THEN 'paid'
+               ), CAST(total_amount AS REAL))
+               - MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = NEW.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0))
+               - COALESCE(CAST(advance_payment_applied AS REAL), 0.0) <= 1e-9 THEN 'paid'
             WHEN MAX(0.0, COALESCE((
                  SELECT SUM(CAST(amount AS REAL))
                  FROM purchase_payments
                  WHERE purchase_id = NEW.purchase_id
                    AND clearing_state = 'cleared'
-               ), 0.0)) > 0 THEN 'partial'
+               ), 0.0)) > 1e-9
+              OR COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
             ELSE 'unpaid' END
    WHERE purchase_id = NEW.purchase_id;
 END;
@@ -1578,22 +1581,25 @@ BEGIN
            ), 0.0)
          ),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((
-                 SELECT SUM(CAST(amount AS REAL))
-                 FROM purchase_payments
-                 WHERE purchase_id = NEW.purchase_id
-                   AND clearing_state = 'cleared'
-               ), 0.0)) >= COALESCE((
+            WHEN COALESCE((
                  SELECT CAST(calculated_total_amount AS REAL)
                  FROM purchase_detailed_totals pdt
                  WHERE pdt.purchase_id = NEW.purchase_id
-               ), CAST(total_amount AS REAL)) THEN 'paid'
+               ), CAST(total_amount AS REAL))
+               - MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = NEW.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0))
+               - COALESCE(CAST(advance_payment_applied AS REAL), 0.0) <= 1e-9 THEN 'paid'
             WHEN MAX(0.0, COALESCE((
                  SELECT SUM(CAST(amount AS REAL))
                  FROM purchase_payments
                  WHERE purchase_id = NEW.purchase_id
                    AND clearing_state = 'cleared'
-               ), 0.0)) > 0 THEN 'partial'
+               ), 0.0)) > 1e-9
+              OR COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
             ELSE 'unpaid' END
    WHERE purchase_id = NEW.purchase_id;
 END;
@@ -1613,22 +1619,25 @@ BEGIN
            ), 0.0)
          ),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((
-                 SELECT SUM(CAST(amount AS REAL))
-                 FROM purchase_payments
-                 WHERE purchase_id = OLD.purchase_id
-                   AND clearing_state = 'cleared'
-               ), 0.0)) >= COALESCE((
+            WHEN COALESCE((
                  SELECT CAST(calculated_total_amount AS REAL)
                  FROM purchase_detailed_totals pdt
                  WHERE pdt.purchase_id = OLD.purchase_id
-               ), CAST(total_amount AS REAL)) THEN 'paid'
+               ), CAST(total_amount AS REAL))
+               - MAX(0.0, COALESCE((
+                 SELECT SUM(CAST(amount AS REAL))
+                 FROM purchase_payments
+                 WHERE purchase_id = OLD.purchase_id
+                   AND clearing_state = 'cleared'
+               ), 0.0))
+               - COALESCE(CAST(advance_payment_applied AS REAL), 0.0) <= 1e-9 THEN 'paid'
             WHEN MAX(0.0, COALESCE((
                  SELECT SUM(CAST(amount AS REAL))
                  FROM purchase_payments
                  WHERE purchase_id = OLD.purchase_id
                    AND clearing_state = 'cleared'
-               ), 0.0)) > 0 THEN 'partial'
+               ), 0.0)) > 1e-9
+              OR COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
             ELSE 'unpaid' END
    WHERE purchase_id = OLD.purchase_id;
 END;
@@ -1922,7 +1931,29 @@ BEGIN
            FROM vendor_advances va
            WHERE va.source_type = 'applied_to_purchase'
              AND va.source_id   = NEW.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((
+                  SELECT CAST(calculated_total_amount AS REAL)
+                  FROM purchase_detailed_totals pdt
+                  WHERE pdt.purchase_id = NEW.source_id
+                ), CAST(total_amount AS REAL))
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((
+                    SELECT SUM(-CAST(amount AS REAL))
+                    FROM vendor_advances va
+                    WHERE va.source_type = 'applied_to_purchase'
+                      AND va.source_id = NEW.source_id
+                  ), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0) > 1e-9
+             OR MAX(0.0, COALESCE((
+                  SELECT SUM(-CAST(amount AS REAL))
+                  FROM vendor_advances va
+                  WHERE va.source_type = 'applied_to_purchase'
+                    AND va.source_id = NEW.source_id
+                ), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE purchase_id = NEW.source_id;
 END;
 
@@ -1938,7 +1969,29 @@ BEGIN
            FROM vendor_advances va
            WHERE va.source_type = 'applied_to_purchase'
              AND va.source_id   = NEW.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((
+                  SELECT CAST(calculated_total_amount AS REAL)
+                  FROM purchase_detailed_totals pdt
+                  WHERE pdt.purchase_id = NEW.source_id
+                ), CAST(total_amount AS REAL))
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((
+                    SELECT SUM(-CAST(amount AS REAL))
+                    FROM vendor_advances va
+                    WHERE va.source_type = 'applied_to_purchase'
+                      AND va.source_id = NEW.source_id
+                  ), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0) > 1e-9
+             OR MAX(0.0, COALESCE((
+                  SELECT SUM(-CAST(amount AS REAL))
+                  FROM vendor_advances va
+                  WHERE va.source_type = 'applied_to_purchase'
+                    AND va.source_id = NEW.source_id
+                ), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE purchase_id = NEW.source_id;
 END;
 
@@ -1954,7 +2007,29 @@ BEGIN
            FROM vendor_advances va
            WHERE va.source_type = 'applied_to_purchase'
              AND va.source_id   = OLD.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((
+                  SELECT CAST(calculated_total_amount AS REAL)
+                  FROM purchase_detailed_totals pdt
+                  WHERE pdt.purchase_id = OLD.source_id
+                ), CAST(total_amount AS REAL))
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((
+                    SELECT SUM(-CAST(amount AS REAL))
+                    FROM vendor_advances va
+                    WHERE va.source_type = 'applied_to_purchase'
+                      AND va.source_id = OLD.source_id
+                  ), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0) > 1e-9
+             OR MAX(0.0, COALESCE((
+                  SELECT SUM(-CAST(amount AS REAL))
+                  FROM vendor_advances va
+                  WHERE va.source_type = 'applied_to_purchase'
+                    AND va.source_id = OLD.source_id
+                ), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE purchase_id = OLD.source_id;
 END;
 
