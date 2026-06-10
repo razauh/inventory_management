@@ -403,8 +403,13 @@ class BackupRestoreController(QObject):
         return ret == QMessageBox.StandardButton.Yes
 
     def _on_restore_finished(self, ok: bool, message: str, used_path: Optional[str], prog_dialog) -> None:
-        prog_dialog.on_log(message)
-        prog_dialog.on_finished(ok, message, used_path)
+        from .service import RESTORE_RESTART_REQUIRED_MARKER
+
+        restart_required = RESTORE_RESTART_REQUIRED_MARKER in message
+        display_message = message.replace(RESTORE_RESTART_REQUIRED_MARKER, "").strip()
+
+        prog_dialog.on_log(display_message)
+        prog_dialog.on_finished(ok, display_message, used_path)
 
         if ok:
             self.restore_completed.emit(used_path or "")
@@ -418,4 +423,6 @@ class BackupRestoreController(QObject):
             QTimer.singleShot(0, QCoreApplication.quit)
         else:
             if self._widget:
-                QMessageBox.critical(self._widget, "Restore Failed", message)
+                QMessageBox.critical(self._widget, "Restore Failed", display_message)
+            if restart_required:
+                QTimer.singleShot(0, QCoreApplication.quit)

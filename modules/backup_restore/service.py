@@ -34,6 +34,9 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
 from .validators import validate_backup_destination, validate_backup_source
 
 
+RESTORE_RESTART_REQUIRED_MARKER = "RESTORE_RESTART_REQUIRED"
+
+
 # ----------------------------
 # Utilities
 # ----------------------------
@@ -359,32 +362,68 @@ class RestoreJob(QObject):
 
         except Exception as exc:
             self._log.debug("Restore failed:\n%s", traceback.format_exc())
-            # Attempt rollback if swap already happened
-            if swapped and safety_dir:
-                try:
-                    _safe_call(cb.log, "Attempting rollback from safety copy…")
-                    if self._app_db_manager:
-                        self._app_db_manager.close_all()
-                    # Safety dir contains original db + possible wal/shm
-                    # Find the original DB file name by matching current db_path.name
-                    sqlite_ops = self._sqlite_ops or self._import_sqlite_ops()
-                    db_path = Path(sqlite_ops.get_db_path())
-                    original = Path(safety_dir) / db_path.name
-                    if not original.exists():
-                        # Fallback: any .db in safety dir
-                        candidates = list(Path(safety_dir).glob("*.db"))
-                        if candidates:
-                            original = candidates[0]
-                    fsops = self._fsops or self._import_fsops()
-                    fsops.replace_db_with(str(original), str(db_path))
-                    if self._app_db_manager:
-                        self._app_db_manager.open()
-                    _safe_call(cb.log, "Rollback succeeded.")
-                except Exception as rollback_exc:
-                    self._log.debug("Rollback also failed:\n%s", traceback.format_exc())
-                    _safe_call(cb.log, _fmt_err("Rollback failed.", rollback_exc))
+            failure_message = _fmt_err("Restore failed.", exc)
+            rollback_status: Optional[str] = None
 
-            _safe_call(cb.finished, False, _fmt_err("Restore failed.", exc), None)
+            if swapped:
+                if safety_dir:
+                    _safe_call(cb.log, "Attempting rollback from safety copy…")
+                    try:
+                        if self._app_db_manager:
+                            self._app_db_manager.close_all()
+                        # Safety dir contains original db + possible wal/shm
+                        # Find the original DB file name by matching current db_path.name
+                        sqlite_ops = self._sqlite_ops or self._import_sqlite_ops()
+                        db_path = Path(sqlite_ops.get_db_path())
+                        original = Path(safety_dir) / db_path.name
+                        if not original.exists():
+                            # Fallback: any .db in safety dir
+                            candidates = list(Path(safety_dir).glob("*.db"))
+                            if candidates:
+                                original = candidates[0]
+                        fsops = self._fsops or self._import_fsops()
+                        fsops.replace_db_with(str(original), str(db_path))
+                    except Exception as rollback_exc:
+                        self._log.debug("Rollback also failed:\n%s", traceback.format_exc())
+                        rollback_status = _fmt_err(
+                            "Rollback failed. The live database may still be the restored file, "
+                            "and the application database connection may be closed.",
+                            rollback_exc,
+                        )
+                        _safe_call(cb.log, rollback_status)
+                    else:
+                        rollback_status = "Rollback restored the safety copy."
+                        if self._app_db_manager:
+                            try:
+                                self._app_db_manager.open()
+                            except Exception as reopen_exc:
+                                self._log.debug("Rollback reopen failed:\n%s", traceback.format_exc())
+                                rollback_status = _fmt_err(
+                                    "Rollback restored the safety copy, but reopening the application "
+                                    "database connection failed.",
+                                    reopen_exc,
+                                )
+                        else:
+                            rollback_status = (
+                                "Rollback restored the safety copy, but no database manager was "
+                                "available to reopen the application database connection."
+                            )
+                        _safe_call(cb.log, rollback_status)
+                else:
+                    rollback_status = (
+                        "Rollback was not attempted because no safety copy path was available. "
+                        "The live database may still be the restored file, and the application "
+                        "database connection may be closed."
+                    )
+                    _safe_call(cb.log, rollback_status)
+
+                failure_message = (
+                    f"{failure_message}\n\n{rollback_status}\n\n"
+                    "Application restart required because a database restore swap was attempted.\n"
+                    f"{RESTORE_RESTART_REQUIRED_MARKER}"
+                )
+
+            _safe_call(cb.finished, False, failure_message, None)
 
     @staticmethod
     def _foreign_key_violations(db_path: str) -> list:
