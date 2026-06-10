@@ -53,6 +53,11 @@ def _fmt_err(msg: str, exc: BaseException | None = None) -> str:
     return f"{msg}\n\n{exc.__class__.__name__}: {exc}"
 
 
+def _active_db_family(db_path: Path) -> tuple[Path, Path, Path]:
+    db_path = db_path.resolve()
+    return (db_path, Path(str(db_path) + "-wal").resolve(), Path(str(db_path) + "-shm").resolve())
+
+
 @dataclass
 class _Callbacks:
     phase: Optional[Callable[[str], None]] = None
@@ -300,6 +305,8 @@ class RestoreJob(QObject):
                 raise RuntimeError("Backup file must have .imsdb extension.")
 
             db_path = Path(sqlite_ops.get_db_path())
+            if imsdb.resolve() in _active_db_family(db_path):
+                raise RuntimeError("Backup file must not be the active database or its WAL/SHM files.")
             _safe_call(cb.phase, "Validating backup")
             _safe_call(cb.progress, 5)
             if not sqlite_ops.quick_check(str(imsdb)):

@@ -107,6 +107,16 @@ def _copy_file_fsync(src: Path, dst: Path) -> None:
     _fsync_file(dst)
 
 
+def _active_db_family(target: Path) -> tuple[Path, Path, Path]:
+    target = target.resolve()
+    return (target, Path(str(target) + "-wal").resolve(), Path(str(target) + "-shm").resolve())
+
+
+def _reject_active_db_source(source: Path, target: Path) -> None:
+    if source.resolve() in _active_db_family(target):
+        raise RuntimeError("Restore source must not be the active database or its WAL/SHM files.")
+
+
 def _same_device(p1: Path, p2: Path) -> bool:
     """Return True if two paths live on the same device/volume (best-effort)."""
     try:
@@ -300,6 +310,7 @@ def replace_db_with(
     tgt = Path(target_db_path).resolve()
     if not src.exists() or not src.is_file():
         raise RuntimeError(f"Source DB file not found: {src}")
+    _reject_active_db_source(src, tgt)
 
     tgt.parent.mkdir(parents=True, exist_ok=True)
     _log(logger, verbose, "replace_db.start", ts=_now_iso(), src=str(src), src_size=src.stat().st_size, target=str(tgt))
