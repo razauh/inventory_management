@@ -5,12 +5,12 @@ Per-product stock valuation snapshot.
 UI:
 - Top row:  Product combobox (with "(Select…)" default) + Refresh button
 - Card:     On Hand (qty + uom), Unit Value, Total Value
-- Footer:   Small note ("from v_stock_on_hand") for context
+- Footer:   Status + source note for context
 
 Behavior:
 - On product change or Refresh -> query InventoryRepo.stock_on_hand(product_id)
-- If no product selected -> clear card
-- If repo returns nothing -> show N/A/0.00 gracefully
+- If no product selected -> clear card with status
+- If repo returns nothing -> show "No inventory history"
 
 Update:
 - Accept either an InventoryRepo or a raw sqlite3.Connection (repo_or_conn).
@@ -115,10 +115,13 @@ class StockValuationWidget(QWidget):
         grid.addWidget(self.lbl_total_value_title, 2, 0, Qt.AlignRight)
         grid.addWidget(self.val_total_value,       2, 1, Qt.AlignLeft)
 
-        # Optional note / source
+        self.lbl_status = QLabel("Select a product")
+        self.lbl_status.setStyleSheet("color:#666; font-size:11px;")
+        grid.addWidget(self.lbl_status, 3, 0, 1, 2, Qt.AlignLeft)
+
         self.lbl_note = QLabel("Source: v_stock_on_hand")
         self.lbl_note.setStyleSheet("color:#666; font-size:11px;")
-        grid.addWidget(self.lbl_note, 3, 0, 1, 2, Qt.AlignLeft)
+        grid.addWidget(self.lbl_note, 4, 0, 1, 2, Qt.AlignLeft)
 
         root.addWidget(self.grp_card, 0)
 
@@ -134,7 +137,7 @@ class StockValuationWidget(QWidget):
         # Init
         # ------------------------------------------------------------------
         self._load_products()
-        self._clear_card()
+        self._clear_card("Select a product")
 
     # ----------------------------------------------------------------------
     # Data loading
@@ -239,7 +242,7 @@ class StockValuationWidget(QWidget):
         """React to product change: load snapshot or clear if none selected."""
         pid = self._selected_product_id()
         if pid is None:
-            self._clear_card()
+            self._clear_card("Select a product")
             return
         self._load_product_snapshot(pid)
 
@@ -258,7 +261,7 @@ class StockValuationWidget(QWidget):
                         exc_info=True,
                     )
                 return
-            self._clear_card()
+            self._clear_card("Select a product")
             return
         self._load_product_snapshot(pid)
 
@@ -295,10 +298,14 @@ class StockValuationWidget(QWidget):
         except Exception:
             return None
 
-    def _clear_card(self) -> None:
+    def _set_status(self, text: str) -> None:
+        self.lbl_status.setText(text)
+
+    def _clear_card(self, status_text: str) -> None:
         self.val_on_hand.setText("—")
         self.val_unit_value.setText("—")
         self.val_total_value.setText("—")
+        self._set_status(status_text)
 
     def _load_product_snapshot(self, product_id: int) -> None:
         """
@@ -311,12 +318,12 @@ class StockValuationWidget(QWidget):
             rec = repo.stock_on_hand(product_id)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load stock snapshot: {e}")
-            self._clear_card()
+            self._clear_card("Snapshot unavailable")
             return
 
         if not rec:
             # No row for the product in the view
-            self._clear_card()
+            self._clear_card("No inventory history")
             return
 
         qty = rec.get("on_hand_qty")
@@ -341,3 +348,4 @@ class StockValuationWidget(QWidget):
         self.val_on_hand.setText(on_hand_str)
         self.val_unit_value.setText(_fmt_float(unit))
         self.val_total_value.setText(_fmt_float(total))
+        self._set_status("Snapshot loaded")
