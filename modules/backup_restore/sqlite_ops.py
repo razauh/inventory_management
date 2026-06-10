@@ -77,20 +77,16 @@ def _resolve_db_path() -> str:
 
     Resolution order:
       1) Value set via set_db_path()
-      2) Environment variable APP_DB_PATH
-      3) Optional app-provided helpers:
+      2) Optional app-provided helpers:
          - core.db.get_db_path()
          - database.get_db_path()
          - app.database.get_db_path()
+      3) Environment variable APP_DB_PATH
 
     Raise a RuntimeError if none are found.
     """
     if _DB_PATH:
         return _DB_PATH
-
-    env = os.getenv("APP_DB_PATH")
-    if env:
-        return str(Path(env).expanduser().resolve())
 
     # Attempt to call well-known helpers if present
     candidates = [
@@ -110,10 +106,14 @@ def _resolve_db_path() -> str:
             # Quietly ignore; we'll fail below if nothing resolves.
             pass
 
+    env = os.getenv("APP_DB_PATH")
+    if env:
+        return str(Path(env).expanduser().resolve())
+
     raise RuntimeError(
         "sqlite_ops.get_db_path(): Unable to resolve DB path. "
         "Call set_db_path(path) at startup or set APP_DB_PATH environment variable, "
-        "or expose core.db.get_db_path()."
+        "or expose database.get_db_path()."
     )
 
 

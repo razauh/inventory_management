@@ -10,6 +10,10 @@ from . import schema as schema_module
 from .seeders.default_data import seed as seed_default_data
 
 
+def get_db_path() -> str:
+    return str(DB_PATH.resolve())
+
+
 def _ensure_version_table(conn: sqlite3.Connection) -> None:
     conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {TABLE_SCHEMA_VERSION}(
@@ -60,5 +64,6 @@ def get_unresolved_purchase_return_count(conn: sqlite3.Connection) -> int:
 
 __all__ = [
     "get_connection",
+    "get_db_path",
     "get_unresolved_purchase_return_count",
 ]
