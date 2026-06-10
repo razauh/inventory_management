@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
 
         def open(self):
             # Recreate the main connection
-            from .database import get_connection as _gc  # local import avoids circularities
+            from database import get_connection as _gc  # local import avoids circularities
             self._mw.conn = _gc()
 
             # Give modules a chance to rebind their repos/cursors with the new connection
