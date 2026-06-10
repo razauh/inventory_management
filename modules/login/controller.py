@@ -75,18 +75,27 @@ class LoginController:
         if not verify_password(password, u["password_hash"]):
             # Count failure and possibly lock
             try:
-                self.repo.increment_failed_attempts(
-                    user_id=int(u["user_id"]),
-                    max_attempts=self.MAX_FAILED_ATTEMPTS,
-                    lock_minutes=self.LOCKOUT_MINUTES,
+                self._with_auth_savepoint(
+                    lambda: (
+                        self.repo.increment_failed_attempts(
+                            user_id=int(u["user_id"]),
+                            max_attempts=self.MAX_FAILED_ATTEMPTS,
+                            lock_minutes=self.LOCKOUT_MINUTES,
+                        ),
+                        self.repo.insert_auth_log(self.last_username or "", False, "wrong_password", client=None),
+                    )
                 )
             finally:
-                self._fail("wrong_password", f"Incorrect password for “{self.last_username}”.", log=True)
+                self._fail("wrong_password", f"Incorrect password for “{self.last_username}”.", log=False)
             return None
 
         # Success path: reset counters, touch login times
-        self.repo.reset_failed_attempts_and_touch_login(int(u["user_id"]))
-        self.repo.insert_auth_log(self.last_username or "", True, "ok", client=None)
+        self._with_auth_savepoint(
+            lambda: (
+                self.repo.reset_failed_attempts_and_touch_login(int(u["user_id"])),
+                self.repo.insert_auth_log(self.last_username or "", True, "ok", client=None),
+            )
+        )
 
         # Return only what the app needs downstream
         return {
@@ -107,6 +116,18 @@ class LoginController:
         self.last_error_code = None
         self.last_error_message = None
         self.last_username = None
+
+    def _with_auth_savepoint(self, fn) -> None:
+        self.conn.execute("SAVEPOINT auth_mutation")
+        try:
+            fn()
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK TO auth_mutation")
+            finally:
+                self.conn.execute("RELEASE auth_mutation")
+            raise
+        self.conn.execute("RELEASE auth_mutation")
 
     def _fail(self, code: str, message: str, username: Optional[str] = None, log: bool = False) -> None:
         self.last_error_code = code

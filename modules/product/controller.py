@@ -248,6 +248,19 @@ class ProductController(BaseModule):
         src_index = self.proxy.mapToSource(idxs[0])
         return self.base_model.at(src_index.row()).product_id
 
+    def _with_product_savepoint(self, fn):
+        self.conn.execute("SAVEPOINT product_mutation")
+        try:
+            result = fn()
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK TO product_mutation")
+            finally:
+                self.conn.execute("RELEASE product_mutation")
+            raise
+        self.conn.execute("RELEASE product_mutation")
+        return result
+
     def _add(self):
         dlg = ProductForm(self.view, repo=self.repo)
         if not dlg.exec():
@@ -255,22 +268,28 @@ class ProductController(BaseModule):
         pdata = dlg.payload()
         if not pdata:
             return
-        pid = self.repo.create(**pdata["product"])
-        # Always set base UoM
-        base_id = pdata["uoms"]["base_uom_id"]
-        self.repo.set_base_uom(pid, base_id)
-        # Alternates + roles if enabled
-        roles = {base_id: (True, True)}
-        all_alts = {}
-        if pdata["uoms"]["enabled_sales"]:
-            for a in pdata["uoms"]["sales_alts"]:
-                all_alts[a["uom_id"]] = a
-                prev = roles.get(a["uom_id"], (False, False))
-                roles[a["uom_id"]] = (True, prev[1])
-        for a in all_alts.values():
-            self.repo.add_alt_uom(pid, a["uom_id"], a["factor_to_base"])
-        if len(roles) > 1:  # only persist roles if there were alternates
-            self.repo.upsert_roles(pid, roles)
+        try:
+            def save_product():
+                pid = self.repo.create(**pdata["product"])
+                base_id = pdata["uoms"]["base_uom_id"]
+                self.repo.set_base_uom(pid, base_id)
+                roles = {base_id: (True, True)}
+                all_alts = {}
+                if pdata["uoms"]["enabled_sales"]:
+                    for a in pdata["uoms"]["sales_alts"]:
+                        all_alts[a["uom_id"]] = a
+                        prev = roles.get(a["uom_id"], (False, False))
+                        roles[a["uom_id"]] = (True, prev[1])
+                for a in all_alts.values():
+                    self.repo.add_alt_uom(pid, a["uom_id"], a["factor_to_base"])
+                if len(roles) > 1:
+                    self.repo.upsert_roles(pid, roles)
+                return pid
+
+            pid = self._with_product_savepoint(save_product)
+        except (DomainError, sqlite3.IntegrityError, ValueError) as e:
+            error(self.view, "Not saved", str(e))
+            return
         info(self.view, "Saved", f"Product #{pid} created.")
         self._reload()
 
@@ -294,20 +313,27 @@ class ProductController(BaseModule):
         pdata = dlg.payload()
         if not pdata:
             return
-        self.repo.update(pid, **pdata["product"])
-        base_id = pdata["uoms"]["base_uom_id"]
-        self.repo.set_base_uom(pid, base_id)
-        roles_map = {base_id: (True, True)}
-        all_alts = {}
-        if pdata["uoms"]["enabled_sales"]:
-            for a in pdata["uoms"]["sales_alts"]:
-                all_alts[a["uom_id"]] = a
-                prev = roles_map.get(a["uom_id"], (False, False))
-                roles_map[a["uom_id"]] = (True, prev[1])
-        for a in all_alts.values():
-            self.repo.add_alt_uom(pid, a["uom_id"], a["factor_to_base"])
-        if len(roles_map) > 1:
-            self.repo.upsert_roles(pid, roles_map)
+        try:
+            def save_product():
+                self.repo.update(pid, **pdata["product"])
+                base_id = pdata["uoms"]["base_uom_id"]
+                self.repo.set_base_uom(pid, base_id)
+                roles_map = {base_id: (True, True)}
+                all_alts = {}
+                if pdata["uoms"]["enabled_sales"]:
+                    for a in pdata["uoms"]["sales_alts"]:
+                        all_alts[a["uom_id"]] = a
+                        prev = roles_map.get(a["uom_id"], (False, False))
+                        roles_map[a["uom_id"]] = (True, prev[1])
+                for a in all_alts.values():
+                    self.repo.add_alt_uom(pid, a["uom_id"], a["factor_to_base"])
+                if len(roles_map) > 1:
+                    self.repo.upsert_roles(pid, roles_map)
+
+            self._with_product_savepoint(save_product)
+        except (DomainError, sqlite3.IntegrityError, ValueError) as e:
+            error(self.view, "Not saved", str(e))
+            return
         info(self.view, "Saved", f"Product #{pid} updated.")
         self._reload()
 

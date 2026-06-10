@@ -95,6 +95,7 @@ class LoginRepo:
             - If after increment the count >= max_attempts, sets locked_until either
               to lock_until_ts (if provided) or to DB-clock 'now' + lock_minutes.
         """
+        was_in_transaction = self.conn.in_transaction
         if max_attempts < 1:
             max_attempts = 3
         if lock_minutes < 1:
@@ -129,13 +130,15 @@ class LoginRepo:
             params = (max_attempts, plus, user_id)
 
         self.conn.execute(sql, params)
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     def reset_failed_attempts_and_touch_login(self, user_id: int) -> None:
         """
         On successful login: zero failed_attempts, set last_login=now, clear locked_until.
         (No prev_login column in schema; not updating it.)
         """
+        was_in_transaction = self.conn.in_transaction
         sql = """
         UPDATE users
            SET failed_attempts = 0,
@@ -144,7 +147,8 @@ class LoginRepo:
          WHERE user_id = ?
         """
         self.conn.execute(sql, (user_id,))
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     def insert_auth_log(self, username: str, success: bool, reason: str, client: Optional[str]) -> None:
         """
@@ -154,6 +158,7 @@ class LoginRepo:
         NOTE: Callers should ensure password verification uses a strong KDF
               before marking an attempt as successful.
         """
+        was_in_transaction = self.conn.in_transaction
         uname = self._norm_username(username)
 
         # Resolve user_id (may be None if user does not exist)
@@ -173,7 +178,8 @@ class LoginRepo:
             """,
             (user_id, details, client),
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     # ------------------------------ optional -----------------------------
 

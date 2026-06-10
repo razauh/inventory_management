@@ -43,6 +43,7 @@ class VendorsRepo:
         return Vendor(**dict(r)) if r else None
 
     def create(self, name: str, contact_info: str, address: str | None) -> int:
+        was_in_transaction = self.conn.in_transaction
         self._ensure_non_empty(name, "Name")
         self._ensure_non_empty(contact_info, "Contact")
         name_n = self._normalize_text(name)
@@ -52,10 +53,12 @@ class VendorsRepo:
             "INSERT INTO vendors(name, contact_info, address) VALUES (?, ?, ?)",
             (name_n, contact_n, address_n)
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
         return int(cur.lastrowid)
 
     def update(self, vendor_id: int, name: str, contact_info: str, address: str | None):
+        was_in_transaction = self.conn.in_transaction
         self._ensure_non_empty(name, "Name")
         self._ensure_non_empty(contact_info, "Contact")
         name_n = self._normalize_text(name)
@@ -65,7 +68,8 @@ class VendorsRepo:
             "UPDATE vendors SET name=?, contact_info=?, address=? WHERE vendor_id=?",
             (name_n, contact_n, address_n, vendor_id)
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     # def delete(self, vendor_id: int):
     #     self.conn.execute("DELETE FROM vendors WHERE vendor_id=?", (vendor_id,))

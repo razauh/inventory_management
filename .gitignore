@@ -28,6 +28,7 @@ data/*.sqlite3
 
 # Logs and temp files
 *.log
+.logs/
 *.tmp
 *.swp
 *~

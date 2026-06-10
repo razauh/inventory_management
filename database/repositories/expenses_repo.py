@@ -95,33 +95,41 @@ class ExpensesRepo:
         """
         if not name or not name.strip():
             raise DomainError("Name cannot be empty.")
+        was_in_transaction = self.conn.in_transaction
         name_n = name.strip()
         cur = self.conn.execute(
             "INSERT INTO expense_categories(name) VALUES (?)", (name_n,)
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
         return int(cur.lastrowid)
 
     def update_category(self, category_id: int, name: str) -> None:
         """Update the name of an existing category."""
         if not name or not name.strip():
             raise DomainError("Name cannot be empty.")
+        was_in_transaction = self.conn.in_transaction
         name_n = name.strip()
         self.conn.execute(
             "UPDATE expense_categories SET name=? WHERE category_id=?",
             (name_n, category_id),
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     def delete_category(self, category_id: int) -> None:
         """Remove a category. Translate FK violations into a domain error."""
+        was_in_transaction = self.conn.in_transaction
         try:
             self.conn.execute(
                 "DELETE FROM expense_categories WHERE category_id=?",
                 (category_id,),
             )
-            self.conn.commit()
+            if not was_in_transaction:
+                self.conn.commit()
         except sqlite3.IntegrityError as e:
+            if not was_in_transaction:
+                self.conn.rollback()
             # category is referenced by existing expenses
             raise DomainError(
                 "Cannot delete a category that is used by existing expenses."
@@ -293,12 +301,14 @@ class ExpensesRepo:
             raise DomainError("Description cannot be empty.")
         if amount is None or float(amount) < 0:
             raise DomainError("Amount must be non-negative.")
+        was_in_transaction = self.conn.in_transaction
         desc_n = description.strip()
         cur = self.conn.execute(
             "INSERT INTO expenses(description, amount, date, category_id) VALUES (?,?,?,?)",
             (desc_n, float(amount), date, category_id),
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
         return int(cur.lastrowid)
 
     def update_expense(
@@ -318,6 +328,7 @@ class ExpensesRepo:
             raise DomainError("Description cannot be empty.")
         if amount is None or float(amount) < 0:
             raise DomainError("Amount must be non-negative.")
+        was_in_transaction = self.conn.in_transaction
         desc_n = description.strip()
         self.conn.execute(
             """
@@ -327,15 +338,18 @@ class ExpensesRepo:
             """,
             (desc_n, float(amount), date, category_id, expense_id),
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     def delete_expense(self, expense_id: int) -> None:
         """Delete an expense by ID."""
+        was_in_transaction = self.conn.in_transaction
         self.conn.execute(
             "DELETE FROM expenses WHERE expense_id = ?",
             (expense_id,),
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     def get_expense(self, expense_id: int) -> Dict | None:
         """

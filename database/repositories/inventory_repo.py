@@ -358,6 +358,7 @@ class InventoryRepo:
           reference_table, reference_id, reference_item_id,
           date, posted_at, txn_seq, notes, created_by
         """
+        was_in_transaction = self.conn.in_transaction
         # Pre-validate product↔UoM mapping to prevent silent stock corruption.
         # (The schema triggers will also guard this, but we fail early with a clear message.)
         uom_row = self.conn.execute(
@@ -416,7 +417,8 @@ class InventoryRepo:
             ),
         )
         rebuild_dirty_valuations(self.conn, int(product_id))
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
         return int(cur.lastrowid)
 
     # ------------------------------------------------------------------

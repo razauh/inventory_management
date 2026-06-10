@@ -109,6 +109,7 @@ class CustomersRepo:
         """
         Insert a new customer. Soft validation mirrors form checks.
         """
+        was_in_transaction = self.conn.in_transaction
         # validation
         self._ensure_non_empty(name, "Name")
         self._ensure_non_empty(contact_info, "Contact")
@@ -122,13 +123,15 @@ class CustomersRepo:
             "INSERT INTO customers(name, contact_info, address) VALUES (?,?,?)",
             (name_n, contact_n, address_n),
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
         return int(cur.lastrowid)
 
     def update(self, customer_id: int, name: str, contact_info: str, address: str | None) -> None:
         """
         Update core fields for a customer. Soft validation mirrors form checks.
         """
+        was_in_transaction = self.conn.in_transaction
         # validation
         self._ensure_non_empty(name, "Name")
         self._ensure_non_empty(contact_info, "Contact")
@@ -142,7 +145,8 @@ class CustomersRepo:
             "UPDATE customers SET name=?, contact_info=?, address=? WHERE customer_id=?",
             (name_n, contact_n, address_n, customer_id),
         )
-        self.conn.commit()
+        if not was_in_transaction:
+            self.conn.commit()
 
     # def delete(self, customer_id: int) -> None:
     #     self.conn.execute("DELETE FROM customers WHERE customer_id=?", (customer_id,))

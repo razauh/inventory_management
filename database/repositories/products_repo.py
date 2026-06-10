@@ -39,16 +39,22 @@ class ProductsRepo:
         Start an IMMEDIATE transaction (write lock once first write happens),
         commit on success, rollback on error.
         """
-        cur = self.conn.cursor()
+        was_in_transaction = self.conn.in_transaction
+        cur = None
         try:
-            cur.execute("BEGIN IMMEDIATE")
+            if not was_in_transaction:
+                cur = self.conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
             yield
-            self.conn.commit()
+            if not was_in_transaction:
+                self.conn.commit()
         except Exception:
-            self.conn.rollback()
+            if not was_in_transaction:
+                self.conn.rollback()
             raise
         finally:
-            cur.close()
+            if cur is not None:
+                cur.close()
 
     # ---------------------------- Products ----------------------------
 
