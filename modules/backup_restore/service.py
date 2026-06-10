@@ -32,6 +32,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
 
 from .validators import validate_backup_destination, validate_backup_source
+from .logging_utils import get_logger, log_event
 
 
 RESTORE_RESTART_REQUIRED_MARKER = "RESTORE_RESTART_REQUIRED"
@@ -67,6 +68,24 @@ def _backup_destination(dest: Path) -> Path:
     if dest.name and dest.suffix.lower() != ".imsdb":
         return dest.with_suffix(".imsdb")
     return dest
+
+
+def _backup_restore_logger() -> logging.Logger:
+    return get_logger()
+
+
+def _log_event(
+    logger: logging.Logger,
+    op: str,
+    phase: str,
+    message: str,
+    extra: Optional[dict[str, object]] = None,
+    level: int = logging.INFO,
+) -> None:
+    try:
+        log_event(logger, op, phase, message, extra=extra, level=level)
+    except Exception:
+        logger.log(level, message)
 
 
 @dataclass
@@ -173,7 +192,7 @@ class BackupJob(QObject):
         self._sqlite_ops = sqlite_ops
         self._fsops = fsops
         self._pool = QThreadPool.globalInstance()
-        self._log = logger or logging.getLogger(__name__)
+        self._log = logger or _backup_restore_logger()
 
     def run_async(self, dest_file: str, callbacks) -> None:
         cb = _queued_callbacks(callbacks)
@@ -183,13 +202,14 @@ class BackupJob(QObject):
     # ---- core workflow (runs in worker thread) ----
     def _run(self, dest_file: str, cb: _Callbacks) -> None:
         tmp_snapshot: Optional[str] = None
+        raw_dest = Path(dest_file)
+        dest = _backup_destination(raw_dest)
+        _log_event(self._log, "backup", "start", "Backup started.", {"dest": str(dest)})
         try:
             # Resolve collaborators lazily
             sqlite_ops = self._sqlite_ops or self._import_sqlite_ops()
             fsops = self._fsops or self._import_fsops()
 
-            raw_dest = Path(dest_file)
-            dest = _backup_destination(raw_dest)
             dest_parent = dest.parent if dest.parent != Path("") else Path.cwd()
             _safe_call(cb.phase, "Preflight")
             _safe_call(cb.progress, -1)
@@ -205,10 +225,24 @@ class BackupJob(QObject):
                 free_space=free_bytes,
                 active_db_path=str(db_path),
             )
+            _log_event(
+                self._log,
+                "backup",
+                "validation",
+                "Backup preflight validation passed.",
+                {"db_path": str(db_path), "dest": str(dest), "db_size": db_size, "free_space": free_bytes},
+            )
             # Snapshot (uses WAL checkpoint + Online Backup API inside sqlite_ops)
             _safe_call(cb.phase, "Snapshotting database")
             _safe_call(cb.log, f"Reading from: {db_path}")
             tmp_snapshot = fsops.make_temp_file(suffix=".imsdb", dir=str(dest_parent))
+            _log_event(
+                self._log,
+                "backup",
+                "snapshot",
+                "Backup snapshot started.",
+                {"tmp_snapshot": tmp_snapshot},
+            )
 
             _safe_call(cb.log, "Checkpointing WAL and performing online backup…")
             sqlite_ops.create_consistent_snapshot(
@@ -223,17 +257,40 @@ class BackupJob(QObject):
             _safe_call(cb.phase, "Verifying backup image")
             if not sqlite_ops.quick_check(tmp_snapshot):
                 raise RuntimeError("Snapshot integrity check failed (PRAGMA quick_check != 'ok').")
+            _log_event(
+                self._log,
+                "backup",
+                "verification",
+                "Backup snapshot verification passed.",
+                {"tmp_snapshot": tmp_snapshot},
+            )
             _safe_call(cb.progress, 97)
 
             # Save atomically
             _safe_call(cb.phase, "Saving")
+            _log_event(
+                self._log,
+                "backup",
+                "save",
+                "Backup save started.",
+                {"tmp_snapshot": tmp_snapshot, "dest": str(dest)},
+            )
             fsops.atomic_move(tmp_snapshot, str(dest))
             _safe_call(cb.progress, 100)
             _safe_call(cb.log, f"Backup written to: {dest}")
+            _log_event(self._log, "backup", "completion", "Backup completed.", {"dest": str(dest)})
 
             _safe_call(cb.finished, True, "Backup completed successfully.", str(dest))
 
         except Exception as exc:
+            _log_event(
+                self._log,
+                "backup",
+                "failure",
+                "Backup failed.",
+                {"dest": str(dest), "error": f"{exc.__class__.__name__}: {exc}"},
+                level=logging.ERROR,
+            )
             self._log.debug("Backup failed:\n%s", traceback.format_exc())
             _safe_call(cb.finished, False, _fmt_err("Backup failed.", exc), None)
         finally:
@@ -276,7 +333,7 @@ class RestoreJob(QObject):
         self._fsops = fsops
         self._app_db_manager = app_db_manager
         self._pool = QThreadPool.globalInstance()
-        self._log = logger or logging.getLogger(__name__)
+        self._log = logger or _backup_restore_logger()
 
     def run_async(self, src_file: str, callbacks) -> None:
         cb = _queued_callbacks(callbacks)
@@ -287,11 +344,12 @@ class RestoreJob(QObject):
     def _run(self, src_file: str, cb: _Callbacks) -> None:
         safety_dir: Optional[str] = None
         swapped: bool = False
+        imsdb = Path(src_file)
+        _log_event(self._log, "restore", "start", "Restore started.", {"src": str(imsdb)})
         try:
             sqlite_ops = self._sqlite_ops or self._import_sqlite_ops()
             fsops = self._fsops or self._import_fsops()
 
-            imsdb = Path(src_file)
             if not imsdb.exists() or not imsdb.is_file():
                 raise RuntimeError("Backup file does not exist.")
             if imsdb.suffix.lower() != ".imsdb":
@@ -311,28 +369,58 @@ class RestoreJob(QObject):
                     "Selected backup is not compatible with this application schema.\n"
                     f"{detail}"
                 )
+            _log_event(
+                self._log,
+                "restore",
+                "validation",
+                "Restore source validation passed.",
+                {"src": str(imsdb), "db_path": str(db_path)},
+            )
 
             # Safety copy current DB
             _safe_call(cb.phase, "Creating safety copy")
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            _log_event(self._log, "restore", "safety_copy", "Restore safety copy started.", {"db_path": str(db_path)})
             safety_dir = fsops.safety_copy_current_db(str(db_path), ts)
             _safe_call(cb.log, f"Safety copy created at: {safety_dir}")
+            _log_event(
+                self._log,
+                "restore",
+                "safety_copy",
+                "Restore safety copy completed.",
+                {"safety_dir": safety_dir},
+            )
             _safe_call(cb.progress, 25)
 
             # Swap files
             _safe_call(cb.phase, "Swapping database files")
             if self._app_db_manager is None:
                 raise RuntimeError("No database manager available to coordinate connections.")
+            _log_event(
+                self._log,
+                "restore",
+                "swap",
+                "Restore database swap started.",
+                {"src": str(imsdb), "db_path": str(db_path)},
+            )
             self._app_db_manager.close_all()
             fsops.replace_db_with(str(imsdb), str(db_path))
             swapped = True
             self._app_db_manager.open()
+            _log_event(self._log, "restore", "swap", "Restore database swap completed.", {"db_path": str(db_path)})
             _safe_call(cb.progress, 70)
 
             # Post-restore checks
             _safe_call(cb.phase, "Post-restore checks")
             if not sqlite_ops.quick_check(str(db_path)):
                 raise RuntimeError("Restored database failed integrity check (PRAGMA quick_check != 'ok').")
+            _log_event(
+                self._log,
+                "restore",
+                "verification",
+                "Restored database quick check passed.",
+                {"db_path": str(db_path)},
+            )
 
             # NEW: Foreign key integrity check (fail if any violations are present)
             _safe_call(cb.phase, "Checking foreign keys")
@@ -355,12 +443,28 @@ class RestoreJob(QObject):
                     f"Foreign key check failed: {len(violations)} violation(s) detected.\n"
                     f"{detail}"
                 )
+            _log_event(
+                self._log,
+                "restore",
+                "verification",
+                "Restored database foreign key check passed.",
+                {"db_path": str(db_path)},
+            )
 
             _safe_call(cb.progress, 100)
             _safe_call(cb.log, "Restore completed successfully.")
+            _log_event(self._log, "restore", "completion", "Restore completed.", {"src": str(imsdb)})
             _safe_call(cb.finished, True, "Restore completed successfully.", str(imsdb))
 
         except Exception as exc:
+            _log_event(
+                self._log,
+                "restore",
+                "failure",
+                "Restore failed.",
+                {"src": str(imsdb), "error": f"{exc.__class__.__name__}: {exc}", "swapped": swapped},
+                level=logging.ERROR,
+            )
             self._log.debug("Restore failed:\n%s", traceback.format_exc())
             failure_message = _fmt_err("Restore failed.", exc)
             rollback_status: Optional[str] = None
@@ -368,6 +472,13 @@ class RestoreJob(QObject):
             if swapped:
                 if safety_dir:
                     _safe_call(cb.log, "Attempting rollback from safety copy…")
+                    _log_event(
+                        self._log,
+                        "restore",
+                        "rollback",
+                        "Restore rollback started.",
+                        {"safety_dir": safety_dir},
+                    )
                     try:
                         if self._app_db_manager:
                             self._app_db_manager.close_all()
@@ -393,6 +504,13 @@ class RestoreJob(QObject):
                         _safe_call(cb.log, rollback_status)
                     else:
                         rollback_status = "Rollback restored the safety copy."
+                        _log_event(
+                            self._log,
+                            "restore",
+                            "rollback",
+                            "Restore rollback completed.",
+                            {"safety_dir": safety_dir},
+                        )
                         if self._app_db_manager:
                             try:
                                 self._app_db_manager.open()

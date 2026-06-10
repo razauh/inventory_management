@@ -6,7 +6,7 @@ from typing import Iterable, Optional
 # For settlements
 from .sale_payments_repo import SalePaymentsRepo
 from .customer_advances_repo import CustomerAdvancesRepo
-from .inventory_repo import rebuild_dirty_valuations
+from .inventory_repo import next_inventory_txn_seq, rebuild_dirty_valuations
 
 
 @dataclass
@@ -207,11 +207,21 @@ class SalesRepo:
             INSERT INTO inventory_transactions (
                 product_id, quantity, uom_id, transaction_type,
                 reference_table, reference_id, reference_item_id,
-                date, notes, created_by
+                date, txn_seq, notes, created_by
             )
-            VALUES (?, ?, ?, 'sale', 'sales', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, 'sale', 'sales', ?, ?, ?, ?, ?, ?)
             """,
-            (product_id, qty, uom_id, sid, item_id, date, notes, created_by),
+            (
+                product_id,
+                qty,
+                uom_id,
+                sid,
+                item_id,
+                date,
+                next_inventory_txn_seq(self.conn, date),
+                notes,
+                created_by,
+            ),
         )
 
     def _delete_sale_content(self, sid: str):
@@ -613,6 +623,8 @@ class SalesRepo:
                 order_factor = total_after_od / net_subtotal
             final_return_value = return_value * order_factor
 
+            seq = next_inventory_txn_seq(self.conn, date)
+
             # Insert inventory return rows
             for ln in lines:  # {item_id, product_id, uom_id, qty_return}
                 # Verify the item exists and matches the sale
@@ -628,9 +640,9 @@ class SalesRepo:
                     INSERT INTO inventory_transactions(
                         product_id, quantity, uom_id, transaction_type,
                         reference_table, reference_id, reference_item_id,
-                        date, notes, created_by
+                        date, txn_seq, notes, created_by
                     )
-                    VALUES (?, ?, ?, 'sale_return', 'sales', ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, 'sale_return', 'sales', ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ln["product_id"],
@@ -639,10 +651,12 @@ class SalesRepo:
                         sid,
                         ln["item_id"],
                         date,
+                        seq,
                         notes,
                         created_by,
                     ),
                 )
+                seq += 10
             rebuild_dirty_valuations(self.conn)
 
             # Settlement handling (if applicable)

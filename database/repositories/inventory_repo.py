@@ -151,6 +151,16 @@ def _cell(row, key: str, index: int):
         return row[index]
 
 
+def next_inventory_txn_seq(conn: sqlite3.Connection, date: str, *, minimum: int = 0) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
+        (date,),
+    ).fetchone()
+    max_seq = int(_cell(row, "max_seq", 0) or 0) if row else 0
+    next_seq = max_seq + 10
+    return max(next_seq, minimum)
+
+
 class InventoryRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -365,13 +375,21 @@ class InventoryRepo:
             INSERT INTO inventory_transactions
                 (product_id, quantity, uom_id, transaction_type,
                  reference_table, reference_id, reference_item_id,
-                 date, notes, created_by)
+                 date, txn_seq, notes, created_by)
             VALUES
                 (?, ?, ?, 'adjustment',
                  NULL, NULL, NULL,
-                 ?, ?, ?)
+                 ?, ?, ?, ?)
             """,
-            (int(product_id), float(quantity), int(uom_id), date, notes, created_by),
+            (
+                int(product_id),
+                float(quantity),
+                int(uom_id),
+                date,
+                next_inventory_txn_seq(self.conn, date),
+                notes,
+                created_by,
+            ),
         )
         rebuild_dirty_valuations(self.conn, int(product_id))
         self.conn.commit()
