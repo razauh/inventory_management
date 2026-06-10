@@ -798,13 +798,20 @@ class PurchaseReturnForm(QDialog):
                         financials.get("remaining_refundable_amount", 0.0)
                     )
                     
-                    # Calculate current return value to adjust the remaining
                     current_return_value = self._calculate_return_value()
-                    # When a return is processed, it reduces the amount owed on the purchase,
-                    # which decreases the "remaining" amount
                     original_remaining = total_calc - paid_amount - advance_applied
-                    new_remaining = original_remaining - current_return_value
-                    self.lbl_remaining.setText(f"Adjusted Remaining: {new_remaining:.2f} (Original: {original_remaining:.2f})")
+                    adjusted_remaining = original_remaining - current_return_value
+                    payable_remaining = max(0.0, adjusted_remaining)
+                    excess_settlement = max(0.0, -adjusted_remaining)
+                    label = (
+                        f"Adjusted Payable: {payable_remaining:.2f} "
+                        f"(Original: {original_remaining:.2f})"
+                    )
+                    if excess_settlement > EPSILON:
+                        label += (
+                            f" | Refund/Credit Due: {excess_settlement:.2f}"
+                        )
+                    self.lbl_remaining.setText(label)
                 else:
                     self.lbl_remaining.setText("Purchase financials not found")
                     self._refund_financials_loaded = False
