@@ -135,13 +135,18 @@ class BackupJob(QObject):
             if dest.exists() and dest.is_dir():
                 raise RuntimeError("Destination path refers to a directory, not a file.")
 
-            # Snapshot (uses WAL checkpoint + Online Backup API inside sqlite_ops.snapshot)
+            # Snapshot (uses WAL checkpoint + Online Backup API inside sqlite_ops)
             _safe_call(cb.phase, "Snapshotting database")
             _safe_call(cb.log, f"Reading from: {db_path}")
             tmp_snapshot = fsops.make_temp_file(suffix=".imsdb", dir=str(dest_parent))
 
             _safe_call(cb.log, "Checkpointing WAL and performing online backup…")
-            sqlite_ops.snapshot(str(db_path), tmp_snapshot)  # new API: ensures WAL-safe, consistent snapshot
+            sqlite_ops.create_consistent_snapshot(
+                tmp_snapshot,
+                progress_step=cb.progress,
+                log=cb.log,
+                verify_mode="quick",
+            )
             _safe_call(cb.progress, 95)
 
             # Verify snapshot
