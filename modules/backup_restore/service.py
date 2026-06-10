@@ -166,6 +166,7 @@ class BackupJob(QObject):
 
     # ---- core workflow (runs in worker thread) ----
     def _run(self, dest_file: str, cb: _Callbacks) -> None:
+        tmp_snapshot: Optional[str] = None
         try:
             # Resolve collaborators lazily
             sqlite_ops = self._sqlite_ops or self._import_sqlite_ops()
@@ -227,6 +228,12 @@ class BackupJob(QObject):
         except Exception as exc:
             self._log.debug("Backup failed:\n%s", traceback.format_exc())
             _safe_call(cb.finished, False, _fmt_err("Backup failed.", exc), None)
+        finally:
+            if tmp_snapshot:
+                try:
+                    Path(tmp_snapshot).unlink(missing_ok=True)
+                except Exception:
+                    self._log.debug("Unable to remove temporary backup snapshot: %s", tmp_snapshot, exc_info=True)
 
     # ---- helpers ----
     @staticmethod
