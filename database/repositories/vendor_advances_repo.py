@@ -471,17 +471,18 @@ class VendorAdvancesRepo:
     def _get_purchase_remaining_due(self, purchase_id: str, vendor_id: int) -> Optional[float]:
         """
         Returns remaining due for the purchase as:
-            total_amount - paid_amount - advance_payment_applied
+            net_total_after_returns - paid_amount - advance_payment_applied
         or None if the purchase is missing or belongs to another vendor.
         """
         row = self.conn.execute(
             """
             SELECT
-              CAST(total_amount AS REAL)            AS total_amount,
-              CAST(paid_amount AS REAL)             AS paid_amount,
-              CAST(advance_payment_applied AS REAL) AS advance_applied
-            FROM purchases
-            WHERE purchase_id = ? AND vendor_id = ?
+              CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS REAL) AS total_amount,
+              CAST(p.paid_amount AS REAL)             AS paid_amount,
+              CAST(p.advance_payment_applied AS REAL) AS advance_applied
+            FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+            WHERE p.purchase_id = ? AND p.vendor_id = ?
             """,
             (purchase_id, vendor_id),
         ).fetchone()
@@ -490,7 +491,7 @@ class VendorAdvancesRepo:
         total = float(row["total_amount"])
         paid = float(row["paid_amount"])
         adv  = float(row["advance_applied"])
-        return total - paid - adv
+        return max(0.0, total - paid - adv)
 
     def _raise_mapped_error(self, e: sqlite3.Error) -> None:
         """
