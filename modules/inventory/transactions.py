@@ -44,6 +44,7 @@ class TransactionsView(QWidget):
         """
         super().__init__(parent)
         self.repo = repo
+        self._last_invalid_range: tuple[str, str] | None = None
         self.setWindowTitle("Inventory — Transactions")
 
         root = QVBoxLayout(self)
@@ -223,6 +224,17 @@ class TransactionsView(QWidget):
     # ----------------------------------------------------------------------
     def _reload(self) -> None:
         """Reload table with current filters."""
+        if self._has_invalid_date_range():
+            model = TransactionsTableModel([])
+            self.tbl_txn.setModel(model)
+            self.tbl_txn.resizeColumnsToContents()
+            self._show_invalid_date_range_message()
+            self.lbl_filter_summary.setText(
+                "Invalid date range. 'From' must be on or before 'To'."
+            )
+            return
+
+        self._last_invalid_range = None
         try:
             # if self.repo is a raw connection, wrap it just for this call
             repo = self.repo if isinstance(self.repo, InventoryRepo) else InventoryRepo(self.repo)
@@ -241,6 +253,26 @@ class TransactionsView(QWidget):
         self.tbl_txn.setModel(model)
         self.tbl_txn.resizeColumnsToContents()
         self._update_filter_summary(model.rowCount())
+
+    def _has_invalid_date_range(self) -> bool:
+        date_from = self.date_from.date()
+        date_to = self.date_to.date()
+        if date_from == self.date_from.minimumDate():
+            return False
+        if date_to == self.date_to.minimumDate():
+            return False
+        return date_from > date_to
+
+    def _show_invalid_date_range_message(self) -> None:
+        date_range = (self.date_from_str or "", self.date_to_str or "")
+        if self._last_invalid_range == date_range:
+            return
+        self._last_invalid_range = date_range
+        ui.info(
+            self,
+            "Invalid date range",
+            "'From' date must be on or before 'To' date.",
+        )
 
     def _update_filter_summary(self, row_count: int) -> None:
         parts = []
