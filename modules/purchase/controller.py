@@ -865,7 +865,13 @@ class PurchaseController(BaseModule):
             ],
         }
         
-        dlg = PurchaseForm(self.view, vendors=self.vendors, products=self.products, initial=init)
+        dlg = PurchaseForm(
+            self.view,
+            vendors=self.vendors,
+            products=self.products,
+            initial=init,
+            allow_initial_payment=False,
+        )
         if self.repo.has_vendor_locking_activity(row["purchase_id"]):
             dlg.cmb_vendor.setEnabled(False)
             dlg.cmb_vendor.setToolTip(

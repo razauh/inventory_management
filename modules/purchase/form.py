@@ -85,12 +85,14 @@ class PurchaseForm(QDialog):
         return self._method_display_to_key.get(display_value)
 
     def __init__(self, parent=None, vendors: VendorsRepo | None = None,
-                 products: ProductsRepo | None = None, initial=None):
+                 products: ProductsRepo | None = None, initial=None,
+                 allow_initial_payment: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Purchase")
         self.setModal(True)
         # Store initial data for later use
         self._initial_data = initial
+        self._allow_initial_payment = allow_initial_payment
         self.vendors = vendors
         self.products = products
         self._payload = None
@@ -233,17 +235,12 @@ class PurchaseForm(QDialog):
         # Add left side to main layout
         main_layout.addWidget(left_widget, 2)  # Left side gets 2/3 of space
 
-        is_edit_mode = bool(initial)
-
-        ip_box = QGroupBox("Initial Payment (optional)")
-
-
-        # Always enable the initial payment section
-        ip_box.setEnabled(True)
-        ip_box.setTitle("Initial Payment (optional)")
+        self.ip_box = QGroupBox("Initial Payment (optional)")
+        self.ip_box.setEnabled(allow_initial_payment)
+        self.ip_box.setVisible(allow_initial_payment)
 
         # Use a vertical layout for the single column format
-        ip_layout = QVBoxLayout(ip_box)
+        ip_layout = QVBoxLayout(self.ip_box)
         ip_layout.setSpacing(8)
 
         self.ip_amount = QLineEdit(); self.ip_amount.setPlaceholderText("0")
@@ -382,7 +379,7 @@ class PurchaseForm(QDialog):
         ip_layout.addStretch(1)
 
         # Add right side (Initial Payment) to main layout
-        main_layout.addWidget(ip_box, 1)  # Right side gets 1/3 of space
+        main_layout.addWidget(self.ip_box, 1)  # Right side gets 1/3 of space
 
         
 
@@ -434,7 +431,11 @@ class PurchaseForm(QDialog):
             self.txt_notes.setText(initial.get("notes") or "")
 
             # Load initial payment data if it exists in the initial data
-            if "initial_payment" in initial and initial["initial_payment"]:
+            if (
+                self._allow_initial_payment
+                and "initial_payment" in initial
+                and initial["initial_payment"]
+            ):
                 initial_payment = initial["initial_payment"]
                 self.ip_amount.setText(str(initial_payment.get("amount", "0")))
                 method_value = initial_payment.get("method", "CASH")
@@ -1438,8 +1439,10 @@ class PurchaseForm(QDialog):
             "total_amount": total_amount,
         }
 
-        ip_amount_txt = self.ip_amount.text().strip()
-        ip_amount = self._to_float_safe(ip_amount_txt)
+        ip_amount = 0.0
+        if self._allow_initial_payment:
+            ip_amount_txt = self.ip_amount.text().strip()
+            ip_amount = self._to_float_safe(ip_amount_txt)
 
         if ip_amount > 0:
             method = self.ip_method.currentText()
@@ -1532,6 +1535,9 @@ class PurchaseForm(QDialog):
 
         
         try:
+            if not self._allow_initial_payment:
+                return len(errors) == 0, errors
+
             ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
             ip_amount = self._to_float_safe(ip_amount_txt)
 
