@@ -25,6 +25,7 @@ Public Interface
 - integrity_check(db_path: str, limit_errors: int = 3) -> Tuple[bool, List[str]]
 - foreign_key_check(db_path: str) -> List[sqlite3.Row]
 - verify_database(db_path: str, mode: str = "quick", fk_check: bool = False, limit_errors: int = 3) -> Tuple[bool, List[str]]
+- verify_app_schema_compatibility(db_path: str) -> Tuple[bool, List[str]]
 
 Notes
 -----
@@ -55,6 +56,7 @@ __all__ = [
     "integrity_check",
     "foreign_key_check",
     "verify_database",
+    "verify_app_schema_compatibility",
     "set_db_path",  # optional helper
 ]
 
@@ -386,3 +388,39 @@ def verify_database(
                     details.append(f"- table={t}, rowid={rowid}, parent={parent}, fkid={fkid}")
 
     return ok, details
+
+
+def verify_app_schema_compatibility(db_path: str) -> Tuple[bool, List[str]]:
+    details: List[str] = []
+    p = Path(db_path)
+    if not p.exists() or not p.is_file():
+        return False, ["database file does not exist."]
+
+    try:
+        from constants import SCHEMA_VERSION, TABLE_SCHEMA_VERSION
+        from database.schema import REQUIRED_TABLES
+
+        required_tables = set(REQUIRED_TABLES) | {TABLE_SCHEMA_VERSION}
+        with _connect_ro(str(p)) as con:
+            rows = con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table';"
+            ).fetchall()
+            existing_tables = {str(row[0]) for row in rows}
+
+            missing = sorted(required_tables - existing_tables)
+            if missing:
+                details.append("missing required application table(s): " + ", ".join(missing))
+
+            if TABLE_SCHEMA_VERSION in existing_tables:
+                row = con.execute(
+                    f"SELECT version FROM {TABLE_SCHEMA_VERSION} WHERE id=1;"
+                ).fetchone()
+                found_version = row[0] if row else None
+                if found_version != SCHEMA_VERSION:
+                    details.append(
+                        f"unsupported schema version: expected {SCHEMA_VERSION!r}, found {found_version!r}."
+                    )
+
+        return len(details) == 0, details
+    except Exception as exc:
+        return False, [f"schema compatibility check failed: {exc!r}"]

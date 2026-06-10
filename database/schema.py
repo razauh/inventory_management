@@ -2850,6 +2850,38 @@ END;
 
 """
 
+REQUIRED_TABLES = (
+    "company_info",
+    "company_contacts",
+    "users",
+    "vendors",
+    "customers",
+    "expense_categories",
+    "expenses",
+    "uoms",
+    "products",
+    "product_sale_prices",
+    "product_uoms",
+    "purchases",
+    "sales",
+    "purchase_items",
+    "sale_items",
+    "inventory_transactions",
+    "purchase_return_snapshots",
+    "stock_valuation_history",
+    "customer_advances",
+    "audit_logs",
+    "error_logs",
+    "company_bank_accounts",
+    "sale_payments",
+    "purchase_payments",
+    "vendor_bank_accounts",
+    "purchase_refunds",
+    "valuation_dirty",
+    "vendor_advances",
+)
+
+
 def _ensure_customer_is_active(conn: sqlite3.Connection) -> None:
     """
     Safe migration for older DBs that created `customers` before `is_active` existed.

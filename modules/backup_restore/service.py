@@ -304,6 +304,13 @@ class RestoreJob(QObject):
             _safe_call(cb.progress, 5)
             if not sqlite_ops.quick_check(str(imsdb)):
                 raise RuntimeError("Selected backup failed integrity check (PRAGMA quick_check != 'ok').")
+            ok_schema, schema_details = sqlite_ops.verify_app_schema_compatibility(str(imsdb))
+            if not ok_schema:
+                detail = "\n".join(schema_details[:10]) if schema_details else "(no details)"
+                raise RuntimeError(
+                    "Selected backup is not compatible with this application schema.\n"
+                    f"{detail}"
+                )
 
             # Safety copy current DB
             _safe_call(cb.phase, "Creating safety copy")
