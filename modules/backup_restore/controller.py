@@ -342,6 +342,7 @@ class BackupRestoreController(QObject):
         """
         Kick off an async restore job from a *.imsdb file.
         """
+        from . import sqlite_ops  # lazy import
         from .service import RestoreJob  # lazy import
 
         # Ensure we have a DB manager to coordinate connections.
@@ -351,6 +352,19 @@ class BackupRestoreController(QObject):
                 "Restore Error",
                 "No database manager available to coordinate connections during restore.",
             )
+            return
+
+        try:
+            target_db_path = Path(sqlite_ops.get_db_path())
+        except Exception as exc:
+            QMessageBox.critical(
+                self._widget,
+                "Restore Error",
+                f"Unable to resolve the live database path.\n\n{exc}",
+            )
+            return
+
+        if not self._confirm_restore(src_file, str(target_db_path)):
             return
 
         # Progress callbacks
@@ -373,6 +387,20 @@ class BackupRestoreController(QObject):
             logger=None,
         )
         job.run_async(str(src_file), callbacks=cb)
+
+    def _confirm_restore(self, src_file: str, target_db_path: str) -> bool:
+        ret = QMessageBox.warning(
+            self._widget,
+            "Confirm Restore",
+            "Restoring will replace the current database.\n\n"
+            f"Backup file:\n{Path(src_file)}\n\n"
+            f"Current database:\n{Path(target_db_path)}\n\n"
+            "A safety copy of the current database will be created first.\n"
+            "Continue with restore?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return ret == QMessageBox.StandardButton.Yes
 
     def _on_restore_finished(self, ok: bool, message: str, used_path: Optional[str], prog_dialog) -> None:
         prog_dialog.on_log(message)
