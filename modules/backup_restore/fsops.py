@@ -297,8 +297,8 @@ def replace_db_with(
 
     Steps:
       - Ensure target directory exists.
-      - Remove lingering target -wal/-shm files, if any.
       - Copy source to a temp file in the target directory and fsync.
+      - Remove lingering target -wal/-shm files, if any.
       - os.replace() temp → target (atomic on same volume).
       - fsync target directory.
 
@@ -315,33 +315,43 @@ def replace_db_with(
     tgt.parent.mkdir(parents=True, exist_ok=True)
     _log(logger, verbose, "replace_db.start", ts=_now_iso(), src=str(src), src_size=src.stat().st_size, target=str(tgt))
 
-    # Remove any stale WAL/SHM for the target DB
-    for suffix in ("", "-wal", "-shm"):
-        stale = Path(str(tgt) + suffix) if suffix else tgt
-        if stale.exists():
-            try:
-                size_before = stale.stat().st_size if stale.is_file() else 0
-                stale.unlink()
-                _log(logger, verbose, "replace_db.remove_stale", ts=_now_iso(), path=str(stale), size=size_before)
-            except Exception:
-                # If removing the main DB fails due to permissions/locks, propagate a clearer error
-                if suffix == "":
-                    raise RuntimeError(
-                        f"Unable to remove current database file (is it locked?): {stale}"
-                    )
-                # For wal/shm, continue best-effort
+    # Copy into a temporary file in the *target* directory before touching the live DB.
+    tmp_file = tempfile.NamedTemporaryFile(
+        prefix=f".{tgt.name}.",
+        suffix=".swap",
+        dir=str(tgt.parent),
+        delete=False,
+    )
+    tmp = Path(tmp_file.name)
+    tmp_file.close()
+    try:
+        _copy_file_fsync(src, tmp)
+        _log(logger, verbose, "replace_db.copied", ts=_now_iso(), tmp=str(tmp), tmp_size=tmp.stat().st_size)
 
-    # Copy into a temporary file in the *target* directory to ensure atomic rename
-    tmp = tgt.with_suffix(tgt.suffix + ".swap")
-    if tmp.exists():
-        tmp.unlink(missing_ok=True)
-    _copy_file_fsync(src, tmp)
-    _log(logger, verbose, "replace_db.copied", ts=_now_iso(), tmp=str(tmp), tmp_size=tmp.stat().st_size)
+        # Remove any stale WAL/SHM for the target DB
+        for suffix in ("", "-wal", "-shm"):
+            stale = Path(str(tgt) + suffix) if suffix else tgt
+            if stale.exists():
+                try:
+                    size_before = stale.stat().st_size if stale.is_file() else 0
+                    stale.unlink()
+                    _log(logger, verbose, "replace_db.remove_stale", ts=_now_iso(), path=str(stale), size=size_before)
+                except Exception:
+                    # If removing the main DB fails due to permissions/locks, propagate a clearer error
+                    if suffix == "":
+                        raise RuntimeError(
+                            f"Unable to remove current database file (is it locked?): {stale}"
+                        )
+                    # For wal/shm, continue best-effort
 
-    # Atomic replace
-    os.replace(str(tmp), str(tgt))
-    _fsync_dir(tgt.parent)
-    _log(logger, verbose, "replace_db.replaced", ts=_now_iso(), final=str(tgt), final_size=tgt.stat().st_size)
+        # Atomic replace
+        os.replace(str(tmp), str(tgt))
+        tmp = None
+        _fsync_dir(tgt.parent)
+        _log(logger, verbose, "replace_db.replaced", ts=_now_iso(), final=str(tgt), final_size=tgt.stat().st_size)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
     if strict_verify and tgt.exists():
         digest = _sha256(tgt)
