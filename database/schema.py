@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS purchase_items (
     purchase_price NUMERIC NOT NULL CHECK (CAST(purchase_price AS REAL) >= 0),
     sale_price     NUMERIC NOT NULL CHECK (CAST(sale_price AS REAL) >= 0),
     item_discount  NUMERIC NOT NULL DEFAULT 0 CHECK (CAST(item_discount AS REAL) >= 0),
+    CHECK (CAST(sale_price AS REAL) > CAST(purchase_price AS REAL)),
     FOREIGN KEY (purchase_id)            REFERENCES purchases(purchase_id) ON DELETE CASCADE,
     FOREIGN KEY (product_id)             REFERENCES products(product_id),
     FOREIGN KEY (uom_id)                 REFERENCES uoms(uom_id),
@@ -211,6 +212,35 @@ CREATE TABLE IF NOT EXISTS purchase_items (
 CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase ON purchase_items(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_items_product  ON purchase_items(product_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_items_uom      ON purchase_items(uom_id);
+
+DROP TRIGGER IF EXISTS trg_purchase_items_price_rule_ins;
+DROP TRIGGER IF EXISTS trg_purchase_items_price_rule_upd;
+
+CREATE TRIGGER trg_purchase_items_price_rule_ins
+BEFORE INSERT ON purchase_items
+FOR EACH ROW
+BEGIN
+  SELECT CASE
+    WHEN CAST(NEW.purchase_price AS REAL) < 0
+      OR CAST(NEW.sale_price AS REAL) < 0
+      OR CAST(NEW.sale_price AS REAL) <= CAST(NEW.purchase_price AS REAL)
+    THEN RAISE(ABORT, 'Sale price must be greater than purchase price')
+    ELSE 1
+  END;
+END;
+
+CREATE TRIGGER trg_purchase_items_price_rule_upd
+BEFORE UPDATE OF purchase_price, sale_price ON purchase_items
+FOR EACH ROW
+BEGIN
+  SELECT CASE
+    WHEN CAST(NEW.purchase_price AS REAL) < 0
+      OR CAST(NEW.sale_price AS REAL) < 0
+      OR CAST(NEW.sale_price AS REAL) <= CAST(NEW.purchase_price AS REAL)
+    THEN RAISE(ABORT, 'Sale price must be greater than purchase price')
+    ELSE 1
+  END;
+END;
 
 CREATE TABLE IF NOT EXISTS sale_items (
     item_id       INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,8 +1,9 @@
-from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QComboBox, QLineEdit
+from PySide6.QtWidgets import QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QComboBox, QLineEdit
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCompleter
 from ...utils.validators import is_positive_number, non_empty
 from ...database.repositories.products_repo import ProductsRepo
+from .validation import SALE_PRICE_RULE_MESSAGE, parse_strict_float
 
 class PurchaseItemForm(QDialog):
     def __init__(self, parent=None, repo: ProductsRepo | None = None, initial=None):
@@ -41,6 +42,7 @@ class PurchaseItemForm(QDialog):
         self.buttons.rejected.connect(self.reject)
         lay.addWidget(self.buttons)
         self._payload = None
+        self._validation_error = ""
         self.cmb_product.currentIndexChanged.connect(self._on_product_changed)
         self._on_product_changed()
         if initial:
@@ -186,26 +188,37 @@ class PurchaseItemForm(QDialog):
         pid = self.cmb_product.currentData()
         uom_id = self._base_uom_id if self._base_uom_id is not None else (self.cmb_uom.currentData() if hasattr(self, "cmb_uom") else None)
         if not pid or uom_id is None:
+            self._validation_error = (
+                "Selected product has no configured base UOM. "
+                "Configure the product UOM before adding it to a purchase."
+            )
             return None
         try:
-            qty_val = float((self.txt_qty.text() or "").strip())
-            buy_val = float((self.txt_buy.text() or "").strip())
-            sale_val = float((self.txt_sale.text() or "0").strip())
-        except Exception:
+            qty_val = parse_strict_float((self.txt_qty.text() or "").strip())
+            buy_val = parse_strict_float((self.txt_buy.text() or "").strip())
+            sale_val = parse_strict_float((self.txt_sale.text() or "").strip())
+        except ValueError:
+            self._validation_error = "Please enter valid numeric quantity, purchase price, and sale price."
             return None
         if not (qty_val > 0.0):
+            self._validation_error = "Quantity must be greater than 0."
             return None
         if not (buy_val > 0.0):
+            self._validation_error = "Purchase price must be greater than 0."
             return None
-        if sale_val < 0.0:
+        if sale_val <= buy_val:
+            self._validation_error = SALE_PRICE_RULE_MESSAGE
             return None
         disc_str = (self.txt_disc.text() or "").strip()
         try:
-            disc_val = float(disc_str) if disc_str else 0.0
-        except Exception:
+            disc_val = parse_strict_float(disc_str) if disc_str else 0.0
+        except ValueError:
+            self._validation_error = "Please enter a valid numeric item discount."
             return None
         if disc_val < 0.0 or disc_val >= buy_val:
+            self._validation_error = "Item discount must be nonnegative and less than purchase price."
             return None
+        self._validation_error = ""
         return {
             "product_id": int(pid),
             "uom_id": int(uom_id),
@@ -218,6 +231,7 @@ class PurchaseItemForm(QDialog):
     def accept(self):
         p = self.get_payload()
         if p is None:
+            QMessageBox.warning(self, "Validation Errors", self._validation_error or "Please enter valid purchase item details.")
             return
         self._payload = p
         super().accept()

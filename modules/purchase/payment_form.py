@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtCore import QEvent, QObject
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...utils.helpers import today_str
-import re
+from .validation import parse_strict_float
 import logging
 
 
@@ -194,17 +194,7 @@ class PaymentForm(QDialog):
         self.setMinimumSize(600, 550)
 
     def _to_float_safe(self, txt: str) -> float:
-        if txt is None:
-            return 0.0
-        try:
-            cleaned = re.sub(r"[^0-9.\-]", "", txt)
-            return float(cleaned) if cleaned and cleaned not in ['-', '.', '-.'] else 0.0
-        except ValueError:
-            logging.warning(f"Could not convert '{txt}' to float, returning 0.0")
-            return 0.0
-        except Exception as e:
-            logging.error(f"Unexpected error in _to_float_safe with input '{txt}': {e}")
-            return 0.0
+        return parse_strict_float(txt)
 
     def _update_field_enablement(self, enable_company=False, enable_vendor=False, enable_instr=False, enable_temp=False):
         """Centralize the logic for enabling/disabling payment fields."""
@@ -216,7 +206,8 @@ class PaymentForm(QDialog):
 
     def _toggle_fields_by_amount(self):
         try:
-            amount = float(self._to_float_safe(self.amount.text()))
+            amount_text = self.amount.text().strip()
+            amount = float(self._to_float_safe(amount_text)) if amount_text else 0.0
             enable_fields = amount > 0
 
             self.date.setEnabled(enable_fields)
@@ -373,7 +364,8 @@ class PaymentForm(QDialog):
 
     def _refresh_visibility(self):
         try:
-            amount = float(self._to_float_safe(self.amount.text()))
+            amount_text = self.amount.text().strip()
+            amount = float(self._to_float_safe(amount_text)) if amount_text else 0.0
             if amount <= 0:
                 self._update_field_enablement(False, False, False, False)
                 self._reset_labels()
@@ -568,7 +560,7 @@ class PaymentForm(QDialog):
         
         try:
             amount = float(self._to_float_safe(self.amount.text()))
-        except:
+        except ValueError:
             errors.append("Please enter a valid numeric amount.")
             return len(errors) == 0, errors
 
@@ -648,7 +640,10 @@ class PaymentForm(QDialog):
 
     def get_payload(self) -> dict | None:
         amount_txt = self.amount.text().strip()
-        amount = self._to_float_safe(amount_txt)
+        try:
+            amount = self._to_float_safe(amount_txt)
+        except ValueError:
+            return None
 
         if amount <= 0:
             return None

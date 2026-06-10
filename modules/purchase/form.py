@@ -10,7 +10,7 @@ from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...utils.helpers import today_str, fmt_money
-import re
+from .validation import SALE_PRICE_RULE_MESSAGE, parse_strict_float
 import datetime
 import logging
 
@@ -548,21 +548,12 @@ class PurchaseForm(QDialog):
             self.lbl_vendor_advance.setText("Vendor Balance: Select a vendor")
             self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #666666;")  # Gray for placeholder
     def _to_float_safe(self, txt: str) -> float:
-        if txt is None:
-            return 0.0
-        try:
-            cleaned = re.sub(r"[^0-9.\-]", "", txt)
-            return float(cleaned) if cleaned and cleaned not in ['-', '.', '-.'] else 0.0
-        except ValueError:
-            logging.warning(f"Could not convert '{txt}' to float, returning 0.0")
-            return 0.0
-        except Exception as e:
-            logging.error(f"Unexpected error in _to_float_safe with input '{txt}': {e}")
-            return 0.0
+        return parse_strict_float(txt)
 
     def _toggle_ip_fields_by_amount(self):
         try:
-            amount = float(self._to_float_safe(self.ip_amount.text()))
+            amount_txt = self.ip_amount.text().strip()
+            amount = float(self._to_float_safe(amount_txt)) if amount_txt else 0.0
             enable_fields = amount > 0
 
             
@@ -714,7 +705,8 @@ class PurchaseForm(QDialog):
     def _refresh_ip_visibility(self):
         
         try:
-            amount = float(self._to_float_safe(self.ip_amount.text()))
+            amount_txt = self.ip_amount.text().strip()
+            amount = float(self._to_float_safe(amount_txt)) if amount_txt else 0.0
             if amount <= 0:
                 
                 self.ip_company_acct.setEnabled(False)
@@ -892,13 +884,7 @@ class PurchaseForm(QDialog):
     def _base_uom_id(self, product_id: int) -> int | None:
         base = self.products.get_base_uom(product_id)
         if base: return int(base["uom_id"])
-        u = self.products.list_uoms()
-        if u:
-            return int(u[0]["uom_id"])
-        else:
-            
-            logging.error("No UOMs found in the system. Please configure at least one UOM.")
-            return None
+        return None
 
     def _delete_row_for_button(self, btn: QPushButton):
         for r in range(self.tbl.rowCount()):
@@ -1075,7 +1061,10 @@ class PurchaseForm(QDialog):
     def _recalc_row(self, r: int):
         def num(c):
             it = self.tbl.item(r, c)
-            return self._to_float_safe(it.text()) if it and it.text() else 0.0
+            try:
+                return self._to_float_safe(it.text()) if it and it.text() else 0.0
+            except ValueError:
+                return 0.0
 
         qty = num(2)
         buy = num(3)
@@ -1087,7 +1076,7 @@ class PurchaseForm(QDialog):
                 it.setBackground(Qt.red if bad else Qt.white)
 
         bad_buy = buy <= 0
-        bad_sale = (sale < buy) or (sale <= 0)  
+        bad_sale = (sale <= buy) or (sale <= 0)  
         mark(3, bad_buy)
         mark(4, bad_sale or bad_buy)
 
@@ -1121,10 +1110,13 @@ class PurchaseForm(QDialog):
 
         def num(c):
             it = self.tbl.item(r, c)
-            return self._to_float_safe(it.text()) if it and it.text() else 0.0
+            try:
+                return self._to_float_safe(it.text()) if it and it.text() else 0.0
+            except ValueError:
+                return 0.0
 
         qty = num(2); buy = num(3); sale = num(4)
-        if qty <= 0 or buy <= 0 or not (sale >= buy):
+        if qty <= 0 or buy <= 0 or not (sale > buy):
             return None
         uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
         if not uom_id:
@@ -1178,33 +1170,33 @@ class PurchaseForm(QDialog):
             
             qty_it = self.tbl.item(r, 2)
             try:
-                qty = self._to_float_safe((qty_it.text() or "0").strip())
+                qty = self._to_float_safe((qty_it.text() if qty_it else "").strip())
                 if qty <= 0:
                     errors.append(f"Row {r+1}: Quantity must be greater than 0.")
                     continue
-            except:
+            except ValueError:
                 errors.append(f"Row {r+1}: Please enter a valid numeric quantity.")
                 continue
 
             
             buy_it = self.tbl.item(r, 3)
             try:
-                buy = self._to_float_safe((buy_it.text() or "0").strip())
+                buy = self._to_float_safe((buy_it.text() if buy_it else "").strip())
                 if buy <= 0:
                     errors.append(f"Row {r+1}: Purchase price must be greater than 0.")
                     continue
-            except:
+            except ValueError:
                 errors.append(f"Row {r+1}: Please enter a valid numeric purchase price.")
                 continue
 
             
             sale_it = self.tbl.item(r, 4)
             try:
-                sale = self._to_float_safe((sale_it.text() or "0").strip())
-                if sale < buy:
-                    errors.append(f"Row {r+1}: Sale price must be greater than or equal to purchase price ({buy}).")
+                sale = self._to_float_safe((sale_it.text() if sale_it else "").strip())
+                if sale <= buy:
+                    errors.append(f"Row {r+1}: {SALE_PRICE_RULE_MESSAGE}")
                     continue
-            except:
+            except ValueError:
                 errors.append(f"Row {r+1}: Please enter a valid numeric sale price.")
                 continue
 
@@ -1226,7 +1218,10 @@ class PurchaseForm(QDialog):
                     "item_discount": self._row_item_discount(r),
                 })
             else:
-                errors.append(f"Row {r+1}: Unable to determine UOM for product. Please configure UOM settings.")
+                errors.append(
+                    f"Row {r+1}: Selected product has no configured base UOM. "
+                    "Configure the product UOM before adding it to a purchase."
+                )
 
         
         if not valid_rows:
@@ -1410,13 +1405,20 @@ class PurchaseForm(QDialog):
                 it = self.tbl.item(r, c)
                 return self._to_float_safe(it.text()) if it and it.text() else 0.0
 
-            qty = num(2); buy = num(3); sale = num(4)
+            try:
+                qty = num(2); buy = num(3); sale = num(4)
+            except ValueError:
+                return None
+            if qty <= 0 or buy <= 0 or sale <= buy:
+                return None
             uom_id = self.tbl.item(r, 0).data(Qt.UserRole)
             if uom_id is None:
                 try:
                     uom_id = int(self.products.get_base_uom(product_id)["uom_id"])
                 except Exception:
                     uom_id = self._base_uom_id(product_id)
+            if uom_id is None:
+                return None
             
             rows.append({
                 "item_id": self.tbl.item(r, 0).data(self.ITEM_ID_ROLE),
@@ -1442,7 +1444,7 @@ class PurchaseForm(QDialog):
         ip_amount = 0.0
         if self._allow_initial_payment:
             ip_amount_txt = self.ip_amount.text().strip()
-            ip_amount = self._to_float_safe(ip_amount_txt)
+            ip_amount = self._to_float_safe(ip_amount_txt) if ip_amount_txt else 0.0
 
         if ip_amount > 0:
             method = self.ip_method.currentText()
@@ -1539,7 +1541,7 @@ class PurchaseForm(QDialog):
                 return len(errors) == 0, errors
 
             ip_amount_txt = self.ip_amount.text().strip() if hasattr(self, "ip_amount") else ""
-            ip_amount = self._to_float_safe(ip_amount_txt)
+            ip_amount = self._to_float_safe(ip_amount_txt) if ip_amount_txt else 0.0
 
             if ip_amount < 0:
                 errors.append("Initial payment amount cannot be negative.")

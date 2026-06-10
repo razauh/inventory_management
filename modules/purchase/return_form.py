@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6.QtGui import QBrush, QColor
 from ...utils.helpers import today_str, fmt_money
+from .validation import parse_strict_float
 
 # Constants
 EPSILON = 1e-9
@@ -614,9 +615,9 @@ class PurchaseReturnForm(QDialog):
 
             qty_it = self.tbl.item(r, self.COL_QTY_RETURN)
             try:
-                return_qty = float((qty_it.text() or "0").strip()) if qty_it else 0.0
-            except Exception:
-                return_qty = 0.0
+                return_qty = parse_strict_float((qty_it.text() or "").strip()) if qty_it else 0.0
+            except ValueError:
+                return None
 
             if return_qty < 0:
                 return None
@@ -765,7 +766,8 @@ class PurchaseReturnForm(QDialog):
             if not it_qty:
                 continue
             try:
-                q = float(it_qty.text() or 0.0)
+                q_text = (it_qty.text() or "").strip()
+                q = parse_strict_float(q_text) if q_text else 0.0
             except Exception:
                 q = 0.0
             meta = self._meta_for_row(r)
@@ -857,7 +859,8 @@ class PurchaseReturnForm(QDialog):
             if not it_qty:
                 continue
             try:
-                q = float(it_qty.text() or 0.0)
+                q_text = (it_qty.text() or "").strip()
+                q = parse_strict_float(q_text) if q_text else 0.0
             except ValueError:
                 errors.append(f"Row {r+1}: Please enter a valid numeric quantity in 'Qty Return' column.")
                 ok = False
@@ -904,19 +907,7 @@ class PurchaseReturnForm(QDialog):
         return self._method_display_to_key.get(display_value)
 
     def _to_float_safe(self, txt: str) -> float:
-        import re
-        import logging
-        if txt is None:
-            return 0.0
-        try:
-            cleaned = re.sub(r"[^0-9.\-]", "", txt)
-            return float(cleaned) if cleaned and cleaned not in ['-', '.', '-.'] else 0.0
-        except ValueError:
-            logging.warning(f"Could not convert '{txt}' to float, returning 0.0")
-            return 0.0
-        except Exception as e:
-            logging.error(f"Unexpected error in _to_float_safe with input '{txt}': {e}")
-            return 0.0
+        return parse_strict_float(txt)
 
     def _update_field_enablement(self, enable_company=False, enable_vendor=False, enable_instr=False, enable_temp=False):
         """Centralize the logic for enabling/disabling refund fields."""

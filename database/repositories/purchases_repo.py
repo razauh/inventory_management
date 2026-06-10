@@ -7,6 +7,18 @@ from typing import Iterable, Optional
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 
 
+PURCHASE_ITEM_PRICE_RULE_MESSAGE = "Sale price must be greater than purchase price."
+
+
+def _ensure_purchase_item_prices(purchase_price: float, sale_price: float) -> None:
+    if purchase_price < 0:
+        raise ValueError("Purchase price cannot be negative.")
+    if sale_price < 0:
+        raise ValueError("Sale price cannot be negative.")
+    if sale_price <= purchase_price:
+        raise ValueError(PURCHASE_ITEM_PRICE_RULE_MESSAGE)
+
+
 @dataclass
 class PurchaseHeader:
     purchase_id: str
@@ -157,6 +169,7 @@ class PurchasesRepo:
         )
 
     def _insert_item(self, it: PurchaseItem) -> int:
+        _ensure_purchase_item_prices(float(it.purchase_price), float(it.sale_price))
         cur = self.conn.execute(
             """
             INSERT INTO purchase_items(
@@ -198,6 +211,7 @@ class PurchasesRepo:
         order_disc = float(header.order_discount or 0.0)
         subtotal = 0.0
         for it in items_list:
+            _ensure_purchase_item_prices(float(it.purchase_price), float(it.sale_price))
             line_total = float(it.quantity) * (float(it.purchase_price) - float(it.item_discount or 0.0))
             subtotal += line_total
         total_amount = max(0.0, subtotal - order_disc)
@@ -323,6 +337,7 @@ class PurchasesRepo:
         order_disc = float(header.order_discount or 0.0)
         subtotal = 0.0
         for it in items_list:
+            _ensure_purchase_item_prices(float(it.purchase_price), float(it.sale_price))
             line_total = float(it.quantity) * (float(it.purchase_price) - float(it.item_discount or 0.0))
             subtotal += line_total
         total_amount = max(0.0, subtotal - order_disc)
