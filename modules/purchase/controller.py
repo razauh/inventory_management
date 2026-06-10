@@ -11,7 +11,6 @@ from .view import PurchaseView
 from .model import PurchasesTableModel
 from .form import PurchaseForm
 from .return_form import PurchaseReturnForm
-from .payments import PurchasePaymentDialog
 from ...database.repositories.purchases_repo import PurchasesRepo, PurchaseHeader, PurchaseItem
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
