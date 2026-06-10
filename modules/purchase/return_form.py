@@ -348,11 +348,12 @@ class PurchaseReturnForm(QDialog):
         rows = []
         repo = self.vba_repo
         if repo and self.vendor_id:
-            try_methods = ("list_active_for_vendor", "list_for_vendor", "list_by_vendor")
-            for m in try_methods:
-                if hasattr(repo, m):
-                    rows = getattr(repo, m)(self.vendor_id)
-                    break
+            try:
+                rows = repo.list(self.vendor_id, active_only=True)
+            except Exception:
+                import logging
+                logging.exception("Failed to load vendor bank accounts for vendor_id=%s", self.vendor_id)
+                rows = []
         primary_index = 0
         for i, r in enumerate(rows or []):
             label = _first_key(r, "label", default="Vendor Account")
@@ -1060,11 +1061,12 @@ class PurchaseReturnForm(QDialog):
         rows = []
         repo = self.vba_repo
         if repo and self.vendor_id:
-            try_methods = ("list_active_for_vendor", "list_for_vendor", "list_by_vendor")
-            for m in try_methods:
-                if hasattr(repo, m):
-                    rows = getattr(repo, m)(self.vendor_id)
-                    break
+            try:
+                rows = repo.list(self.vendor_id, active_only=True)
+            except Exception:
+                import logging
+                logging.exception("Failed to load vendor bank accounts for vendor_id=%s", self.vendor_id)
+                rows = []
         
         primary_index = 0
         for i, r in enumerate(rows or []):
@@ -1163,9 +1165,9 @@ class PurchaseReturnForm(QDialog):
                     account = self.vba_repo.find_by_label(vendor_acct_text, self.vendor_id)
                     if account:
                         vendor_bank_id = account.get('vendor_bank_account_id') or account.get('id')
-                elif self.vba_repo and hasattr(self.vba_repo, 'list_active_for_vendor'):
+                elif self.vba_repo and hasattr(self.vba_repo, 'list'):
                     # Fallback: search through active vendor accounts
-                    all_accounts = self.vba_repo.list_active_for_vendor(self.vendor_id)
+                    all_accounts = self.vba_repo.list(self.vendor_id, active_only=True)
                     for acc in all_accounts:
                         if acc.get('label', '').lower() == vendor_acct_text.lower():
                             vendor_bank_id = acc.get('vendor_bank_account_id') or acc.get('id')

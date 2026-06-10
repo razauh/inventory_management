@@ -17,6 +17,7 @@ from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
+from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str
 
@@ -81,6 +82,7 @@ class PurchaseController(BaseModule):
         self.repo = PurchasesRepo(conn)
         self.payments = PurchasePaymentsRepo(conn)
         self.vadv = VendorAdvancesRepo(conn)
+        self.vbank = VendorBankAccountsRepo(conn)
         self.vendors = VendorsRepo(conn)
         self.products = ProductsRepo(conn)
         self._wire()
@@ -1003,6 +1005,7 @@ class PurchaseController(BaseModule):
             items_for_form,
             vendor_id=vendor_id,
             vendors=self.vendors,
+            vendor_bank_accounts_repo=self.vbank,
             purchases_repo=self.repo,
             order_discount=float(row.get("order_discount", 0.0) or 0.0),
         )
@@ -1225,32 +1228,6 @@ class PurchaseController(BaseModule):
             for r in rows:
                 _id = r["account_id"]
                 _name = r["label"]
-                if _id is not None and _name is not None:
-                    out.append({"id": int(_id), "name": str(_name)})
-            return out
-        except Exception:
-            return []
-
-    def _list_vendor_bank_accounts(self, vendor_id: int) -> list[dict]:
-        try:
-            from ..database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
-            repo = VendorBankAccountsRepo(self.conn)
-            rows = []
-            for attr in ("list_by_vendor", "list_for_vendor", "list"):
-                if hasattr(repo, attr):
-                    try:
-                        rows = list(getattr(repo, attr)(vendor_id))
-                    except TypeError:
-                        try:
-                            rows = list(getattr(repo, attr)(vendor_id=vendor_id))
-                        except Exception:
-                            rows = []
-                    break
-            out = []
-            for r in rows:
-                d = dict(r)
-                _id = d.get("id") or d.get("vendor_bank_account_id") or d.get("account_id")
-                _name = d.get("name") or d.get("account_name") or d.get("title") or d.get("iban") or d.get("account_no")
                 if _id is not None and _name is not None:
                     out.append({"id": int(_id), "name": str(_name)})
             return out
