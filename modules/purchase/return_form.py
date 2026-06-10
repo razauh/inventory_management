@@ -74,6 +74,7 @@ class PurchaseReturnForm(QDialog):
         vendor_bank_accounts_repo=None,
         company_bank_accounts_repo=None,
         purchases_repo=None,
+        order_discount: float = 0.0,
     ):
         super().__init__(parent)
         self.setWindowTitle("Purchase Return")
@@ -84,6 +85,8 @@ class PurchaseReturnForm(QDialog):
         self.vba_repo = vendor_bank_accounts_repo
         self.cba_repo = company_bank_accounts_repo
         self.purchases_repo = purchases_repo
+        self.order_discount = max(0.0, float(order_discount or 0.0))
+        self._return_value_factor = 1.0
         self._refund_financials_loaded = False
         self._purchase_fully_paid = False
         self._remaining_refundable_amount = 0.0
@@ -370,6 +373,21 @@ class PurchaseReturnForm(QDialog):
         """
         self.tbl.blockSignals(True)
         self.tbl.setRowCount(len(items))
+        subtotal = 0.0
+        for it in items:
+            qty_purchased = float(_first_key(it, "quantity", "qty", "qty_purchased", default=0.0))
+            buy = float(_first_key(
+                it, "purchase_price", "buy_price", "buy",
+                "unit_purchase_price", "unit_price", "price",
+                "unit_cost", "cost_price", default=0.0
+            ))
+            disc = float(_first_key(it, "item_discount", "discount", "disc", "unit_discount", default=0.0))
+            subtotal += qty_purchased * max(0.0, buy - disc)
+        if subtotal > 0.0:
+            effective_order_discount = min(self.order_discount, subtotal)
+            self._return_value_factor = (subtotal - effective_order_discount) / subtotal
+        else:
+            self._return_value_factor = 0.0
         for r, it in enumerate(items):
             item_id = int(_first_key(it, "item_id", default=-1))
             product = str(_first_key(it, "product_name", "name", "product", default=f"#{item_id}"))
@@ -393,7 +411,7 @@ class PurchaseReturnForm(QDialog):
                 "unit_cost", "cost_price", default=0.0
             ))
             disc = float(_first_key(it, "item_discount", "discount", "disc", "unit_discount", default=0.0))
-            net_unit = max(0.0, buy - disc)
+            net_unit = max(0.0, buy - disc) * self._return_value_factor
 
             def ro(text):
                 x = QTableWidgetItem(text)

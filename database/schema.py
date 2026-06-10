@@ -879,9 +879,30 @@ BEGIN
     CAST(pi.purchase_price AS REAL),
     CAST(pi.item_discount AS REAL),
     NEW.date,
-    CAST(NEW.quantity AS REAL) *
-      (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+    CASE
+      WHEN pst.subtotal <= 0 THEN 0.0
+      ELSE CAST(NEW.quantity AS REAL)
+        * MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+        * (
+          pst.subtotal -
+          CASE
+            WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+            WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > pst.subtotal THEN pst.subtotal
+            ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0)
+          END
+        ) / pst.subtotal
+    END
   FROM purchase_items pi
+  JOIN purchases p ON p.purchase_id = pi.purchase_id
+  JOIN (
+    SELECT purchase_id,
+           COALESCE(SUM(
+             CAST(quantity AS REAL) *
+             MAX(0.0, CAST(purchase_price AS REAL) - CAST(item_discount AS REAL))
+           ), 0.0) AS subtotal
+    FROM purchase_items
+    GROUP BY purchase_id
+  ) pst ON pst.purchase_id = pi.purchase_id
   WHERE pi.item_id = NEW.reference_item_id
     AND pi.purchase_id = NEW.reference_id;
 END;
@@ -2068,19 +2089,18 @@ SELECT p.purchase_id,
          SELECT SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
          FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
        ), 0.0) AS subtotal_before_order_discount,
-       (
+       MAX(0.0,
          COALESCE((
            SELECT SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
            FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
          ), 0.0)
          - CAST(p.order_discount AS REAL)
-       )
-       -
-       COALESCE((
-         SELECT SUM(CAST(prv.return_value AS REAL))
-         FROM purchase_return_valuations prv
-         WHERE prv.purchase_id = p.purchase_id
-       ), 0.0) AS calculated_total_amount
+         - COALESCE((
+           SELECT SUM(CAST(prv.return_value AS REAL))
+           FROM purchase_return_valuations prv
+           WHERE prv.purchase_id = p.purchase_id
+         ), 0.0)
+       ) AS calculated_total_amount
 FROM purchases p;
 
 /* On-hand stock (from latest valuation snapshot per product) */
@@ -2772,14 +2792,36 @@ def _backfill_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
             CAST(pi.purchase_price AS REAL),
             CAST(pi.item_discount AS REAL),
             it.date,
-            CAST(it.quantity AS REAL) *
-                (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+            CASE
+                WHEN pst.subtotal <= 0 THEN 0.0
+                ELSE CAST(it.quantity AS REAL)
+                    * MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+                    * (
+                        pst.subtotal -
+                        CASE
+                            WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                            WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > pst.subtotal THEN pst.subtotal
+                            ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0)
+                        END
+                    ) / pst.subtotal
+            END
         FROM inventory_transactions it
         JOIN purchase_items pi
           ON pi.item_id = it.reference_item_id
          AND pi.purchase_id = it.reference_id
          AND pi.product_id = it.product_id
          AND pi.uom_id = it.uom_id
+        JOIN purchases p
+          ON p.purchase_id = pi.purchase_id
+        JOIN (
+            SELECT purchase_id,
+                   COALESCE(SUM(
+                     CAST(quantity AS REAL) *
+                     MAX(0.0, CAST(purchase_price AS REAL) - CAST(item_discount AS REAL))
+                   ), 0.0) AS subtotal
+            FROM purchase_items
+            GROUP BY purchase_id
+        ) pst ON pst.purchase_id = pi.purchase_id
         LEFT JOIN purchase_return_snapshots prs
           ON prs.transaction_id = it.transaction_id
         WHERE it.transaction_type = 'purchase_return'
@@ -2825,9 +2867,30 @@ def migrate_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
             NEW.product_id, NEW.uom_id, CAST(NEW.quantity AS REAL),
             CAST(pi.purchase_price AS REAL), CAST(pi.item_discount AS REAL),
             NEW.date,
-            CAST(NEW.quantity AS REAL) *
-              (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+            CASE
+              WHEN pst.subtotal <= 0 THEN 0.0
+              ELSE CAST(NEW.quantity AS REAL)
+                * MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+                * (
+                  pst.subtotal -
+                  CASE
+                    WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                    WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > pst.subtotal THEN pst.subtotal
+                    ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0)
+                  END
+                ) / pst.subtotal
+            END
           FROM purchase_items pi
+          JOIN purchases p ON p.purchase_id = pi.purchase_id
+          JOIN (
+            SELECT purchase_id,
+                   COALESCE(SUM(
+                     CAST(quantity AS REAL) *
+                     MAX(0.0, CAST(purchase_price AS REAL) - CAST(item_discount AS REAL))
+                   ), 0.0) AS subtotal
+            FROM purchase_items
+            GROUP BY purchase_id
+          ) pst ON pst.purchase_id = pi.purchase_id
           WHERE pi.item_id = NEW.reference_item_id
             AND pi.purchase_id = NEW.reference_id;
         END;
@@ -2900,6 +2963,7 @@ def migrate_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
                             (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
                  FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id
                ), 0.0) AS subtotal_before_order_discount,
+               MAX(0.0,
                COALESCE((
                  SELECT SUM(CAST(pi.quantity AS REAL) *
                             (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)))
@@ -2910,7 +2974,7 @@ def migrate_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
                  SELECT SUM(CAST(prv.return_value AS REAL))
                  FROM purchase_return_valuations prv
                  WHERE prv.purchase_id = p.purchase_id
-               ), 0.0) AS calculated_total_amount
+               ), 0.0)) AS calculated_total_amount
         FROM purchases p;
         """
     )

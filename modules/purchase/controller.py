@@ -1004,6 +1004,7 @@ class PurchaseController(BaseModule):
             vendor_id=vendor_id,
             vendors=self.vendors,
             purchases_repo=self.repo,
+            order_discount=float(row.get("order_discount", 0.0) or 0.0),
         )
         # Set the purchase ID to allow remaining calculation
         dlg.set_purchase_id(pid)

@@ -481,6 +481,29 @@ class PurchasesRepo:
             iid = int(ln["item_id"])
             requested_per_item[iid] = requested_per_item.get(iid, 0.0) + float(ln["qty_return"])
 
+        totals_row = self.conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(
+                CAST(pi.quantity AS REAL) *
+                MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+              ), 0.0) AS subtotal,
+              COALESCE(CAST(p.order_discount AS REAL), 0.0) AS order_discount
+            FROM purchases p
+            LEFT JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+            WHERE p.purchase_id = ?
+            GROUP BY p.purchase_id
+            """,
+            (pid,),
+        ).fetchone()
+        purchase_subtotal = float(totals_row["subtotal"] or 0.0) if totals_row else 0.0
+        order_discount = float(totals_row["order_discount"] or 0.0) if totals_row else 0.0
+        effective_order_discount = min(max(0.0, order_discount), purchase_subtotal)
+        return_value_factor = (
+            (purchase_subtotal - effective_order_discount) / purchase_subtotal
+            if purchase_subtotal > 0.0
+            else 0.0
+        )
         requested_return_value = 0.0
 
         # Validate against purchased - already returned
@@ -516,7 +539,7 @@ class PurchasesRepo:
                     f"Return qty exceeds remaining for item {item_id}: requested {batch_qty:g}, remaining {remaining:g}"
                 )
 
-            requested_return_value += batch_qty * max(
+            requested_return_value += batch_qty * return_value_factor * max(
                 0.0,
                 float(row["purchase_price"] or 0.0)
                 - float(row["item_discount"] or 0.0),
