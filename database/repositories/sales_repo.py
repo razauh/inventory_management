@@ -109,6 +109,31 @@ class SalesRepo:
     def get_header(self, sid: str) -> dict | None:
         return self.conn.execute("SELECT * FROM sales WHERE sale_id=?", (sid,)).fetchone()
 
+    def has_customer_locking_activity(self, sale_id: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT CASE WHEN
+              EXISTS (
+                SELECT 1 FROM sale_payments sp
+                WHERE sp.sale_id = ?
+              )
+              OR EXISTS (
+                SELECT 1 FROM customer_advances ca
+                WHERE ca.source_id = ?
+                  AND ca.source_type IN ('applied_to_sale', 'return_credit')
+              )
+              OR EXISTS (
+                SELECT 1 FROM inventory_transactions it
+                WHERE it.transaction_type = 'sale_return'
+                  AND it.reference_table = 'sales'
+                  AND it.reference_id = ?
+              )
+            THEN 1 ELSE 0 END AS locked
+            """,
+            (sale_id, sale_id, sale_id),
+        ).fetchone()
+        return bool(row and row["locked"])
+
     def list_items(self, sid: str) -> list[dict]:
         sql = """
         SELECT si.item_id, si.sale_id, si.product_id, p.name AS product_name,
@@ -279,9 +304,19 @@ class SalesRepo:
         """
         with self.conn:
             # Ensure we’re editing a sale row
-            row = self.conn.execute("SELECT doc_type FROM sales WHERE sale_id=?", (header.sale_id,)).fetchone()
+            row = self.conn.execute(
+                "SELECT doc_type, customer_id FROM sales WHERE sale_id=?",
+                (header.sale_id,),
+            ).fetchone()
             if not row or row["doc_type"] != "sale":
                 raise ValueError("update_sale() requires an existing sale (doc_type='sale').")
+            if (
+                int(row["customer_id"]) != int(header.customer_id)
+                and self.has_customer_locking_activity(header.sale_id)
+            ):
+                raise ValueError(
+                    "Cannot change the sale customer after payments, credits, or returns exist"
+                )
 
             self.conn.execute(
                 """
