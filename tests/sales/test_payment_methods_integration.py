@@ -345,3 +345,94 @@ def test_update_sale_settlement_guard(test_db):
     # Verify update succeeded
     row = test_db.execute("SELECT total_amount FROM sales WHERE sale_id='SO-GUARD-TEST'").fetchone()
     assert float(row["total_amount"]) == 85.0
+
+
+def test_convert_quotation_to_sale_safety(test_db):
+    sales_repo = SalesRepo(test_db)
+
+    # 1. Create a draft quotation
+    qh = SaleHeader(
+        sale_id="Q-TEST-1",
+        customer_id=1,
+        date="2026-06-11",
+        total_amount=120.0,
+        order_discount=0.0,
+        payment_status="unpaid",
+        paid_amount=0.0,
+        advance_payment_applied=0.0,
+        notes="Quotation test",
+        created_by=1
+    )
+    items = [
+        SaleItem(
+            item_id=None,
+            sale_id="Q-TEST-1",
+            product_id=1,
+            quantity=1.0,
+            uom_id=1,
+            unit_price=120.0,
+            item_discount=0.0
+        )
+    ]
+    sales_repo.create_quotation(qh, items, quotation_status="draft")
+
+    # 2. First conversion should succeed
+    sales_repo.convert_quotation_to_sale(
+        qo_id="Q-TEST-1",
+        new_so_id="SO-CONV-1",
+        date="2026-06-11",
+        created_by=1
+    )
+
+    # Verify quotation marked as accepted/converted
+    q_row = test_db.execute("SELECT quotation_status FROM sales WHERE sale_id='Q-TEST-1'").fetchone()
+    assert q_row["quotation_status"] == "accepted"
+
+    # Verify sale is created
+    so_row = test_db.execute("SELECT * FROM sales WHERE sale_id='SO-CONV-1'").fetchone()
+    assert so_row is not None
+    assert so_row["source_type"] == "quotation"
+    assert so_row["source_id"] == "Q-TEST-1"
+
+    # 3. Repeated conversion of accepted quotation should fail
+    with pytest.raises(ValueError, match="cannot be converted"):
+        sales_repo.convert_quotation_to_sale(
+            qo_id="Q-TEST-1",
+            new_so_id="SO-CONV-2",
+            date="2026-06-11",
+            created_by=1
+        )
+
+    # 4. Create a cancelled quotation and verify conversion fails
+    qh_cancelled = SaleHeader(
+        sale_id="Q-TEST-CANCELLED",
+        customer_id=1,
+        date="2026-06-11",
+        total_amount=100.0,
+        order_discount=0.0,
+        payment_status="unpaid",
+        paid_amount=0.0,
+        advance_payment_applied=0.0,
+        notes="Cancelled quotation",
+        created_by=1
+    )
+    sales_repo.create_quotation(qh_cancelled, items, quotation_status="cancelled")
+    with pytest.raises(ValueError, match="cannot be converted"):
+        sales_repo.convert_quotation_to_sale(
+            qo_id="Q-TEST-CANCELLED",
+            new_so_id="SO-CONV-3",
+            date="2026-06-11",
+            created_by=1
+        )
+
+    # 5. Verify database unique constraint prevents duplicate conversion link
+    with pytest.raises(sqlite3.IntegrityError):
+        test_db.execute(
+            """
+            INSERT INTO sales (
+                sale_id, customer_id, date, total_amount, order_discount,
+                payment_status, paid_amount, advance_payment_applied,
+                source_type, source_id, doc_type
+            ) VALUES ('SO-CONV-DUP', 1, '2026-06-11', 100.0, 0.0, 'unpaid', 0.0, 0.0, 'quotation', 'Q-TEST-1', 'sale')
+            """
+        )

@@ -290,7 +290,12 @@ class SalesController(BaseModule):
             self.view.btn_apply_credit.setEnabled(allow_sales)
 
         # Quotation-only action
-        allow_convert = (self._doc_type == "quotation") and selected
+        allow_convert = False
+        if (self._doc_type == "quotation") and selected:
+            row = self._selected_row()
+            if row and row.get("quotation_status") in ("draft", "sent"):
+                allow_convert = True
+
         if hasattr(self.view, "btn_convert"):
             self.view.btn_convert.setEnabled(allow_convert)
 
@@ -1016,6 +1021,10 @@ class SalesController(BaseModule):
             return
 
         qo_id = r["sale_id"]
+        if r.get("quotation_status") not in ("draft", "sent"):
+            info(self.view, "Cannot Convert", f"Quotation {qo_id} has status '{r.get('quotation_status')}' and cannot be converted.")
+            return
+
         date_for_so = today_str()  # you can change to reuse quotation date if you prefer
         so_id = new_sale_id(self.conn, date_for_so)
 

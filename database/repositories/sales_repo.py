@@ -49,6 +49,9 @@ class SalesRepo:
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
         self.conn = conn
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_source_quotation ON sales(source_id) WHERE source_type = 'quotation'"
+        )
 
     # ---------------------------------------------------------------------
     # READ — SALES
@@ -582,6 +585,11 @@ class SalesRepo:
             ).fetchone()
             if not qh:
                 raise ValueError(f"Quotation not found: {qo_id}")
+
+            if qh["quotation_status"] not in ("draft", "sent"):
+                raise ValueError(
+                    f"Quotation {qo_id} has status '{qh['quotation_status']}' and cannot be converted."
+                )
 
             # Optionally re-derive totals from view; fallback to header values
             tot = self.conn.execute(

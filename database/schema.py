@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS sales (
 );
 CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date);
 CREATE INDEX IF NOT EXISTS idx_sales_doc_type_date ON sales(doc_type, date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_source_quotation ON sales(source_id) WHERE source_type = 'quotation';
 
 -- (Removed separate quotations/quotation_items tables)
 
