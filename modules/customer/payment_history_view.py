@@ -261,6 +261,9 @@ class _CustomerHistoryDialog(QDialog):
             cleaned: dict = {}
             for k in headers:
                 v = row_dict.get(k)
+                if k == "kind":
+                    cleaned[k] = _TablePage._fmt_kind(v)
+                    continue
                 # Coerce common numeric-looking values only for known numeric columns;
                 # leave other fields (IDs, notes, etc.) as strings.
                 try:
@@ -478,7 +481,8 @@ class _TablePage(QWidget):
         for r, row in enumerate(self.rows):
             for c, key in enumerate(self.headers):
                 val = row.get(key, "")
-                item = QTableWidgetItem(self._fmt(val))
+                display_value = self._fmt_kind(val) if key == "kind" else self._fmt(val)
+                item = QTableWidgetItem(display_value)
                 # Alignment: numeric → right, date-ish → center, text → left
                 if _is_number(val):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -539,6 +543,17 @@ class _TablePage(QWidget):
         if isinstance(v, float):
             return f"{v:.2f}"
         return str(v)
+
+    @staticmethod
+    def _fmt_kind(v: Any) -> str:
+        labels = {
+            "sale": "Sale",
+            "receipt": "Payment",
+            "refund": "Refund",
+            "advance": "Advance",
+            "advance_applied": "Advance Applied",
+        }
+        return labels.get(v, "" if v is None else str(v))
 
 
 # -----------------------------

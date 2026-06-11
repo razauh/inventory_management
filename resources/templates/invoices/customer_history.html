@@ -84,7 +84,7 @@ Address: {{ customer.address or '' }}
         </tr>
       </thead>
       <tbody>
-        {% set order = {'sale':'Sale','receipt':'Payment','advance':'Advance','advance_applied':'Advance Applied'} %}
+        {% set order = {'sale':'Sale','receipt':'Payment','refund':'Refund','advance':'Advance','advance_applied':'Advance Applied'} %}
         {% for ev in (events or []) %}
         <tr>
           <td>{{ ev.date }}</td>

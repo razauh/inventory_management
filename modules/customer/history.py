@@ -209,6 +209,7 @@ class CustomerHistoryService:
         Builds a unified chronological timeline of financial events for the customer:
           - 'sale'            (amount = calculated_total_amount, remaining_due included)
           - 'receipt'         (sale payment; amount = payment amount > 0)
+          - 'refund'          (sale payment; amount = payment amount < 0)
           - 'advance'         (customer deposit/credit; amount = +ve)
           - 'advance_applied' (credit applied to sale; amount = negative)
         """
@@ -234,13 +235,14 @@ class CustomerHistoryService:
             )
 
         for p in payments:
+            amount = float(p["amount"] or 0.0)
             events.append(
                 {
-                    "kind": "receipt",
+                    "kind": "refund" if amount < 0 else "receipt",
                     "date": p["date"],
                     "id": p["payment_id"],
                     "sale_id": p["sale_id"],
-                    "amount": float(p["amount"] or 0.0),  # > 0 under current business rules
+                    "amount": amount,
                     "method": p["method"],
                     "clearing_state": p["clearing_state"],
                     "instrument_no": p["instrument_no"],
@@ -261,8 +263,8 @@ class CustomerHistoryService:
                 }
             )
 
-        # chronological sort; for same day, put sale first, then receipts, then advances, then applications
-        order = {"sale": 0, "receipt": 1, "advance": 2, "advance_applied": 3}
+        # chronological sort; for same day, put sale first, then payments, advances, and applications
+        order = {"sale": 0, "receipt": 1, "refund": 1, "advance": 2, "advance_applied": 3}
         events.sort(key=lambda e: (e["date"] or "", order.get(e["kind"], 99), str(e.get("id", ""))))
         return events
 
