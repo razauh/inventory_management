@@ -1215,7 +1215,7 @@ class SalesController(BaseModule):
                 },
             )
             if payload:
-                _ = customer_actions.apply_customer_advance(
+                result = customer_actions.apply_customer_advance(
                     db_path=self._db_path,
                     customer_id=customer_id,
                     sale_id=str(payload["sale_id"]),
@@ -1223,12 +1223,20 @@ class SalesController(BaseModule):
                     form_defaults={
                         "customer_id": customer_id,
                         "sale_id": payload["sale_id"],
-                        "amount_to_apply": payload["amount"],
+                        "amount": payload["amount"],
                         "date": payload.get("date"),
                         "notes": payload.get("notes"),
                         "created_by": payload.get("created_by"),
                     },
                 )
+                if not result or not result.success:
+                    message = (
+                        result.message
+                        if result and result.message
+                        else "Credit application was not recorded."
+                    )
+                    info(self.view, "Not saved", message)
+                    return
                 info(self.view, "Saved", "Credit application recorded.")
                 self._reload()
                 self._sync_details()
