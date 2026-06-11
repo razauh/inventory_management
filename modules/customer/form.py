@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QLineEdit,
     QPlainTextEdit,
-    QCheckBox,
     QMessageBox,
 )
 
@@ -22,7 +21,6 @@ class CustomerForm(QDialog):
     Customer create/edit form.
 
     Enhancements:
-      - Active toggle (schema: customers.is_active) — defaults to ON.
       - Required fields: name, contact info.
       - Whitespace normalization: trims and tidies multi-line inputs.
       - Optional dedup hint: pass a `dup_check` callable to warn if an active
@@ -31,7 +29,7 @@ class CustomerForm(QDialog):
     Args:
         parent: Qt parent
         initial: optional dict with keys like
-                 {customer_id, name, contact_info, address, is_active}
+                 {customer_id, name, contact_info, address}
         dup_check: optional callable (name: str, current_id: Optional[int]) -> bool
                    Return True if another ACTIVE customer with the same name exists.
                    The form will warn but will not block submission.
@@ -57,15 +55,11 @@ class CustomerForm(QDialog):
         self.addr = QPlainTextEdit()
         self.addr.setPlaceholderText("Address (optional)")
 
-        self.is_active = QCheckBox("Active")
-        self.is_active.setChecked(True)  # default ON
-
         # --- Layout ---
         form = QFormLayout()
         form.addRow("Name*", self.name)
         form.addRow("Contact Info*", self.contact)
         form.addRow("Address", self.addr)
-        form.addRow("", self.is_active)
 
         root = QVBoxLayout(self)
         root.addLayout(form)
@@ -80,10 +74,6 @@ class CustomerForm(QDialog):
             self.name.setText(initial.get("name", "") or "")
             self.contact.setPlainText(initial.get("contact_info", "") or "")
             self.addr.setPlainText(initial.get("address", "") or "")
-            ia = initial.get("is_active")
-            if ia is not None:
-                # Accept 1/0, True/False
-                self.is_active.setChecked(bool(ia))
 
         self._payload = None
 
@@ -127,7 +117,6 @@ class CustomerForm(QDialog):
         contact_info = self._norm_multiline(self.contact.toPlainText())
         address_norm = self._norm_multiline(self.addr.toPlainText())
         address = address_norm if address_norm else None
-        is_active = 1 if self.is_active.isChecked() else 0
 
         # Optional dedup *warning* (non-blocking)
         if self._dup_check:
@@ -150,7 +139,6 @@ class CustomerForm(QDialog):
             "name": name,
             "contact_info": contact_info,
             "address": address,          # optional
-            "is_active": is_active,      # schema toggle
         }
 
     def accept(self):
