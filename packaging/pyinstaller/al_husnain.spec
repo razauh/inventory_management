@@ -7,7 +7,7 @@ ROOT = Path(SPECPATH).resolve().parents[1]
 
 a = Analysis(
     [str(ROOT / "main.py")],
-    pathex=[str(ROOT.parent)],
+    pathex=[str(ROOT), str(ROOT.parent)],
     binaries=[],
     datas=[
         (str(ROOT / "resources"), "resources"),
