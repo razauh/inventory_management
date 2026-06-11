@@ -91,10 +91,10 @@ class CustomerAgingReports:
             "customer_id": int,
             "name": str,
             "total_due": float,
-            "b0_30": float,
-            "b31_60": float,
-            "b61_90": float,
-            "b91_plus": float,
+            "b_0_30": float,
+            "b_31_60": float,
+            "b_61_90": float,
+            "b_91_plus": float,
             "available_credit": float
           }
         Only documents with positive remaining are considered.
@@ -170,10 +170,10 @@ class CustomerAgingReports:
                     "customer_id": cust.id,
                     "name": cust.name,
                     "total_due": total_due,
-                    "b0_30": b_totals[0],
-                    "b31_60": b_totals[1],
-                    "b61_90": b_totals[2],
-                    "b91_plus": b_totals[3],
+                    "b_0_30": b_totals[0],
+                    "b_31_60": b_totals[1],
+                    "b_61_90": b_totals[2],
+                    "b_91_plus": b_totals[3],
                     "available_credit": credit,
                 }
             )
@@ -188,9 +188,9 @@ class CustomerAgingReports:
           {
             "doc_no": str,
             "date": "YYYY-MM-DD",
-            "total_amount": float,
-            "paid_amount": float,
-            "advance_payment_applied": float,
+            "total": float,
+            "paid": float,
+            "advance_applied": float,
             "remaining": float,
             "days_outstanding": int
           }
@@ -211,9 +211,9 @@ class CustomerAgingReports:
                 {
                     "doc_no": str(h["doc_no"]),
                     "date": d,
-                    "total_amount": total,
-                    "paid_amount": paid,
-                    "advance_payment_applied": adv,
+                    "total": total,
+                    "paid": paid,
+                    "advance_applied": adv,
                     "remaining": remaining,
                     "days_outstanding": int(days),
                 }
@@ -545,4 +545,3 @@ class CustomerAgingTab(QWidget):
     def _refresh_impl(self) -> None:
         # Idempotent implementation
         pass
-
