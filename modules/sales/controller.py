@@ -395,11 +395,12 @@ class SalesController(BaseModule):
             """
             SELECT
               s.total_amount,
-              COALESCE(s.paid_amount, 0.0)              AS paid_amount,
-              COALESCE(s.advance_payment_applied, 0.0)  AS advance_payment_applied,
-              COALESCE(sdt.calculated_total_amount, s.total_amount) AS calculated_total_amount
+              srt.paid_amount,
+              srt.advance_payment_applied,
+              srt.canonical_total_amount AS calculated_total_amount,
+              srt.remaining_due
             FROM sales s
-            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
             WHERE s.sale_id = ?;
             """,
             (sale_id,),
@@ -415,7 +416,7 @@ class SalesController(BaseModule):
         calc_total = float(row["calculated_total_amount"] or 0.0)
         paid = float(row["paid_amount"] or 0.0)
         adv = float(row["advance_payment_applied"] or 0.0)
-        remaining = max(0.0, calc_total - paid - adv)
+        remaining = float(row["remaining_due"] or 0.0)
         return {
             "total_amount": float(row["total_amount"] or 0.0),
             "paid_amount": paid,
@@ -606,6 +607,8 @@ class SalesController(BaseModule):
                         "date": str(d.get("date")),
                         "total": float(d.get("total_amount") or d.get("total") or 0.0),
                         "paid": float(d.get("paid_amount") or d.get("paid") or 0.0),
+                        "advance_payment_applied": float(d.get("advance_payment_applied") or 0.0),
+                        "remaining_due": float(d.get("remaining_due") or 0.0),
                     })
                 return out
         except Exception:
@@ -615,9 +618,14 @@ class SalesController(BaseModule):
         try:
             cur = self.conn.execute(
                 """
-                SELECT sale_id, date, total_amount AS total, COALESCE(paid_amount,0.0) AS paid
-                FROM sales
-                WHERE customer_id = ?
+                SELECT s.sale_id, s.date,
+                       srt.canonical_total_amount AS total,
+                       srt.paid_amount AS paid,
+                       srt.advance_payment_applied,
+                       srt.remaining_due
+                FROM sales s
+                JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+                WHERE s.customer_id = ? AND s.doc_type = 'sale'
                 ORDER BY date DESC, sale_id DESC
                 LIMIT 200;
                 """,
@@ -631,6 +639,8 @@ class SalesController(BaseModule):
                     "date": str(row["date"]),
                     "total": float(row["total"]),
                     "paid": float(row["paid"]),
+                    "advance_payment_applied": float(row["advance_payment_applied"]),
+                    "remaining_due": float(row["remaining_due"]),
                 })
             return out
         except Exception:
@@ -1484,7 +1494,7 @@ class SalesController(BaseModule):
 
             # Calculate paid amount and remaining
             paid_amount = float(doc_data.get('paid_amount', 0.0))
-            total_amount = float(doc_data.get('total_amount', 0.0))
+            total_amount = max(0.0, float(enriched_data['totals']['total']))
             advance_payment_applied = float(doc_data.get('advance_payment_applied', 0.0))
             # Calculate remaining properly by accounting for advance payments
             remaining = max(0.0, total_amount - paid_amount - advance_payment_applied)

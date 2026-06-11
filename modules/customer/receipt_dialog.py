@@ -541,7 +541,7 @@ class _CustomerMoneyDialog(QDialog):
                 date = str(row.get("date", ""))
                 total = float(row.get("total", 0.0))
                 paid = float(row.get("paid", 0.0))
-                rem = total - paid
+                rem = float(row.get("remaining_due", total - paid - float(row.get("advance_payment_applied", 0.0))))
                 display = f"{doc} — {date} — Total {total:.2f} Paid {paid:.2f} Rem {rem:.2f}"
                 self.salePicker.addItem(display, row)
             self._update_remaining()
@@ -751,7 +751,7 @@ class _CustomerMoneyDialog(QDialog):
             if rem is None:
                 total = float(data.get("total", 0.0))
                 paid = float(data.get("paid", 0.0))
-                rem = total - paid
+                rem = float(data.get("remaining_due", total - paid - float(data.get("advance_payment_applied", 0.0))))
             self.saleRemainingLabel.setText(_t(f"Remaining: ${rem:.2f}"))
         else:
             self.saleRemainingLabel.setText("")
@@ -762,7 +762,7 @@ class _CustomerMoneyDialog(QDialog):
         if isinstance(data, dict):
             total = float(data.get("total", 0.0))
             paid = float(data.get("paid", 0.0))
-            rem = total - paid
+            rem = float(data.get("remaining_due", total - paid - float(data.get("advance_payment_applied", 0.0))))
             # If adapter exists, prefer it for more accurate due
             if self._get_sale_due and str(data.get("sale_id", "")):
                 try:
@@ -852,7 +852,7 @@ class _CustomerMoneyDialog(QDialog):
 
     # ---------- Validation (advance) ----------
     def _validate_live_advance(self) -> None:
-        if self.pageStack.currentIndex() != self.PAGE_ADVANCE:
+        if self.pageStack.currentIndex() != self.PAGE_ADVANCE or not hasattr(self, "errorLabel"):
             return
         ok, msg = self._validate_advance()
         self.errorLabel.setText(msg or "")
@@ -867,7 +867,7 @@ class _CustomerMoneyDialog(QDialog):
 
     # ---------- Validation (apply advance) ----------
     def _validate_live_apply(self) -> None:
-        if self.pageStack.currentIndex() != self.PAGE_APPLY:
+        if self.pageStack.currentIndex() != self.PAGE_APPLY or not hasattr(self, "errorLabel"):
             return
         ok, msg = self._validate_apply()
         self.errorLabel.setText(msg or "")
@@ -909,7 +909,7 @@ class _CustomerMoneyDialog(QDialog):
             else:
                 total = float(selected_sale.get("total", 0.0))
                 paid = float(selected_sale.get("paid", 0.0))
-                rem = total - paid
+                rem = float(selected_sale.get("remaining_due", total - paid - float(selected_sale.get("advance_payment_applied", 0.0))))
             if amt - rem > 1e-9:
                 return False, _t("Amount exceeds remaining due for the selected sale.")
         except Exception:
@@ -932,7 +932,7 @@ class _CustomerMoneyDialog(QDialog):
             date = str(row.get("date", ""))
             total = float(row.get("total", 0.0))
             paid = float(row.get("paid", 0.0))
-            rem = total - paid
+            rem = float(row.get("remaining_due", total - paid - float(row.get("advance_payment_applied", 0.0))))
 
             # Check if search text matches any part of the data
             if (search_lower in sid.lower() or
@@ -964,7 +964,13 @@ class _CustomerMoneyDialog(QDialog):
             date = str(row_data.get("date", ""))
             total = float(row_data.get("total", 0.0))
             paid = float(row_data.get("paid", 0.0))
-            rem = total - paid
+            rem = float(row_data.get("remaining_due", total - paid - float(row_data.get("advance_payment_applied", 0.0))))
+            sale_id = str(row_data.get("sale_id", ""))
+            if self._get_sale_due and sale_id:
+                try:
+                    rem = float(self._get_sale_due(sale_id))
+                except Exception:
+                    pass
 
             items = [
                 QStandardItem(sale_id),
@@ -1010,7 +1016,13 @@ class _CustomerMoneyDialog(QDialog):
             # Calculate remaining due
             total = float(selected_sale.get("total", 0.0))
             paid = float(selected_sale.get("paid", 0.0))
-            rem = total - paid
+            rem = float(selected_sale.get("remaining_due", total - paid - float(selected_sale.get("advance_payment_applied", 0.0))))
+            sale_id = str(selected_sale.get("sale_id", ""))
+            if self._get_sale_due and sale_id:
+                try:
+                    rem = float(self._get_sale_due(sale_id))
+                except Exception:
+                    pass
 
             # Update the remaining due label
             self.applySaleRemainingLabel.setText(f"{rem:.2f}")

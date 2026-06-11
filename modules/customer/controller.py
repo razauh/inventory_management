@@ -130,28 +130,14 @@ class CustomerController(BaseModule):
         ).fetchone()
         credit_balance = float(bal_row["balance"]) if bal_row else 0.0
 
-        # sales count + open due sum (use calculated_total_amount, and subtract advance_payment_applied)
+        # sales count + canonical open due sum
         summary_row = self.conn.execute(
             """
             SELECT
               COUNT(*) AS sales_count,
-              COALESCE(SUM(
-                CASE
-                  WHEN (
-                    COALESCE(sdt.calculated_total_amount, s.total_amount)
-                    - COALESCE(s.paid_amount, 0)
-                    - COALESCE(s.advance_payment_applied, 0)
-                  ) > 0
-                  THEN (
-                    COALESCE(sdt.calculated_total_amount, s.total_amount)
-                    - COALESCE(s.paid_amount, 0)
-                    - COALESCE(s.advance_payment_applied, 0)
-                  )
-                  ELSE 0
-                END
-              ), 0.0) AS open_due_sum
+              COALESCE(SUM(srt.remaining_due), 0.0) AS open_due_sum
             FROM sales s
-            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
             WHERE s.customer_id = ? AND s.doc_type = 'sale';
             """,
             (customer_id,),
@@ -324,10 +310,12 @@ class CustomerController(BaseModule):
               s.sale_id,
               s.doc_no,
               s.date,
-              COALESCE(sdt.calculated_total_amount, s.total_amount) AS total,
-              COALESCE(s.paid_amount, 0.0) AS paid
+              srt.canonical_total_amount AS total,
+              srt.paid_amount AS paid,
+              srt.advance_payment_applied AS advance_payment_applied,
+              srt.remaining_due AS remaining_due
             FROM sales s
-            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
             WHERE s.customer_id = ? AND s.doc_type = 'sale'
             ORDER BY s.date DESC, s.sale_id DESC;
             """,
@@ -345,10 +333,12 @@ class CustomerController(BaseModule):
             SELECT
               s.sale_id,
               s.date,
-              COALESCE(sdt.calculated_total_amount, s.total_amount) AS total_calc,
-              COALESCE(s.paid_amount, 0) AS paid_amount
+              srt.canonical_total_amount AS total_calc,
+              srt.paid_amount AS paid_amount,
+              srt.advance_payment_applied AS advance_payment_applied,
+              srt.remaining_due AS remaining_due
             FROM sales s
-            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
             WHERE s.customer_id = ? AND s.doc_type = 'sale'
             ORDER BY s.date DESC, s.sale_id DESC;
             """,
@@ -357,7 +347,7 @@ class CustomerController(BaseModule):
 
         out: List[Dict[str, Any]] = []
         for r in rows:
-            remaining = float(r["total_calc"] or 0.0) - float(r["paid_amount"] or 0.0)
+            remaining = float(r["remaining_due"] or 0.0)
             if remaining > 0:
                 out.append(
                     {
@@ -366,6 +356,7 @@ class CustomerController(BaseModule):
                         "remaining_due": remaining,
                         "total": float(r["total_calc"] or 0.0),
                         "paid": float(r["paid_amount"] or 0.0),
+                        "advance_payment_applied": float(r["advance_payment_applied"] or 0.0),
                     }
                 )
         return out

@@ -228,6 +228,25 @@ class SalesRepo:
         )
         self.conn.execute("DELETE FROM sale_items WHERE sale_id=?", (sid,))
 
+    def _refresh_sale_payment_status(self, sid: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE sales
+               SET payment_status = CASE
+                 WHEN COALESCE((
+                   SELECT remaining_due
+                   FROM sale_receivable_totals
+                   WHERE sale_id = sales.sale_id
+                 ), 0.0) <= 1e-9 THEN 'paid'
+                 WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                      + COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
+                 ELSE 'unpaid'
+               END
+             WHERE sale_id = ? AND doc_type = 'sale'
+            """,
+            (sid,),
+        )
+
     # ---------------------------------------------------------------------
     # WRITE — SALES (doc_type='sale')
     # ---------------------------------------------------------------------
@@ -251,6 +270,7 @@ class SalesRepo:
                     created_by=header.created_by,
                     notes=header.notes,
                 )
+            self._refresh_sale_payment_status(header.sale_id)
             rebuild_dirty_valuations(self.conn)
 
     def update_sale(self, header: SaleHeader, items: Iterable[SaleItem]):
@@ -270,9 +290,6 @@ class SalesRepo:
                        date=?,
                        total_amount=?,
                        order_discount=?,
-                       payment_status=?,      -- maintained by triggers; UI should not hand-edit
-                       paid_amount=?,         -- maintained by triggers; UI should not hand-edit
-                       advance_payment_applied=?,
                        notes=?,
                        created_by=?,
                        source_type=?,
@@ -284,9 +301,6 @@ class SalesRepo:
                     header.date,
                     header.total_amount,
                     header.order_discount,
-                    header.payment_status,
-                    header.paid_amount,
-                    header.advance_payment_applied,
                     header.notes,
                     header.created_by,
                     header.source_type,
@@ -309,6 +323,7 @@ class SalesRepo:
                     created_by=header.created_by,
                     notes=header.notes,
                 )
+            self._refresh_sale_payment_status(header.sale_id)
             rebuild_dirty_valuations(self.conn)
 
     def delete_sale(self, sid: str):
@@ -777,10 +792,16 @@ class SalesRepo:
         with self.conn:  # Ensure consistent connection handling
             cur = self.conn.execute(
                 """
-                SELECT sale_id, total_amount, paid_amount, payment_status, advance_payment_applied
-                  FROM sales
-                 WHERE customer_id = ? AND doc_type = ?
-                 ORDER BY date ASC, sale_id ASC;
+                SELECT s.sale_id,
+                       srt.canonical_total_amount AS total_amount,
+                       srt.paid_amount,
+                       s.payment_status,
+                       srt.advance_payment_applied,
+                       srt.remaining_due
+                  FROM sales s
+                  JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+                 WHERE s.customer_id = ? AND s.doc_type = ?
+                 ORDER BY s.date ASC, s.sale_id ASC;
                 """,
                 (customer_id, doc_type),
             )

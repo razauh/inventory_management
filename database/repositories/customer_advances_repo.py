@@ -129,9 +129,7 @@ class CustomerAdvancesRepo:
         Soft checks (for clearer messages before the DB enforces):
           - amount must be positive.
           - sale must exist, be doc_type='sale', and belong to the customer.
-          - will not apply more than the sale's remaining due:
-              remaining_due = total_amount - paid_amount - advance_payment_applied
-            (advance_payment_applied is expected to be maintained by DB triggers)
+          - will not apply more than the canonical sale remaining due.
         Returns the new tx_id.
         """
         if not sale_id:
@@ -143,14 +141,13 @@ class CustomerAdvancesRepo:
             # Validate sale exists, is a real sale, and belongs to the customer
             row = con.execute(
                 """
-                SELECT sale_id,
-                       customer_id,
-                       COALESCE(total_amount, 0.0)            AS total_amount,
-                       COALESCE(paid_amount, 0.0)              AS paid_amount,
-                       COALESCE(advance_payment_applied, 0.0)  AS advance_payment_applied,
-                       doc_type
-                  FROM sales
-                 WHERE sale_id = ?;
+                SELECT s.sale_id,
+                       s.customer_id,
+                       s.doc_type,
+                       COALESCE(srt.remaining_due, 0.0) AS remaining_due
+                  FROM sales s
+                  LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+                 WHERE s.sale_id = ?;
                 """,
                 (sale_id,),
             ).fetchone()
@@ -162,11 +159,7 @@ class CustomerAdvancesRepo:
             if int(row["customer_id"]) != int(customer_id):
                 raise ValueError("Sale does not belong to the specified customer.")
 
-            total_amount = float(row["total_amount"] or 0.0)
-            paid_amount = float(row["paid_amount"] or 0.0)
-            adv_applied = float(row["advance_payment_applied"] or 0.0)
-
-            remaining_due = self._clamp_non_negative(total_amount - paid_amount - adv_applied)
+            remaining_due = float(row["remaining_due"] or 0.0)
 
             if float(amount) > (remaining_due + 1e-9):
                 raise ValueError(

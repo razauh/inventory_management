@@ -239,11 +239,13 @@ class SalePaymentsRepo:
             sale_info = con.execute(
                 """
                 SELECT
-                    s.total_amount,
-                    s.paid_amount,
-                    s.advance_payment_applied,
+                    srt.canonical_total_amount,
+                    srt.paid_amount,
+                    srt.advance_payment_applied,
+                    srt.remaining_due,
                     c.customer_id
                 FROM sales s
+                JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
                 JOIN customers c ON c.customer_id = s.customer_id
                 WHERE s.sale_id = ?
                 """,
@@ -253,13 +255,10 @@ class SalePaymentsRepo:
             if not sale_info:
                 raise ValueError(f"Sale not found: {sale_id}")
 
-            total_amount = float(sale_info["total_amount"])
-            current_paid = float(sale_info["paid_amount"])
-            current_advance = float(sale_info["advance_payment_applied"]) if sale_info["advance_payment_applied"] else 0.0
             customer_id = int(sale_info["customer_id"])
 
             # Calculate excess amount immediately before INSERT using original amount
-            amount_due = total_amount - current_paid - current_advance
+            amount_due = float(sale_info["remaining_due"] or 0.0)
             excess_amount = max(0, amount - amount_due)  # Using original unmodified amount
 
             # Record the original full payment amount in the database
@@ -403,11 +402,12 @@ class SalePaymentsRepo:
                 sale_info = con.execute(
                     """
                     SELECT
-                        s.total_amount,
-                        s.paid_amount,  -- This may already include the payment if trigger ran
-                        s.advance_payment_applied,
+                        srt.canonical_total_amount,
+                        srt.paid_amount,  -- This may already include the payment if trigger ran
+                        srt.advance_payment_applied,
                         c.customer_id
                     FROM sales s
+                    JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
                     JOIN customers c ON c.customer_id = s.customer_id
                     WHERE s.sale_id = ?
                     """,
@@ -415,7 +415,7 @@ class SalePaymentsRepo:
                 ).fetchone()
 
                 if sale_info:
-                    total_amount = float(sale_info["total_amount"])
+                    total_amount = float(sale_info["canonical_total_amount"])
                     current_paid = float(sale_info["paid_amount"])  # This may include the payment we're clearing
                     current_advance = float(sale_info["advance_payment_applied"]) if sale_info["advance_payment_applied"] else 0.0
                     customer_id = int(sale_info["customer_id"])

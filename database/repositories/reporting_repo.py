@@ -137,10 +137,11 @@ class ReportingRepo:
         SELECT
             s.sale_id     AS doc_no,
             s.date        AS date,
-            COALESCE(s.total_amount, 0.0)             AS total_amount,
-            COALESCE(s.paid_amount, 0.0)              AS paid_amount,
-            COALESCE(s.advance_payment_applied, 0.0)  AS advance_payment_applied
+            srt.canonical_total_amount AS total_amount,
+            srt.paid_amount            AS paid_amount,
+            srt.advance_payment_applied AS advance_payment_applied
         FROM sales s
+        JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
         WHERE s.customer_id = ?
           AND s.doc_type = 'sale'
           AND s.date <= ?
@@ -163,10 +164,11 @@ class ReportingRepo:
             s.customer_id,
             s.sale_id     AS doc_no,
             s.date        AS date,
-            COALESCE(s.total_amount, 0.0)             AS total_amount,
-            COALESCE(s.paid_amount, 0.0)              AS paid_amount,
-            COALESCE(s.advance_payment_applied, 0.0)  AS advance_payment_applied
+            srt.canonical_total_amount AS total_amount,
+            srt.paid_amount            AS paid_amount,
+            srt.advance_payment_applied AS advance_payment_applied
         FROM sales s
+        JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
         WHERE s.customer_id IN ({placeholders})
           AND s.doc_type = 'sale'
           AND s.date <= ?
@@ -1292,10 +1294,12 @@ class ReportingRepo:
           s.date                          AS date,
           cu.name                         AS customer_name,
           s.payment_status                AS payment_status,
-          COALESCE(CAST(s.total_amount AS REAL), 0.0)            AS total_amount,
-          COALESCE(CAST(s.paid_amount AS REAL), 0.0)             AS paid_amount,
-          COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0) AS advance_payment_applied
+          srt.canonical_total_amount AS total_amount,
+          srt.paid_amount AS paid_amount,
+          srt.advance_payment_applied AS advance_payment_applied,
+          srt.remaining_due AS remaining_due
         FROM sales s
+        JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
         LEFT JOIN customers cu ON cu.customer_id = s.customer_id
         {where}
         ORDER BY s.date DESC, s.sale_id DESC

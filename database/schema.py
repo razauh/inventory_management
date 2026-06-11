@@ -1630,14 +1630,10 @@ BEGIN
     ELSE 1
   END;
 
-  /* remaining_due = total_amount - paid_amount - advance_payment_applied */
+  /* Canonical remaining due comes from sale line totals. */
   SELECT CASE
     WHEN (
-      COALESCE((SELECT CAST(total_amount AS REAL)            FROM sales WHERE sale_id = NEW.source_id), 0.0)
-      -
-      COALESCE((SELECT CAST(paid_amount AS REAL)             FROM sales WHERE sale_id = NEW.source_id), 0.0)
-      -
-      COALESCE((SELECT CAST(advance_payment_applied AS REAL) FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      COALESCE((SELECT remaining_due FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
       + CAST(NEW.amount AS REAL)  /* NEW.amount negative when applying */
     ) < -1e-9
     THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
@@ -1657,8 +1653,11 @@ BEGIN
   UPDATE sales
      SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'), 0.0)),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) > 0 THEN 'partial'
+            WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = NEW.sale_id), 0.0)
+                 - MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0))
+                 - COALESCE(CAST(advance_payment_applied AS REAL), 0.0) <= 1e-9 THEN 'paid'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0))
+                 + COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
             ELSE 'unpaid' END
    WHERE sale_id = NEW.sale_id;
 END;
@@ -1670,8 +1669,11 @@ BEGIN
   UPDATE sales
      SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'), 0.0)),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0)) > 0 THEN 'partial'
+            WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = NEW.sale_id), 0.0)
+                 - MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0))
+                 - COALESCE(CAST(advance_payment_applied AS REAL), 0.0) <= 1e-9 THEN 'paid'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = NEW.sale_id AND clearing_state = 'cleared'),0.0))
+                 + COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
             ELSE 'unpaid' END
    WHERE sale_id = NEW.sale_id;
 END;
@@ -1683,8 +1685,11 @@ BEGIN
   UPDATE sales
      SET paid_amount = MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'), 0.0)),
          payment_status = CASE
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'),0.0)) >= CAST(total_amount AS REAL) THEN 'paid'
-            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'),0.0)) > 0 THEN 'partial'
+            WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = OLD.sale_id), 0.0)
+                 - MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'),0.0))
+                 - COALESCE(CAST(advance_payment_applied AS REAL), 0.0) <= 1e-9 THEN 'paid'
+            WHEN MAX(0.0, COALESCE((SELECT SUM(CAST(amount AS REAL)) FROM sale_payments WHERE sale_id = OLD.sale_id AND clearing_state = 'cleared'),0.0))
+                 + COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
             ELSE 'unpaid' END
    WHERE sale_id = OLD.sale_id;
 END;
@@ -1706,7 +1711,15 @@ BEGIN
            FROM customer_advances ca
            WHERE ca.source_type = 'applied_to_sale'
              AND ca.source_id   = NEW.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type = 'applied_to_sale' AND ca.source_id = NEW.source_id), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                + MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type = 'applied_to_sale' AND ca.source_id = NEW.source_id), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE sale_id = NEW.source_id;
 END;
 
@@ -1722,7 +1735,15 @@ BEGIN
            FROM customer_advances ca
            WHERE ca.source_type = 'applied_to_sale'
              AND ca.source_id   = NEW.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type = 'applied_to_sale' AND ca.source_id = NEW.source_id), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                + MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type = 'applied_to_sale' AND ca.source_id = NEW.source_id), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE sale_id = NEW.source_id;
 END;
 
@@ -1738,7 +1759,15 @@ BEGIN
            FROM customer_advances ca
            WHERE ca.source_type = 'applied_to_sale'
              AND ca.source_id   = OLD.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = OLD.source_id), 0.0)
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type = 'applied_to_sale' AND ca.source_id = OLD.source_id), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                + MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type = 'applied_to_sale' AND ca.source_id = OLD.source_id), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE sale_id = OLD.source_id;
 END;
 
@@ -2266,6 +2295,7 @@ GROUP BY vendor_id;
 /* ======================== VIEWS ======================== */
 
 /* Sales totals (per-unit discount) — works for both doc types */
+DROP VIEW IF EXISTS sale_receivable_totals;
 DROP VIEW IF EXISTS sale_detailed_totals;
 CREATE VIEW sale_detailed_totals AS
 SELECT s.sale_id,
@@ -2279,6 +2309,22 @@ SELECT s.sale_id,
          FROM sale_items si WHERE si.sale_id = s.sale_id
        ),0.0) - CAST(s.order_discount AS REAL) AS calculated_total_amount
 FROM sales s;
+
+/* Canonical customer receivable totals. Line totals, not header totals, drive AR. */
+CREATE VIEW sale_receivable_totals AS
+SELECT
+  s.sale_id,
+  MAX(0.0, CAST(sdt.calculated_total_amount AS REAL)) AS canonical_total_amount,
+  MAX(0.0, COALESCE(CAST(s.paid_amount AS REAL), 0.0)) AS paid_amount,
+  MAX(0.0, COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)) AS advance_payment_applied,
+  MAX(
+    0.0,
+    MAX(0.0, CAST(sdt.calculated_total_amount AS REAL))
+      - MAX(0.0, COALESCE(CAST(s.paid_amount AS REAL), 0.0))
+      - MAX(0.0, COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0))
+  ) AS remaining_due
+FROM sales s
+JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id;
 
 /* Purchase totals (per-unit discount, net of returns) */
 DROP VIEW IF EXISTS purchase_detailed_totals;
@@ -2783,7 +2829,15 @@ BEGIN
            FROM customer_advances ca
            WHERE ca.source_type = 'applied_to_sale'
              AND ca.source_id   = NEW.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=NEW.source_id), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                + MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=NEW.source_id), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE sale_id = NEW.source_id;
 END;
 
@@ -2801,7 +2855,15 @@ BEGIN
            FROM customer_advances ca
            WHERE ca.source_type = 'applied_to_sale'
              AND ca.source_id   = NEW.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=NEW.source_id), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                + MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=NEW.source_id), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE sale_id = NEW.source_id;
 END;
 
@@ -2819,7 +2881,15 @@ BEGIN
            FROM customer_advances ca
            WHERE ca.source_type = 'applied_to_sale'
              AND ca.source_id   = OLD.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = OLD.source_id), 0.0)
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=OLD.source_id), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                + MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=OLD.source_id), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE sale_id = OLD.source_id;
 END;
 
@@ -2836,7 +2906,15 @@ BEGIN
            FROM customer_advances ca
            WHERE ca.source_type = 'applied_to_sale'
              AND ca.source_id   = OLD.source_id
-         ), 0.0))
+         ), 0.0)),
+         payment_status = CASE
+           WHEN COALESCE((SELECT canonical_total_amount FROM sale_receivable_totals WHERE sale_id = OLD.source_id), 0.0)
+                - COALESCE(CAST(paid_amount AS REAL), 0.0)
+                - MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=OLD.source_id), 0.0)) <= 1e-9 THEN 'paid'
+           WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
+                + MAX(0.0, COALESCE((SELECT SUM(-CAST(amount AS REAL)) FROM customer_advances ca WHERE ca.source_type='applied_to_sale' AND ca.source_id=OLD.source_id), 0.0)) > 1e-9 THEN 'partial'
+           ELSE 'unpaid'
+         END
    WHERE sale_id = OLD.source_id;
 END;
 
@@ -2857,14 +2935,10 @@ BEGIN
     ELSE 1
   END;
 
-  /* remaining_due = total_amount - paid_amount - advance_payment_applied */
+  /* Canonical remaining due comes from sale line totals. */
   SELECT CASE
     WHEN (
-      COALESCE((SELECT CAST(total_amount AS REAL)            FROM sales WHERE sale_id = NEW.source_id), 0.0)
-      -
-      COALESCE((SELECT CAST(paid_amount AS REAL)             FROM sales WHERE sale_id = NEW.source_id), 0.0)
-      -
-      COALESCE((SELECT CAST(advance_payment_applied AS REAL) FROM sales WHERE sale_id = NEW.source_id), 0.0)
+      COALESCE((SELECT remaining_due FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
       + CAST(NEW.amount AS REAL)  /* NEW.amount is negative when applying credit */
     ) < -1e-9
     THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')

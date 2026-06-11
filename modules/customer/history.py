@@ -72,10 +72,12 @@ class CustomerHistoryService:
                     s.source_type,
                     s.source_id,
                     COALESCE(sdt.subtotal_before_order_discount, 0.0) AS subtotal_before_order_discount,
-                    COALESCE(sdt.calculated_total_amount, s.total_amount) AS calculated_total_amount
+                    srt.canonical_total_amount AS calculated_total_amount,
+                    srt.remaining_due AS remaining_due
                 FROM sales s
                 JOIN customers c ON c.customer_id = s.customer_id
-                LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+                JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+                JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
                 WHERE s.customer_id = ?
                   AND s.doc_type = 'sale'
                 ORDER BY s.date ASC, s.sale_id ASC;
@@ -116,13 +118,10 @@ class CustomerHistoryService:
         for r in items:
             items_by_sale.setdefault(r["sale_id"], []).append(dict(r))
 
-        # Compute remaining due using calculated_total_amount - paid_amount - advance_payment_applied
         result: List[Dict[str, Any]] = []
         for s in sales:
             calc_total = float(s["calculated_total_amount"] or 0.0)
-            paid = float(s["paid_amount"] or 0.0)
-            adv_applied = float(s["advance_payment_applied"] or 0.0)
-            remaining_due = self._clamp_non_negative(calc_total - paid - adv_applied)
+            remaining_due = float(s["remaining_due"] or 0.0)
             header_total = float(s["total_amount"] or 0.0)
             result.append(
                 {
