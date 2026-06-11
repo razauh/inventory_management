@@ -4,9 +4,6 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from .customer_advances_repo import CustomerAdvancesRepo
-
-
 class SalePaymentsRepo:
     """
     Repository for customer receipts/refunds (rows in sale_payments).
@@ -70,6 +67,34 @@ class SalePaymentsRepo:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON;")
         return con
+
+    @staticmethod
+    def _grant_customer_credit(
+        con: sqlite3.Connection,
+        *,
+        customer_id: int,
+        amount: float,
+        date: Optional[str],
+        notes: str,
+        created_by: Optional[int],
+    ) -> int:
+        cur = con.execute(
+            """
+            INSERT INTO customer_advances
+                (customer_id, tx_date, amount, source_type, source_id, notes, created_by)
+            VALUES
+                (:customer_id, COALESCE(:tx_date, CURRENT_DATE), :amount,
+                 'deposit', NULL, :notes, :created_by)
+            """,
+            {
+                "customer_id": customer_id,
+                "tx_date": date,
+                "amount": float(amount),
+                "notes": notes,
+                "created_by": created_by,
+            },
+        )
+        return int(cur.lastrowid)
 
     # --- soft validations mirroring DB rules -------------------------------
 
@@ -276,8 +301,8 @@ class SalePaymentsRepo:
             # Only grant customer credit and mark overpayment_converted if the payment is cleared
             # For pending payments, do not grant credit and do not mark overpayment_converted
             if excess_amount > 1e-9 and clearing_state == "cleared":  # Only if there's a meaningful excess and payment is cleared
-                cadv = CustomerAdvancesRepo(con)
-                cadv.grant_credit(
+                self._grant_customer_credit(
+                    con,
                     customer_id=customer_id,
                     amount=excess_amount,
                     date=date or None,
@@ -419,8 +444,8 @@ class SalePaymentsRepo:
 
                         if not already_converted:
                             # Convert the excess to customer credit
-                            cadv = CustomerAdvancesRepo(con)
-                            cadv.grant_credit(
+                            self._grant_customer_credit(
+                                con,
                                 customer_id=customer_id,
                                 amount=excess_amount,
                                 date=cleared_date or None,
