@@ -332,6 +332,9 @@ CREATE TABLE IF NOT EXISTS customer_advances (
 );
 CREATE INDEX IF NOT EXISTS idx_cadv_cust    ON customer_advances(customer_id);
 CREATE INDEX IF NOT EXISTS idx_cadv_cust_dt ON customer_advances(customer_id, tx_date);
+CREATE INDEX IF NOT EXISTS idx_cadv_sale_source
+  ON customer_advances(source_id)
+  WHERE source_type IN ('applied_to_sale', 'return_credit');
 
 /* -------- logs -------- */
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -1616,29 +1619,102 @@ BEGIN
   END;
 END;
 
-/* New guard: do not allow applying credit beyond a sale's remaining due */
+/* Validate sale-linked customer credit rows and application limits. */
 DROP TRIGGER IF EXISTS trg_customer_advances_not_exceed_remaining_due;
 CREATE TRIGGER trg_customer_advances_not_exceed_remaining_due
 BEFORE INSERT ON customer_advances
 FOR EACH ROW
-WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
+WHEN NEW.source_type IN ('applied_to_sale', 'return_credit')
 BEGIN
-  /* Ensure referenced sale exists */
   SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM sales s WHERE s.sale_id = NEW.source_id)
-      THEN RAISE(ABORT, 'Invalid sale reference for customer credit application')
+    WHEN NEW.source_id IS NULL OR TRIM(NEW.source_id) = ''
+      THEN RAISE(ABORT, 'Sale-linked customer credit requires a sale reference')
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM sales s
+      WHERE s.sale_id = NEW.source_id
+        AND s.doc_type = 'sale'
+        AND s.customer_id = NEW.customer_id
+    )
+      THEN RAISE(ABORT, 'Invalid sale or customer reference for customer credit')
     ELSE 1
   END;
 
-  /* Canonical remaining due comes from sale line totals. */
   SELECT CASE
-    WHEN (
+    WHEN NEW.source_type = 'applied_to_sale' AND (
       COALESCE((SELECT remaining_due FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
-      + CAST(NEW.amount AS REAL)  /* NEW.amount negative when applying */
+      + CAST(NEW.amount AS REAL)
     ) < -1e-9
     THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
     ELSE 1
   END;
+END;
+
+DROP TRIGGER IF EXISTS trg_customer_advances_sale_ref_update;
+CREATE TRIGGER trg_customer_advances_sale_ref_update
+BEFORE UPDATE ON customer_advances
+FOR EACH ROW
+WHEN NEW.source_type IN ('applied_to_sale', 'return_credit')
+BEGIN
+  SELECT CASE
+    WHEN NEW.source_id IS NULL OR TRIM(NEW.source_id) = ''
+      THEN RAISE(ABORT, 'Sale-linked customer credit requires a sale reference')
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM sales s
+      WHERE s.sale_id = NEW.source_id
+        AND s.doc_type = 'sale'
+        AND s.customer_id = NEW.customer_id
+    )
+      THEN RAISE(ABORT, 'Invalid sale or customer reference for customer credit')
+    ELSE 1
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_customer_advances_sale_identity_guard;
+CREATE TRIGGER trg_customer_advances_sale_identity_guard
+BEFORE UPDATE OF customer_id, source_type, source_id ON customer_advances
+FOR EACH ROW
+WHEN (
+   OLD.source_type IN ('applied_to_sale', 'return_credit')
+   OR NEW.source_type IN ('applied_to_sale', 'return_credit')
+ )
+ AND (
+   NEW.customer_id <> OLD.customer_id
+   OR NEW.source_type <> OLD.source_type
+   OR NEW.source_id IS NOT OLD.source_id
+ )
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot change sale-linked customer credit identity');
+END;
+
+DROP TRIGGER IF EXISTS trg_sales_customer_advance_delete_guard;
+CREATE TRIGGER trg_sales_customer_advance_delete_guard
+BEFORE DELETE ON sales
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1
+  FROM customer_advances ca
+  WHERE ca.source_id = OLD.sale_id
+    AND ca.source_type IN ('applied_to_sale', 'return_credit')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot delete a sale referenced by customer credit');
+END;
+
+DROP TRIGGER IF EXISTS trg_sales_customer_advance_identity_guard;
+CREATE TRIGGER trg_sales_customer_advance_identity_guard
+BEFORE UPDATE OF sale_id, customer_id ON sales
+FOR EACH ROW
+WHEN (NEW.sale_id <> OLD.sale_id OR NEW.customer_id <> OLD.customer_id)
+ AND EXISTS (
+   SELECT 1
+   FROM customer_advances ca
+   WHERE ca.source_id = OLD.sale_id
+     AND ca.source_type IN ('applied_to_sale', 'return_credit')
+ )
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot change a sale referenced by customer credit');
 END;
 
 /* Roll up paid_amount & payment_status from sale_payments (clamped ≥ 0) */
@@ -2916,34 +2992,6 @@ BEGIN
            ELSE 'unpaid'
          END
    WHERE sale_id = OLD.source_id;
-END;
-
-
-/* ======================== CUSTOMER CREDIT GUARD (NO OVER-APPLICATION) ======================== */
-/* Prevent applying more credit to a sale than its remaining due (header total - cash/bank paid - credit already applied). */
-
-DROP TRIGGER IF EXISTS trg_customer_advances_not_exceed_remaining_due;
-CREATE TRIGGER trg_customer_advances_not_exceed_remaining_due
-BEFORE INSERT ON customer_advances
-FOR EACH ROW
-WHEN NEW.source_type = 'applied_to_sale' AND NEW.source_id IS NOT NULL
-BEGIN
-  /* Ensure referenced sale exists */
-  SELECT CASE
-    WHEN NOT EXISTS (SELECT 1 FROM sales s WHERE s.sale_id = NEW.source_id)
-      THEN RAISE(ABORT, 'Invalid sale reference for customer credit application')
-    ELSE 1
-  END;
-
-  /* Canonical remaining due comes from sale line totals. */
-  SELECT CASE
-    WHEN (
-      COALESCE((SELECT remaining_due FROM sale_receivable_totals WHERE sale_id = NEW.source_id), 0.0)
-      + CAST(NEW.amount AS REAL)  /* NEW.amount is negative when applying credit */
-    ) < -1e-9
-    THEN RAISE(ABORT, 'Cannot apply credit beyond remaining due')
-    ELSE 1
-  END;
 END;
 
 """
