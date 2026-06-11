@@ -288,6 +288,40 @@ class SalesRepo:
             (sid,),
         )
 
+    def _check_stock_availability(self, items: Iterable[SaleItem] | list[sqlite3.Row]):
+        requested_base = {}
+        for it in items:
+            if hasattr(it, "product_id"):
+                product_id = int(it.product_id)
+                uom_id = int(it.uom_id)
+                qty = float(it.quantity)
+            else:
+                product_id = int(it["product_id"])
+                uom_id = int(it["uom_id"])
+                qty = float(it["quantity"])
+
+            frow = self.conn.execute(
+                "SELECT CAST(factor_to_base AS REAL) AS f FROM product_uoms WHERE product_id=? AND uom_id=?",
+                (product_id, uom_id),
+            ).fetchone()
+            factor = float(frow["f"]) if frow and frow["f"] is not None else 1.0
+            qty_base = qty * factor
+            requested_base[product_id] = requested_base.get(product_id, 0.0) + qty_base
+
+        for product_id, req_qty in requested_base.items():
+            rebuild_dirty_valuations(self.conn, product_id)
+            r = self.conn.execute(
+                "SELECT CAST(qty_in_base AS REAL) AS q FROM v_stock_on_hand WHERE product_id=?",
+                (product_id,),
+            ).fetchone()
+            on_hand = float(r["q"]) if r else 0.0
+            if req_qty > on_hand + 1e-9:
+                p_row = self.conn.execute("SELECT name FROM products WHERE product_id=?", (product_id,)).fetchone()
+                p_name = p_row["name"] if p_row else f"ID {product_id}"
+                raise ValueError(
+                    f"Insufficient stock for product '{p_name}'. Requested: {req_qty:g}, Available: {on_hand:g} (in base units)."
+                )
+
     # ---------------------------------------------------------------------
     # WRITE — SALES (doc_type='sale')
     # ---------------------------------------------------------------------
@@ -297,6 +331,7 @@ class SalesRepo:
         Payments must be recorded via SalePaymentsRepo (not header math).
         """
         with self.conn:
+            self._check_stock_availability(items)
             self._insert_header(header)
             for it in items:
                 it.sale_id = header.sale_id
@@ -345,6 +380,12 @@ class SalesRepo:
                     "Cannot change the sale customer after payments, credits, or returns exist"
                 )
 
+            # Delete old sale content first to free up stock
+            self._delete_sale_content(header.sale_id)
+
+            # Check stock availability
+            self._check_stock_availability(items)
+
             self.conn.execute(
                 """
                 UPDATE sales
@@ -356,7 +397,7 @@ class SalesRepo:
                        created_by=?,
                        source_type=?,
                        source_id=?
-                 WHERE sale_id=?
+                  WHERE sale_id=?
                 """,
                 (
                     header.customer_id,
@@ -371,7 +412,6 @@ class SalesRepo:
                 ),
             )
 
-            self._delete_sale_content(header.sale_id)
             for it in items:
                 it.sale_id = header.sale_id
                 item_id = self._insert_item(it)
@@ -570,6 +610,8 @@ class SalesRepo:
                 """,
                 (qo_id,),
             ).fetchall()
+
+            self._check_stock_availability(q_items)
 
             # Insert items for the new sale + inventory postings
             for qi in q_items:

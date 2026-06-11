@@ -1058,6 +1058,32 @@ BEGIN
       THEN RAISE(ABORT, 'Adjustment quantity exceeds available stock')
     ELSE 1 END;
 
+  SELECT CASE
+    WHEN NEW.transaction_type = 'sale'
+     AND (
+       CAST(NEW.quantity AS REAL) * COALESCE((
+         SELECT CAST(pu.factor_to_base AS REAL)
+         FROM product_uoms pu
+         WHERE pu.product_id = NEW.product_id
+           AND pu.uom_id = NEW.uom_id
+         LIMIT 1
+       ), 1.0)
+     ) > COALESCE((
+       SELECT SUM(
+         CAST(it.quantity AS REAL) * COALESCE(pu.factor_to_base, 1.0) *
+         CASE
+           WHEN it.transaction_type IN ('purchase', 'sale_return') THEN 1.0
+           WHEN it.transaction_type IN ('sale', 'purchase_return') THEN -1.0
+           WHEN it.transaction_type = 'adjustment' THEN 1.0
+         END
+       )
+       FROM inventory_transactions it
+       LEFT JOIN product_uoms pu ON pu.product_id = it.product_id AND pu.uom_id = it.uom_id
+       WHERE it.product_id = NEW.product_id
+     ), 0.0) + 1e-9
+      THEN RAISE(ABORT, 'Sale quantity exceeds available stock')
+    ELSE 1 END;
+
   -- ensure referenced rows exist + correct table
   SELECT CASE
     WHEN NEW.transaction_type = 'purchase' AND (

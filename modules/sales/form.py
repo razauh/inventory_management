@@ -379,6 +379,21 @@ class SaleForm(QDialog):
 
         # seed table
         self._rows = [dict(x) for x in (initial.get("items") or [])] if initial else []
+        self._original_qty_base = {}
+        if initial and initial.get("sale_id") and self.mode == "sale":
+            for item in self._rows:
+                pid = item.get("product_id")
+                uom_id = item.get("uom_id")
+                qty = item.get("quantity") or 0.0
+                if pid and uom_id:
+                    try:
+                        uoms = self.products.list_product_uoms(int(pid))
+                        uom = next((u for u in uoms if u["uom_id"] == uom_id), None)
+                        factor = float(uom["factor_to_base"]) if uom else 1.0
+                    except Exception:
+                        factor = 1.0
+                    self._original_qty_base[pid] = self._original_qty_base.get(pid, 0.0) + (qty * factor)
+
         self._rebuild_table()
         if initial:
             # Try to set customer by ID first, then by name if needed
@@ -607,6 +622,8 @@ class SaleForm(QDialog):
 
             # availability in BASE initially; alt handler will convert
             avail_base = self.products.on_hand_base(int(pid))
+            if pid in self._original_qty_base:
+                avail_base += self._original_qty_base[pid]
             avail.setText(f"{avail_base:g}")
 
             self._recalc_row(r); self._refresh_totals()
@@ -624,6 +641,8 @@ class SaleForm(QDialog):
             sale_base = float(pr["sale"])
             cost_base = float(unit.data(Qt.UserRole) or 0.0)
             avail_base = self.products.on_hand_base(int(pid))
+            if pid in self._original_qty_base:
+                avail_base += self._original_qty_base[pid]
 
             if data is None:
                 # base uom
@@ -805,7 +824,10 @@ class SaleForm(QDialog):
             return None
 
         errors = []
+        critical_errors = []
         items = []
+        requested_base_by_product = {}
+        product_names = {}
 
         # row-by-row validation with specific messages
         for r in range(self.tbl.rowCount()):
@@ -829,7 +851,9 @@ class SaleForm(QDialog):
                     pid = self._parse_product_id_from_text(text)
 
                     if not pid:
-                        errors.append(f"Row {r+1}: Invalid product format. Please select from the suggestions.")
+                        msg = f"Row {r+1}: Invalid product format. Please select from the suggestions."
+                        errors.append(msg)
+                        critical_errors.append(msg)
                         continue
 
                 # numbers in selected UoM (as displayed)
@@ -842,25 +866,37 @@ class SaleForm(QDialog):
                 unit  = num(6)
                 disc  = num(7)
 
+                row_has_errors = False
                 if qty <= 0:
-                    errors.append(f"Row {r+1}: Quantity must be greater than 0.")
-                    continue
+                    msg = f"Row {r+1}: Quantity must be greater than 0."
+                    errors.append(msg)
+                    critical_errors.append(msg)
+                    row_has_errors = True
                 if unit <= 0:
-                    errors.append(f"Row {r+1}: Unit Price must be greater than 0.")
-                    continue
+                    msg = f"Row {r+1}: Unit Price must be greater than 0."
+                    errors.append(msg)
+                    critical_errors.append(msg)
+                    row_has_errors = True
                 if disc < 0:
-                    errors.append(f"Row {r+1}: Discount cannot be negative.")
-                    continue
-                # oversell guard in the selected UoM
-                if qty > avail:
-                    errors.append(f"Row {r+1}: Quantity ({qty:g}) exceeds available ({avail:g}).")
+                    msg = f"Row {r+1}: Discount cannot be negative."
+                    errors.append(msg)
+                    critical_errors.append(msg)
+                    row_has_errors = True
+
+                if row_has_errors:
                     continue
 
                 # uom_id: base vs alt
                 base_uom_id = int(self.tbl.item(r, 0).data(Qt.UserRole) or 0)
                 uom_id = base_uom_id
+                factor = 1.0
                 if alt and isinstance(alt.currentData(), tuple):
                     uom_id = int(alt.currentData()[0])
+                    factor = float(alt.currentData()[1])
+
+                qty_base = qty * factor
+                requested_base_by_product[pid] = requested_base_by_product.get(pid, 0.0) + qty_base
+                product_names[pid] = product_editor.text().strip()
 
                 items.append({
                     "product_id": pid,
@@ -870,11 +906,30 @@ class SaleForm(QDialog):
                     "item_discount": disc,
                 })
             except Exception:
-                errors.append(f"Row {r+1}: Invalid or incomplete data.")
+                msg = f"Row {r+1}: Invalid or incomplete data."
+                errors.append(msg)
+                critical_errors.append(msg)
                 continue
 
+        # Aggregate stock guard check in UI
+        if self.mode == "sale":
+            for pid, total_req_base in requested_base_by_product.items():
+                avail_base = self.products.on_hand_base(int(pid))
+                if pid in self._original_qty_base:
+                    avail_base += self._original_qty_base[pid]
+                if total_req_base > avail_base + 1e-9:
+                    p_name = product_names.get(pid, f"Product #{pid}")
+                    msg = f"Total requested quantity for '{p_name}' ({total_req_base:g} base units) exceeds available stock ({avail_base:g} base units)."
+                    errors.append(msg)
+                    critical_errors.append(msg)
+
+        if critical_errors:
+            self._warn("Please fix these issues",
+                       "\n".join(critical_errors[:6] + (["…"] if len(critical_errors) > 6 else [])),
+                       focus_widget=self.tbl, row_to_select=0)
+            return None
+
         if errors and not items:
-            # If nothing valid, show the first few issues and select the first bad row
             self._warn("Please fix these issues",
                        "\n".join(errors[:6] + (["…"] if len(errors) > 6 else [])),
                        focus_widget=self.tbl, row_to_select=0)
