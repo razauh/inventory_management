@@ -27,11 +27,12 @@
     .transactions-table .col-date { width: 60px; }
     .transactions-table .col-type { width: 70px; }
     .transactions-table .col-sale {
-      width: 95px;
+      width: 80px;
       word-wrap: break-word;
       overflow-wrap: anywhere;
       word-break: break-all;
     }
+    .transactions-table .col-description { width: 105px; }
     .transactions-table .col-amount,
     .transactions-table .col-remaining { width: 55px; }
   </style>
@@ -79,17 +80,19 @@ Address: {{ customer.address or '' }}
           <th class="col-date">Date</th>
           <th class="col-type">Type</th>
           <th class="col-sale">Sale ID</th>
+          <th class="col-description">Details</th>
           <th class="col-amount t-right">Amount</th>
           <th class="col-remaining t-right">Remaining</th>
         </tr>
       </thead>
       <tbody>
-        {% set order = {'sale':'Sale','receipt':'Payment','refund':'Refund','advance':'Advance','advance_applied':'Advance Applied'} %}
+        {% set order = {'sale':'Sale','sale_return':'Sale Return','receipt':'Payment','refund':'Refund','advance':'Advance','advance_applied':'Advance Applied'} %}
         {% for ev in (events or []) %}
         <tr>
           <td>{{ ev.date }}</td>
           <td>{{ order.get(ev.kind, ev.kind) }}</td>
           <td>{{ ev.sale_id or '' }}</td>
+          <td>{{ ev.description or '' }}</td>
           <td class="t-right">{{ '%.2f' % (ev.amount or 0.0) }}</td>
           <td class="t-right">
             {% if ev.kind == 'sale' %}

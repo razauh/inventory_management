@@ -58,15 +58,16 @@ class CustomersRepo:
           - contact_info
           - address
         """
-        pattern = f"%{term.strip()}%"
+        escaped = term.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         rows = self.conn.execute(
             "SELECT customer_id, name, contact_info, address "
             "FROM customers "
             "WHERE "
-            "  CAST(customer_id AS TEXT) LIKE ? OR "
-            "  name LIKE ? OR "
-            "  contact_info LIKE ? OR "
-            "  address LIKE ? "
+            "  CAST(customer_id AS TEXT) LIKE ? ESCAPE '\\' OR "
+            "  name LIKE ? ESCAPE '\\' OR "
+            "  contact_info LIKE ? ESCAPE '\\' OR "
+            "  address LIKE ? ESCAPE '\\' "
             "ORDER BY customer_id DESC",
             (pattern, pattern, pattern, pattern),
         ).fetchall()

@@ -4,7 +4,7 @@ import sqlite3
 import logging
 from typing import Any, Optional, Dict, List
 
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
+from PySide6.QtCore import Qt, QSortFilterProxyModel
 from PySide6.QtWidgets import QWidget
 
 from ..base_module import BaseModule
@@ -66,8 +66,9 @@ class CustomerController(BaseModule):
         if hasattr(self.view, "btn_update_clearing"):
             self.view.btn_update_clearing.clicked.connect(self._on_update_clearing)
 
-    def _build_model(self):
-        rows = self.repo.list_customers()
+    def _build_model(self, rows: list | None = None):
+        if rows is None:
+            rows = self.repo.list_customers()
         self.base = CustomersTableModel(rows)
 
         self.proxy = QSortFilterProxyModel(self.view)
@@ -93,8 +94,12 @@ class CustomerController(BaseModule):
     # ------------------------------------------------------------------ #
 
     def _apply_filter(self, text: str):
-        # Client-side filter (fast, preserves existing UX).
-        self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
+        query = text.strip()
+        rows = self.repo.search(query) if query else self.repo.list_customers()
+        self._build_model(rows)
+        if self.proxy.rowCount() > 0:
+            self.view.table.selectRow(0)
+        self._update_details()
 
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()
@@ -197,7 +202,9 @@ class CustomerController(BaseModule):
         self.view.btn_record_advance.setEnabled(enabled)
         self.view.btn_apply_advance.setEnabled(enabled)
         # History popup is allowed as long as something is selected
-        self.view.btn_history.setEnabled(True if self._selected_id() else False)
+        has_selection = self._selected_id() is not None
+        self.view.btn_history.setEnabled(has_selection)
+        self.view.btn_print_history.setEnabled(has_selection)
         # Optional clearing button mirrors enabled state (if present)
         if hasattr(self.view, "btn_update_clearing"):
             self.view.btn_update_clearing.setEnabled(enabled)

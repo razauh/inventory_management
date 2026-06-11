@@ -3,8 +3,9 @@
 from .actions import (
     ActionResult,
     receive_payment,
-    record_advance,
-    apply_advance,
+    record_customer_advance,
+    apply_customer_advance,
+    update_receipt_clearing,
     open_payment_history,
 )
 from .controller import CustomerController
@@ -18,8 +19,9 @@ __all__ = [
     # actions
     "ActionResult",
     "receive_payment",
-    "record_advance",
-    "apply_advance",
+    "record_customer_advance",
+    "apply_customer_advance",
+    "update_receipt_clearing",
     "open_payment_history",
     # widgets/controllers
     "CustomerController",

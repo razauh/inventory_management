@@ -282,6 +282,8 @@ CREATE TABLE IF NOT EXISTS inventory_transactions (
 CREATE INDEX IF NOT EXISTS idx_inventory_product  ON inventory_transactions(product_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_date     ON inventory_transactions(date);
 CREATE INDEX IF NOT EXISTS idx_inventory_type     ON inventory_transactions(transaction_type);
+CREATE INDEX IF NOT EXISTS idx_inventory_reference_type
+  ON inventory_transactions(reference_table, reference_id, transaction_type);
 CREATE INDEX IF NOT EXISTS idx_it_product_order
   ON inventory_transactions(product_id, date, txn_seq, posted_at, transaction_id);
 

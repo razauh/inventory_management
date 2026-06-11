@@ -205,6 +205,7 @@ class _CustomerHistoryDialog(QDialog):
             rows = w.rows
             title = w.title or "History"
             pretty_header = w._pretty_header
+            columns = self._build_column_meta(headers, rows, pretty_header)
         else:
             # Treat non-table tab as summary: flatten the overview dict
             overview = (self._history or {}).get("summary") or {}
@@ -216,6 +217,7 @@ class _CustomerHistoryDialog(QDialog):
 
             def pretty_header(k: str) -> str:
                 return _CustomerHistoryDialog._pretty_title(k)
+            columns = self._build_column_meta(headers, rows, pretty_header)
 
         # Load template via package-safe loader
         try:
@@ -280,8 +282,7 @@ class _CustomerHistoryDialog(QDialog):
 
         html = template.render(
             title=title,
-            keys=headers,
-            labels=[pretty_header(h) for h in headers],
+            columns=columns,
             rows=norm_rows,
             customer_id=self._customer_id,
             customer_name=summary.get("customer_name", ""),
@@ -368,6 +369,51 @@ class _CustomerHistoryDialog(QDialog):
         self._summary_label = QLabel(msg)
         self._summary_label.setStyleSheet("color:#444; margin-top:6px;")
         outer.addWidget(self._summary_label)
+
+    @staticmethod
+    def _build_column_meta(
+        headers: List[str],
+        rows: List[Dict[str, Any]],
+        pretty_header,
+    ) -> List[Dict[str, Any]]:
+        numeric_keys = {
+            "amount",
+            "amount_effect",
+            "balance",
+            "balance_after",
+            "open_due",
+            "open_due_sum",
+            "credit",
+            "credit_balance",
+            "total",
+            "total_amount",
+            "paid_amount",
+            "remaining",
+            "quantity",
+            "price",
+        }
+        date_keys = {"date", "posted_at", "tx_date", "cleared_date", "deposited_date", "instrument_date"}
+        columns: List[Dict[str, Any]] = []
+        for key in headers:
+            align = "left"
+            if key in numeric_keys:
+                align = "right"
+            elif key in date_keys:
+                align = "center"
+            else:
+                sample = next((row.get(key) for row in rows if row.get(key) not in (None, "")), None)
+                if _is_number(sample):
+                    align = "right"
+                elif isinstance(sample, str) and _looks_like_date(sample):
+                    align = "center"
+            columns.append(
+                {
+                    "key": key,
+                    "label": pretty_header(key),
+                    "align": align,
+                }
+            )
+        return columns
 
     def _build_summary_widget(
         self,
@@ -548,6 +594,7 @@ class _TablePage(QWidget):
     def _fmt_kind(v: Any) -> str:
         labels = {
             "sale": "Sale",
+            "sale_return": "Sale Return",
             "receipt": "Payment",
             "refund": "Refund",
             "advance": "Advance",

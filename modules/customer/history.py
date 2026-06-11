@@ -11,6 +11,7 @@ class CustomerHistoryService:
 
     Pulls data from:
       - sales (doc_type='sale') + sale_items (+ products, uoms) and sale_detailed_totals view
+      - inventory_transactions (transaction_type='sale_return')
       - sale_payments
       - customer_advances (+ v_customer_advance_balance)
 
@@ -165,6 +166,53 @@ class CustomerHistoryService:
             ).fetchall()
         return self._rowsdict(rows)
 
+    def sale_returns(self, customer_id: int) -> List[Dict[str, Any]]:
+        """Returns each returned sale line with its order-discount-adjusted value."""
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT
+                    it.transaction_id,
+                    it.reference_id AS sale_id,
+                    it.reference_item_id AS item_id,
+                    it.date,
+                    it.posted_at,
+                    it.txn_seq,
+                    it.product_id,
+                    p.name AS product_name,
+                    CAST(it.quantity AS REAL) AS quantity,
+                    it.uom_id,
+                    u.unit_name AS uom_name,
+                    CAST(si.unit_price AS REAL) AS unit_price,
+                    CAST(si.item_discount AS REAL) AS item_discount,
+                    -(
+                        CAST(it.quantity AS REAL)
+                        * (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+                        * CASE
+                            WHEN CAST(sdt.subtotal_before_order_discount AS REAL) > 0
+                            THEN CAST(sdt.calculated_total_amount AS REAL)
+                                 / CAST(sdt.subtotal_before_order_discount AS REAL)
+                            ELSE 1.0
+                          END
+                    ) AS amount,
+                    it.notes
+                FROM inventory_transactions it
+                JOIN sale_items si ON si.item_id = it.reference_item_id
+                JOIN sales s ON s.sale_id = si.sale_id
+                JOIN products p ON p.product_id = it.product_id
+                JOIN uoms u ON u.uom_id = it.uom_id
+                JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+                WHERE s.customer_id = ?
+                  AND s.doc_type = 'sale'
+                  AND it.transaction_type = 'sale_return'
+                  AND it.reference_table = 'sales'
+                  AND it.reference_id = s.sale_id
+                ORDER BY it.date ASC, it.txn_seq ASC, it.transaction_id ASC;
+                """,
+                (customer_id,),
+            ).fetchall()
+        return self._rowsdict(rows)
+
     def advances_ledger(self, customer_id: int) -> Dict[str, Any]:
         """
         Returns:
@@ -208,12 +256,14 @@ class CustomerHistoryService:
         """
         Builds a unified chronological timeline of financial events for the customer:
           - 'sale'            (amount = calculated_total_amount, remaining_due included)
+          - 'sale_return'     (amount = negative returned line value)
           - 'receipt'         (sale payment; amount = payment amount > 0)
           - 'refund'          (sale payment; amount = payment amount < 0)
           - 'advance'         (customer deposit/credit; amount = +ve)
           - 'advance_applied' (credit applied to sale; amount = negative)
         """
         sales = self.sales_with_items(customer_id)
+        returns = self.sale_returns(customer_id)
         payments = self.sale_payments(customer_id)
         advances = self.advances_ledger(customer_id)
 
@@ -231,6 +281,24 @@ class CustomerHistoryService:
                     "payment_status": s["payment_status"],
                     "items": s["items"],
                     "notes": s.get("notes"),
+                }
+            )
+
+        for r in returns:
+            quantity = float(r["quantity"] or 0.0)
+            uom_name = r.get("uom_name") or ""
+            events.append(
+                {
+                    "kind": "sale_return",
+                    "date": r["date"],
+                    "id": r["transaction_id"],
+                    "sale_id": r["sale_id"],
+                    "amount": float(r["amount"] or 0.0),
+                    "product_name": r["product_name"],
+                    "quantity": quantity,
+                    "uom_name": uom_name,
+                    "description": f'{r["product_name"]}: {quantity:g} {uom_name}'.strip(),
+                    "notes": r.get("notes"),
                 }
             )
 
@@ -263,8 +331,15 @@ class CustomerHistoryService:
                 }
             )
 
-        # chronological sort; for same day, put sale first, then payments, advances, and applications
-        order = {"sale": 0, "receipt": 1, "refund": 1, "advance": 2, "advance_applied": 3}
+        # chronological sort; returns precede their related refund or credit entries
+        order = {
+            "sale": 0,
+            "sale_return": 1,
+            "receipt": 2,
+            "refund": 2,
+            "advance": 3,
+            "advance_applied": 4,
+        }
         events.sort(key=lambda e: (e["date"] or "", order.get(e["kind"], 99), str(e.get("id", ""))))
         return events
 

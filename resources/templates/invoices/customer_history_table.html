@@ -42,6 +42,8 @@
       font-weight: 700;
     }
     .t-right { text-align: right; }
+    .t-left { text-align: left; }
+    .t-center { text-align: center; }
     .muted { color: #666; }
     .summary-table { margin-top: 8px; }
   </style>
@@ -56,17 +58,17 @@
     <table aria-label="{{ title }} data">
       <thead>
         <tr>
-          {% for label in labels %}
-          <th scope="col">{{ label }}</th>
+          {% for column in columns %}
+          <th scope="col" class="t-{{ column.align or 'left' }}">{{ column.label }}</th>
           {% endfor %}
         </tr>
       </thead>
       <tbody>
         {% for row in rows %}
         <tr>
-          {% for key in keys %}
-          {% set val = row.get(key) %}
-          <td class="t-right">
+          {% for column in columns %}
+          {% set val = row.get(column.key) %}
+          <td class="t-{{ column.align or 'left' }}">
             {% if val is none %}
               <span class="muted">—</span>
             {% else %}
