@@ -326,7 +326,7 @@ class SalePaymentsRepo:
         instrument_date: Optional[str] = None,  # optional
         notes: Optional[str] = None,
         ref_no: Optional[str] = None,
-    ) -> None:
+    ) -> int:
         """
         Update the clearing_state (posted/pending/cleared/bounced) and optional dates.
         When changing to 'cleared', this will also process any overpayment as customer credit.
@@ -386,8 +386,8 @@ class SalePaymentsRepo:
                     raise ValueError(f"Payment not found: {payment_id}")
 
                 if current_state["clearing_state"] == clearing_state:
-                    # State is already what we wanted, so return silently
-                    return
+                    # State is already what we wanted, so report success.
+                    return 1
                 else:
                     # Another thread changed to a different state, operation failed
                     raise ValueError(f"Another operation changed payment {payment_id} state concurrently")
@@ -458,6 +458,8 @@ class SalePaymentsRepo:
                                 "UPDATE sale_payments SET overpayment_converted = 1, converted_to_credit = ? WHERE payment_id = ?",
                                 (excess_amount, payment_id)
                             )
+
+            return rows_affected
 
 
     def list_by_sale(self, sale_id: str) -> list[sqlite3.Row]:

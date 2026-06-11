@@ -19,6 +19,7 @@ Operating instructions for AI coding agents working in this repository.
 
 ## Development Rules
 
+- When given a problem to patch, inspect the relevant source files first and verify that the reported problem actually exists before making a patch plan or editing code.
 - Prefer existing modules, controllers, repositories, and views instead of adding parallel implementations.
 - Keep dependencies minimal. If a new dependency is necessary, explain why the standard library or current packages are insufficient.
 - Avoid adding telemetry, remote logging, or cloud tracking.
