@@ -7,7 +7,6 @@ import sqlite3
 from config import DB_PATH
 from constants import TABLE_SCHEMA_VERSION, SCHEMA_VERSION
 from . import schema as schema_module
-from .seeders.default_data import seed as seed_default_data
 
 
 def get_db_path() -> str:
@@ -50,9 +49,6 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL;")
 
     _ensure_version_table(conn)
-
-    # Seeders should be safe to run repeatedly (idempotent).
-    seed_default_data(conn)
 
     conn.commit()
     return conn
