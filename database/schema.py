@@ -946,6 +946,37 @@ BEGIN
   SELECT RAISE(ABORT, 'Cannot change identity of a purchase item referenced by returns');
 END;
 
+DROP TRIGGER IF EXISTS trg_sale_items_return_delete_guard;
+CREATE TRIGGER trg_sale_items_return_delete_guard
+BEFORE DELETE ON sale_items
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM inventory_transactions it
+  WHERE it.transaction_type = 'sale_return'
+    AND it.reference_table = 'sales'
+    AND it.reference_id = OLD.sale_id
+    AND it.reference_item_id = OLD.item_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot delete a sale item referenced by returns');
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_items_return_identity_guard;
+CREATE TRIGGER trg_sale_items_return_identity_guard
+BEFORE UPDATE OF sale_id, product_id, uom_id ON sale_items
+FOR EACH ROW
+WHEN (NEW.sale_id <> OLD.sale_id OR NEW.product_id <> OLD.product_id OR NEW.uom_id <> OLD.uom_id)
+ AND EXISTS (
+  SELECT 1 FROM inventory_transactions it
+  WHERE it.transaction_type = 'sale_return'
+    AND it.reference_table = 'sales'
+    AND it.reference_id = OLD.sale_id
+    AND it.reference_item_id = OLD.item_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot change identity of a sale item referenced by returns');
+END;
+
 DROP TRIGGER IF EXISTS trg_purchases_vendor_change_guard;
 CREATE TRIGGER trg_purchases_vendor_change_guard
 BEFORE UPDATE OF vendor_id ON purchases
@@ -3517,6 +3548,37 @@ def migrate_sale_return_snapshots(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_sale_return_snapshots_sale
           ON sale_return_snapshots(sale_id);
+
+        DROP TRIGGER IF EXISTS trg_sale_items_return_delete_guard;
+        CREATE TRIGGER trg_sale_items_return_delete_guard
+        BEFORE DELETE ON sale_items
+        FOR EACH ROW
+        WHEN EXISTS (
+          SELECT 1 FROM inventory_transactions it
+          WHERE it.transaction_type = 'sale_return'
+            AND it.reference_table = 'sales'
+            AND it.reference_id = OLD.sale_id
+            AND it.reference_item_id = OLD.item_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Cannot delete a sale item referenced by returns');
+        END;
+
+        DROP TRIGGER IF EXISTS trg_sale_items_return_identity_guard;
+        CREATE TRIGGER trg_sale_items_return_identity_guard
+        BEFORE UPDATE OF sale_id, product_id, uom_id ON sale_items
+        FOR EACH ROW
+        WHEN (NEW.sale_id <> OLD.sale_id OR NEW.product_id <> OLD.product_id OR NEW.uom_id <> OLD.uom_id)
+         AND EXISTS (
+          SELECT 1 FROM inventory_transactions it
+          WHERE it.transaction_type = 'sale_return'
+            AND it.reference_table = 'sales'
+            AND it.reference_id = OLD.sale_id
+            AND it.reference_item_id = OLD.item_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Cannot change identity of a sale item referenced by returns');
+        END;
 
         DROP TRIGGER IF EXISTS trg_sale_return_snapshot_insert;
         CREATE TRIGGER trg_sale_return_snapshot_insert

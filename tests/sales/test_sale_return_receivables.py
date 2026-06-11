@@ -170,6 +170,42 @@ def test_sale_return_snapshots_are_immutable_and_block_sale_edits(sale_db):
             [SaleItem(item_id, "SAL-001", product_id, 10.0, uom_id, 12.0, 0.0)],
         )
 
+    return_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM inventory_transactions
+        WHERE transaction_type='sale_return' AND reference_id='SAL-001'
+        """
+    ).fetchone()[0]
+    assert return_count == 1
+
+
+def test_returned_sale_item_identity_and_deletion_are_guarded(sale_db):
+    conn, _, product_id, uom_id = sale_db
+    repo, item_id = _create_sale(sale_db)
+    _return(repo, item_id, 2.0)
+
+    with pytest.raises(sqlite3.IntegrityError, match="Cannot delete a sale item"):
+        conn.execute("DELETE FROM sale_items WHERE item_id=?", (item_id,))
+
+    other_product_id = conn.execute(
+        "INSERT INTO products (name) VALUES ('Other Return Product')"
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+        (other_product_id, uom_id),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="Cannot change identity of a sale item"):
+        conn.execute(
+            "UPDATE sale_items SET product_id=? WHERE item_id=?",
+            (other_product_id, item_id),
+        )
+
+    item = conn.execute(
+        "SELECT product_id FROM sale_items WHERE item_id=?",
+        (item_id,),
+    ).fetchone()
+    assert int(item["product_id"]) == product_id
+
 
 def test_legacy_sale_return_backfill_uses_stored_sale_terms(sale_db):
     conn, _, product_id, uom_id = sale_db

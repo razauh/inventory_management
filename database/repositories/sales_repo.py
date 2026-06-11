@@ -247,8 +247,24 @@ class SalesRepo:
         )
 
     def _delete_sale_content(self, sid: str):
+        if self.conn.execute(
+            """
+            SELECT 1 FROM inventory_transactions
+            WHERE transaction_type='sale_return'
+              AND reference_table='sales'
+              AND reference_id=?
+            LIMIT 1
+            """,
+            (sid,),
+        ).fetchone():
+            raise ValueError("Cannot delete sale content after returns exist")
         self.conn.execute(
-            "DELETE FROM inventory_transactions WHERE reference_table='sales' AND reference_id=?",
+            """
+            DELETE FROM inventory_transactions
+            WHERE transaction_type='sale'
+              AND reference_table='sales'
+              AND reference_id=?
+            """,
             (sid,),
         )
         self.conn.execute("DELETE FROM sale_items WHERE sale_id=?", (sid,))
