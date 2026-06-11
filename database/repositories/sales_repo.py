@@ -727,7 +727,11 @@ class SalesRepo:
             value_row = self.conn.execute(
                 f"""
                 SELECT COUNT(*) AS snapshot_count,
-                       COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS return_value
+                       COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS return_value,
+                       COALESCE(SUM(CAST(allocated_order_discount AS REAL)), 0.0)
+                         AS allocated_order_discount,
+                       COALESCE(SUM(CAST(cogs_reversal_value AS REAL)), 0.0)
+                         AS cogs_reversal_value
                 FROM sale_return_snapshots
                 WHERE transaction_id IN ({placeholders})
                 """,
@@ -736,6 +740,10 @@ class SalesRepo:
             if int(value_row["snapshot_count"] or 0) != len(return_transaction_ids):
                 raise sqlite3.IntegrityError("Sale return snapshot capture failed")
             final_return_value = float(value_row["return_value"] or 0.0)
+            allocated_order_discount = float(
+                value_row["allocated_order_discount"] or 0.0
+            )
+            cogs_reversal_value = float(value_row["cogs_reversal_value"] or 0.0)
 
             settlement_due = max(0.0, final_return_value - remaining_due_before)
             paid_before = float(hdr["paid_amount"] or 0.0)
@@ -791,6 +799,8 @@ class SalesRepo:
             ).fetchone()
             return {
                 "return_value": final_return_value,
+                "allocated_order_discount": allocated_order_discount,
+                "cogs_reversal_value": cogs_reversal_value,
                 "remaining_due_before_return": remaining_due_before,
                 "settlement_due": settlement_due,
                 "cash_refund_cap": cash_cap,
@@ -805,8 +815,10 @@ class SalesRepo:
         row = self.conn.execute(
             """
             SELECT
-              COALESCE(SUM(CAST(it.quantity AS REAL)), 0.0) AS qty_returned,
-              COALESCE(SUM(CAST(srs.return_value AS REAL)), 0.0) AS value_returned
+              COALESCE(SUM(CAST(srs.returned_quantity AS REAL)), 0.0) AS qty_returned,
+              COALESCE(SUM(CAST(srs.return_value AS REAL)), 0.0) AS value_returned,
+              COALESCE(SUM(CAST(srs.cogs_reversal_value AS REAL)), 0.0)
+                AS cogs_reversed
             FROM inventory_transactions it
             JOIN sale_return_snapshots srs ON srs.transaction_id = it.transaction_id
             WHERE it.reference_table='sales'
@@ -817,6 +829,7 @@ class SalesRepo:
         return {
             "qty": float(row["qty_returned"]),
             "value": float(row["value_returned"]),
+            "cogs_reversed": float(row["cogs_reversed"]),
         }
 
     def get_receivable_position(self, sale_id: str, return_value: float = 0.0) -> dict:

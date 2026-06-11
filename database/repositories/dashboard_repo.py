@@ -45,21 +45,17 @@ class DashboardRepo:
 
     def total_sales(self, date_from: str, date_to: str) -> float:
         sql = """
-            SELECT COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS v
-            FROM sales s
-            WHERE s.doc_type = 'sale'
-              AND s.date >= ? AND s.date <= ?
+            SELECT COALESCE(SUM(CAST(revenue AS REAL)), 0.0) AS v
+            FROM sale_financial_events
+            WHERE event_date >= ? AND event_date <= ?
         """
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
     def cogs_for_sales(self, date_from: str, date_to: str) -> float:
-        # sale_item_cogs already ties COGS to the sale date via its join.
         sql = """
-            SELECT COALESCE(SUM(c.cogs_value), 0.0) AS v
-            FROM sale_item_cogs c
-            JOIN sales s ON s.sale_id = c.sale_id
-            WHERE s.doc_type = 'sale'
-              AND s.date >= ? AND s.date <= ?
+            SELECT COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS v
+            FROM sale_financial_events
+            WHERE event_date >= ? AND event_date <= ?
         """
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
@@ -246,34 +242,17 @@ class DashboardRepo:
         self, date_from: str, date_to: str, limit_n: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Top products by revenue within date range (sales only).
-        qty_base computed via product_uoms factor_to_base (same logic as sale_item_cogs).
-        revenue = quantity * (unit_price - item_discount).
+        Top products by net revenue within date range.
         """
         sql = """
             SELECT
               p.name AS product_name,
-              /* convert sold qty to base */
-              COALESCE(SUM(
-                CAST(si.quantity AS REAL) *
-                COALESCE((
-                  SELECT CAST(pu.factor_to_base AS REAL)
-                  FROM product_uoms pu
-                  WHERE pu.product_id = si.product_id
-                    AND pu.uom_id     = si.uom_id
-                  LIMIT 1
-                ), 1.0)
-              ), 0.0) AS qty_base,
-              /* revenue before order-level discount (consistent with sale_detailed_totals' subtotal) */
-              COALESCE(SUM(
-                CAST(si.quantity AS REAL) *
-                (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
-              ), 0.0) AS revenue
-            FROM sale_items si
-            JOIN sales s    ON s.sale_id = si.sale_id AND s.doc_type = 'sale'
-            JOIN products p ON p.product_id = si.product_id
-            WHERE s.date >= ? AND s.date <= ?
-            GROUP BY p.name
+              COALESCE(SUM(CAST(e.quantity_base AS REAL)), 0.0) AS qty_base,
+              COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue
+            FROM sale_financial_events e
+            JOIN products p ON p.product_id = e.product_id
+            WHERE e.event_date >= ? AND e.event_date <= ?
+            GROUP BY e.product_id, p.name
             ORDER BY revenue DESC, qty_base DESC, p.name COLLATE NOCASE
             LIMIT ?
         """
@@ -291,19 +270,18 @@ class DashboardRepo:
         self, date_from: str, date_to: str, limit_n: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Top customers by revenue over an explicit date range (app-locale provided).
+        Top customers by net revenue over an explicit date range.
         Replace any prior MTD variant that used the DB clock.
         """
         sql = """
             SELECT
               c.name AS customer_name,
-              COUNT(*) AS order_count,
-              COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS revenue
-            FROM sales s
-            JOIN customers c ON c.customer_id = s.customer_id
-            WHERE s.doc_type = 'sale'
-              AND s.date >= ? AND s.date <= ?
-            GROUP BY c.name
+              COUNT(DISTINCT CASE WHEN e.event_type = 'sale' THEN e.sale_id END) AS order_count,
+              COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue
+            FROM sale_financial_events e
+            JOIN customers c ON c.customer_id = e.customer_id
+            WHERE e.event_date >= ? AND e.event_date <= ?
+            GROUP BY e.customer_id, c.name
             ORDER BY revenue DESC, order_count DESC, c.name COLLATE NOCASE
             LIMIT ?
         """

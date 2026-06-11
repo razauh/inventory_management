@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 
 from inventory_management.database.repositories.dashboard_repo import DashboardRepo
+from inventory_management.database.repositories.reporting_repo import ReportingRepo
 from inventory_management.database.repositories.sales_repo import SaleHeader, SaleItem, SalesRepo
 from inventory_management.database.schema import SQL, _backfill_sale_return_snapshots
 from inventory_management.modules.sales.controller import SalesController
@@ -29,7 +30,9 @@ def sale_db(tmp_path):
         conn.close()
 
 
-def _create_sale(sale_db, *, sale_id="SAL-001", paid=0.0, advance=0.0):
+def _create_sale(
+    sale_db, *, sale_id="SAL-001", paid=0.0, advance=0.0, order_discount=0.0
+):
     conn, customer_id, product_id, uom_id = sale_db
     repo = SalesRepo(conn)
     repo.create_sale(
@@ -37,8 +40,8 @@ def _create_sale(sale_db, *, sale_id="SAL-001", paid=0.0, advance=0.0):
             sale_id=sale_id,
             customer_id=customer_id,
             date="2026-06-11",
-            total_amount=100.0,
-            order_discount=0.0,
+            total_amount=100.0 - order_discount,
+            order_discount=order_discount,
             payment_status="unpaid",
             paid_amount=0.0,
             advance_payment_applied=advance,
@@ -60,14 +63,14 @@ def _create_sale(sale_db, *, sale_id="SAL-001", paid=0.0, advance=0.0):
     return repo, item_id
 
 
-def _return(repo, item_id, qty, *, cash=0.0):
+def _return(repo, item_id, qty, *, cash=0.0, date="2026-06-11"):
     item = repo.conn.execute(
         "SELECT product_id, uom_id FROM sale_items WHERE item_id=?",
         (item_id,),
     ).fetchone()
     return repo.record_return(
         sid="SAL-001",
-        date="2026-06-11",
+        date=date,
         created_by=None,
         lines=[{
             "item_id": item_id,
@@ -223,12 +226,72 @@ def test_legacy_sale_return_backfill_uses_stored_sale_terms(sale_db):
 
     _backfill_sale_return_snapshots(conn)
     snapshot = conn.execute(
-        "SELECT unit_sale_price, unit_discount, return_value FROM sale_return_snapshots"
+        """
+        SELECT unit_sale_price, unit_discount, net_unit_price,
+               allocated_order_discount, return_value, cogs_reversal_value
+        FROM sale_return_snapshots
+        """
     ).fetchone()
     assert float(snapshot["unit_sale_price"]) == pytest.approx(10.0)
     assert float(snapshot["unit_discount"]) == pytest.approx(0.0)
+    assert float(snapshot["net_unit_price"]) == pytest.approx(10.0)
+    assert float(snapshot["allocated_order_discount"]) == pytest.approx(0.0)
     assert float(snapshot["return_value"]) == pytest.approx(20.0)
+    assert float(snapshot["cogs_reversal_value"]) == pytest.approx(0.0)
     assert repo.get_receivable_position("SAL-001")["net_total_amount"] == pytest.approx(80.0)
+
+
+def test_sale_return_snapshot_captures_discount_and_original_cogs(sale_db):
+    conn, _, product_id, _ = sale_db
+    conn.execute(
+        """
+        INSERT INTO stock_valuation_history (
+            product_id, valuation_date, quantity, unit_value, total_value, valuation_method
+        ) VALUES (?, '2026-06-10', 10, 4, 40, 'moving_average')
+        """,
+        (product_id,),
+    )
+    repo, item_id = _create_sale(sale_db, order_discount=20.0)
+
+    result = _return(repo, item_id, 2.0)
+    snapshot = conn.execute(
+        """
+        SELECT net_unit_price, allocated_order_discount, return_value,
+               unit_cost_base, cogs_reversal_value
+        FROM sale_return_snapshots
+        WHERE sale_id='SAL-001'
+        """
+    ).fetchone()
+
+    assert float(snapshot["net_unit_price"]) == pytest.approx(10.0)
+    assert float(snapshot["allocated_order_discount"]) == pytest.approx(4.0)
+    assert float(snapshot["return_value"]) == pytest.approx(16.0)
+    assert float(snapshot["unit_cost_base"]) == pytest.approx(4.0)
+    assert float(snapshot["cogs_reversal_value"]) == pytest.approx(8.0)
+    assert result["allocated_order_discount"] == pytest.approx(4.0)
+    assert result["cogs_reversal_value"] == pytest.approx(8.0)
+
+
+def test_financial_reports_post_return_value_and_cogs_on_return_date(sale_db):
+    conn, _, product_id, _ = sale_db
+    conn.execute(
+        """
+        INSERT INTO stock_valuation_history (
+            product_id, valuation_date, quantity, unit_value, total_value, valuation_method
+        ) VALUES (?, '2026-06-10', 10, 4, 40, 'moving_average')
+        """,
+        (product_id,),
+    )
+    repo, item_id = _create_sale(sale_db)
+    _return(repo, item_id, 2.0, date="2026-06-12")
+
+    reporting = ReportingRepo(conn)
+    assert reporting.revenue_total("2026-06-11", "2026-06-11") == pytest.approx(100.0)
+    assert reporting.cogs_total("2026-06-11", "2026-06-11") == pytest.approx(40.0)
+    assert reporting.revenue_total("2026-06-12", "2026-06-12") == pytest.approx(-20.0)
+    assert reporting.cogs_total("2026-06-12", "2026-06-12") == pytest.approx(-8.0)
+    assert DashboardRepo(conn).total_sales("2026-06-12", "2026-06-12") == pytest.approx(-20.0)
+    assert DashboardRepo(conn).cogs_for_sales("2026-06-12", "2026-06-12") == pytest.approx(-8.0)
 
 
 def test_dashboard_and_sales_financials_use_net_remaining(sale_db):

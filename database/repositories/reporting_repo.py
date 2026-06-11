@@ -18,7 +18,8 @@ class ReportingRepo:
                 expenses, expense_categories,
                 inventory_transactions, product_uoms,
                 stock_valuation_history
-      - Views:  sale_detailed_totals, v_stock_on_hand, sale_item_cogs
+      - Views:  sale_detailed_totals, v_stock_on_hand, sale_item_cogs,
+                sale_financial_events
 
     Notes on date handling:
       • All ORDER BY clauses sort directly on the date/timestamp column (no DATE() wrapper)
@@ -539,34 +540,21 @@ class ReportingRepo:
     # ----------------------------------------------------------------------
 
     def revenue_total(self, date_from: str, date_to: str) -> float:
-        """
-        Revenue over period by sales.date; doc_type='sale' only.
-        Prefer header total_amount but fall back to sale_detailed_totals if present.
-        """
+        """Net revenue from sale and return events in the period."""
         sql = """
-        SELECT COALESCE(
-                 SUM(COALESCE(sdt.calculated_total_amount, CAST(s.total_amount AS REAL))),
-                 0.0
-               ) AS rev
-        FROM sales s
-        LEFT JOIN sale_detailed_totals sdt
-          ON sdt.sale_id = s.sale_id
-        WHERE s.doc_type = 'sale'
-          AND s.date >= ? AND s.date <= ?
+        SELECT COALESCE(SUM(CAST(revenue AS REAL)), 0.0) AS rev
+        FROM sale_financial_events
+        WHERE event_date >= ? AND event_date <= ?
         """
         row = self.conn.execute(sql, (date_from, date_to)).fetchone()
         return float(row["rev"] if row and row["rev"] is not None else 0.0)
 
     def cogs_total(self, date_from: str, date_to: str) -> float:
-        """
-        Use sale_item_cogs view (moving-average at sale date; doc_type='sale' only).
-        """
+        """Net COGS after return reversals in the period."""
         sql = """
-        SELECT COALESCE(SUM(c.cogs_value), 0.0) AS cogs
-        FROM sales s
-        JOIN sale_item_cogs c ON c.sale_id = s.sale_id
-        WHERE s.doc_type = 'sale'
-          AND s.date >= ? AND s.date <= ?
+        SELECT COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS cogs
+        FROM sale_financial_events
+        WHERE event_date >= ? AND event_date <= ?
         """
         row = self.conn.execute(sql, (date_from, date_to)).fetchone()
         return float(row["cogs"] if row and row["cogs"] is not None else 0.0)
@@ -667,6 +655,32 @@ class ReportingRepo:
             [category],
         )
 
+    @staticmethod
+    def _event_where(
+        date_from: str,
+        date_to: str,
+        statuses: Optional[Sequence[str]] = None,
+        customer_id: Optional[int] = None,
+        product_id: Optional[int] = None,
+        category: Optional[str] = None,
+    ) -> tuple[str, list[object]]:
+        where = " WHERE e.event_date >= ? AND e.event_date <= ? "
+        params: list[object] = [date_from, date_to]
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            where += f" AND s.payment_status IN ({marks}) "
+            params.extend(statuses)
+        if customer_id is not None:
+            where += " AND e.customer_id = ? "
+            params.append(customer_id)
+        if product_id is not None:
+            where += " AND e.product_id = ? "
+            params.append(product_id)
+        if category:
+            where += " AND e.category = ? "
+            params.append(category)
+        return where, params
+
     # ---- Lists & lookups ----
 
     def get_product_categories(self) -> list[sqlite3.Row]:
@@ -725,34 +739,19 @@ class ReportingRepo:
             "yearly": "%Y",
         }.get(granularity, "%Y-%m-%d")
 
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        # optional filters
-        sw, sp = self._statuses_where(statuses)
-        where += sw
-        params += sp
-
-        cw, cp = self._customer_where(customer_id)
-        where += cw
-        params += cp
-
-        pw, pp_ = self._product_exists_where(product_id)
-        where += pw
-        params += pp_
-
-        kw, kp = self._category_exists_where(category)
-        where += kw
-        params += kp
+        where, params = self._event_where(
+            date_from, date_to, statuses, customer_id, product_id, category
+        )
 
         sql = f"""
         SELECT
-          STRFTIME('{fmt}', DATE(s.date)) AS period,
-          COUNT(*)                         AS order_count,
-          COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS revenue
-        FROM sales s
+          STRFTIME('{fmt}', DATE(e.event_date)) AS period,
+          COUNT(DISTINCT CASE WHEN e.event_type = 'sale' THEN e.sale_id END) AS order_count,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
         {where}
-        GROUP BY STRFTIME('{fmt}', DATE(s.date))
+        GROUP BY STRFTIME('{fmt}', DATE(e.event_date))
         ORDER BY period
         """
         return list(self.conn.execute(sql, params))
@@ -768,57 +767,28 @@ class ReportingRepo:
         product_id: Optional[int],
         category: Optional[str],
     ) -> list[sqlite3.Row]:
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        sw, sp = self._statuses_where(statuses)
-        where += sw
-        params += sp
-
-        cw, cp = self._customer_where(customer_id)
-        where += cw
-        params += cp
-
-        pw, pp_ = self._product_exists_where(product_id)
-        where += pw
-        params += pp_
-
-        kw, kp = self._category_exists_where(category)
-        where += kw
-        params += kp
-
-        # Revenue from headers; COGS via sale_item_cogs joined by sale_id (aggregated per customer)
-        sql = f"""
-        WITH revenue AS (
-          SELECT s.customer_id,
-                 COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS revenue,
-                 COUNT(*) AS order_count
-          FROM sales s
-          {where}
-          GROUP BY s.customer_id
-        ), cogs AS (
-          SELECT s.customer_id,
-                 COALESCE(SUM(CAST(c.cogs_value AS REAL)), 0.0) AS cogs
-          FROM sales s
-          JOIN sale_item_cogs c ON c.sale_id = s.sale_id
-          {where}
-          GROUP BY s.customer_id
+        where, params = self._event_where(
+            date_from, date_to, statuses, customer_id, product_id, category
         )
+        sql = f"""
         SELECT
           cu.name AS customer_name,
-          COALESCE(r.order_count, 0) AS order_count,
-          COALESCE(r.revenue, 0.0)   AS revenue,
-          COALESCE(g.cogs, 0.0)      AS cogs,
-          (COALESCE(r.revenue,0.0) - COALESCE(g.cogs,0.0)) AS gross,
-          CASE WHEN COALESCE(r.revenue,0.0) = 0 THEN 0.0
-               ELSE (COALESCE(r.revenue,0.0) - COALESCE(g.cogs,0.0)) / COALESCE(r.revenue,0.0)
+          COUNT(DISTINCT CASE WHEN e.event_type = 'sale' THEN e.sale_id END) AS order_count,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue,
+          COALESCE(SUM(CAST(e.cogs AS REAL)), 0.0) AS cogs,
+          COALESCE(SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL)), 0.0) AS gross,
+          CASE WHEN COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) = 0 THEN 0.0
+               ELSE SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL))
+                    / SUM(CAST(e.revenue AS REAL))
           END AS margin_pct
-        FROM revenue r
-        LEFT JOIN cogs g ON g.customer_id = r.customer_id
-        LEFT JOIN customers cu ON cu.customer_id = r.customer_id
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
+        LEFT JOIN customers cu ON cu.customer_id = e.customer_id
+        {where}
+        GROUP BY e.customer_id, cu.name
         ORDER BY revenue DESC, cu.name COLLATE NOCASE
         """
-        return list(self.conn.execute(sql, params * 2))  # same WHERE/params repeated for cogs CTE
+        return list(self.conn.execute(sql, params))
 
     # ---- Sales by product ----
 
@@ -831,86 +801,30 @@ class ReportingRepo:
         product_id: Optional[int],
         category: Optional[str],
     ) -> list[sqlite3.Row]:
-        """
-        Revenue at product-level from line items:
-          line_revenue = quantity * (unit_price - item_discount)
-        qty_base via product_uoms.factor_to_base
-        COGS via sale_item_cogs (already at product granularity)
-        """
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        sw, sp = self._statuses_where(statuses)
-        where += sw
-        params += sp
-
-        cw, cp = self._customer_where(customer_id)
-        where += cw
-        params += cp
-
-        if product_id is not None:
-            where += " AND si.product_id = ? "
-            params.append(product_id)
-
-        if category:
-            where += " AND COALESCE(p.category,'') = ? "
-            params.append(category)
+        """Net sales, quantity, and COGS by product."""
+        where, params = self._event_where(
+            date_from, date_to, statuses, customer_id, product_id, category
+        )
 
         sql = f"""
-        WITH line_rev AS (
-          SELECT
-            si.product_id,
-            p.name AS product_name,
-            SUM(CAST(si.quantity AS REAL) * (CAST(si.unit_price AS REAL) - COALESCE(CAST(si.item_discount AS REAL),0))) AS revenue,
-            SUM(CAST(si.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base
-          FROM sales s
-          JOIN sale_items si ON si.sale_id = s.sale_id
-          LEFT JOIN products p ON p.product_id = si.product_id
-          LEFT JOIN product_uoms pu
-                 ON pu.product_id = si.product_id AND pu.uom_id = si.uom_id
-          {where}
-          GROUP BY si.product_id, p.name
-        ),
-        cogs AS (
-          SELECT
-            c.product_id,
-            SUM(CAST(c.cogs_value AS REAL)) AS cogs
-          FROM sales s
-          JOIN sale_item_cogs c ON c.sale_id = s.sale_id
-          {self._statuses_where(statuses)[0].replace('s.', 's.')}
-          {self._customer_where(customer_id)[0].replace('s.', 's.')}
-          {" AND c.product_id = ? " if product_id is not None else ""}
-          {" AND EXISTS (SELECT 1 FROM products p3 WHERE p3.product_id = c.product_id AND COALESCE(p3.category,'') = ?) " if category else ""}
-          AND s.doc_type = 'sale'
-          AND s.date >= ? AND s.date <= ?
-          GROUP BY c.product_id
-        )
         SELECT
-          lr.product_name,
-          lr.qty_base,
-          COALESCE(lr.revenue, 0.0) AS revenue,
-          COALESCE(g.cogs, 0.0)     AS cogs,
-          (COALESCE(lr.revenue,0.0) - COALESCE(g.cogs,0.0)) AS gross,
-          CASE WHEN COALESCE(lr.revenue,0.0) = 0 THEN 0.0
-               ELSE (COALESCE(lr.revenue,0.0) - COALESCE(g.cogs,0.0)) / COALESCE(lr.revenue,0.0)
+          p.name AS product_name,
+          COALESCE(SUM(CAST(e.quantity_base AS REAL)), 0.0) AS qty_base,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue,
+          COALESCE(SUM(CAST(e.cogs AS REAL)), 0.0) AS cogs,
+          COALESCE(SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL)), 0.0) AS gross,
+          CASE WHEN COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) = 0 THEN 0.0
+               ELSE SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL))
+                    / SUM(CAST(e.revenue AS REAL))
           END AS margin_pct
-        FROM line_rev lr
-        LEFT JOIN cogs g ON g.product_id = lr.product_id
-        ORDER BY revenue DESC, lr.product_name COLLATE NOCASE
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
+        LEFT JOIN products p ON p.product_id = e.product_id
+        {where}
+        GROUP BY e.product_id, p.name
+        ORDER BY revenue DESC, p.name COLLATE NOCASE
         """
-        params_cogs: list[object] = []
-        # replicate optional filters for cogs CTE (order: statuses, customer, product, category, dates)
-        if statuses:
-            params_cogs += list(statuses)
-        if customer_id is not None:
-            params_cogs.append(customer_id)
-        if product_id is not None:
-            params_cogs.append(product_id)
-        if category:
-            params_cogs.append(category)
-        params_cogs += [date_from, date_to]
-
-        return list(self.conn.execute(sql, params + params_cogs))
+        return list(self.conn.execute(sql, params))
 
     # ---- Sales by category ----
 
@@ -923,82 +837,29 @@ class ReportingRepo:
         product_id: Optional[int],
         category: Optional[str],
     ) -> list[sqlite3.Row]:
-        """
-        Use products.category free-text.
-        """
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        sw, sp = self._statuses_where(statuses)
-        where += sw
-        params += sp
-
-        cw, cp = self._customer_where(customer_id)
-        where += cw
-        params += cp
-
-        if product_id is not None:
-            where += " AND si.product_id = ? "
-            params.append(product_id)
-
-        if category:
-            where += " AND COALESCE(p.category,'') = ? "
-            params.append(category)
+        """Net sales, quantity, and COGS by product category."""
+        where, params = self._event_where(
+            date_from, date_to, statuses, customer_id, product_id, category
+        )
 
         sql = f"""
-        WITH line_rev AS (
-          SELECT
-            COALESCE(p.category, '(Uncategorized)') AS category,
-            SUM(CAST(si.quantity AS REAL) * (CAST(si.unit_price AS REAL) - COALESCE(CAST(si.item_discount AS REAL),0))) AS revenue,
-            SUM(CAST(si.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base
-          FROM sales s
-          JOIN sale_items si ON si.sale_id = s.sale_id
-          LEFT JOIN products p ON p.product_id = si.product_id
-          LEFT JOIN product_uoms pu
-                 ON pu.product_id = si.product_id AND pu.uom_id = si.uom_id
-          {where}
-          GROUP BY COALESCE(p.category, '(Uncategorized)')
-        ),
-        cogs AS (
-          SELECT
-            COALESCE(p2.category, '(Uncategorized)') AS category,
-            SUM(CAST(c.cogs_value AS REAL)) AS cogs
-          FROM sales s
-          JOIN sale_item_cogs c ON c.sale_id = s.sale_id
-          LEFT JOIN products p2 ON p2.product_id = c.product_id
-          {self._statuses_where(statuses)[0].replace('s.', 's.')}
-          {self._customer_where(customer_id)[0].replace('s.', 's.')}
-          {" AND c.product_id = ? " if product_id is not None else ""}
-          {" AND COALESCE(p2.category,'') = ? " if category else ""}
-          AND s.doc_type = 'sale'
-          AND s.date >= ? AND s.date <= ?
-          GROUP BY COALESCE(p2.category, '(Uncategorized)')
-        )
         SELECT
-          lr.category,
-          lr.qty_base,
-          COALESCE(lr.revenue, 0.0) AS revenue,
-          COALESCE(g.cogs, 0.0)     AS cogs,
-          (COALESCE(lr.revenue,0.0) - COALESCE(g.cogs,0.0)) AS gross,
-          CASE WHEN COALESCE(lr.revenue,0.0) = 0 THEN 0.0
-               ELSE (COALESCE(lr.revenue,0.0) - COALESCE(g.cogs,0.0)) / COALESCE(lr.revenue,0.0)
+          CASE WHEN e.category = '' THEN '(Uncategorized)' ELSE e.category END AS category,
+          COALESCE(SUM(CAST(e.quantity_base AS REAL)), 0.0) AS qty_base,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue,
+          COALESCE(SUM(CAST(e.cogs AS REAL)), 0.0) AS cogs,
+          COALESCE(SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL)), 0.0) AS gross,
+          CASE WHEN COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) = 0 THEN 0.0
+               ELSE SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL))
+                    / SUM(CAST(e.revenue AS REAL))
           END AS margin_pct
-        FROM line_rev lr
-        LEFT JOIN cogs g ON g.category = lr.category
-        ORDER BY revenue DESC, lr.category COLLATE NOCASE
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
+        {where}
+        GROUP BY CASE WHEN e.category = '' THEN '(Uncategorized)' ELSE e.category END
+        ORDER BY revenue DESC, category COLLATE NOCASE
         """
-        params_cogs: list[object] = []
-        if statuses:
-            params_cogs += list(statuses)
-        if customer_id is not None:
-            params_cogs.append(customer_id)
-        if product_id is not None:
-            params_cogs.append(product_id)
-        if category:
-            params_cogs.append(category)
-        params_cogs += [date_from, date_to]
-
-        return list(self.conn.execute(sql, params + params_cogs))
+        return list(self.conn.execute(sql, params))
 
     # ---- Margin by period (daily/monthly/yearly) ----
 
@@ -1018,57 +879,27 @@ class ReportingRepo:
             "yearly": "%Y",
         }.get(granularity, "%Y-%m-%d")
 
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        sw, sp = self._statuses_where(statuses)
-        where += sw
-        params += sp
-
-        cw, cp = self._customer_where(customer_id)
-        where += cw
-        params += cp
-
-        pw, pp_ = self._product_exists_where(product_id)
-        where += pw
-        params += pp_
-
-        kw, kp = self._category_exists_where(category)
-        where += kw
-        params += kp
+        where, params = self._event_where(
+            date_from, date_to, statuses, customer_id, product_id, category
+        )
 
         sql = f"""
-        WITH rev AS (
-          SELECT
-            STRFTIME('{fmt}', DATE(s.date)) AS period,
-            SUM(CAST(s.total_amount AS REAL)) AS revenue
-          FROM sales s
-          {where}
-          GROUP BY STRFTIME('{fmt}', DATE(s.date))
-        ),
-        cg AS (
-          SELECT
-            STRFTIME('{fmt}', DATE(s.date)) AS period,
-            SUM(CAST(c.cogs_value AS REAL)) AS cogs
-          FROM sales s
-          JOIN sale_item_cogs c ON c.sale_id = s.sale_id
-          {where}
-          GROUP BY STRFTIME('{fmt}', DATE(s.date))
-        )
         SELECT
-          r.period,
-          COALESCE(r.revenue, 0.0) AS revenue,
-          COALESCE(cg.cogs, 0.0)   AS cogs,
-          (COALESCE(r.revenue,0.0) - COALESCE(cg.cogs,0.0)) AS gross,
-          CASE WHEN COALESCE(r.revenue,0.0) = 0 THEN 0.0
-               ELSE (COALESCE(r.revenue,0.0) - COALESCE(cg.cogs,0.0)) / COALESCE(r.revenue,0.0)
+          STRFTIME('{fmt}', DATE(e.event_date)) AS period,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue,
+          COALESCE(SUM(CAST(e.cogs AS REAL)), 0.0) AS cogs,
+          COALESCE(SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL)), 0.0) AS gross,
+          CASE WHEN COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) = 0 THEN 0.0
+               ELSE SUM(CAST(e.revenue AS REAL) - CAST(e.cogs AS REAL))
+                    / SUM(CAST(e.revenue AS REAL))
           END AS margin_pct
-        FROM rev r
-        LEFT JOIN cg ON cg.period = r.period
-        ORDER BY r.period
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
+        {where}
+        GROUP BY STRFTIME('{fmt}', DATE(e.event_date))
+        ORDER BY period
         """
-        # NOTE: same WHERE block used twice (rev + cg), so duplicate params
-        return list(self.conn.execute(sql, params + params))
+        return list(self.conn.execute(sql, params))
 
     # ---- Margin by customer ----
 
@@ -1121,22 +952,18 @@ class ReportingRepo:
         statuses: Optional[Sequence[str]],
         limit_n: int,
     ) -> list[sqlite3.Row]:
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        sw, sp = self._statuses_where(statuses)
-        where += sw
-        params += sp
+        where, params = self._event_where(date_from, date_to, statuses)
 
         sql = f"""
         SELECT
           cu.name AS customer_name,
-          COUNT(*) AS order_count,
-          COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS revenue
-        FROM sales s
-        LEFT JOIN customers cu ON cu.customer_id = s.customer_id
+          COUNT(DISTINCT CASE WHEN e.event_type = 'sale' THEN e.sale_id END) AS order_count,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
+        LEFT JOIN customers cu ON cu.customer_id = e.customer_id
         {where}
-        GROUP BY s.customer_id, cu.name
+        GROUP BY e.customer_id, cu.name
         ORDER BY revenue DESC, cu.name COLLATE NOCASE
         LIMIT ?
         """
@@ -1152,28 +979,19 @@ class ReportingRepo:
         statuses: Optional[Sequence[str]],
         limit_n: int,
     ) -> list[sqlite3.Row]:
-        """
-        Rank by revenue from line items; also return qty_base.
-        """
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        sw, sp = self._statuses_where(statuses)
-        where += sw
-        params += sp
+        """Rank products by net revenue and quantity."""
+        where, params = self._event_where(date_from, date_to, statuses)
 
         sql = f"""
         SELECT
           p.name AS product_name,
-          SUM(CAST(si.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base,
-          SUM(CAST(si.quantity AS REAL) * (CAST(si.unit_price AS REAL) - COALESCE(CAST(si.item_discount AS REAL),0))) AS revenue
-        FROM sales s
-        JOIN sale_items si ON si.sale_id = s.sale_id
-        LEFT JOIN products p ON p.product_id = si.product_id
-        LEFT JOIN product_uoms pu
-               ON pu.product_id = si.product_id AND pu.uom_id = si.uom_id
+          COALESCE(SUM(CAST(e.quantity_base AS REAL)), 0.0) AS qty_base,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
+        LEFT JOIN products p ON p.product_id = e.product_id
         {where}
-        GROUP BY p.name
+        GROUP BY e.product_id, p.name
         ORDER BY revenue DESC, p.name COLLATE NOCASE
         LIMIT ?
         """
@@ -1184,9 +1002,11 @@ class ReportingRepo:
 
     def returns_summary(self, date_from: str, date_to: str) -> list[sqlite3.Row]:
         """
-        Basic returns indicators using available schema:
+        Sale return indicators:
           - refunds_sum: SUM of negative sale_payments.amount between dates (any clearing_state)
-          - returns_qty_base: SUM base-qty of inventory_transactions with type='sale_return' between dates
+          - returns_qty_base: returned base quantity
+          - returns_value: immutable returned revenue value
+          - cogs_reversed: immutable original-sale COGS reversal
         """
         # refunds (negative payments)
         sql_refunds = """
@@ -1199,15 +1019,27 @@ class ReportingRepo:
 
         # returns qty (base)
         sql_qty = """
-        SELECT COALESCE(SUM(CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
-        FROM inventory_transactions it
+        SELECT COALESCE(SUM(CAST(srs.returned_quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+        FROM sale_return_snapshots srs
         LEFT JOIN product_uoms pu
-               ON pu.product_id = it.product_id AND pu.uom_id = it.uom_id
-        WHERE it.transaction_type = 'sale_return'
-          AND it.date >= ? AND it.date <= ?
+               ON pu.product_id = srs.product_id AND pu.uom_id = srs.uom_id
+        WHERE srs.return_date >= ? AND srs.return_date <= ?
         """
         qty = self.conn.execute(sql_qty, (date_from, date_to)).fetchone()
         qty_base = float(qty["qty_base"] if qty and qty["qty_base"] is not None else 0.0)
+
+        values = self.conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS returns_value,
+              COALESCE(SUM(CAST(cogs_reversal_value AS REAL)), 0.0) AS cogs_reversed
+            FROM sale_return_snapshots
+            WHERE return_date >= ? AND return_date <= ?
+            """,
+            (date_from, date_to),
+        ).fetchone()
+        returns_value = float(values["returns_value"] or 0.0)
+        cogs_reversed = float(values["cogs_reversed"] or 0.0)
 
         # Return as rows {metric, value}
         cur = self.conn.cursor()
@@ -1215,7 +1047,11 @@ class ReportingRepo:
         row1 = cur.fetchone()
         cur.execute("SELECT ? AS metric, ? AS value", ("returns_qty_base", qty_base))
         row2 = cur.fetchone()
-        return [row1, row2]
+        cur.execute("SELECT ? AS metric, ? AS value", ("returns_value", returns_value))
+        row3 = cur.fetchone()
+        cur.execute("SELECT ? AS metric, ? AS value", ("cogs_reversed", cogs_reversed))
+        row4 = cur.fetchone()
+        return [row1, row2, row3, row4]
 
     # ---- Status breakdown ----
 
@@ -1227,27 +1063,17 @@ class ReportingRepo:
         product_id: Optional[int],
         category: Optional[str],
     ) -> list[sqlite3.Row]:
-        params: list[object] = [date_from, date_to]
-        where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
-
-        cw, cp = self._customer_where(customer_id)
-        where += cw
-        params += cp
-
-        pw, pp_ = self._product_exists_where(product_id)
-        where += pw
-        params += pp_
-
-        kw, kp = self._category_exists_where(category)
-        where += kw
-        params += kp
+        where, params = self._event_where(
+            date_from, date_to, None, customer_id, product_id, category
+        )
 
         sql = f"""
         SELECT
           s.payment_status AS payment_status,
-          COUNT(*)         AS order_count,
-          COALESCE(SUM(CAST(s.total_amount AS REAL)), 0.0) AS revenue
-        FROM sales s
+          COUNT(DISTINCT CASE WHEN e.event_type = 'sale' THEN e.sale_id END) AS order_count,
+          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue
+        FROM sale_financial_events e
+        JOIN sales s ON s.sale_id = e.sale_id
         {where}
         GROUP BY s.payment_status
         ORDER BY s.payment_status

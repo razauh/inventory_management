@@ -173,32 +173,34 @@ class CustomerHistoryService:
                 """
                 SELECT
                     it.transaction_id,
-                    it.reference_id AS sale_id,
-                    it.reference_item_id AS item_id,
-                    it.date,
+                    srs.sale_id,
+                    srs.item_id,
+                    srs.return_date AS date,
                     it.posted_at,
                     it.txn_seq,
-                    it.product_id,
+                    srs.product_id,
                     p.name AS product_name,
-                    CAST(it.quantity AS REAL) AS quantity,
-                    it.uom_id,
+                    CAST(srs.returned_quantity AS REAL) AS quantity,
+                    srs.uom_id,
                     u.unit_name AS uom_name,
                     CAST(srs.unit_sale_price AS REAL) AS unit_price,
                     CAST(srs.unit_discount AS REAL) AS item_discount,
+                    CAST(srs.net_unit_price AS REAL) AS net_unit_price,
+                    CAST(srs.allocated_order_discount AS REAL) AS allocated_order_discount,
                     -CAST(srs.return_value AS REAL) AS amount,
+                    CAST(srs.cogs_reversal_value AS REAL) AS cogs_reversal_value,
                     it.notes
                 FROM inventory_transactions it
-                JOIN sale_items si ON si.item_id = it.reference_item_id
                 JOIN sale_return_snapshots srs ON srs.transaction_id = it.transaction_id
-                JOIN sales s ON s.sale_id = si.sale_id
-                JOIN products p ON p.product_id = it.product_id
-                JOIN uoms u ON u.uom_id = it.uom_id
+                JOIN sales s ON s.sale_id = srs.sale_id
+                JOIN products p ON p.product_id = srs.product_id
+                JOIN uoms u ON u.uom_id = srs.uom_id
                 WHERE s.customer_id = ?
                   AND s.doc_type = 'sale'
                   AND it.transaction_type = 'sale_return'
                   AND it.reference_table = 'sales'
-                  AND it.reference_id = s.sale_id
-                ORDER BY it.date ASC, it.txn_seq ASC, it.transaction_id ASC;
+                  AND it.reference_id = srs.sale_id
+                ORDER BY srs.return_date ASC, it.txn_seq ASC, it.transaction_id ASC;
                 """,
                 (customer_id,),
             ).fetchall()

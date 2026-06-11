@@ -315,8 +315,12 @@ CREATE TABLE IF NOT EXISTS sale_return_snapshots (
     returned_quantity NUMERIC NOT NULL CHECK (CAST(returned_quantity AS REAL) > 0),
     unit_sale_price   NUMERIC NOT NULL CHECK (CAST(unit_sale_price AS REAL) >= 0),
     unit_discount     NUMERIC NOT NULL CHECK (CAST(unit_discount AS REAL) >= 0),
+    net_unit_price    NUMERIC NOT NULL CHECK (CAST(net_unit_price AS REAL) >= 0),
+    allocated_order_discount NUMERIC NOT NULL CHECK (CAST(allocated_order_discount AS REAL) >= 0),
     return_date       DATE    NOT NULL,
     return_value      NUMERIC NOT NULL CHECK (CAST(return_value AS REAL) >= 0),
+    unit_cost_base    NUMERIC NOT NULL CHECK (CAST(unit_cost_base AS REAL) >= 0),
+    cogs_reversal_value NUMERIC NOT NULL CHECK (CAST(cogs_reversal_value AS REAL) >= 0),
     captured_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (transaction_id) REFERENCES inventory_transactions(transaction_id) ON DELETE CASCADE
 );
@@ -1203,13 +1207,25 @@ WHEN NEW.transaction_type = 'sale_return'
 BEGIN
   INSERT INTO sale_return_snapshots (
     transaction_id, sale_id, item_id, product_id, uom_id,
-    returned_quantity, unit_sale_price, unit_discount,
-    return_date, return_value
+    returned_quantity, unit_sale_price, unit_discount, net_unit_price,
+    allocated_order_discount, return_date, return_value,
+    unit_cost_base, cogs_reversal_value
   )
   SELECT
     NEW.transaction_id, NEW.reference_id, NEW.reference_item_id,
     NEW.product_id, NEW.uom_id, CAST(NEW.quantity AS REAL),
     CAST(si.unit_price AS REAL), CAST(si.item_discount AS REAL),
+    MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)),
+    CASE
+      WHEN sst.subtotal <= 0 THEN 0.0
+      ELSE CAST(NEW.quantity AS REAL)
+        * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+        * CASE
+            WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+            WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > sst.subtotal THEN 1.0
+            ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0) / sst.subtotal
+          END
+    END,
     NEW.date,
     CASE
       WHEN sst.subtotal <= 0 THEN 0.0
@@ -1223,9 +1239,16 @@ BEGIN
             ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
           END
         ) / sst.subtotal
-    END
+    END,
+    COALESCE(CAST(cogs.unit_cost_base AS REAL), 0.0),
+    CAST(NEW.quantity AS REAL)
+      * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)
+      * COALESCE(CAST(cogs.unit_cost_base AS REAL), 0.0)
   FROM sale_items si
   JOIN sales s ON s.sale_id = si.sale_id
+  LEFT JOIN product_uoms pu
+    ON pu.product_id = NEW.product_id AND pu.uom_id = NEW.uom_id
+  LEFT JOIN sale_item_cogs cogs ON cogs.item_id = si.item_id
   JOIN (
     SELECT sale_id,
            COALESCE(SUM(
@@ -2673,6 +2696,68 @@ SELECT
 FROM sale_items si
 JOIN sales s ON s.sale_id = si.sale_id AND s.doc_type = 'sale';
 
+DROP VIEW IF EXISTS sale_financial_events;
+CREATE VIEW sale_financial_events AS
+WITH sale_subtotals AS (
+  SELECT
+    si.sale_id,
+    COALESCE(SUM(
+      CAST(si.quantity AS REAL)
+      * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+    ), 0.0) AS subtotal
+  FROM sale_items si
+  GROUP BY si.sale_id
+)
+SELECT
+  s.date AS event_date,
+  s.sale_id,
+  si.item_id,
+  s.customer_id,
+  si.product_id,
+  COALESCE(p.category, '') AS category,
+  CAST(si.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS quantity_base,
+  CASE
+    WHEN ss.subtotal <= 0 THEN 0.0
+    ELSE CAST(si.quantity AS REAL)
+      * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+      * (
+        ss.subtotal -
+        CASE
+          WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+          WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > ss.subtotal THEN ss.subtotal
+          ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
+        END
+      ) / ss.subtotal
+  END AS revenue,
+  COALESCE(CAST(cogs.cogs_value AS REAL), 0.0) AS cogs,
+  'sale' AS event_type
+FROM sales s
+JOIN sale_items si ON si.sale_id = s.sale_id
+JOIN sale_subtotals ss ON ss.sale_id = s.sale_id
+LEFT JOIN products p ON p.product_id = si.product_id
+LEFT JOIN product_uoms pu
+  ON pu.product_id = si.product_id AND pu.uom_id = si.uom_id
+LEFT JOIN sale_item_cogs cogs ON cogs.item_id = si.item_id
+WHERE s.doc_type = 'sale'
+UNION ALL
+SELECT
+  srs.return_date AS event_date,
+  srs.sale_id,
+  srs.item_id,
+  s.customer_id,
+  srs.product_id,
+  COALESCE(p.category, '') AS category,
+  -CAST(srs.returned_quantity AS REAL)
+    * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS quantity_base,
+  -CAST(srs.return_value AS REAL) AS revenue,
+  -CAST(srs.cogs_reversal_value AS REAL) AS cogs,
+  'sale_return' AS event_type
+FROM sale_return_snapshots srs
+JOIN sales s ON s.sale_id = srs.sale_id AND s.doc_type = 'sale'
+LEFT JOIN products p ON p.product_id = srs.product_id
+LEFT JOIN product_uoms pu
+  ON pu.product_id = srs.product_id AND pu.uom_id = srs.uom_id;
+
 /* FIFO COGS per sale item using per-product purchase layers.
    This implements true FIFO by assigning each sale's quantity segment
    in the cumulative sales stream to overlapping purchase layers. */
@@ -3157,6 +3242,7 @@ REQUIRED_TABLES = (
     "sale_items",
     "inventory_transactions",
     "purchase_return_snapshots",
+    "sale_return_snapshots",
     "stock_valuation_history",
     "customer_advances",
     "audit_logs",
@@ -3483,13 +3569,25 @@ def _backfill_sale_return_snapshots(conn: sqlite3.Connection) -> None:
         """
         INSERT INTO sale_return_snapshots (
             transaction_id, sale_id, item_id, product_id, uom_id,
-            returned_quantity, unit_sale_price, unit_discount,
-            return_date, return_value
+            returned_quantity, unit_sale_price, unit_discount, net_unit_price,
+            allocated_order_discount, return_date, return_value,
+            unit_cost_base, cogs_reversal_value
         )
         SELECT
             it.transaction_id, it.reference_id, it.reference_item_id,
             it.product_id, it.uom_id, CAST(it.quantity AS REAL),
             CAST(si.unit_price AS REAL), CAST(si.item_discount AS REAL),
+            MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)),
+            CASE
+                WHEN sst.subtotal <= 0 THEN 0.0
+                ELSE CAST(it.quantity AS REAL)
+                    * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+                    * CASE
+                        WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                        WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > sst.subtotal THEN 1.0
+                        ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0) / sst.subtotal
+                      END
+            END,
             it.date,
             CASE
                 WHEN sst.subtotal <= 0 THEN 0.0
@@ -3503,7 +3601,11 @@ def _backfill_sale_return_snapshots(conn: sqlite3.Connection) -> None:
                             ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
                         END
                     ) / sst.subtotal
-            END
+            END,
+            COALESCE(CAST(cogs.unit_cost_base AS REAL), 0.0),
+            CAST(it.quantity AS REAL)
+                * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)
+                * COALESCE(CAST(cogs.unit_cost_base AS REAL), 0.0)
         FROM inventory_transactions it
         JOIN sale_items si
           ON si.item_id = it.reference_item_id
@@ -3511,6 +3613,9 @@ def _backfill_sale_return_snapshots(conn: sqlite3.Connection) -> None:
          AND si.product_id = it.product_id
          AND si.uom_id = it.uom_id
         JOIN sales s ON s.sale_id = si.sale_id
+        LEFT JOIN product_uoms pu
+          ON pu.product_id = it.product_id AND pu.uom_id = it.uom_id
+        LEFT JOIN sale_item_cogs cogs ON cogs.item_id = si.item_id
         JOIN (
             SELECT sale_id,
                    COALESCE(SUM(
@@ -3529,7 +3634,76 @@ def _backfill_sale_return_snapshots(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_sale_return_snapshot_columns(
+    conn: sqlite3.Connection, *, backfill: bool = True
+) -> None:
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_return_snapshots'"
+    ).fetchone()
+    if not table:
+        return
+
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sale_return_snapshots)")}
+    migrations = {
+        "net_unit_price": "ALTER TABLE sale_return_snapshots ADD COLUMN net_unit_price NUMERIC;",
+        "allocated_order_discount": "ALTER TABLE sale_return_snapshots ADD COLUMN allocated_order_discount NUMERIC;",
+        "unit_cost_base": "ALTER TABLE sale_return_snapshots ADD COLUMN unit_cost_base NUMERIC;",
+        "cogs_reversal_value": "ALTER TABLE sale_return_snapshots ADD COLUMN cogs_reversal_value NUMERIC;",
+    }
+    for column, sql in migrations.items():
+        if column not in cols:
+            conn.execute(sql)
+
+    if not backfill:
+        return
+
+    conn.execute("DROP TRIGGER IF EXISTS trg_sale_return_snapshot_update_guard")
+    conn.execute(
+        """
+        UPDATE sale_return_snapshots
+        SET net_unit_price = COALESCE(
+                net_unit_price,
+                MAX(0.0, CAST(unit_sale_price AS REAL) - CAST(unit_discount AS REAL))
+            ),
+            allocated_order_discount = COALESCE(
+                allocated_order_discount,
+                MAX(
+                    0.0,
+                    CAST(returned_quantity AS REAL)
+                      * MAX(0.0, CAST(unit_sale_price AS REAL) - CAST(unit_discount AS REAL))
+                      - CAST(return_value AS REAL)
+                )
+            ),
+            unit_cost_base = COALESCE(
+                unit_cost_base,
+                (SELECT CAST(cogs.unit_cost_base AS REAL)
+                 FROM sale_item_cogs cogs
+                 WHERE cogs.item_id = sale_return_snapshots.item_id),
+                0.0
+            ),
+            cogs_reversal_value = COALESCE(
+                cogs_reversal_value,
+                CAST(returned_quantity AS REAL)
+                  * COALESCE((
+                      SELECT CAST(pu.factor_to_base AS REAL)
+                      FROM product_uoms pu
+                      WHERE pu.product_id = sale_return_snapshots.product_id
+                        AND pu.uom_id = sale_return_snapshots.uom_id
+                      LIMIT 1
+                    ), 1.0)
+                  * COALESCE(
+                      (SELECT CAST(cogs.unit_cost_base AS REAL)
+                       FROM sale_item_cogs cogs
+                       WHERE cogs.item_id = sale_return_snapshots.item_id),
+                      0.0
+                    )
+            )
+        """
+    )
+
+
 def migrate_sale_return_snapshots(conn: sqlite3.Connection) -> None:
+    _ensure_sale_return_snapshot_columns(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS sale_return_snapshots (
@@ -3541,8 +3715,12 @@ def migrate_sale_return_snapshots(conn: sqlite3.Connection) -> None:
             returned_quantity NUMERIC NOT NULL CHECK (CAST(returned_quantity AS REAL) > 0),
             unit_sale_price   NUMERIC NOT NULL CHECK (CAST(unit_sale_price AS REAL) >= 0),
             unit_discount     NUMERIC NOT NULL CHECK (CAST(unit_discount AS REAL) >= 0),
+            net_unit_price    NUMERIC NOT NULL CHECK (CAST(net_unit_price AS REAL) >= 0),
+            allocated_order_discount NUMERIC NOT NULL CHECK (CAST(allocated_order_discount AS REAL) >= 0),
             return_date       DATE    NOT NULL,
             return_value      NUMERIC NOT NULL CHECK (CAST(return_value AS REAL) >= 0),
+            unit_cost_base    NUMERIC NOT NULL CHECK (CAST(unit_cost_base AS REAL) >= 0),
+            cogs_reversal_value NUMERIC NOT NULL CHECK (CAST(cogs_reversal_value AS REAL) >= 0),
             captured_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (transaction_id) REFERENCES inventory_transactions(transaction_id) ON DELETE CASCADE
         );
@@ -3588,13 +3766,25 @@ def migrate_sale_return_snapshots(conn: sqlite3.Connection) -> None:
         BEGIN
           INSERT INTO sale_return_snapshots (
             transaction_id, sale_id, item_id, product_id, uom_id,
-            returned_quantity, unit_sale_price, unit_discount,
-            return_date, return_value
+            returned_quantity, unit_sale_price, unit_discount, net_unit_price,
+            allocated_order_discount, return_date, return_value,
+            unit_cost_base, cogs_reversal_value
           )
           SELECT
             NEW.transaction_id, NEW.reference_id, NEW.reference_item_id,
             NEW.product_id, NEW.uom_id, CAST(NEW.quantity AS REAL),
             CAST(si.unit_price AS REAL), CAST(si.item_discount AS REAL),
+            MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)),
+            CASE
+              WHEN sst.subtotal <= 0 THEN 0.0
+              ELSE CAST(NEW.quantity AS REAL)
+                * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+                * CASE
+                    WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                    WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > sst.subtotal THEN 1.0
+                    ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0) / sst.subtotal
+                  END
+            END,
             NEW.date,
             CASE
               WHEN sst.subtotal <= 0 THEN 0.0
@@ -3608,9 +3798,16 @@ def migrate_sale_return_snapshots(conn: sqlite3.Connection) -> None:
                     ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
                   END
                 ) / sst.subtotal
-            END
+            END,
+            COALESCE(CAST(cogs.unit_cost_base AS REAL), 0.0),
+            CAST(NEW.quantity AS REAL)
+              * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)
+              * COALESCE(CAST(cogs.unit_cost_base AS REAL), 0.0)
           FROM sale_items si
           JOIN sales s ON s.sale_id = si.sale_id
+          LEFT JOIN product_uoms pu
+            ON pu.product_id = NEW.product_id AND pu.uom_id = NEW.uom_id
+          LEFT JOIN sale_item_cogs cogs ON cogs.item_id = si.item_id
           JOIN (
             SELECT sale_id,
                    COALESCE(SUM(
@@ -3657,6 +3854,76 @@ def migrate_sale_return_snapshots(conn: sqlite3.Connection) -> None:
         BEGIN
           SELECT RAISE(ABORT, 'Snapshotted sale return financial fields are immutable');
         END;
+        """
+    )
+    _recreate_sale_financial_events(conn)
+
+
+def _recreate_sale_financial_events(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        DROP VIEW IF EXISTS sale_financial_events;
+        CREATE VIEW sale_financial_events AS
+        WITH sale_subtotals AS (
+          SELECT
+            si.sale_id,
+            COALESCE(SUM(
+              CAST(si.quantity AS REAL)
+              * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+            ), 0.0) AS subtotal
+          FROM sale_items si
+          GROUP BY si.sale_id
+        )
+        SELECT
+          s.date AS event_date,
+          s.sale_id,
+          si.item_id,
+          s.customer_id,
+          si.product_id,
+          COALESCE(p.category, '') AS category,
+          CAST(si.quantity AS REAL)
+            * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS quantity_base,
+          CASE
+            WHEN ss.subtotal <= 0 THEN 0.0
+            ELSE CAST(si.quantity AS REAL)
+              * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+              * (
+                ss.subtotal -
+                CASE
+                  WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                  WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > ss.subtotal THEN ss.subtotal
+                  ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
+                END
+              ) / ss.subtotal
+          END AS revenue,
+          COALESCE(CAST(cogs.cogs_value AS REAL), 0.0) AS cogs,
+          'sale' AS event_type
+        FROM sales s
+        JOIN sale_items si ON si.sale_id = s.sale_id
+        JOIN sale_subtotals ss ON ss.sale_id = s.sale_id
+        LEFT JOIN products p ON p.product_id = si.product_id
+        LEFT JOIN product_uoms pu
+          ON pu.product_id = si.product_id AND pu.uom_id = si.uom_id
+        LEFT JOIN sale_item_cogs cogs ON cogs.item_id = si.item_id
+        WHERE s.doc_type = 'sale'
+        UNION ALL
+        SELECT
+          srs.return_date AS event_date,
+          srs.sale_id,
+          srs.item_id,
+          s.customer_id,
+          srs.product_id,
+          COALESCE(p.category, '') AS category,
+          -CAST(srs.returned_quantity AS REAL)
+            * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS quantity_base,
+          -CAST(srs.return_value AS REAL) AS revenue,
+          -CAST(srs.cogs_reversal_value AS REAL) AS cogs,
+          'sale_return' AS event_type
+        FROM sale_return_snapshots srs
+        JOIN sales s ON s.sale_id = srs.sale_id AND s.doc_type = 'sale'
+        LEFT JOIN products p ON p.product_id = srs.product_id
+        LEFT JOIN product_uoms pu
+          ON pu.product_id = srs.product_id AND pu.uom_id = srs.uom_id;
         """
     )
     _backfill_sale_return_snapshots(conn)
@@ -3725,6 +3992,7 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
+        _ensure_sale_return_snapshot_columns(conn, backfill=False)
         # Apply (idempotent) schema
         conn.executescript(SQL)
         # Backfill migrations for existing DBs missing columns

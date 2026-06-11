@@ -93,7 +93,12 @@ def _rebuild_product_valuation(conn: sqlite3.Connection, product_id: int, earlie
                 0.0
               )
             ELSE NULL
-          END AS purchase_unit_value
+          END AS purchase_unit_value,
+          CASE
+            WHEN it.transaction_type = 'sale_return' THEN
+              COALESCE(CAST(srs.unit_cost_base AS REAL), 0.0)
+            ELSE NULL
+          END AS sale_return_unit_value
         FROM inventory_transactions it
         LEFT JOIN product_uoms pu
           ON pu.product_id = it.product_id
@@ -103,6 +108,8 @@ def _rebuild_product_valuation(conn: sqlite3.Connection, product_id: int, earlie
         LEFT JOIN product_uoms pi_uom
           ON pi_uom.product_id = pi.product_id
          AND pi_uom.uom_id = pi.uom_id
+        LEFT JOIN sale_return_snapshots srs
+          ON srs.transaction_id = it.transaction_id
         WHERE it.product_id = ?
           AND DATE(it.date) >= DATE(?)
         ORDER BY DATE(it.date), it.txn_seq, it.posted_at, it.transaction_id
@@ -125,6 +132,13 @@ def _rebuild_product_valuation(conn: sqlite3.Connection, product_id: int, earlie
                     next_unit_value = ((quantity * unit_value) + (movement * purchase_unit_value)) / next_quantity
                 else:
                     next_unit_value = purchase_unit_value if purchase_unit is not None else unit_value
+            elif txn_type == "sale_return":
+                return_unit = _cell(txn, "sale_return_unit_value", 6)
+                return_unit_value = float(return_unit or 0.0)
+                if next_quantity > 0:
+                    next_unit_value = ((quantity * unit_value) + (movement * return_unit_value)) / next_quantity
+                else:
+                    next_unit_value = return_unit_value if return_unit is not None else unit_value
             next_total_value = next_quantity * next_unit_value if next_quantity > 0 else 0.0
         elif txn_type in ("sale", "purchase_return"):
             next_quantity = quantity - movement
