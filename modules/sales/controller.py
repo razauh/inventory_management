@@ -791,62 +791,59 @@ class SalesController(BaseModule):
             for it in p["items"]
         ]
 
-        # Persist header + items (inventory is posted by repo for sales)
-        self.repo.create_sale(h, items)
-
-        # Initial payment via SalePaymentsRepo (no header math)
+        # Persist header + items + initial payment atomically
         init_amt = float(p.get("initial_payment") or 0.0)
+        payment_info = None
         if init_amt > 0:
-            try:
-                from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # lazy import
-                pay_repo = SalePaymentsRepo(self._db_path)
+            method = p.get("initial_method") or "Cash"
+            # Optional bank / instrument fields from the form payload
+            bank_id = p.get("initial_bank_account_id")
+            instr_no = (p.get("initial_instrument_no") or "").strip() if p.get("initial_instrument_no") else ""
+            instr_type = p.get("initial_instrument_type")
 
-                method = p.get("initial_method") or "Cash"
-                 # Optional bank / instrument fields from the form payload
-                bank_id = p.get("initial_bank_account_id")
-                instr_no = (p.get("initial_instrument_no") or "").strip() if p.get("initial_instrument_no") else ""
-                instr_type = p.get("initial_instrument_type")
+            payment_info = {
+                "sale_id": sid,
+                "amount": init_amt,
+                "method": method,
+                "date": p["date"],
+                "created_by": (self.user["user_id"] if self.user else None),
+                "notes": "[Init payment]",
+            }
 
-                kwargs = {
-                    "sale_id": sid,
-                    "amount": init_amt,
-                    "method": method,
-                    "date": p["date"],
-                    "created_by": (self.user["user_id"] if self.user else None),
-                    "notes": "[Init payment]",
-                }
+            # Method-specific fields: align with SalePaymentsRepo expectations
+            if method in ("Bank Transfer", "Cheque", "Cross Cheque"):
+                if bank_id is not None:
+                    payment_info["bank_account_id"] = int(bank_id)
+                if instr_no:
+                    payment_info["instrument_no"] = instr_no
 
-                # Method-specific fields: align with SalePaymentsRepo expectations
-                if method in ("Bank Transfer", "Cheque", "Cross Cheque"):
-                    if bank_id is not None:
-                        kwargs["bank_account_id"] = int(bank_id)
-                    if instr_no:
-                        kwargs["instrument_no"] = instr_no
-
-                # Instrument type: prefer form payload; otherwise choose sensible defaults
-                if instr_type:
-                    kwargs["instrument_type"] = instr_type
+            # Instrument type: prefer form payload; otherwise choose sensible defaults
+            if instr_type:
+                payment_info["instrument_type"] = instr_type
+            else:
+                if method == "Bank Transfer":
+                    payment_info["instrument_type"] = "online"
+                elif method in ("Cheque", "Cross Cheque"):
+                    # Cheque and Cross Cheque share cross_cheque instrument_type
+                    payment_info["instrument_type"] = "cross_cheque"
                 else:
-                    if method == "Bank Transfer":
-                        kwargs["instrument_type"] = "online"
-                    elif method in ("Cheque", "Cross Cheque"):
-                        # Cheque and Cross Cheque share cross_cheque instrument_type
-                        kwargs["instrument_type"] = "cross_cheque"
-                    else:
-                        kwargs["instrument_type"] = "other"
+                    payment_info["instrument_type"] = "other"
 
-                pay_repo.record_payment(**kwargs)
+        try:
+            self.repo.create_sale(h, items, payment_info)
+            if payment_info:
                 info(self.view, "Saved", f"Sale {sid} created and initial payment recorded.")
-            except Exception as e:
-                # Sale is created; payment failed → notify clearly
-                info(self.view, "Saved (with note)",
-                     f"Sale {sid} created. Initial payment was not recorded: {e}")
+            else:
+                info(self.view, "Saved", f"Sale {sid} created.")
+        except Exception as e:
+            info(self.view, "Error", f"Could not create sale:\n{e}")
+            return
+
         # Check if this was called from print button
         should_print_after_save = p.get('_should_print', False)
         if should_print_after_save:
             self._print_sale_invoice(sid)
-        else:
-            info(self.view, "Saved", f"Sale {sid} created.")
+
         self._reload()
         self._sync_details()
 
@@ -979,7 +976,11 @@ class SalesController(BaseModule):
             )
             for it in p["items"]
         ]
-        self.repo.update_sale(h, items)
+        try:
+            self.repo.update_sale(h, items)
+        except Exception as e:
+            info(self.view, "Error", f"Could not update sale:\n{e}")
+            return
 
         # Check if this was called from print button
         should_print_after_save = p.get('_should_print', False)

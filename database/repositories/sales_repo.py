@@ -62,7 +62,8 @@ class SalesRepo:
                CAST(s.total_amount AS REAL)   AS total_amount,
                CAST(s.order_discount AS REAL) AS order_discount,
                CAST(s.paid_amount AS REAL)    AS paid_amount,
-               s.payment_status, s.notes
+               s.payment_status, s.notes, s.doc_type, s.quotation_status,
+               s.source_type, s.source_id
         FROM sales s
         JOIN customers c ON c.customer_id = s.customer_id
         WHERE s.doc_type = 'sale'
@@ -93,10 +94,12 @@ class SalesRepo:
             params.append(date)
 
         sql = """
-          SELECT s.sale_id, s.date, c.name AS customer_name,
+          SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
                  CAST(s.total_amount AS REAL) AS total_amount,
+                 CAST(s.order_discount AS REAL) AS order_discount,
                  CAST(s.paid_amount AS REAL)  AS paid_amount,
-                 s.payment_status
+                 s.payment_status, s.notes, s.doc_type, s.quotation_status,
+                 s.source_type, s.source_id
           FROM sales s
           JOIN customers c ON c.customer_id = s.customer_id
         """
@@ -159,8 +162,9 @@ class SalesRepo:
         SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
                CAST(s.total_amount AS REAL)   AS total_amount,
                CAST(s.order_discount AS REAL) AS order_discount,
-               s.quotation_status,
-               s.notes
+               CAST(s.paid_amount AS REAL)    AS paid_amount,
+               s.payment_status, s.notes, s.doc_type, s.quotation_status,
+               s.source_type, s.source_id
         FROM sales s
         JOIN customers c ON c.customer_id = s.customer_id
         WHERE s.doc_type = 'quotation'
@@ -325,10 +329,10 @@ class SalesRepo:
     # ---------------------------------------------------------------------
     # WRITE — SALES (doc_type='sale')
     # ---------------------------------------------------------------------
-    def create_sale(self, header: SaleHeader, items: Iterable[SaleItem]):
+    def create_sale(self, header: SaleHeader, items: Iterable[SaleItem], payment_info: dict | None = None):
         """
         Create a SALE (doc_type='sale') and post inventory for each item.
-        Payments must be recorded via SalePaymentsRepo (not header math).
+        Optionally records an initial payment atomically in the same transaction.
         """
         with self.conn:
             self._check_stock_availability(items)
@@ -347,6 +351,13 @@ class SalesRepo:
                     notes=header.notes,
                 )
             self._refresh_sale_payment_status(header.sale_id)
+
+            if payment_info:
+                from .sale_payments_repo import SalePaymentsRepo
+                pay_repo = SalePaymentsRepo("")
+                pay_repo.record_payment_with_conn(self.conn, **payment_info)
+                self._refresh_sale_payment_status(header.sale_id)
+
             rebuild_dirty_valuations(self.conn)
 
     def update_sale(self, header: SaleHeader, items: Iterable[SaleItem]):
@@ -356,7 +367,7 @@ class SalesRepo:
         with self.conn:
             # Ensure we’re editing a sale row
             row = self.conn.execute(
-                "SELECT doc_type, customer_id FROM sales WHERE sale_id=?",
+                "SELECT doc_type, customer_id, paid_amount, advance_payment_applied FROM sales WHERE sale_id=?",
                 (header.sale_id,),
             ).fetchone()
             if not row or row["doc_type"] != "sale":
@@ -378,6 +389,15 @@ class SalesRepo:
             ):
                 raise ValueError(
                     "Cannot change the sale customer after payments, credits, or returns exist"
+                )
+
+            # Reject edits below settled value
+            paid = float(row["paid_amount"] or 0.0)
+            advance = float(row["advance_payment_applied"] or 0.0)
+            settled = paid + advance
+            if header.total_amount < settled:
+                raise ValueError(
+                    f"Cannot reduce sale total below settled value of {settled:,.2f} (paid: {paid:,.2f}, credit applied: {advance:,.2f})."
                 )
 
             # Delete old sale content first to free up stock

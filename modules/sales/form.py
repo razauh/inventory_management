@@ -323,8 +323,9 @@ class SaleForm(QDialog):
         customer_payment_layout.setSpacing(5)  # Very minimal spacing between sections
         customer_payment_layout.addLayout(payment_layout, 1)  # Payment gets less space
 
-        # For quotations, hide the payment section widgets (no parent widget to hide)
-        if self.mode == "quotation":
+        # For quotations or editing existing sales, hide the payment section widgets
+        is_edit = initial is not None and "sale_id" in initial
+        if self.mode == "quotation" or is_edit:
             for i in range(payment_layout.rowCount()):
                 for role in (QFormLayout.LabelRole, QFormLayout.FieldRole):
                     item = payment_layout.itemAt(i, role)
@@ -344,7 +345,7 @@ class SaleForm(QDialog):
         # Add payment/ bank strips only for 'sale' mode (hidden for quotations)
         lay.addWidget(self.pay_box)
         lay.addWidget(self.bank_box)
-        if self.mode == "quotation":
+        if self.mode == "quotation" or is_edit:
             self.pay_box.setVisible(False)
             self.bank_box.setVisible(False)
 

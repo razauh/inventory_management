@@ -216,14 +216,15 @@ class SalesPaymentForm(QDialog):
             QMessageBox.warning(self, "Cannot record payment", msg)
             return
 
-        # Resolve internal method key instead of display text
+        # Resolve display value from internal method key
         method_key = self.method.currentData()
+        method_display = self.PAYMENT_METHODS.get(method_key, method_key)
 
         self._payload = {
             "sale_id": self._sale_id,
             "amount": self._to_float(self.amount.text()),
             "date": self.date.date().toString("yyyy-MM-dd"),
-            "method": method_key,
+            "method": method_display,
             "bank_account_id": self._current_company_bank_id(),
             "instrument_no": (self.instr_no.text().strip() or None),
             "notes": (self.notes.text().strip() or None),
