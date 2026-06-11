@@ -1311,20 +1311,9 @@ class SalesController(BaseModule):
                 }
             )
 
-        # 1) Inventory transactions
-        self.repo.record_return(
-            sid=sid,
-            date=today_str(),
-            created_by=(self.user["user_id"] if self.user else None),
-            lines=lines,
-            notes="[Return]",
-        )
-
-        # 2) Money side
         refund_amount = float(p.get("refund_amount") or 0.0)  # already order-discount prorated
         hdr = self.repo.get_header(sid) or {}
         paid_before = float(hdr.get("paid_amount") or 0.0)
-        customer_id = int(hdr.get("customer_id") or 0)
 
         requested_cash = float(p.get("cash_refund_now") or 0.0)
 
@@ -1338,44 +1327,19 @@ class SalesController(BaseModule):
             cash_refund = min(max(0.0, requested_cash), cap)
             credit_part = max(0.0, refund_amount - cash_refund)
 
-            if cash_refund > 0:
-                try:
-                    from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # lazy import
-                    pay_repo = SalePaymentsRepo(self._db_path)
-                    pay_repo.record_payment(
-                        sale_id=sid,
-                        date=today_str(),
-                        amount=-abs(cash_refund),
-                        method="Cash",
-                        instrument_type="other",
-                        notes="[Return refund]",
-                        created_by=(self.user["user_id"] if self.user else None),
-                    )
-                except Exception as e:
-                    info(
-                        self.view,
-                        "Refund warning",
-                        f"Inventory return saved, but cash refund could not be recorded: {e}",
-                    )
-
-        if credit_part > 0 and customer_id:
-            try:
-                from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo  # lazy import
-                adv_repo = CustomerAdvancesRepo(self._db_path)
-                adv_repo.add_return_credit(
-                    customer_id=customer_id,
-                    amount=credit_part,
-                    sale_id=sid,
-                    date=today_str(),
-                    notes="[Return credit]",
-                    created_by=(self.user["user_id"] if self.user else None),
-                )
-            except Exception as e:
-                info(
-                    self.view,
-                    "Credit warning",
-                    f"Inventory return saved, but customer credit could not be recorded: {e}",
-                )
+        self.repo.record_return(
+            sid=sid,
+            date=today_str(),
+            created_by=(self.user["user_id"] if self.user else None),
+            lines=lines,
+            notes="[Return]",
+            settlement={
+                "cash_refund": cash_refund,
+                "credit_amount": credit_part,
+                "refund_notes": "[Return refund]",
+                "credit_notes": "[Return credit]",
+            },
+        )
 
         # Optional note if fully returned
         all_back = all(

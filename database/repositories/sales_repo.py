@@ -3,9 +3,6 @@ from dataclasses import dataclass
 import sqlite3
 from typing import Iterable, Optional
 
-# For settlements
-from .sale_payments_repo import SalePaymentsRepo
-from .customer_advances_repo import CustomerAdvancesRepo
 from .inventory_repo import next_inventory_txn_seq, rebuild_dirty_valuations
 
 
@@ -589,7 +586,10 @@ class SalesRepo:
                     )
 
             # Header for customer_id
-            hdr = self.conn.execute("SELECT customer_id FROM sales WHERE sale_id=?", (sid,)).fetchone()
+            hdr = self.conn.execute(
+                "SELECT customer_id, CAST(paid_amount AS REAL) AS paid_amount FROM sales WHERE sale_id=?",
+                (sid,),
+            ).fetchone()
             if not hdr:
                 raise ValueError(f"Unknown sale_id: {sid}")
             customer_id = int(hdr["customer_id"])
@@ -661,37 +661,50 @@ class SalesRepo:
 
             # Settlement handling (if applicable)
             if settlement and final_return_value > 0:
-                mode = (settlement.get("mode") or "").lower()
-                if mode in ("refund", "refund_now"):
-                    payments = SalePaymentsRepo(self.conn)
-                    payments.record_payment(
-                        sale_id=sid,
-                        amount=-final_return_value,  # incoming refund (negative)
-                        method=settlement.get("method") or "Cash",
-                        bank_account_id=settlement.get("bank_account_id"),
-                        customer_bank_account_id=settlement.get("customer_bank_account_id"),
-                        instrument_type=settlement.get("instrument_type"),
-                        instrument_no=settlement.get("instrument_no"),
-                        instrument_date=settlement.get("instrument_date"),
-                        deposited_date=settlement.get("deposited_date"),
-                        cleared_date=settlement.get("cleared_date"),
-                        clearing_state=settlement.get("clearing_state"),
-                        ref_no=settlement.get("ref_no"),
-                        notes=settlement.get("notes") or notes,
-                        date=date,
-                        created_by=created_by,
+                cash_refund = float(settlement.get("cash_refund") or 0.0)
+                credit_amount = float(settlement.get("credit_amount") or 0.0)
+                paid_before = float(hdr["paid_amount"] or 0.0)
+
+                if cash_refund < 0 or credit_amount < 0:
+                    raise ValueError("Return settlement amounts cannot be negative.")
+                if abs((cash_refund + credit_amount) - final_return_value) > 1e-6:
+                    raise ValueError("Return settlement must equal the calculated return value.")
+                if cash_refund > paid_before + 1e-9:
+                    raise ValueError("Cash refund cannot exceed the sale's paid amount.")
+
+                if cash_refund > 0:
+                    self.conn.execute(
+                        """
+                        INSERT INTO sale_payments (
+                            sale_id, date, amount, method, instrument_type,
+                            clearing_state, notes, created_by
+                        ) VALUES (?, ?, ?, 'Cash', 'other', 'cleared', ?, ?)
+                        """,
+                        (
+                            sid,
+                            date,
+                            -cash_refund,
+                            settlement.get("refund_notes") or "[Return refund]",
+                            created_by,
+                        ),
                     )
-                elif mode == "credit_note":
-                    cadv = CustomerAdvancesRepo(self.conn)
-                    cadv.grant_credit(
-                        customer_id=customer_id,
-                        amount=final_return_value,
-                        date=date,
-                        notes=notes,
-                        created_by=created_by,
-                        source_id=sid,
-                        # Keep return credits explicitly labeled
-                        source_type="return_credit",
+
+                if credit_amount > 0:
+                    self.conn.execute(
+                        """
+                        INSERT INTO customer_advances (
+                            customer_id, tx_date, amount, source_type,
+                            source_id, notes, created_by
+                        ) VALUES (?, ?, ?, 'return_credit', ?, ?, ?)
+                        """,
+                        (
+                            customer_id,
+                            date,
+                            credit_amount,
+                            sid,
+                            settlement.get("credit_notes") or "[Return credit]",
+                            created_by,
+                        ),
                     )
 
     def sale_return_totals(self, sale_id: str) -> dict:
