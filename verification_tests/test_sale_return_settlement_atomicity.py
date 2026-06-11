@@ -80,7 +80,7 @@ def test_split_return_settlement_commits_inventory_refund_and_credit_together(sa
         """
         INSERT INTO sale_payments (
             sale_id, date, amount, method, instrument_type, clearing_state
-        ) VALUES ('SO-RETURN-ATOMIC', '2026-06-11', 60, 'Cash', 'other', 'cleared')
+        ) VALUES ('SO-RETURN-ATOMIC', '2026-06-11', 100, 'Cash', 'other', 'cleared')
         """
     )
 
@@ -118,6 +118,13 @@ def test_credit_failure_rolls_back_inventory_return(sale_db):
     conn, repo, _, product_id, uom_id, item_id = sale_db
     conn.execute(
         """
+        INSERT INTO sale_payments (
+            sale_id, date, amount, method, instrument_type, clearing_state
+        ) VALUES ('SO-RETURN-ATOMIC', '2026-06-11', 100, 'Cash', 'other', 'cleared')
+        """
+    )
+    conn.execute(
+        """
         CREATE TRIGGER fail_return_credit
         BEFORE INSERT ON customer_advances
         WHEN NEW.source_type = 'return_credit'
@@ -149,7 +156,7 @@ def test_refund_failure_rolls_back_inventory_return(sale_db):
         """
         INSERT INTO sale_payments (
             sale_id, date, amount, method, instrument_type, clearing_state
-        ) VALUES ('SO-RETURN-ATOMIC', '2026-06-11', 20, 'Cash', 'other', 'cleared')
+        ) VALUES ('SO-RETURN-ATOMIC', '2026-06-11', 100, 'Cash', 'other', 'cleared')
         """
     )
     conn.execute(

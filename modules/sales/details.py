@@ -260,7 +260,7 @@ class SaleDetails(QWidget):
 
         # Paid / remaining / status
         self.lab_paid.setText(fmt_money(paid_amount))
-        self.lab_remain.setText(fmt_money(max(0.0, total_amount - paid_amount)))
+        self.lab_remain.setText(fmt_money(r.get("remaining_due", max(0.0, total_amount - paid_amount))))
         self.lab_status.setText(r.get("payment_status", "-"))
 
         # Optional: customer credit balance

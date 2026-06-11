@@ -119,6 +119,7 @@ class SaleReturnForm(QDialog):
         self._refund_amount: float = 0.0           # returned value AFTER order-discount proration
         self._sale_total_after_od: float = 0.0     # sales.total_amount (after ORDER discount)
         self._sale_paid: float = 0.0               # sales.paid_amount
+        self._remaining_due: float = 0.0           # receivable before this return
         self._sale_od: float = 0.0                 # sales.order_discount
         self._sale_net_subtotal: float = 0.0       # Σ qty * (unit_price - item_discount), BEFORE order discount
 
@@ -247,10 +248,22 @@ class SaleReturnForm(QDialog):
             return
 
         try:
-            paid_amount = h["paid_amount"]
+            position = self.repo.get_receivable_position(sid)
+        except Exception:
+            position = {}
+        try:
+            paid_amount = position.get("paid_amount", h["paid_amount"])
         except (KeyError, TypeError):
             paid_amount = 0.0
-        self._sale_paid = float(paid_amount)
+        self._sale_paid = float(paid_amount or 0.0)
+        try:
+            header_total = float(h["total_amount"] or 0.0)
+            header_advance = float(h["advance_payment_applied"] or 0.0)
+        except (KeyError, TypeError):
+            header_total = 0.0
+            header_advance = 0.0
+        fallback_remaining = max(0.0, header_total - self._sale_paid - header_advance)
+        self._remaining_due = float(position.get("remaining_due", fallback_remaining) or 0.0)
 
         try:
             order_discount = h["order_discount"]
@@ -396,8 +409,8 @@ class SaleReturnForm(QDialog):
         self._refund_amount = total
         self.lbl_returned_value.setText(fmt_money(self._refund_amount))
 
-        # Cap for cash refund now
-        cap = min(self._refund_amount, self._sale_paid)
+        settlement_due = max(0.0, self._refund_amount - self._remaining_due)
+        cap = min(settlement_due, self._sale_paid)
         self.lbl_cash_cap.setText(f"(max: {fmt_money(cap)})")
         self.spin_cash.setMaximum(max(0.0, cap))
 
@@ -416,25 +429,31 @@ class SaleReturnForm(QDialog):
         self._update_note()
 
     def _update_note(self):
-        cap = min(self._refund_amount, self._sale_paid)
+        settlement_due = max(0.0, self._refund_amount - self._remaining_due)
+        cap = min(settlement_due, self._sale_paid)
         cash_now = self.spin_cash.value() if self.spin_cash.isEnabled() else 0.0
-        if cap <= 0:
-            self.lbl_note.setText("")
+        if settlement_due <= 0:
+            self.lbl_note.setText(
+                f"This return reduces the sale balance by {fmt_money(self._refund_amount)}. No refund or credit is due."
+            )
             return
 
         if cash_now < cap:
-            credited = self._refund_amount - cash_now
+            credited = settlement_due - cash_now
             self.lbl_note.setText(
                 f"Paying {fmt_money(cash_now)} now. "
-                f"{fmt_money(credited)} will reduce balance / be credited."
+                f"{fmt_money(credited)} will become customer credit."
             )
-        elif self._refund_amount > self._sale_paid:
+        elif settlement_due > self._sale_paid:
             self.lbl_note.setText(
                 f"Note: Paid is {fmt_money(self._sale_paid)}. "
-                f"Cash refund is capped at that amount; the remainder will be credited/reduce balance."
+                f"Cash refund is capped at that amount; the remainder becomes customer credit."
             )
         else:
-            self.lbl_note.setText("")
+            self.lbl_note.setText(
+                f"{fmt_money(self._remaining_due)} reduces the balance first. "
+                f"Settlement due is {fmt_money(settlement_due)}."
+            )
 
     # ---- payload ----
     def get_payload(self):

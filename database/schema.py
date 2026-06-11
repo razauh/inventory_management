@@ -305,6 +305,24 @@ CREATE TABLE IF NOT EXISTS purchase_return_snapshots (
 CREATE INDEX IF NOT EXISTS idx_purchase_return_snapshots_purchase
   ON purchase_return_snapshots(purchase_id);
 
+/* -------- immutable sale-return valuation snapshots -------- */
+CREATE TABLE IF NOT EXISTS sale_return_snapshots (
+    transaction_id    INTEGER PRIMARY KEY,
+    sale_id           TEXT    NOT NULL,
+    item_id           INTEGER NOT NULL,
+    product_id        INTEGER NOT NULL,
+    uom_id            INTEGER NOT NULL,
+    returned_quantity NUMERIC NOT NULL CHECK (CAST(returned_quantity AS REAL) > 0),
+    unit_sale_price   NUMERIC NOT NULL CHECK (CAST(unit_sale_price AS REAL) >= 0),
+    unit_discount     NUMERIC NOT NULL CHECK (CAST(unit_discount AS REAL) >= 0),
+    return_date       DATE    NOT NULL,
+    return_value      NUMERIC NOT NULL CHECK (CAST(return_value AS REAL) >= 0),
+    captured_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (transaction_id) REFERENCES inventory_transactions(transaction_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sale_return_snapshots_sale
+  ON sale_return_snapshots(sale_id);
+
 /* -------- stock valuation history (running average) -------- */
 CREATE TABLE IF NOT EXISTS stock_valuation_history (
     valuation_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1144,6 +1162,84 @@ WHEN EXISTS (
 )
 BEGIN
   SELECT RAISE(ABORT, 'Snapshotted purchase return financial fields are immutable');
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_return_snapshot_insert;
+CREATE TRIGGER trg_sale_return_snapshot_insert
+AFTER INSERT ON inventory_transactions
+FOR EACH ROW
+WHEN NEW.transaction_type = 'sale_return'
+BEGIN
+  INSERT INTO sale_return_snapshots (
+    transaction_id, sale_id, item_id, product_id, uom_id,
+    returned_quantity, unit_sale_price, unit_discount,
+    return_date, return_value
+  )
+  SELECT
+    NEW.transaction_id, NEW.reference_id, NEW.reference_item_id,
+    NEW.product_id, NEW.uom_id, CAST(NEW.quantity AS REAL),
+    CAST(si.unit_price AS REAL), CAST(si.item_discount AS REAL),
+    NEW.date,
+    CASE
+      WHEN sst.subtotal <= 0 THEN 0.0
+      ELSE CAST(NEW.quantity AS REAL)
+        * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+        * (
+          sst.subtotal -
+          CASE
+            WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+            WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > sst.subtotal THEN sst.subtotal
+            ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
+          END
+        ) / sst.subtotal
+    END
+  FROM sale_items si
+  JOIN sales s ON s.sale_id = si.sale_id
+  JOIN (
+    SELECT sale_id,
+           COALESCE(SUM(
+             CAST(quantity AS REAL) *
+             MAX(0.0, CAST(unit_price AS REAL) - CAST(item_discount AS REAL))
+           ), 0.0) AS subtotal
+    FROM sale_items
+    GROUP BY sale_id
+  ) sst ON sst.sale_id = si.sale_id
+  WHERE si.item_id = NEW.reference_item_id
+    AND si.sale_id = NEW.reference_id;
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_return_snapshot_update_guard;
+CREATE TRIGGER trg_sale_return_snapshot_update_guard
+BEFORE UPDATE ON sale_return_snapshots
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'Sale return snapshots are immutable');
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_return_snapshot_delete_guard;
+CREATE TRIGGER trg_sale_return_snapshot_delete_guard
+AFTER DELETE ON sale_return_snapshots
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM inventory_transactions it
+  WHERE it.transaction_id = OLD.transaction_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Delete the source sale return transaction instead');
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_return_transaction_update_guard;
+CREATE TRIGGER trg_sale_return_transaction_update_guard
+BEFORE UPDATE OF product_id, quantity, uom_id, transaction_type,
+                 reference_table, reference_id, reference_item_id, date
+ON inventory_transactions
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM sale_return_snapshots srs
+  WHERE srs.transaction_id = OLD.transaction_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'Snapshotted sale return financial fields are immutable');
 END;
 
 /* Block converting a posted sale back to quotation */
@@ -2385,19 +2481,33 @@ SELECT s.sale_id,
        COALESCE((
          SELECT SUM(CAST(si.quantity AS REAL) * (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)))
          FROM sale_items si WHERE si.sale_id = s.sale_id
-       ),0.0) - CAST(s.order_discount AS REAL) AS calculated_total_amount
+       ),0.0) - CAST(s.order_discount AS REAL) AS calculated_total_amount,
+       COALESCE((
+         SELECT SUM(CAST(srs.return_value AS REAL))
+         FROM sale_return_snapshots srs WHERE srs.sale_id = s.sale_id
+       ),0.0) AS returned_value,
+       MAX(0.0,
+         COALESCE((
+           SELECT SUM(CAST(si.quantity AS REAL) * (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)))
+           FROM sale_items si WHERE si.sale_id = s.sale_id
+         ),0.0) - CAST(s.order_discount AS REAL)
+         - COALESCE((
+           SELECT SUM(CAST(srs.return_value AS REAL))
+           FROM sale_return_snapshots srs WHERE srs.sale_id = s.sale_id
+         ),0.0)
+       ) AS net_total_amount
 FROM sales s;
 
 /* Canonical customer receivable totals. Line totals, not header totals, drive AR. */
 CREATE VIEW sale_receivable_totals AS
 SELECT
   s.sale_id,
-  MAX(0.0, CAST(sdt.calculated_total_amount AS REAL)) AS canonical_total_amount,
+  MAX(0.0, CAST(sdt.net_total_amount AS REAL)) AS canonical_total_amount,
   MAX(0.0, COALESCE(CAST(s.paid_amount AS REAL), 0.0)) AS paid_amount,
   MAX(0.0, COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)) AS advance_payment_applied,
   MAX(
     0.0,
-    MAX(0.0, CAST(sdt.calculated_total_amount AS REAL))
+    MAX(0.0, CAST(sdt.net_total_amount AS REAL))
       - MAX(0.0, COALESCE(CAST(s.paid_amount AS REAL), 0.0))
       - MAX(0.0, COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0))
   ) AS remaining_due
@@ -3337,6 +3447,209 @@ def migrate_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
     _backfill_purchase_return_snapshots(conn)
 
 
+def _backfill_sale_return_snapshots(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        INSERT INTO sale_return_snapshots (
+            transaction_id, sale_id, item_id, product_id, uom_id,
+            returned_quantity, unit_sale_price, unit_discount,
+            return_date, return_value
+        )
+        SELECT
+            it.transaction_id, it.reference_id, it.reference_item_id,
+            it.product_id, it.uom_id, CAST(it.quantity AS REAL),
+            CAST(si.unit_price AS REAL), CAST(si.item_discount AS REAL),
+            it.date,
+            CASE
+                WHEN sst.subtotal <= 0 THEN 0.0
+                ELSE CAST(it.quantity AS REAL)
+                    * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+                    * (
+                        sst.subtotal -
+                        CASE
+                            WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                            WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > sst.subtotal THEN sst.subtotal
+                            ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
+                        END
+                    ) / sst.subtotal
+            END
+        FROM inventory_transactions it
+        JOIN sale_items si
+          ON si.item_id = it.reference_item_id
+         AND si.sale_id = it.reference_id
+         AND si.product_id = it.product_id
+         AND si.uom_id = it.uom_id
+        JOIN sales s ON s.sale_id = si.sale_id
+        JOIN (
+            SELECT sale_id,
+                   COALESCE(SUM(
+                     CAST(quantity AS REAL) *
+                     MAX(0.0, CAST(unit_price AS REAL) - CAST(item_discount AS REAL))
+                   ), 0.0) AS subtotal
+            FROM sale_items
+            GROUP BY sale_id
+        ) sst ON sst.sale_id = si.sale_id
+        LEFT JOIN sale_return_snapshots srs
+          ON srs.transaction_id = it.transaction_id
+        WHERE it.transaction_type = 'sale_return'
+          AND it.reference_table = 'sales'
+          AND srs.transaction_id IS NULL
+        """
+    )
+
+
+def migrate_sale_return_snapshots(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sale_return_snapshots (
+            transaction_id    INTEGER PRIMARY KEY,
+            sale_id           TEXT    NOT NULL,
+            item_id           INTEGER NOT NULL,
+            product_id        INTEGER NOT NULL,
+            uom_id            INTEGER NOT NULL,
+            returned_quantity NUMERIC NOT NULL CHECK (CAST(returned_quantity AS REAL) > 0),
+            unit_sale_price   NUMERIC NOT NULL CHECK (CAST(unit_sale_price AS REAL) >= 0),
+            unit_discount     NUMERIC NOT NULL CHECK (CAST(unit_discount AS REAL) >= 0),
+            return_date       DATE    NOT NULL,
+            return_value      NUMERIC NOT NULL CHECK (CAST(return_value AS REAL) >= 0),
+            captured_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (transaction_id) REFERENCES inventory_transactions(transaction_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_sale_return_snapshots_sale
+          ON sale_return_snapshots(sale_id);
+
+        DROP TRIGGER IF EXISTS trg_sale_return_snapshot_insert;
+        CREATE TRIGGER trg_sale_return_snapshot_insert
+        AFTER INSERT ON inventory_transactions
+        FOR EACH ROW
+        WHEN NEW.transaction_type = 'sale_return'
+        BEGIN
+          INSERT INTO sale_return_snapshots (
+            transaction_id, sale_id, item_id, product_id, uom_id,
+            returned_quantity, unit_sale_price, unit_discount,
+            return_date, return_value
+          )
+          SELECT
+            NEW.transaction_id, NEW.reference_id, NEW.reference_item_id,
+            NEW.product_id, NEW.uom_id, CAST(NEW.quantity AS REAL),
+            CAST(si.unit_price AS REAL), CAST(si.item_discount AS REAL),
+            NEW.date,
+            CASE
+              WHEN sst.subtotal <= 0 THEN 0.0
+              ELSE CAST(NEW.quantity AS REAL)
+                * MAX(0.0, CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
+                * (
+                  sst.subtotal -
+                  CASE
+                    WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                    WHEN COALESCE(CAST(s.order_discount AS REAL), 0.0) > sst.subtotal THEN sst.subtotal
+                    ELSE COALESCE(CAST(s.order_discount AS REAL), 0.0)
+                  END
+                ) / sst.subtotal
+            END
+          FROM sale_items si
+          JOIN sales s ON s.sale_id = si.sale_id
+          JOIN (
+            SELECT sale_id,
+                   COALESCE(SUM(
+                     CAST(quantity AS REAL) *
+                     MAX(0.0, CAST(unit_price AS REAL) - CAST(item_discount AS REAL))
+                   ), 0.0) AS subtotal
+            FROM sale_items
+            GROUP BY sale_id
+          ) sst ON sst.sale_id = si.sale_id
+          WHERE si.item_id = NEW.reference_item_id
+            AND si.sale_id = NEW.reference_id;
+        END;
+
+        DROP TRIGGER IF EXISTS trg_sale_return_snapshot_update_guard;
+        CREATE TRIGGER trg_sale_return_snapshot_update_guard
+        BEFORE UPDATE ON sale_return_snapshots
+        FOR EACH ROW
+        BEGIN
+          SELECT RAISE(ABORT, 'Sale return snapshots are immutable');
+        END;
+
+        DROP TRIGGER IF EXISTS trg_sale_return_snapshot_delete_guard;
+        CREATE TRIGGER trg_sale_return_snapshot_delete_guard
+        AFTER DELETE ON sale_return_snapshots
+        FOR EACH ROW
+        WHEN EXISTS (
+          SELECT 1 FROM inventory_transactions it
+          WHERE it.transaction_id = OLD.transaction_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Delete the source sale return transaction instead');
+        END;
+
+        DROP TRIGGER IF EXISTS trg_sale_return_transaction_update_guard;
+        CREATE TRIGGER trg_sale_return_transaction_update_guard
+        BEFORE UPDATE OF product_id, quantity, uom_id, transaction_type,
+                         reference_table, reference_id, reference_item_id, date
+        ON inventory_transactions
+        FOR EACH ROW
+        WHEN EXISTS (
+          SELECT 1 FROM sale_return_snapshots srs
+          WHERE srs.transaction_id = OLD.transaction_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Snapshotted sale return financial fields are immutable');
+        END;
+        """
+    )
+    _backfill_sale_return_snapshots(conn)
+    conn.executescript(
+        """
+        DROP VIEW IF EXISTS sale_receivable_totals;
+        DROP VIEW IF EXISTS sale_detailed_totals;
+        CREATE VIEW sale_detailed_totals AS
+        SELECT s.sale_id,
+               CAST(s.order_discount AS REAL) AS order_discount,
+               COALESCE((
+                 SELECT SUM(CAST(si.quantity AS REAL) *
+                            (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)))
+                 FROM sale_items si WHERE si.sale_id = s.sale_id
+               ), 0.0) AS subtotal_before_order_discount,
+               COALESCE((
+                 SELECT SUM(CAST(si.quantity AS REAL) *
+                            (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)))
+                 FROM sale_items si WHERE si.sale_id = s.sale_id
+               ), 0.0) - CAST(s.order_discount AS REAL) AS calculated_total_amount,
+               COALESCE((
+                 SELECT SUM(CAST(srs.return_value AS REAL))
+                 FROM sale_return_snapshots srs WHERE srs.sale_id = s.sale_id
+               ), 0.0) AS returned_value,
+               MAX(0.0,
+                 COALESCE((
+                   SELECT SUM(CAST(si.quantity AS REAL) *
+                              (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL)))
+                   FROM sale_items si WHERE si.sale_id = s.sale_id
+                 ), 0.0) - CAST(s.order_discount AS REAL)
+                 - COALESCE((
+                   SELECT SUM(CAST(srs.return_value AS REAL))
+                   FROM sale_return_snapshots srs WHERE srs.sale_id = s.sale_id
+                 ), 0.0)
+               ) AS net_total_amount
+        FROM sales s;
+
+        CREATE VIEW sale_receivable_totals AS
+        SELECT
+          s.sale_id,
+          MAX(0.0, CAST(sdt.net_total_amount AS REAL)) AS canonical_total_amount,
+          MAX(0.0, COALESCE(CAST(s.paid_amount AS REAL), 0.0)) AS paid_amount,
+          MAX(0.0, COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)) AS advance_payment_applied,
+          MAX(
+            0.0,
+            MAX(0.0, CAST(sdt.net_total_amount AS REAL))
+              - MAX(0.0, COALESCE(CAST(s.paid_amount AS REAL), 0.0))
+              - MAX(0.0, COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0))
+          ) AS remaining_due
+        FROM sales s
+        JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id;
+        """
+    )
+
+
 def unresolved_purchase_return_count(conn: sqlite3.Connection) -> int:
     row = conn.execute(
         "SELECT COUNT(*) FROM v_unresolved_purchase_returns"
@@ -3359,6 +3672,7 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         _ensure_sale_payments_converted_to_credit(conn)
         _ensure_vendor_advances_payment_metadata(conn)
         migrate_purchase_return_snapshots(conn)
+        migrate_sale_return_snapshots(conn)
         conn.commit()
     print(f"✓ DB applied to {db_path}")
 

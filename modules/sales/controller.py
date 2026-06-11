@@ -448,9 +448,10 @@ class SalesController(BaseModule):
         # Returns summary for details panel (quotations naturally zero)
         try:
             rt = self.repo.sale_return_totals(r["sale_id"])
+            position = self.repo.get_receivable_position(r["sale_id"])
             r["returned_qty"] = float(rt.get("qty", 0.0))
-            r["returned_value"] = float(rt.get("value", 0.0))
-            r["net_after_returns"] = max(0.0, float(r.get("total_amount", 0.0)) - r["returned_value"])
+            r["returned_value"] = float(position["returned_value"])
+            r["net_after_returns"] = float(position["net_total_amount"])
         except Exception:
             r["returned_qty"] = 0.0
             r["returned_value"] = 0.0
@@ -1321,31 +1322,15 @@ class SalesController(BaseModule):
                 }
             )
 
-        refund_amount = float(p.get("refund_amount") or 0.0)  # already order-discount prorated
-        hdr = self.repo.get_header(sid) or {}
-        paid_before = float(hdr.get("paid_amount") or 0.0)
-
         requested_cash = float(p.get("cash_refund_now") or 0.0)
-
-        cash_refund = 0.0
-        credit_part = refund_amount
-
-        # User intent: treat either the checkbox or a positive spinner value
-        # as a request to refund cash now, but always clamp to the cap.
-        cap = min(refund_amount, paid_before)
-        if p.get("refund_now") or requested_cash > 0:
-            cash_refund = min(max(0.0, requested_cash), cap)
-            credit_part = max(0.0, refund_amount - cash_refund)
-
-        self.repo.record_return(
+        result = self.repo.record_return(
             sid=sid,
             date=today_str(),
             created_by=(self.user["user_id"] if self.user else None),
             lines=lines,
             notes="[Return]",
             settlement={
-                "cash_refund": cash_refund,
-                "credit_amount": credit_part,
+                "cash_refund": requested_cash if p.get("refund_now") else 0.0,
                 "refund_notes": "[Return refund]",
                 "credit_notes": "[Return credit]",
             },
@@ -1372,7 +1357,13 @@ class SalesController(BaseModule):
                 pass
 
         # Summary
-        if p.get("refund_now"):
+        cash_refund = float(result["cash_refund"])
+        credit_part = float(result["credit_amount"])
+        balance_reduction = min(
+            float(result["return_value"]),
+            float(result["remaining_due_before_return"]),
+        )
+        if cash_refund > 0:
             if credit_part > 0:
                 info(
                     self.view,
@@ -1382,8 +1373,10 @@ class SalesController(BaseModule):
                 )
             else:
                 info(self.view, "Saved", f"Return recorded. Refunded {fmt_money(cash_refund)} in cash.")
+        elif credit_part > 0:
+            info(self.view, "Saved", f"Return recorded. {fmt_money(credit_part)} added to customer credit.")
         else:
-            info(self.view, "Saved", f"Return recorded. {fmt_money(refund_amount)} added to customer credit.")
+            info(self.view, "Saved", f"Return recorded. Balance reduced by {fmt_money(balance_reduction)}.")
 
         self._reload()
         self._sync_details()
@@ -1492,12 +1485,13 @@ class SalesController(BaseModule):
                 'total': total
             }
 
-            # Calculate paid amount and remaining
+            # Keep gross invoice totals, but use the canonical net receivable for balance.
             paid_amount = float(doc_data.get('paid_amount', 0.0))
-            total_amount = max(0.0, float(enriched_data['totals']['total']))
             advance_payment_applied = float(doc_data.get('advance_payment_applied', 0.0))
-            # Calculate remaining properly by accounting for advance payments
-            remaining = max(0.0, total_amount - paid_amount - advance_payment_applied)
+            position = self.repo.get_receivable_position(sale_id)
+            remaining = float(position['remaining_due'])
+            enriched_data['totals']['returned_value'] = float(position['returned_value'])
+            enriched_data['totals']['net_total'] = float(position['net_total_amount'])
 
             enriched_data['paid_amount'] = paid_amount
             enriched_data['advance_payment_applied'] = advance_payment_applied

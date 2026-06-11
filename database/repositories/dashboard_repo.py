@@ -163,23 +163,14 @@ class DashboardRepo:
 
     def open_receivables(self) -> float:
         """
-        Remaining = total_amount - (paid_amount + advance_payment_applied).
-        Only real sales (doc_type = 'sale'); only positive remaining.
+        Sum canonical net remaining amounts for real sales.
         """
         sql = """
-            SELECT COALESCE(SUM(remaining), 0.0) AS v
-            FROM (
-              SELECT
-                CAST(s.total_amount AS REAL)
-                - (
-                    COALESCE(CAST(s.paid_amount AS REAL), 0.0)
-                    + COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
-                  )
-                AS remaining
-              FROM sales s
-              WHERE s.doc_type = 'sale'
-            )
-            WHERE remaining > 0.0000001
+            SELECT COALESCE(SUM(srt.remaining_due), 0.0) AS v
+            FROM sales s
+            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+            WHERE s.doc_type = 'sale'
+              AND srt.remaining_due > 0.0000001
         """
         return _to_float(self._scalar(sql))
 

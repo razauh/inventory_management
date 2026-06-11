@@ -310,6 +310,17 @@ class SalesRepo:
             ).fetchone()
             if not row or row["doc_type"] != "sale":
                 raise ValueError("update_sale() requires an existing sale (doc_type='sale').")
+            if self.conn.execute(
+                """
+                SELECT 1 FROM inventory_transactions
+                WHERE transaction_type='sale_return'
+                  AND reference_table='sales'
+                  AND reference_id=?
+                LIMIT 1
+                """,
+                (header.sale_id,),
+            ).fetchone():
+                raise ValueError("Cannot edit a sale after returns exist")
             if (
                 int(row["customer_id"]) != int(header.customer_id)
                 and self.has_customer_locking_activity(header.sale_id)
@@ -597,8 +608,14 @@ class SalesRepo:
         lines: list[dict],
         notes: str | None,
         settlement: dict | None = None,
-    ):
+    ) -> dict:
         with self.conn:
+            if not lines:
+                raise ValueError("At least one return line is required")
+            settlement_data = settlement or {}
+            position_before = self.get_receivable_position(sid)
+            remaining_due_before = position_before["remaining_due"]
+
             # Group requested returns per item to validate batch totals
             requested_per_item: dict[int, float] = {}
             for ln in lines:
@@ -644,10 +661,7 @@ class SalesRepo:
                 raise ValueError(f"Unknown sale_id: {sid}")
             customer_id = int(hdr["customer_id"])
 
-            # Calculate total return value with proration for order discount
-            return_value = 0.0
-            for ln in lines:  # {item_id, product_id, uom_id, qty_return}
-                # Verify the item exists and matches the sale
+            for ln in lines:
                 chk = self.conn.execute(
                     "SELECT product_id, uom_id, CAST(unit_price AS REAL) AS unit_price, CAST(item_discount AS REAL) AS item_discount FROM sale_items WHERE item_id=? AND sale_id=?",
                     (ln["item_id"], sid),
@@ -655,25 +669,8 @@ class SalesRepo:
                 if not chk:
                     raise ValueError(f"Sale item mismatch for item_id {ln['item_id']}")
 
-                unit_price = float(chk["unit_price"])
-                item_discount = float(chk["item_discount"])
-                qty_return = float(ln["qty_return"])
-                
-                # Calculate line value (net of item discount)
-                line_value = (unit_price - item_discount) * qty_return
-                return_value += line_value
-
-            # Apply proration for order discount if needed
-            totals = self.get_sale_totals(sid)
-            net_subtotal = totals["net_subtotal"]  # Before order discount
-            total_after_od = totals["total_after_od"]  # After order discount
-            
-            order_factor = 1.0
-            if net_subtotal > 1e-9:  # Avoid division by zero
-                order_factor = total_after_od / net_subtotal
-            final_return_value = return_value * order_factor
-
             seq = next_inventory_txn_seq(self.conn, date)
+            return_transaction_ids: list[int] = []
 
             # Insert inventory return rows
             for ln in lines:  # {item_id, product_id, uom_id, qty_return}
@@ -685,7 +682,7 @@ class SalesRepo:
                 if not chk:
                     raise ValueError(f"Sale item mismatch for item_id {ln['item_id']}")
 
-                self.conn.execute(
+                cur = self.conn.execute(
                     """
                     INSERT INTO inventory_transactions(
                         product_id, quantity, uom_id, transaction_type,
@@ -706,21 +703,34 @@ class SalesRepo:
                         created_by,
                     ),
                 )
+                return_transaction_ids.append(int(cur.lastrowid))
                 seq += 10
             rebuild_dirty_valuations(self.conn)
 
-            # Settlement handling (if applicable)
-            if settlement and final_return_value > 0:
-                cash_refund = float(settlement.get("cash_refund") or 0.0)
-                credit_amount = float(settlement.get("credit_amount") or 0.0)
-                paid_before = float(hdr["paid_amount"] or 0.0)
+            placeholders = ",".join("?" for _ in return_transaction_ids)
+            value_row = self.conn.execute(
+                f"""
+                SELECT COUNT(*) AS snapshot_count,
+                       COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS return_value
+                FROM sale_return_snapshots
+                WHERE transaction_id IN ({placeholders})
+                """,
+                return_transaction_ids,
+            ).fetchone()
+            if int(value_row["snapshot_count"] or 0) != len(return_transaction_ids):
+                raise sqlite3.IntegrityError("Sale return snapshot capture failed")
+            final_return_value = float(value_row["return_value"] or 0.0)
 
-                if cash_refund < 0 or credit_amount < 0:
-                    raise ValueError("Return settlement amounts cannot be negative.")
-                if abs((cash_refund + credit_amount) - final_return_value) > 1e-6:
-                    raise ValueError("Return settlement must equal the calculated return value.")
-                if cash_refund > paid_before + 1e-9:
-                    raise ValueError("Cash refund cannot exceed the sale's paid amount.")
+            settlement_due = max(0.0, final_return_value - remaining_due_before)
+            paid_before = float(hdr["paid_amount"] or 0.0)
+            cash_cap = min(settlement_due, paid_before)
+            requested_cash = float(settlement_data.get("cash_refund") or 0.0)
+            if requested_cash < 0:
+                raise ValueError("Cash refund cannot be negative.")
+            cash_refund = min(requested_cash, cash_cap)
+            credit_amount = max(0.0, settlement_due - cash_refund)
+
+            if settlement_due > 0:
 
                 if cash_refund > 0:
                     self.conn.execute(
@@ -734,7 +744,7 @@ class SalesRepo:
                             sid,
                             date,
                             -cash_refund,
-                            settlement.get("refund_notes") or "[Return refund]",
+                            settlement_data.get("refund_notes") or "[Return refund]",
                             created_by,
                         ),
                     )
@@ -752,22 +762,37 @@ class SalesRepo:
                             date,
                             credit_amount,
                             sid,
-                            settlement.get("credit_notes") or "[Return credit]",
+                            settlement_data.get("credit_notes") or "[Return credit]",
                             created_by,
                         ),
                     )
+
+            self._refresh_sale_payment_status(sid)
+            position_after = self.get_receivable_position(sid)
+            status_row = self.conn.execute(
+                "SELECT payment_status FROM sales WHERE sale_id=?",
+                (sid,),
+            ).fetchone()
+            return {
+                "return_value": final_return_value,
+                "remaining_due_before_return": remaining_due_before,
+                "settlement_due": settlement_due,
+                "cash_refund_cap": cash_cap,
+                "cash_refund": cash_refund,
+                "credit_amount": credit_amount,
+                "net_total_amount": position_after["net_total_amount"],
+                "remaining_due_after_return": position_after["remaining_due"],
+                "payment_status": status_row["payment_status"] if status_row else None,
+            }
 
     def sale_return_totals(self, sale_id: str) -> dict:
         row = self.conn.execute(
             """
             SELECT
               COALESCE(SUM(CAST(it.quantity AS REAL)), 0.0) AS qty_returned,
-              COALESCE(SUM(
-                CAST(it.quantity AS REAL) *
-                (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
-              ), 0.0) AS value_returned
+              COALESCE(SUM(CAST(srs.return_value AS REAL)), 0.0) AS value_returned
             FROM inventory_transactions it
-            JOIN sale_items si ON si.item_id = it.reference_item_id
+            JOIN sale_return_snapshots srs ON srs.transaction_id = it.transaction_id
             WHERE it.reference_table='sales'
               AND it.reference_id=? AND it.transaction_type='sale_return'
             """,
@@ -776,6 +801,39 @@ class SalesRepo:
         return {
             "qty": float(row["qty_returned"]),
             "value": float(row["value_returned"]),
+        }
+
+    def get_receivable_position(self, sale_id: str, return_value: float = 0.0) -> dict:
+        row = self.conn.execute(
+            """
+            SELECT
+              CAST(sdt.calculated_total_amount AS REAL) AS gross_total_amount,
+              CAST(sdt.returned_value AS REAL) AS returned_value,
+              CAST(sdt.net_total_amount AS REAL) AS net_total_amount,
+              CAST(srt.paid_amount AS REAL) AS paid_amount,
+              CAST(srt.advance_payment_applied AS REAL) AS advance_payment_applied,
+              CAST(srt.remaining_due AS REAL) AS remaining_due
+            FROM sale_detailed_totals sdt
+            JOIN sale_receivable_totals srt ON srt.sale_id = sdt.sale_id
+            WHERE sdt.sale_id = ?
+            """,
+            (sale_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Unknown sale_id: {sale_id}")
+        remaining = float(row["remaining_due"] or 0.0)
+        paid = float(row["paid_amount"] or 0.0)
+        prospective_return = max(0.0, float(return_value or 0.0))
+        settlement_due = max(0.0, prospective_return - remaining)
+        return {
+            "gross_total_amount": float(row["gross_total_amount"] or 0.0),
+            "returned_value": float(row["returned_value"] or 0.0),
+            "net_total_amount": float(row["net_total_amount"] or 0.0),
+            "paid_amount": paid,
+            "advance_payment_applied": float(row["advance_payment_applied"] or 0.0),
+            "remaining_due": remaining,
+            "settlement_due": settlement_due,
+            "cash_refund_cap": min(settlement_due, paid),
         }
 
     # ---------------------------------------------------------------------
@@ -812,13 +870,22 @@ class SalesRepo:
         row = self.conn.execute(
             """
             SELECT CAST(subtotal_before_order_discount AS REAL) AS net_subtotal,
-                   CAST(calculated_total_amount        AS REAL) AS total_after_od
+                   CAST(calculated_total_amount AS REAL) AS total_after_od,
+                   CAST(calculated_total_amount AS REAL) AS calculated_total_amount,
+                   CAST(returned_value AS REAL) AS returned_value,
+                   CAST(net_total_amount AS REAL) AS net_total_amount
             FROM sale_detailed_totals
             WHERE sale_id = ?
             """,
             (sale_id,),
         ).fetchone()
-        return row or {"net_subtotal": 0.0, "total_after_od": 0.0}
+        return row or {
+            "net_subtotal": 0.0,
+            "total_after_od": 0.0,
+            "calculated_total_amount": 0.0,
+            "returned_value": 0.0,
+            "net_total_amount": 0.0,
+        }
 
     def list_by_customer(self, customer_id: int, doc_type: str = 'sale') -> list[sqlite3.Row]:
         """

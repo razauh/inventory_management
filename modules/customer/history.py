@@ -183,25 +183,16 @@ class CustomerHistoryService:
                     CAST(it.quantity AS REAL) AS quantity,
                     it.uom_id,
                     u.unit_name AS uom_name,
-                    CAST(si.unit_price AS REAL) AS unit_price,
-                    CAST(si.item_discount AS REAL) AS item_discount,
-                    -(
-                        CAST(it.quantity AS REAL)
-                        * (CAST(si.unit_price AS REAL) - CAST(si.item_discount AS REAL))
-                        * CASE
-                            WHEN CAST(sdt.subtotal_before_order_discount AS REAL) > 0
-                            THEN CAST(sdt.calculated_total_amount AS REAL)
-                                 / CAST(sdt.subtotal_before_order_discount AS REAL)
-                            ELSE 1.0
-                          END
-                    ) AS amount,
+                    CAST(srs.unit_sale_price AS REAL) AS unit_price,
+                    CAST(srs.unit_discount AS REAL) AS item_discount,
+                    -CAST(srs.return_value AS REAL) AS amount,
                     it.notes
                 FROM inventory_transactions it
                 JOIN sale_items si ON si.item_id = it.reference_item_id
+                JOIN sale_return_snapshots srs ON srs.transaction_id = it.transaction_id
                 JOIN sales s ON s.sale_id = si.sale_id
                 JOIN products p ON p.product_id = it.product_id
                 JOIN uoms u ON u.uom_id = it.uom_id
-                JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
                 WHERE s.customer_id = ?
                   AND s.doc_type = 'sale'
                   AND it.transaction_type = 'sale_return'
