@@ -74,6 +74,7 @@ Operating instructions for AI coding agents working in this repository.
 This project has a graphify knowledge graph at `graphify-out/` with community structure and cross-file relationships.
 
 Rules:
+- Do not call `graphify` as a global CLI. Use the local conda environment, such as `conda run -p ./.conda graphify ...` or `./.conda/bin/graphify ...`, because it may not be on `PATH`.
 - For codebase questions, use `graphify query "<question>"` when `graphify-out/graph.json` exists.
 - Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts.
 - If `graphify-out/wiki/index.md` exists, use it for broad navigation instead of raw source browsing.

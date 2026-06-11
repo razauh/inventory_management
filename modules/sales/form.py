@@ -8,13 +8,33 @@ from PySide6.QtWidgets import (
     QFrame, QHeaderView
 )
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
-from PySide6.QtCore import Qt, QDate, QTimer
+from PySide6.QtCore import Qt, QDate, QEvent, QObject, QTimer
 from ...database.repositories.customers_repo import CustomersRepo
     # (bank account repo is passed in, not imported here)
 from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.sales_repo import SalesRepo
 from ...utils.helpers import today_str, fmt_money
 from ...utils.ui_helpers import info  # <-- added for visible validation messages
+
+
+class AddRowShortcutFilter(QObject):
+    def __init__(self, form):
+        super().__init__()
+        self.form = form
+
+    def eventFilter(self, obj, event):
+        if event.type() != QEvent.KeyPress or event.isAutoRepeat():
+            return False
+        if event.key() not in (Qt.Key_Return, Qt.Key_Enter):
+            return False
+        if not (event.modifiers() & Qt.ControlModifier):
+            return False
+
+        focus = self.form.focusWidget()
+        if focus is self.form.tbl or (focus is not None and self.form.tbl.isAncestorOf(focus)):
+            self.form._add_row()
+            return True
+        return False
 
 
 class SaleForm(QDialog):
@@ -184,6 +204,15 @@ class SaleForm(QDialog):
         self.tbl.setColumnHidden(11, True)
 
         ib.addWidget(self.tbl, 1)
+        self.add_row_shortcut_filter = AddRowShortcutFilter(self)
+        self.tbl.installEventFilter(self.add_row_shortcut_filter)
+        self.tbl.viewport().installEventFilter(self.add_row_shortcut_filter)
+        self.shortcut_add_row_ctrl_return = QShortcut(QKeySequence("Ctrl+Return"), self.tbl)
+        self.shortcut_add_row_ctrl_return.setContext(Qt.WidgetWithChildrenShortcut)
+        self.shortcut_add_row_ctrl_return.activated.connect(self._add_row)
+        self.shortcut_add_row_ctrl_enter = QShortcut(QKeySequence("Ctrl+Enter"), self.tbl)
+        self.shortcut_add_row_ctrl_enter.setContext(Qt.WidgetWithChildrenShortcut)
+        self.shortcut_add_row_ctrl_enter.activated.connect(self._add_row)
         add = QHBoxLayout(); self.btn_add_row = QPushButton("Add Row"); add.addWidget(self.btn_add_row); add.addStretch(1); ib.addLayout(add)
 
         # bottom totals (richer summary)
@@ -488,6 +517,7 @@ class SaleForm(QDialog):
         product_edit.setCompleter(completer)
 
         self.tbl.setCellWidget(r, 1, product_edit)
+        product_edit.installEventFilter(self.add_row_shortcut_filter)
 
         # Base UoM (read-only label cell)
         base_cell = QTableWidgetItem("-")
@@ -497,6 +527,7 @@ class SaleForm(QDialog):
         # Alt UoM (combo; disabled when no alternates)
         alt = QComboBox(); alt.setEnabled(False)
         self.tbl.setCellWidget(r, 3, alt)
+        alt.installEventFilter(self.add_row_shortcut_filter)
 
         # Avail (read-only)
         avail = QTableWidgetItem("0")
@@ -535,6 +566,7 @@ class SaleForm(QDialog):
         def kill():
             self.tbl.removeRow(r); self._reindex(); self._refresh_totals()
         btn.clicked.connect(kill); self.tbl.setCellWidget(r, 10, btn)
+        btn.installEventFilter(self.add_row_shortcut_filter)
 
         # when product changes → base uom name, alt list, prices, avail
         def on_prod():

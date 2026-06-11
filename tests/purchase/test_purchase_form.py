@@ -28,6 +28,28 @@ def test_po_ui_add_row(purchase_form, qtbot):
     qtbot.mouseClick(purchase_form.btn_add_row, Qt.LeftButton)
     assert purchase_form.tbl.rowCount() == initial_rows + 1
 
+def test_po_ui_ctrl_enter_adds_row_from_product_field(purchase_form, qtbot):
+    """Ctrl+Enter adds a row from the current product line."""
+    purchase_form.show()
+    initial_rows = purchase_form.tbl.rowCount()
+    product_combo = purchase_form.tbl.cellWidget(0, 1)
+    product_combo.setFocus()
+
+    qtbot.keyClick(product_combo, Qt.Key_Return, Qt.ControlModifier)
+
+    assert purchase_form.tbl.rowCount() == initial_rows + 1
+
+def test_po_ui_ctrl_enter_adds_row_from_numeric_cell(purchase_form, qtbot):
+    """Ctrl+Enter adds a row from any editable item cell."""
+    purchase_form.show()
+    initial_rows = purchase_form.tbl.rowCount()
+    purchase_form.tbl.setCurrentCell(0, 2)
+    purchase_form.tbl.setFocus()
+
+    qtbot.keyClick(purchase_form.tbl, Qt.Key_Return, Qt.ControlModifier)
+
+    assert purchase_form.tbl.rowCount() == initial_rows + 1
+
 def test_po_ui_delete_row(purchase_form, qtbot):
     """PO-UI-005: Delete a row from the items table."""
     # Ensure we have 2 rows

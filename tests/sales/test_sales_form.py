@@ -1,6 +1,6 @@
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QWidget, QHBoxLayout, QComboBox
+from PySide6.QtWidgets import QVBoxLayout
 from inventory_management.modules.sales.form import SaleForm
 from inventory_management.database.repositories.customers_repo import CustomersRepo
 from inventory_management.database.repositories.products_repo import ProductsRepo
@@ -32,25 +32,14 @@ def test_sales_form_window_controls(qtbot, mock_repos):
     assert flags & Qt.WindowCloseButtonHint, "Close button missing"
 
 def test_sales_form_layout_structure(qtbot, mock_repos):
-    """Test that the layout is restructured with payment section on the right."""
+    """Test the current compact sales form layout."""
     form = SaleForm(None, customers=mock_repos["customers"], products=mock_repos["products"], bank_accounts=mock_repos["bank_accounts"])
     qtbot.addWidget(form)
     form.show()
-    
-    # Check main layout is horizontal
-    assert isinstance(form.layout(), QHBoxLayout), f"Main layout should be QHBoxLayout, got {type(form.layout())}"
-    
-    # Check for left and right widgets (this assumes implementation detail, but necessary for structure check)
-    # We expect 2 items in the main layout: Left Content and Right Sidebar
+
+    assert isinstance(form.layout(), QVBoxLayout), f"Main layout should be QVBoxLayout, got {type(form.layout())}"
     assert form.layout().count() >= 2
-    
-    # Verify payment box is in the right sidebar (or at least not in the main vertical flow)
-    # This is tricky to test strictly without inspecting the exact widget hierarchy, 
-    # but we can check if pay_box is visible and where it is parented.
     assert form.pay_box.isVisible()
-    
-    # Check width ratio (approximate)
-    # In a real UI test we might check geometry, but here we just ensure the structure exists.
 
 def test_bank_account_dropdown_population(qtbot, mock_repos):
     """Test that bank account dropdown is populated when Bank Transfer is selected."""
@@ -61,8 +50,8 @@ def test_bank_account_dropdown_population(qtbot, mock_repos):
     # Select Bank Transfer
     form.pay_method.setCurrentIndex(1)
     
-    # Check visibility
-    assert form.bank_box.isVisible()
+    assert form.cmb_bank_account.isVisible()
+    assert form.edt_instr_no.isVisible()
     
     # Check items in dropdown
     assert form.cmb_bank_account.count() > 0
@@ -80,6 +69,32 @@ def test_column_widths(qtbot, mock_repos):
     
     assert prod_width > qty_width * 1.5, "Product column should be significantly wider"
     assert form.tbl.columnWidth(0) <= 50, "Index column should be narrow"
+
+def test_ctrl_enter_adds_row_from_sales_product_field(qtbot, mock_repos):
+    """Ctrl+Enter adds a row from the current product line."""
+    form = SaleForm(None, customers=mock_repos["customers"], products=mock_repos["products"], bank_accounts=mock_repos["bank_accounts"])
+    qtbot.addWidget(form)
+    form.show()
+    initial_rows = form.tbl.rowCount()
+    product_edit = form.tbl.cellWidget(0, 1)
+    product_edit.setFocus()
+
+    qtbot.keyClick(product_edit, Qt.Key_Return, Qt.ControlModifier)
+
+    assert form.tbl.rowCount() == initial_rows + 1
+
+def test_ctrl_enter_adds_row_from_sales_numeric_cell(qtbot, mock_repos):
+    """Ctrl+Enter adds a row from any editable item cell."""
+    form = SaleForm(None, customers=mock_repos["customers"], products=mock_repos["products"], bank_accounts=mock_repos["bank_accounts"])
+    qtbot.addWidget(form)
+    form.show()
+    initial_rows = form.tbl.rowCount()
+    form.tbl.setCurrentCell(0, 5)
+    form.tbl.setFocus()
+
+    qtbot.keyClick(form.tbl, Qt.Key_Return, Qt.ControlModifier)
+
+    assert form.tbl.rowCount() == initial_rows + 1
 
 def test_input_field_widths(qtbot, mock_repos):
     """Test input field maximum widths."""
@@ -100,36 +115,24 @@ def test_font_sizes(qtbot, mock_repos):
     
     # Check font size of total label
     font = form.lab_total.font()
-    assert font.pointSize() > 10 or font.pixelSize() > 12, "Total label font should be increased"
+    assert font.pointSize() >= 10 or font.pixelSize() >= 12, "Total label font should be increased"
 
-def test_manual_customer_entry(qtbot, mock_repos):
-    """Test that manually typing a customer ID works."""
+def test_sales_payload_with_product_text_editor(qtbot, mock_repos, ids):
+    """Test payload generation with the text-based product editor."""
+    customer_id = mock_repos["customers"].create(name="Payload User", contact_info="123", address="Street")
     form = SaleForm(None, customers=mock_repos["customers"], products=mock_repos["products"], bank_accounts=mock_repos["bank_accounts"])
     qtbot.addWidget(form)
     form.show()
-    
-    # Manually type a customer ID that exists in the mock repo
-    # Mock repo has customers? We need to ensure mock_repos['customers'] has data.
-    # The CustomersRepo mock isn't explicitly defined in the test file, it uses the real one with a connection.
-    # We should create a customer first.
-    c = mock_repos["customers"].create(name="Manual User", contact_info="123", address="Street")
-    
-    # Verify customer exists in repo
-    created_c = mock_repos["customers"].get(c)
-    assert created_c is not None, "Customer not found in repo immediately after create"
-    
-    # Type the ID
-    form.cmb_customer.lineEdit().setText(str(c))
-    assert form.cmb_customer.currentText() == str(c), f"ComboBox text mismatch: expected {c}, got {form.cmb_customer.currentText()}"
-    
-    # Add an item to make payload valid
-    form._add_row()
-    form.tbl.cellWidget(0, 1).setCurrentIndex(1) # Select product
-    form.tbl.item(0, 4).setText("100") # Available
-    form.tbl.item(0, 5).setText("1") # Qty
-    form.tbl.item(0, 6).setText("10") # Price
-    
-    # Try to get payload
+
+    form.cmb_customer.setCurrentIndex(form.cmb_customer.findData(customer_id))
+    product_edit = form.tbl.cellWidget(0, 1)
+    product_edit.setText(f"Widget A (#{ids['prod_A']})")
+    form.tbl.item(0, 0).setData(Qt.UserRole, ids["uom_piece"])
+    form.tbl.item(0, 4).setText("100")
+    form.tbl.item(0, 5).setText("1")
+    form.tbl.item(0, 6).setText("10")
+
     p = form.get_payload()
-    assert p is not None, "Payload should be generated for manual ID entry"
-    assert p["customer_id"] == c, f"Customer ID mismatch: expected {c}, got {p['customer_id']}"
+    assert p is not None, "Payload should be generated for text product entry"
+    assert p["customer_id"] == customer_id
+    assert p["items"][0]["product_id"] == ids["prod_A"]

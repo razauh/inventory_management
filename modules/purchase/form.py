@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtCore import QEvent, QObject
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
@@ -23,6 +24,18 @@ class TableEventFilter(QObject):
         self.purchase_form = purchase_form
     
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress and event.isAutoRepeat():
+            return False
+
+        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.modifiers() & Qt.ControlModifier:
+                focus = self.purchase_form.focusWidget()
+                if focus is self.purchase_form.tbl or (
+                    focus is not None and self.purchase_form.tbl.isAncestorOf(focus)
+                ):
+                    self.purchase_form._add_row()
+                    return True
+
         # Check if this is a key press event on our table widget
         if event.type() == QEvent.KeyPress and obj == self.purchase_form.tbl:
             # Check if Tab key was pressed
@@ -196,9 +209,15 @@ class PurchaseForm(QDialog):
         # Install event filter to handle Tab key for adding new rows
         self.table_event_filter = TableEventFilter(self)
         self.tbl.installEventFilter(self.table_event_filter)
+        self.tbl.viewport().installEventFilter(self.table_event_filter)
+        self.shortcut_add_row_ctrl_return = QShortcut(QKeySequence("Ctrl+Return"), self.tbl)
+        self.shortcut_add_row_ctrl_return.setContext(Qt.WidgetWithChildrenShortcut)
+        self.shortcut_add_row_ctrl_return.activated.connect(self._add_row)
+        self.shortcut_add_row_ctrl_enter = QShortcut(QKeySequence("Ctrl+Enter"), self.tbl)
+        self.shortcut_add_row_ctrl_enter.setContext(Qt.WidgetWithChildrenShortcut)
+        self.shortcut_add_row_ctrl_enter.activated.connect(self._add_row)
 
         row_btns = QHBoxLayout()
-        from PySide6.QtGui import QKeySequence, QShortcut
 
         self.btn_add_row = QPushButton("Add Row")
         row_btns.addWidget(self.btn_add_row)
@@ -945,6 +964,9 @@ class PurchaseForm(QDialog):
         cmb_prod.setCurrentIndex(0)
 
         self.tbl.setCellWidget(r, 1, cmb_prod)
+        cmb_prod.installEventFilter(self.table_event_filter)
+        if cmb_prod.lineEdit():
+            cmb_prod.lineEdit().installEventFilter(self.table_event_filter)
 
         for c in (2, 3, 4):
             it = QTableWidgetItem("0")
@@ -961,6 +983,7 @@ class PurchaseForm(QDialog):
         btn_del = QPushButton("✕")
         btn_del.clicked.connect(lambda _=False, b=btn_del: self._delete_row_for_button(b))
         self.tbl.setCellWidget(r, 6, btn_del)
+        btn_del.installEventFilter(self.table_event_filter)
 
         
         cmb_prod.currentIndexChanged.connect(on_prod_changed)
