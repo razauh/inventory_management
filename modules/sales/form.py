@@ -685,28 +685,76 @@ class SaleForm(QDialog):
 
         # prefill for edit
         if pre:
-            # Set the product text field with the full product name and ID format
-            if pre.get("product_id"):
-                # Find the product name to create the proper format
+            pid = pre.get("product_id")
+            if pid:
+                p_obj = None
                 for p in self._all_products():
-                    if p.product_id == pre["product_id"]:
-                        product_edit.setText(f"{p.name} (#{p.product_id})")
-                        # Also store the product ID in the hidden column for consistency
-                        id_item = QTableWidgetItem()
-                        id_item.setData(Qt.UserRole, p.product_id)
-                        self.tbl.setItem(r, 11, id_item)
+                    if p.product_id == pid:
+                        p_obj = p
                         break
-            # Alt UoM selection if provided (after on_prod() built alt list)
-            alt_cb = self.tbl.cellWidget(r, 3)
-            if pre.get("uom_id") and self.tbl.item(r,0).data(Qt.UserRole) != pre["uom_id"] and isinstance(alt_cb, QComboBox):
-                for k in range(alt_cb.count()):
-                    data = alt_cb.itemData(k)
-                    if isinstance(data, tuple) and data[0] == pre["uom_id"]:
-                        alt_cb.setCurrentIndex(k); break
-            # qty / price / discount
-            self.tbl.item(r,5).setText(str(pre.get("quantity", 0)))
-            self.tbl.item(r,6).setText(fmt_money(pre.get("unit_price", 0)))
-            self.tbl.item(r,7).setText(str(pre.get("item_discount", 0)))
+                if p_obj:
+                    # Block signals to avoid starting the textChanged debounce timer
+                    product_edit.blockSignals(True)
+                    product_edit.setText(f"{p_obj.name} (#{p_obj.product_id})")
+                    product_edit.blockSignals(False)
+
+                    # Store the parsed product ID in the hidden column
+                    id_item = QTableWidgetItem()
+                    id_item.setData(Qt.UserRole, pid)
+                    self.tbl.setItem(r, 11, id_item)
+
+                    # Fetch UOMs and populate alt combo box synchronously
+                    uoms = self.products.list_product_uoms(int(pid))
+                    base = next((u for u in uoms if u["is_base"]), None)
+                    alts = [u for u in uoms if not u["is_base"]]
+
+                    base_cell.setText(base["unit_name"] if base else "-")
+                    self.tbl.item(r, 0).setData(Qt.UserRole, int(base["uom_id"]) if base else None)
+                    self.tbl.item(r, 2).setData(Qt.UserRole, float(base["factor_to_base"]) if base else 1.0)
+
+                    # Build alt combo synchronously
+                    alt.blockSignals(True)
+                    alt.clear()
+                    alt.addItem("— base —", None)
+                    for u in alts:
+                        alt.addItem(u["unit_name"], (int(u["uom_id"]), float(u["factor_to_base"])))
+                    alt.setEnabled(bool(alts))
+                    alt.blockSignals(False)
+
+                    # Cache cost_base from latest price but do NOT overwrite unit price with catalog price
+                    pr = self.products.latest_prices_base(int(pid))
+                    cost_base = float(pr["cost"])
+                    unit.setData(Qt.UserRole, cost_base)
+
+                    # Get availability in BASE
+                    avail_base = self.products.on_hand_base(int(pid))
+                    if pid in self._original_qty_base:
+                        avail_base += self._original_qty_base[pid]
+
+                    # Set quantity, discount, and unit_price from prefill
+                    qty = float(pre.get("quantity", 0))
+                    item_discount = float(pre.get("item_discount", 0))
+                    unit_price = float(pre.get("unit_price", 0))
+
+                    self.tbl.item(r, 5).setText(str(qty))
+                    self.tbl.item(r, 6).setText(fmt_money(unit_price))
+                    self.tbl.item(r, 7).setText(str(item_discount))
+
+                    # Set stored UOM and calculate converted availability
+                    uom_id = pre.get("uom_id")
+                    if uom_id and base and base["uom_id"] != uom_id:
+                        alt.blockSignals(True)
+                        selected_factor = 1.0
+                        for k in range(alt.count()):
+                            data = alt.itemData(k)
+                            if isinstance(data, tuple) and data[0] == uom_id:
+                                alt.setCurrentIndex(k)
+                                selected_factor = data[1]
+                                break
+                        alt.blockSignals(False)
+                        avail.setText(f"{(avail_base / selected_factor):g}")
+                    else:
+                        avail.setText(f"{avail_base:g}")
 
         self.tbl.blockSignals(False)
         self._recalc_row(r)
@@ -825,10 +873,10 @@ class SaleForm(QDialog):
             return None
 
         errors = []
-        critical_errors = []
         items = []
         requested_base_by_product = {}
         product_names = {}
+        first_error_row = None
 
         # row-by-row validation with specific messages
         for r in range(self.tbl.rowCount()):
@@ -839,7 +887,10 @@ class SaleForm(QDialog):
 
                 # product
                 if not product_editor or not product_editor.text():
-                    errors.append(f"Row {r+1}: Select a product.")
+                    msg = f"Row {r+1}: Select a product."
+                    errors.append(msg)
+                    if first_error_row is None:
+                        first_error_row = r
                     continue
 
                 # Get product ID from the hidden column (set by on_prod)
@@ -854,7 +905,8 @@ class SaleForm(QDialog):
                     if not pid:
                         msg = f"Row {r+1}: Invalid product format. Please select from the suggestions."
                         errors.append(msg)
-                        critical_errors.append(msg)
+                        if first_error_row is None:
+                            first_error_row = r
                         continue
 
                 # numbers in selected UoM (as displayed)
@@ -871,20 +923,19 @@ class SaleForm(QDialog):
                 if qty <= 0:
                     msg = f"Row {r+1}: Quantity must be greater than 0."
                     errors.append(msg)
-                    critical_errors.append(msg)
                     row_has_errors = True
                 if unit <= 0:
                     msg = f"Row {r+1}: Unit Price must be greater than 0."
                     errors.append(msg)
-                    critical_errors.append(msg)
                     row_has_errors = True
                 if disc < 0:
                     msg = f"Row {r+1}: Discount cannot be negative."
                     errors.append(msg)
-                    critical_errors.append(msg)
                     row_has_errors = True
 
                 if row_has_errors:
+                    if first_error_row is None:
+                        first_error_row = r
                     continue
 
                 # uom_id: base vs alt
@@ -909,7 +960,8 @@ class SaleForm(QDialog):
             except Exception:
                 msg = f"Row {r+1}: Invalid or incomplete data."
                 errors.append(msg)
-                critical_errors.append(msg)
+                if first_error_row is None:
+                    first_error_row = r
                 continue
 
         # Aggregate stock guard check in UI
@@ -922,18 +974,20 @@ class SaleForm(QDialog):
                     p_name = product_names.get(pid, f"Product #{pid}")
                     msg = f"Total requested quantity for '{p_name}' ({total_req_base:g} base units) exceeds available stock ({avail_base:g} base units)."
                     errors.append(msg)
-                    critical_errors.append(msg)
+                    # Find the first row containing this product to highlight it
+                    if first_error_row is None:
+                        for row_idx in range(self.tbl.rowCount()):
+                            item_id_widget = self.tbl.item(row_idx, 11)
+                            row_pid = item_id_widget.data(Qt.UserRole) if item_id_widget else None
+                            if row_pid == pid:
+                                first_error_row = row_idx
+                                break
 
-        if critical_errors:
-            self._warn("Please fix these issues",
-                       "\n".join(critical_errors[:6] + (["…"] if len(critical_errors) > 6 else [])),
-                       focus_widget=self.tbl, row_to_select=0)
-            return None
-
-        if errors and not items:
+        if errors:
+            err_row = first_error_row if first_error_row is not None else 0
             self._warn("Please fix these issues",
                        "\n".join(errors[:6] + (["…"] if len(errors) > 6 else [])),
-                       focus_widget=self.tbl, row_to_select=0)
+                       focus_widget=self.tbl, row_to_select=err_row)
             return None
 
         if not items:
