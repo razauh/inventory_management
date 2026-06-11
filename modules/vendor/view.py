@@ -15,6 +15,7 @@ class VendorView(QWidget):
         # actions + search
         top = QHBoxLayout()
         self.btn_add = QPushButton("Add")
+        self.btn_import = QPushButton("Import Vendors")
         self.btn_edit = QPushButton("Edit")
         # self.btn_del = QPushButton("Delete")
 
@@ -24,6 +25,7 @@ class VendorView(QWidget):
         self.btn_history = QPushButton("History")
 
         top.addWidget(self.btn_add)
+        top.addWidget(self.btn_import)
         top.addWidget(self.btn_edit)
         # top.addWidget(self.btn_del)
         top.addWidget(self.btn_apply_advance)

@@ -27,7 +27,9 @@ REQUIRED_COLUMNS = {
 
 
 class ImportValidationError(Exception):
-    pass
+    def __init__(self, message: str, failed_count: int = 0):
+        super().__init__(message)
+        self.failed_count = failed_count
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,13 @@ class ProductRow:
     alt_unit: str | None
     category: str | None
     factor_to_base: float | None
+
+
+@dataclass(frozen=True)
+class ImportResult:
+    imported_count: int
+    failed_count: int
+    message: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,98 +63,165 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_csv(csv_path: Path) -> list[ProductRow]:
+def _cell_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _load_product_rows(
+    source_name: str,
+    headers: list[str] | None,
+    rows: list[dict[str, object]],
+) -> list[ProductRow]:
     errors: list[str] = []
+    failed_lines: set[int] = set()
     products: list[ProductRow] = []
     seen_names: dict[str, int] = {}
     seen_uoms: dict[str, str] = {}
 
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
-        reader = csv.DictReader(csv_file)
-        if reader.fieldnames != list(REQUIRED_HEADERS):
-            raise ImportValidationError(
-                f"CSV headers must be {list(REQUIRED_HEADERS)}, got {reader.fieldnames}."
-            )
+    if headers != list(REQUIRED_HEADERS):
+        raise ImportValidationError(
+            f"{source_name} headers must be {list(REQUIRED_HEADERS)}, got {headers}."
+        )
 
-        for line_number, row in enumerate(reader, start=2):
-            if None in row:
-                errors.append(f"line {line_number}: too many columns")
+    for line_number, row in enumerate(rows, start=2):
+        name = _cell_text(row.get("name")).strip()
+        base_unit = _cell_text(row.get("base_unit")).strip()
+        alt_unit = _cell_text(row.get("alt_unit")).strip()
+        category = _cell_text(row.get("Category")).strip()
+        factor_text = _cell_text(row.get("Factor")).strip()
+
+        if not name and not base_unit and not alt_unit and not category and not factor_text:
+            continue
+
+        if not name:
+            errors.append(f"line {line_number}: name is required")
+            failed_lines.add(line_number)
+        if not base_unit:
+            errors.append(f"line {line_number}: base_unit is required")
+            failed_lines.add(line_number)
+
+        name_key = name.casefold()
+        if name and name_key in seen_names:
+            errors.append(
+                f"line {line_number}: duplicate product name {name!r}; "
+                f"first seen on line {seen_names[name_key]}"
+            )
+            failed_lines.add(line_number)
+        elif name:
+            seen_names[name_key] = line_number
+
+        for unit in (base_unit, alt_unit):
+            if not unit:
                 continue
-
-            name = (row["name"] or "").strip()
-            base_unit = (row["base_unit"] or "").strip()
-            alt_unit = (row["alt_unit"] or "").strip()
-            category = (row["Category"] or "").strip()
-            factor_text = (row["Factor"] or "").strip()
-
-            if not name:
-                errors.append(f"line {line_number}: name is required")
-            if not base_unit:
-                errors.append(f"line {line_number}: base_unit is required")
-
-            name_key = name.casefold()
-            if name and name_key in seen_names:
+            unit_key = unit.casefold()
+            previous = seen_uoms.get(unit_key)
+            if previous is not None and previous != unit:
                 errors.append(
-                    f"line {line_number}: duplicate product name {name!r}; "
-                    f"first seen on line {seen_names[name_key]}"
+                    f"line {line_number}: UoM {unit!r} conflicts by case with {previous!r}"
                 )
-            elif name:
-                seen_names[name_key] = line_number
+                failed_lines.add(line_number)
+            else:
+                seen_uoms[unit_key] = unit
 
-            for unit in (base_unit, alt_unit):
-                if not unit:
-                    continue
-                unit_key = unit.casefold()
-                previous = seen_uoms.get(unit_key)
-                if previous is not None and previous != unit:
-                    errors.append(
-                        f"line {line_number}: UoM {unit!r} conflicts by case with {previous!r}"
-                    )
-                else:
-                    seen_uoms[unit_key] = unit
-
-            factor_to_base = None
-            if bool(alt_unit) != bool(factor_text):
-                errors.append(
-                    f"line {line_number}: alt_unit and Factor must either both be set or both be empty"
-                )
-            elif alt_unit and factor_text:
-                if alt_unit.casefold() == base_unit.casefold():
-                    errors.append(
-                        f"line {line_number}: alternate UoM must differ from base UoM"
-                    )
-                try:
-                    units_per_base = float(factor_text)
-                except ValueError:
-                    errors.append(f"line {line_number}: invalid Factor {factor_text!r}")
-                else:
-                    if not math.isfinite(units_per_base) or units_per_base <= 0:
-                        errors.append(
-                            f"line {line_number}: Factor must be a finite number greater than zero"
-                        )
-                    else:
-                        factor_to_base = 1.0 / units_per_base
-                        if not math.isfinite(factor_to_base) or factor_to_base <= 0:
-                            errors.append(
-                                f"line {line_number}: Factor is too large to convert safely"
-                            )
-
-            products.append(
-                ProductRow(
-                    line_number=line_number,
-                    name=name,
-                    base_unit=base_unit,
-                    alt_unit=alt_unit or None,
-                    category=category or None,
-                    factor_to_base=factor_to_base,
-                )
+        factor_to_base = None
+        if bool(alt_unit) != bool(factor_text):
+            errors.append(
+                f"line {line_number}: alt_unit and Factor must either both be set or both be empty"
             )
+            failed_lines.add(line_number)
+        elif alt_unit and factor_text:
+            if alt_unit.casefold() == base_unit.casefold():
+                errors.append(
+                    f"line {line_number}: alternate UoM must differ from base UoM"
+                )
+                failed_lines.add(line_number)
+            try:
+                units_per_base = float(factor_text)
+            except ValueError:
+                errors.append(f"line {line_number}: invalid Factor {factor_text!r}")
+                failed_lines.add(line_number)
+            else:
+                if not math.isfinite(units_per_base) or units_per_base <= 0:
+                    errors.append(
+                        f"line {line_number}: Factor must be a finite number greater than zero"
+                    )
+                    failed_lines.add(line_number)
+                else:
+                    factor_to_base = 1.0 / units_per_base
+                    if not math.isfinite(factor_to_base) or factor_to_base <= 0:
+                        errors.append(
+                            f"line {line_number}: Factor is too large to convert safely"
+                        )
+                        failed_lines.add(line_number)
+
+        products.append(
+            ProductRow(
+                line_number=line_number,
+                name=name,
+                base_unit=base_unit,
+                alt_unit=alt_unit or None,
+                category=category or None,
+                factor_to_base=factor_to_base,
+            )
+        )
 
     if not products:
-        errors.append("CSV contains no product rows")
+        errors.append(f"{source_name} contains no product rows")
     if errors:
-        raise ImportValidationError("CSV validation failed:\n- " + "\n- ".join(errors))
+        failed_count = len(failed_lines) if failed_lines else len(products)
+        raise ImportValidationError(
+            f"{source_name} validation failed:\n- " + "\n- ".join(errors),
+            failed_count=failed_count,
+        )
     return products
+
+
+def load_csv(csv_path: Path) -> list[ProductRow]:
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        rows: list[dict[str, object]] = []
+        for line_number, row in enumerate(reader, start=2):
+            if None in row:
+                raise ImportValidationError(
+                    f"CSV validation failed:\n- line {line_number}: too many columns",
+                    failed_count=1,
+                )
+            rows.append(dict(row))
+    return _load_product_rows("CSV", reader.fieldnames, rows)
+
+
+def load_xlsx(xlsx_path: Path) -> list[ProductRow]:
+    if xlsx_path.suffix.lower() != ".xlsx":
+        raise ImportValidationError("Import file must be an .xlsx workbook.")
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise ImportValidationError(
+            "Missing Excel import dependency. Install pandas and openpyxl."
+        ) from exc
+
+    try:
+        frame = pd.read_excel(
+            xlsx_path,
+            engine="openpyxl",
+            dtype=object,
+            keep_default_na=False,
+            na_filter=False,
+        )
+    except ImportError as exc:
+        raise ImportValidationError(
+            "Missing Excel import dependency. Install pandas and openpyxl."
+        ) from exc
+    except Exception as exc:
+        raise ImportValidationError(f"Could not read XLSX file: {exc}") from exc
+
+    headers = [_cell_text(column).strip() for column in list(frame.columns)]
+    data_rows = frame.to_dict(orient="records")
+    return _load_product_rows("XLSX", headers, data_rows)
 
 
 def validate_schema(conn: sqlite3.Connection) -> None:
@@ -183,7 +259,8 @@ def validate_database_conflicts(
     ]
     if conflicts:
         raise ImportValidationError(
-            "Import would create duplicate products:\n- " + "\n- ".join(conflicts)
+            "Import would create duplicate products:\n- " + "\n- ".join(conflicts),
+            failed_count=len(conflicts),
         )
 
     uom_ids: dict[str, int] = {}
@@ -250,6 +327,17 @@ def import_products(
     except Exception:
         conn.rollback()
         raise
+
+
+def import_products_from_xlsx(conn: sqlite3.Connection, xlsx_path: Path) -> ImportResult:
+    products = load_xlsx(xlsx_path)
+    validate_schema(conn)
+    import_products(conn, products)
+    return ImportResult(
+        imported_count=len(products),
+        failed_count=0,
+        message=f"Successfully imported {len(products)} products.",
+    )
 
 
 def main() -> int:

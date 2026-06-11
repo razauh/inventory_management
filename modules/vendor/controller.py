@@ -1,4 +1,6 @@
-from PySide6.QtWidgets import QWidget
+from pathlib import Path
+
+from PySide6.QtWidgets import QFileDialog, QWidget
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QItemSelectionModel
 import sqlite3
 import logging
@@ -47,6 +49,7 @@ class VendorController(BaseModule):
         return self.view
     def _wire(self):
         self.view.btn_add.clicked.connect(self._add)
+        self.view.btn_import.clicked.connect(self._import_vendors)
         self.view.btn_edit.clicked.connect(self._edit)
         self.view.search.textChanged.connect(self._apply_filter)
 
@@ -910,6 +913,56 @@ class VendorController(BaseModule):
         except (VendorsDomainError, sqlite3.IntegrityError) as e:
             info(self.view, "Not saved", f"Could not save vendor:\n{e}")
             return
+        self._reload()
+    def _import_vendors(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self.view,
+            "Import Vendors",
+            "",
+            "Excel Workbooks (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            try:
+                from inventory_management.scripts.bulk_import_vendors import (
+                    ImportValidationError,
+                    import_vendors_from_xlsx,
+                )
+            except ModuleNotFoundError:
+                from scripts.bulk_import_vendors import (  # type: ignore
+                    ImportValidationError,
+                    import_vendors_from_xlsx,
+                )
+
+            result = import_vendors_from_xlsx(self.conn, Path(path))
+        except ImportError as exc:
+            info(self.view, "Import failed", f"Import helper could not load.\n\n{exc}")
+            return
+        except ImportValidationError as exc:
+            failed_count = getattr(exc, "failed_count", 0)
+            info(
+                self.view,
+                "Import failed",
+                f"Imported vendors: 0\nSkipped/failed rows: {failed_count}\n\n{exc}",
+            )
+            return
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            info(
+                self.view,
+                "Import failed",
+                f"Imported vendors: 0\nSkipped/failed rows: unknown\n\n{exc}",
+            )
+            return
+
+        info(
+            self.view,
+            "Import complete",
+            (
+                f"Imported vendors: {result.imported_count}\n"
+                f"Skipped/failed rows: {result.failed_count}"
+            ),
+        )
         self._reload()
     def _ensure_vendor_exists_for_form(self, form, payload: dict):
         try:

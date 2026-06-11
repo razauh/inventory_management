@@ -1,10 +1,12 @@
 from contextlib import contextmanager
 import logging
+from pathlib import Path
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
 from PySide6.QtWidgets import (
     QWidget,
     QLineEdit,
     QMessageBox,
+    QFileDialog,
     QDialog,
     QVBoxLayout,
     QFormLayout,
@@ -220,6 +222,7 @@ class ProductController(BaseModule):
         if self._wired:
             return
         self.view.btn_add.clicked.connect(self._add)
+        self.view.btn_import.clicked.connect(self._import_products)
         self.view.btn_edit.clicked.connect(self._edit)
         # self.view.btn_del.clicked.connect(self._delete)
         self.view.search.textChanged.connect(self._apply_filter)
@@ -291,6 +294,58 @@ class ProductController(BaseModule):
             error(self.view, "Not saved", str(e))
             return
         info(self.view, "Saved", f"Product #{pid} created.")
+        self._reload()
+
+    def _import_products(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self.view,
+            "Import Products",
+            "",
+            "Excel Workbooks (*.xlsx)",
+        )
+        if not path:
+            return
+        xlsx_path = Path(path)
+        try:
+            try:
+                from inventory_management.scripts.bulk_import_products import (
+                    ImportValidationError,
+                    import_products_from_xlsx,
+                )
+            except ModuleNotFoundError:
+                from scripts.bulk_import_products import (  # type: ignore
+                    ImportValidationError,
+                    import_products_from_xlsx,
+                )
+
+            result = import_products_from_xlsx(self.conn, xlsx_path)
+        except ImportError as exc:
+            error(self.view, "Import failed", f"Import helper could not load.\n\n{exc}")
+            return
+        except ImportValidationError as exc:
+            failed_count = getattr(exc, "failed_count", 0)
+            error(
+                self.view,
+                "Import failed",
+                f"Imported products: 0\nSkipped/failed rows: {failed_count}\n\n{exc}",
+            )
+            return
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            error(
+                self.view,
+                "Import failed",
+                f"Imported products: 0\nSkipped/failed rows: unknown\n\n{exc}",
+            )
+            return
+
+        info(
+            self.view,
+            "Import complete",
+            (
+                f"Imported products: {result.imported_count}\n"
+                f"Skipped/failed rows: {result.failed_count}"
+            ),
+        )
         self._reload()
 
     def _edit(self):

@@ -9,9 +9,11 @@ class ProductView(QWidget):
         # Top row: actions + search
         row = QHBoxLayout()
         self.btn_add = QPushButton("Add")
+        self.btn_import = QPushButton("Import Products")
         self.btn_edit = QPushButton("Delete Product")
         # self.btn_del = QPushButton("Delete")
         row.addWidget(self.btn_add)
+        row.addWidget(self.btn_import)
         row.addWidget(self.btn_edit)
         # row.addWidget(self.btn_del)
         row.addStretch(1)
