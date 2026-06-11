@@ -24,13 +24,11 @@ class CustomerDetails(QWidget):
         box_fin = QGroupBox("Financial Snapshot")
         f_fin = QFormLayout(box_fin)
 
-        self.lab_status = QLabel("-")             # Active / Inactive
         self.lab_credit = QLabel("-")             # v_customer_advance_balance (Advance Paid)
         self.lab_last_sale = QLabel("-")          # last sale date
         self.lab_last_payment = QLabel("-")       # last payment date
         self.lab_outstanding = QLabel("-")        # sum of (total - paid - applied advances), provided by caller
 
-        f_fin.addRow("Status:", self.lab_status)
         f_fin.addRow("Advance Paid:", self.lab_credit)
         f_fin.addRow("Last Sale:", self.lab_last_sale)
         f_fin.addRow("Last Payment:", self.lab_last_payment)
@@ -65,7 +63,6 @@ class CustomerDetails(QWidget):
         self.lab_contact.setText("-")
         self.lab_address.setText("-")
         # financial
-        self.lab_status.setText("-")
         self.lab_credit.setText("-")
         self.lab_last_sale.setText("-")
         self.lab_last_payment.setText("-")
@@ -75,7 +72,6 @@ class CustomerDetails(QWidget):
         """
         Expects an optional payload dict (from controller) containing:
           - customer_id, name, contact_info, address
-          - is_active (0/1)
           - credit_balance (float)
           - last_sale_date (YYYY-MM-DD or None)
           - last_payment_date (YYYY-MM-DD or None)
@@ -91,11 +87,6 @@ class CustomerDetails(QWidget):
         self.lab_name.setText(self._fmt_text(row.get("name")))
         self.lab_contact.setText(self._fmt_text(row.get("contact_info")))
         self.lab_address.setText(self._fmt_text(row.get("address")))
-
-        # Financial snapshot
-        is_active = row.get("is_active")
-        status_text = "Active" if (is_active == 1 or is_active is True) else ("Inactive" if is_active is not None else "-")
-        self.lab_status.setText(status_text)
 
         self.lab_credit.setText(self._fmt_money(row.get("credit_balance")))
         self.lab_last_sale.setText(self._fmt_text(row.get("last_sale_date")))

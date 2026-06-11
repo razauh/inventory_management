@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QLabel,
     QSplitter,
-    QCheckBox,
     QTabWidget,
 )
 from PySide6.QtCore import Qt
@@ -19,7 +18,7 @@ class CustomerView(QWidget):
     """
     Customers view:
       - Toolbar: Add, Edit, Record Advance, Apply Advance, History, Print Statement
-      - Search box + 'Show inactive' toggle
+      - Search box
       - Split: table (left) + tabs (right) -> Details
     """
 
@@ -51,14 +50,11 @@ class CustomerView(QWidget):
 
         bar.addStretch(1)
 
-        # Search + Show inactive
+        # Search
         bar.addWidget(QLabel("Search:"))
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search customers (name, id, contact, address)…")
         bar.addWidget(self.search, 2)
-
-        self.chk_show_inactive = QCheckBox("Show inactive")
-        bar.addWidget(self.chk_show_inactive)
 
         root.addLayout(bar)
 

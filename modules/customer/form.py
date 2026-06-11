@@ -23,7 +23,7 @@ class CustomerForm(QDialog):
     Enhancements:
       - Required fields: name, contact info.
       - Whitespace normalization: trims and tidies multi-line inputs.
-      - Optional dedup hint: pass a `dup_check` callable to warn if an active
+      - Optional dedup hint: pass a `dup_check` callable to warn if another
         customer with the same name exists (non-blocking, consistent with vendor side).
 
     Args:
@@ -31,7 +31,7 @@ class CustomerForm(QDialog):
         initial: optional dict with keys like
                  {customer_id, name, contact_info, address}
         dup_check: optional callable (name: str, current_id: Optional[int]) -> bool
-                   Return True if another ACTIVE customer with the same name exists.
+                   Return True if another customer with the same name exists.
                    The form will warn but will not block submission.
     """
 
@@ -127,7 +127,7 @@ class CustomerForm(QDialog):
                         self,
                         "Possible Duplicate",
                         (
-                            "An active customer with the same name already exists.\n\n"
+                            "A customer with the same name already exists.\n\n"
                             "You can still proceed — this is just a heads-up."
                         ),
                     )

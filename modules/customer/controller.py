@@ -20,10 +20,7 @@ class CustomerController(BaseModule):
     Customers controller with payment/credit actions and enriched details.
 
     Key behavior:
-      - Loads active customers by default (customers.is_active = 1).
       - Right pane shows core fields + credit balance + recent activity.
-      - Action buttons (Receive Payment, Record Advance, Apply Advance, Payment History)
-        are disabled for inactive customers (history is allowed even if inactive).
       - Receipts enforce sale_id refers to a real SALE (not quotation) for this customer.
       - UI and actions are imported lazily to keep startup fast.
 
@@ -70,8 +67,7 @@ class CustomerController(BaseModule):
             self.view.btn_update_clearing.clicked.connect(self._on_update_clearing)
 
     def _build_model(self):
-        # Active-only by default
-        rows = self.repo.list_customers(active_only=True)
+        rows = self.repo.list_customers()
         self.base = CustomersTableModel(rows)
 
         self.proxy = QSortFilterProxyModel(self.view)
@@ -122,13 +118,6 @@ class CustomerController(BaseModule):
             return None
         _, name, path = row
         return path if name == "main" and path else None
-
-    def _fetch_is_active(self, customer_id: int) -> int:
-        r = self.conn.execute(
-            "SELECT is_active FROM customers WHERE customer_id=?",
-            (customer_id,),
-        ).fetchone()
-        return int(r["is_active"]) if r and r["is_active"] is not None else 1
 
     def _details_enrichment(self, customer_id: int) -> Dict[str, Any]:
         """
@@ -207,13 +196,6 @@ class CustomerController(BaseModule):
             return
 
         cid = int(payload["customer_id"])
-        # add is_active + enrichment (credit & activity)
-        try:
-            is_active = self._fetch_is_active(cid)
-        except sqlite3.Error:
-            is_active = 1
-
-        payload["is_active"] = is_active
         try:
             payload.update(self._details_enrichment(cid))
         except sqlite3.Error:
@@ -221,11 +203,9 @@ class CustomerController(BaseModule):
             pass
 
         self.view.details.set_data(payload)
-        # enable/disable action buttons based on active flag
-        self._set_actions_enabled(bool(is_active))
+        self._set_actions_enabled(True)
 
     def _set_actions_enabled(self, enabled: bool):
-        # Editing customer info follows the same active flag
         self.view.btn_edit.setEnabled(enabled)
         # Optional delete remains unchanged/commented in base code.
         self.view.btn_record_advance.setEnabled(enabled)
@@ -240,21 +220,16 @@ class CustomerController(BaseModule):
     # Small helpers to reduce repetition
     # ------------------------------------------------------------------ #
 
-    def _preflight(self, *, require_active: bool = True, require_file_db: bool = True) -> tuple[Optional[int], Optional[str]]:
+    def _preflight(self, *, require_file_db: bool = True) -> tuple[Optional[int], Optional[str]]:
         """
         Common pre-checks for action handlers.
 
         Returns (customer_id, db_path). Any None means the caller should bail.
-        - require_active: ensure selected customer is active
         - require_file_db: ensure database is file-backed (payments/credits need this)
         """
         cid = self._selected_id()
         if not cid:
             info(self.view, "Select", "Please select a customer first.")
-            return None, None
-
-        if require_active and not self._fetch_is_active(cid):
-            info(self.view, "Inactive", "This customer is inactive. Enable the customer to proceed.")
             return None, None
 
         db_path: Optional[str]
@@ -415,7 +390,7 @@ class CustomerController(BaseModule):
         Print a simple customer statement based on the same history payload
         used for the Payment History window.
         """
-        cid, db_path = self._preflight(require_active=False, require_file_db=True)
+        cid, db_path = self._preflight(require_file_db=True)
         if not cid or not db_path:
             return
 
@@ -537,7 +512,7 @@ class CustomerController(BaseModule):
     # -- Record Advance (Deposit / Credit) --
 
     def _on_record_advance(self):
-        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        cid, db_path = self._preflight(require_file_db=True)
         if not cid or not db_path:
             return
 
@@ -570,7 +545,7 @@ class CustomerController(BaseModule):
     # -- Apply Advance to a Sale --
 
     def _on_apply_advance(self):
-        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        cid, db_path = self._preflight(require_file_db=True)
         if not cid or not db_path:
             return
 
@@ -635,7 +610,7 @@ class CustomerController(BaseModule):
         Optional handler for a 'Update Clearing' toolbar button if your view provides it.
         Implement a tiny prompt dialog to collect payment_id, state, cleared_date, notes.
         """
-        cid, db_path = self._preflight(require_active=True, require_file_db=True)
+        cid, db_path = self._preflight(require_file_db=True)
         if not cid or not db_path:
             return
 
@@ -677,8 +652,7 @@ class CustomerController(BaseModule):
     # -- Payment / Credit History --
 
     def _on_payment_history(self):
-        # History is allowed even if customer is inactive; file DB not strictly required
-        cid, db_path = self._preflight(require_active=False, require_file_db=False)
+        cid, db_path = self._preflight(require_file_db=False)
         if not cid:
             return
 

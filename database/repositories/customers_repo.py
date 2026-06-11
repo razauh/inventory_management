@@ -38,27 +38,18 @@ class CustomersRepo:
 
     # ---- Queries ----------------------------------------------------------
 
-    def list_customers(self, active_only: bool = True) -> list[Customer]:
+    def list_customers(self) -> list[Customer]:
         """
-        Returns customers. By default, only active rows (is_active=1).
-        Set active_only=False to include inactive as well.
+        Returns customers ordered newest first.
         """
-        if active_only:
-            rows = self.conn.execute(
-                "SELECT customer_id, name, contact_info, address "
-                "FROM customers "
-                "WHERE is_active = 1 "
-                "ORDER BY customer_id DESC"
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT customer_id, name, contact_info, address "
-                "FROM customers "
-                "ORDER BY customer_id DESC"
-            ).fetchall()
+        rows = self.conn.execute(
+            "SELECT customer_id, name, contact_info, address "
+            "FROM customers "
+            "ORDER BY customer_id DESC"
+        ).fetchall()
         return [Customer(**dict(r)) for r in rows]
 
-    def search(self, term: str, active_only: bool = True) -> list[Customer]:
+    def search(self, term: str) -> list[Customer]:
         """
         Server-side search over id/name/contact/address.
         Matches using LIKE on:
@@ -68,31 +59,17 @@ class CustomersRepo:
           - address
         """
         pattern = f"%{term.strip()}%"
-        if active_only:
-            rows = self.conn.execute(
-                "SELECT customer_id, name, contact_info, address "
-                "FROM customers "
-                "WHERE is_active = 1 AND ("
-                "  CAST(customer_id AS TEXT) LIKE ? OR "
-                "  name LIKE ? OR "
-                "  contact_info LIKE ? OR "
-                "  address LIKE ?"
-                ") "
-                "ORDER BY customer_id DESC",
-                (pattern, pattern, pattern, pattern),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT customer_id, name, contact_info, address "
-                "FROM customers "
-                "WHERE "
-                "  CAST(customer_id AS TEXT) LIKE ? OR "
-                "  name LIKE ? OR "
-                "  contact_info LIKE ? OR "
-                "  address LIKE ? "
-                "ORDER BY customer_id DESC",
-                (pattern, pattern, pattern, pattern),
-            ).fetchall()
+        rows = self.conn.execute(
+            "SELECT customer_id, name, contact_info, address "
+            "FROM customers "
+            "WHERE "
+            "  CAST(customer_id AS TEXT) LIKE ? OR "
+            "  name LIKE ? OR "
+            "  contact_info LIKE ? OR "
+            "  address LIKE ? "
+            "ORDER BY customer_id DESC",
+            (pattern, pattern, pattern, pattern),
+        ).fetchall()
         return [Customer(**dict(r)) for r in rows]
 
     def get(self, customer_id: int) -> Customer | None:
