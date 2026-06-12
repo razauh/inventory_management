@@ -81,6 +81,51 @@ class _DateAmountTableModel(QAbstractTableModel):
         return None
 
 
+class _DateDisbursementTableModel(QAbstractTableModel):
+    HEADERS = ("Date", "Gross Outflow", "Refunds Received", "Net Outflow")
+
+    def __init__(self, rows: Optional[List[dict]] = None, parent=None) -> None:
+        super().__init__(parent)
+        self._rows: List[dict] = rows or []
+
+    def set_rows(self, rows: List[dict]) -> None:
+        self.beginResetModel()
+        self._rows = rows or []
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()) -> int:  # type: ignore[override]
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()) -> int:  # type: ignore[override]
+        return 0 if parent.isValid() else 4
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):  # type: ignore[override]
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return self.HEADERS[section]
+        return str(section + 1)
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):  # type: ignore[override]
+        if not index.isValid():
+            return None
+        r, c = index.row(), index.column()
+        row = self._rows[r]
+
+        if role == Qt.DisplayRole:
+            if c == 0:
+                return row.get("date", "")
+            if c == 1:
+                return fmt_money(row.get("gross_outflow"))
+            if c == 2:
+                return fmt_money(row.get("refunds_received"))
+            if c == 3:
+                return fmt_money(row.get("net_outflow"))
+        if role == Qt.TextAlignmentRole:
+            return (Qt.AlignRight | Qt.AlignVCenter) if c in (1, 2, 3) else (Qt.AlignLeft | Qt.AlignVCenter)
+        return None
+
+
 # ------------------------------ Payments Reports Tab ------------------------
 
 class PaymentReportsTab(QWidget):
@@ -171,7 +216,7 @@ class PaymentReportsTab(QWidget):
         self.tbl_disb = _BaseTableView()
         self.tbl_disb.setSelectionMode(QTableView.NoSelection)
         self.tbl_disb.setSortingEnabled(False)
-        self.model_disb = _DateAmountTableModel([])
+        self.model_disb = _DateDisbursementTableModel([])
         self.tbl_disb.setModel(self.model_disb)
 
         disb_wrap = QWidget()
@@ -243,17 +288,19 @@ class PaymentReportsTab(QWidget):
         rows_d = []
         total_d = 0.0
         for r in self.repo.purchase_disbursements_by_day(date_from, date_to):
-            amt = float(r["amount"] or 0.0)
-            rows_d.append({"date": str(r["date"]), "amount": amt})
-            total_d += amt
+            gross = float(r["gross_outflow"] or 0.0)
+            refunds = float(r["refunds_received"] or 0.0)
+            net = float(r["net_outflow"] or 0.0)
+            rows_d.append({"date": str(r["date"]), "gross_outflow": gross, "refunds_received": refunds, "net_outflow": net})
+            total_d += net
         self._rows_disb = rows_d
         self.model_disb.set_rows(rows_d)
 
         # Totals + titles
         self.lbl_collect_total.setText(f"Collections: {fmt_money(total_c)}")
-        self.lbl_disb_total.setText(f"Disbursements: {fmt_money(total_d)}")
+        self.lbl_disb_total.setText(f"Net Disbursements: {fmt_money(total_d)}")
         self.lbl_collect_title.setText(f"<b>Collections (cleared)</b> — {date_from} to {date_to}")
-        self.lbl_disb_title.setText(f"<b>Disbursements (cleared)</b> — {date_from} to {date_to}")
+        self.lbl_disb_title.setText(f"<b>Disbursements (gross / refunds / net)</b> — {date_from} to {date_to}")
 
         self._autosize(self.tbl_collect)
         self._autosize(self.tbl_disb)
@@ -285,9 +332,14 @@ class PaymentReportsTab(QWidget):
                 w.writerow([])
                 # Disbursements
                 w.writerow(["Disbursements"])
-                w.writerow(["Date", "Amount"])
+                w.writerow(["Date", "Gross Outflow", "Refunds Received", "Net Outflow"])
                 for r in self._rows_disb:
-                    w.writerow([r["date"], f"{float(r['amount']):.2f}"])
+                    w.writerow([
+                        r["date"],
+                        f"{float(r['gross_outflow']):.2f}",
+                        f"{float(r['refunds_received']):.2f}",
+                        f"{float(r['net_outflow']):.2f}",
+                    ])
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export CSV:\n{e}")
 
@@ -295,29 +347,33 @@ class PaymentReportsTab(QWidget):
         df = self.dt_from.date().toString("yyyy-MM-dd")
         dt = self.dt_to.date().toString("yyyy-MM-dd")
 
-        def _table(rows: List[dict]) -> str:
-            parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>",
-                     "<th>Date</th>", "<th>Amount</th>", "</tr></thead><tbody>"]
+        def _table(rows: List[dict], headers: List[str]) -> str:
+            parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
+            for header in headers:
+                parts.append(f"<th>{header}</th>")
+            parts.append("</tr></thead><tbody>")
             for r in rows:
                 parts.append("<tr>")
                 parts.append(f"<td>{r.get('date','')}</td>")
-                parts.append(f"<td style='text-align:right'>{fmt_money(r.get('amount'))}</td>")
+                for key in ("amount", "gross_outflow", "refunds_received", "net_outflow"):
+                    if key in r:
+                        parts.append(f"<td style='text-align:right'>{fmt_money(r.get(key))}</td>")
                 parts.append("</tr>")
             parts.append("</tbody></table>")
             return "".join(parts)
 
         total_c = sum(float(r.get("amount") or 0.0) for r in self._rows_collect)
-        total_d = sum(float(r.get("amount") or 0.0) for r in self._rows_disb)
+        total_d = sum(float(r.get("net_outflow") or 0.0) for r in self._rows_disb)
 
         html = [
             "<h2>Payment Reports</h2>",
             f"<p><b>Period:</b> {df} to {dt}</p>",
             "<h3>Collections (cleared)</h3>",
-            _table(self._rows_collect),
+            _table(self._rows_collect, ["Date", "Amount"]),
             f"<p><b>Total Collections:</b> {fmt_money(total_c)}</p>",
-            "<h3>Disbursements (cleared)</h3>",
-            _table(self._rows_disb),
-            f"<p><b>Total Disbursements:</b> {fmt_money(total_d)}</p>",
+            "<h3>Disbursements (gross / refunds / net)</h3>",
+            _table(self._rows_disb, ["Date", "Gross Outflow", "Refunds Received", "Net Outflow"]),
+            f"<p><b>Total Net Disbursements:</b> {fmt_money(total_d)}</p>",
         ]
         return "\n".join(html)
 

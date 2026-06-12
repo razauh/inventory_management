@@ -37,10 +37,21 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex
 class _BasePaymentsTableModel(QAbstractTableModel):
     """Base model for payment data tables"""
     
-    def __init__(self, rows: Optional[List[Dict]] = None, parent=None):
+    def __init__(
+        self,
+        headers: Optional[List[str]] = None,
+        field_map: Optional[List[str]] = None,
+        rows: Optional[List[Dict]] = None,
+        money_fields: Optional[List[str]] = None,
+        right_fields: Optional[List[str]] = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._rows: List[Dict] = rows or []
-        self._headers: List[str] = []
+        self._headers: List[str] = headers or []
+        self._field_map: List[str] = field_map or []
+        self._money_fields = set(money_fields or [])
+        self._right_fields = set(right_fields or [])
         
     def set_rows(self, rows: List[Dict]) -> None:
         self.beginResetModel()
@@ -66,15 +77,15 @@ class _BasePaymentsTableModel(QAbstractTableModel):
             return None
             
         row_data = self._rows[r]
-        header = self._headers[c]
-        value = row_data.get(header)
+        field = self._field_map[c] if c < len(self._field_map) else self._headers[c]
+        value = row_data.get(field)
         
         if role == Qt.DisplayRole:
-            if header in ['amount', 'total_amount']:
+            if field in self._money_fields:
                 return fmt_money(value)
             return str(value) if value is not None else ""
         elif role == Qt.TextAlignmentRole:
-            if header in ['amount', 'total_amount']:
+            if field in self._money_fields or field in self._right_fields:
                 return Qt.AlignRight | Qt.AlignVCenter
             return Qt.AlignLeft | Qt.AlignVCenter
         return None
@@ -83,8 +94,14 @@ class _BasePaymentsTableModel(QAbstractTableModel):
 class _PaymentSummaryTableModel(_BasePaymentsTableModel):
     """Model for payment summary by status"""
     def __init__(self, rows: Optional[List[Dict]] = None, parent=None):
-        super().__init__(rows, parent)
-        self._headers = ["Status", "Payment Type", "Count", "Total Amount"]
+        super().__init__(
+            headers=["Status", "Payment Type", "Count", "Total Amount"],
+            field_map=["status", "type", "count", "total_amount"],
+            rows=rows,
+            money_fields=["total_amount"],
+            right_fields=["count"],
+            parent=parent,
+        )
         
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if role == Qt.BackgroundRole and index.column() == 0 and index.isValid():  # Status column
@@ -105,8 +122,13 @@ class _PaymentSummaryTableModel(_BasePaymentsTableModel):
 class _DetailedPaymentsTableModel(_BasePaymentsTableModel):
     """Model for detailed payment listings"""
     def __init__(self, rows: Optional[List[Dict]] = None, parent=None):
-        super().__init__(rows, parent)
-        self._headers = ["Date", "Type", "Amount", "Method", "Status", "Document ID", "Notes"]
+        super().__init__(
+            headers=["Date", "Type", "Amount", "Method", "Status", "Document ID", "Notes"],
+            field_map=["date", "type", "amount", "method", "status", "doc_id", "notes"],
+            rows=rows,
+            money_fields=["amount"],
+            parent=parent,
+        )
 
 
 # ------------------------------ Logic Layer -----------------------------------
@@ -148,10 +170,22 @@ class ComprehensivePaymentReports:
         FROM purchase_payments p
         {where_clause}
         GROUP BY p.clearing_state
+
+        UNION ALL
+
+        SELECT 
+            p.clearing_state AS status,
+            'Vendor Refund' AS type,
+            COUNT(*) AS count,
+            COALESCE(SUM(CAST(p.amount AS REAL)), 0.0) AS total_amount
+        FROM purchase_refunds p
+        {where_clause}
+        GROUP BY p.clearing_state
+
         ORDER BY status, type
         """
         
-        rows = list(self.conn.execute(query, params + params))
+        rows = list(self.conn.execute(query, params * 3))
         result = []
         for r in rows:
             result.append({
@@ -196,10 +230,23 @@ class ComprehensivePaymentReports:
             p.notes
         FROM purchase_payments p
         {where_clause}
+
+        UNION ALL
+
+        SELECT 
+            p.date,
+            'Vendor Refund' AS type,
+            p.amount,
+            p.method,
+            p.clearing_state AS status,
+            p.purchase_id AS doc_id,
+            p.notes
+        FROM purchase_refunds p
+        {where_clause}
         ORDER BY date DESC
         """
         
-        rows = list(self.conn.execute(query, params + params))
+        rows = list(self.conn.execute(query, params * 3))
         result = []
         for r in rows:
             result.append({
@@ -247,10 +294,23 @@ class ComprehensivePaymentReports:
             p.notes
         FROM purchase_payments p
         {where_clause}
+
+        UNION ALL
+
+        SELECT 
+            p.date,
+            'Vendor Refund' AS type,
+            p.amount,
+            p.method,
+            p.clearing_state AS status,
+            p.purchase_id AS doc_id,
+            p.notes
+        FROM purchase_refunds p
+        {where_clause}
         ORDER BY date DESC, type
         """
         
-        rows = list(self.conn.execute(query, params + params))
+        rows = list(self.conn.execute(query, params * 3))
         result = []
         for r in rows:
             result.append({
@@ -468,4 +528,3 @@ class ComprehensivePaymentReportsTab(QWidget):
             QMessageBox.information(self, "Export Complete", f"Data exported to {fn}")
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", f"Could not export data:\n{e}")
-

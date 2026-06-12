@@ -265,6 +265,20 @@ class EnhancedPaymentReportsTab(QWidget):
                 "type": "Disbursement"
             })
 
+        # Vendor refunds (purchase_refunds)
+        for r in self.repo.conn.execute("""
+            SELECT pr.date, pr.cleared_date, pr.amount, pr.clearing_state as state
+            FROM purchase_refunds pr
+            WHERE pr.date >= ? AND pr.date <= ?
+            ORDER BY pr.date
+        """, (date_from, date_to)):
+            all_rows.append({
+                "date": r["cleared_date"] if r["state"] == "cleared" else r["date"],
+                "amount": float(r["amount"] or 0.0),
+                "status": str(r["state"]),
+                "type": "Vendor Refund"
+            })
+
         # All payments table
         self._rows_all_payments = all_rows
         self.model_all.set_rows(all_rows)

@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot, QThread, Signal
 from PySide6.QtWidgets import (
@@ -32,6 +32,7 @@ from .model import (
     AgingSnapshotTableModel,
     OpenInvoicesTableModel,
 )
+from ...database import get_db_path
 from ...database.repositories.reporting_repo import ReportingRepo
 
 # Try to reuse app-wide money formatter
@@ -233,26 +234,35 @@ class CustomerAgingWorker(QThread):
     finished = Signal(object)  # Signal to send results back to main thread
     error = Signal(str)        # Signal to send error messages back to main thread
     
-    def __init__(self, logic: CustomerAgingReports, as_of: str, buckets: Tuple[Tuple[int, int], ...], 
-                 include_credit_column: bool, customer_id: Optional[int]):
+    def __init__(
+        self,
+        conn_factory: Callable[[], sqlite3.Connection],
+        as_of: str,
+        buckets: Tuple[Tuple[int, int], ...],
+        include_credit_column: bool,
+        customer_id: Optional[int],
+    ):
         super().__init__()
-        self.logic = logic
+        self.conn_factory = conn_factory
         self.as_of = as_of
         self.buckets = buckets
         self.include_credit_column = include_credit_column
         self.customer_id = customer_id
 
     def run(self):
+        conn: Optional[sqlite3.Connection] = None
         try:
-            results = self.logic.compute_aging_snapshot(
-                self.as_of,
-                self.buckets,
-                self.include_credit_column,
-                self.customer_id
+            conn = self.conn_factory()
+            logic = CustomerAgingReports(conn)
+            results = logic.compute_aging_snapshot(
+                self.as_of, self.buckets, self.include_credit_column, self.customer_id
             )
             self.finished.emit(results)
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            if conn is not None:
+                conn.close()
 
 
 # ------------------------------ UI Tab --------------------------------------
@@ -385,7 +395,7 @@ class CustomerAgingTab(QWidget):
         
         # Create and start background worker for the snapshot computation
         self._worker = CustomerAgingWorker(
-            self.logic,
+            self._open_read_connection,
             as_of,
             ((0, 30), (31, 60), (61, 90), (91, 10_000)),
             True,
@@ -398,6 +408,17 @@ class CustomerAgingTab(QWidget):
         
         # Start the background computation
         self._worker.start()
+
+    def _open_read_connection(self) -> sqlite3.Connection:
+        """
+        Open a dedicated read connection for background work.
+        This avoids sharing the UI thread connection across threads.
+        """
+        conn = sqlite3.connect(get_db_path())
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        return conn
 
     def _on_snapshot_computed(self, results: List[dict]) -> None:
         """Called when background worker finishes computing the snapshot."""

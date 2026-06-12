@@ -3088,6 +3088,7 @@ SELECT
   it.product_id,
   it.uom_id,
   CAST(it.quantity AS REAL) AS qty_returned,
+  CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS qty_returned_base,
   CAST(prs.unit_purchase_price AS REAL) AS unit_buy_price,
   CAST(prs.unit_discount AS REAL) AS unit_discount,
   COALESCE(prs.return_date, it.date) AS return_date,
@@ -3095,7 +3096,86 @@ SELECT
   CASE WHEN prs.transaction_id IS NULL THEN 'unresolved' ELSE 'resolved' END AS valuation_status
 FROM inventory_transactions it
 LEFT JOIN purchase_return_snapshots prs ON prs.transaction_id = it.transaction_id
+LEFT JOIN product_uoms pu
+  ON pu.product_id = it.product_id
+ AND pu.uom_id = it.uom_id
 WHERE it.transaction_type = 'purchase_return';
+
+DROP VIEW IF EXISTS purchase_financial_events;
+CREATE VIEW purchase_financial_events AS
+WITH purchase_lines AS (
+  SELECT
+    pi.item_id,
+    pi.purchase_id,
+    pi.product_id,
+    pi.uom_id,
+    CAST(pi.quantity AS REAL) AS quantity,
+    CAST(pi.quantity AS REAL)
+      * MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)) AS line_subtotal
+  FROM purchase_items pi
+),
+purchase_subtotals AS (
+  SELECT
+    purchase_id,
+    COALESCE(SUM(line_subtotal), 0.0) AS subtotal
+  FROM purchase_lines
+  GROUP BY purchase_id
+)
+SELECT
+  p.date AS event_date,
+  p.purchase_id,
+  pl.item_id,
+  p.vendor_id,
+  pl.product_id,
+  COALESCE(pr.category, '') AS category,
+  pl.quantity * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS quantity_base,
+  CASE
+    WHEN ps.subtotal <= 0 THEN 0.0
+    ELSE pl.line_subtotal
+      * (
+        ps.subtotal -
+        CASE
+          WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+          WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > ps.subtotal THEN ps.subtotal
+          ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0)
+        END
+      ) / ps.subtotal
+  END AS spend,
+  CASE
+    WHEN ps.subtotal <= 0 THEN 0.0
+    ELSE pl.line_subtotal
+      * CASE
+          WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+          WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > ps.subtotal THEN 1.0
+          ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0) / ps.subtotal
+        END
+  END AS allocated_order_discount,
+  'purchase' AS event_type
+FROM purchases p
+JOIN purchase_lines pl ON pl.purchase_id = p.purchase_id
+JOIN purchase_subtotals ps ON ps.purchase_id = p.purchase_id
+LEFT JOIN products pr ON pr.product_id = pl.product_id
+LEFT JOIN product_uoms pu
+  ON pu.product_id = pl.product_id
+ AND pu.uom_id = pl.uom_id
+UNION ALL
+SELECT
+  srs.return_date AS event_date,
+  srs.purchase_id,
+  srs.item_id,
+  p.vendor_id,
+  srs.product_id,
+  COALESCE(pr.category, '') AS category,
+  -CAST(srs.qty_returned_base AS REAL) AS quantity_base,
+  CASE
+    WHEN srs.valuation_status = 'resolved' THEN -COALESCE(CAST(srs.return_value AS REAL), 0.0)
+    ELSE 0.0
+  END AS spend,
+  0.0 AS allocated_order_discount,
+  'purchase_return' AS event_type
+FROM purchase_return_valuations srs
+JOIN purchases p ON p.purchase_id = srs.purchase_id
+LEFT JOIN products pr ON pr.product_id = srs.product_id;
 
 DROP VIEW IF EXISTS v_unresolved_purchase_returns;
 CREATE VIEW v_unresolved_purchase_returns AS
@@ -3671,23 +3751,103 @@ def migrate_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
 
         DROP VIEW IF EXISTS purchase_detailed_totals;
         DROP VIEW IF EXISTS v_unresolved_purchase_returns;
-        DROP VIEW IF EXISTS purchase_return_valuations;
-        CREATE VIEW purchase_return_valuations AS
+DROP VIEW IF EXISTS purchase_return_valuations;
+CREATE VIEW purchase_return_valuations AS
+SELECT
+  it.transaction_id,
+  it.reference_id AS purchase_id,
+  it.reference_item_id AS item_id,
+  it.product_id,
+  it.uom_id,
+  CAST(it.quantity AS REAL) AS qty_returned,
+  CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS qty_returned_base,
+  CAST(prs.unit_purchase_price AS REAL) AS unit_buy_price,
+  CAST(prs.unit_discount AS REAL) AS unit_discount,
+  COALESCE(prs.return_date, it.date) AS return_date,
+  CAST(prs.return_value AS REAL) AS return_value,
+  CASE WHEN prs.transaction_id IS NULL THEN 'unresolved' ELSE 'resolved' END AS valuation_status
+FROM inventory_transactions it
+LEFT JOIN purchase_return_snapshots prs ON prs.transaction_id = it.transaction_id
+LEFT JOIN product_uoms pu
+  ON pu.product_id = it.product_id
+ AND pu.uom_id = it.uom_id
+WHERE it.transaction_type = 'purchase_return';
+
+        DROP VIEW IF EXISTS purchase_financial_events;
+        CREATE VIEW purchase_financial_events AS
+        WITH purchase_lines AS (
+          SELECT
+            pi.item_id,
+            pi.purchase_id,
+            pi.product_id,
+            pi.uom_id,
+            CAST(pi.quantity AS REAL) AS quantity,
+            CAST(pi.quantity AS REAL)
+              * MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)) AS line_subtotal
+          FROM purchase_items pi
+        ),
+        purchase_subtotals AS (
+          SELECT
+            purchase_id,
+            COALESCE(SUM(line_subtotal), 0.0) AS subtotal
+          FROM purchase_lines
+          GROUP BY purchase_id
+        )
         SELECT
-          it.transaction_id,
-          it.reference_id AS purchase_id,
-          it.reference_item_id AS item_id,
-          it.product_id,
-          it.uom_id,
-          CAST(it.quantity AS REAL) AS qty_returned,
-          CAST(prs.unit_purchase_price AS REAL) AS unit_buy_price,
-          CAST(prs.unit_discount AS REAL) AS unit_discount,
-          COALESCE(prs.return_date, it.date) AS return_date,
-          CAST(prs.return_value AS REAL) AS return_value,
-          CASE WHEN prs.transaction_id IS NULL THEN 'unresolved' ELSE 'resolved' END AS valuation_status
-        FROM inventory_transactions it
-        LEFT JOIN purchase_return_snapshots prs ON prs.transaction_id = it.transaction_id
-        WHERE it.transaction_type = 'purchase_return';
+          p.date AS event_date,
+          p.purchase_id,
+          pl.item_id,
+          p.vendor_id,
+          pl.product_id,
+          COALESCE(pr.category, '') AS category,
+          pl.quantity * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS quantity_base,
+          CASE
+            WHEN ps.subtotal <= 0 THEN 0.0
+            ELSE pl.line_subtotal
+              * (
+                ps.subtotal -
+                CASE
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > ps.subtotal THEN ps.subtotal
+                  ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0)
+                END
+              ) / ps.subtotal
+          END AS spend,
+          CASE
+            WHEN ps.subtotal <= 0 THEN 0.0
+            ELSE pl.line_subtotal
+              * CASE
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > ps.subtotal THEN 1.0
+                  ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0) / ps.subtotal
+                END
+          END AS allocated_order_discount,
+          'purchase' AS event_type
+        FROM purchases p
+        JOIN purchase_lines pl ON pl.purchase_id = p.purchase_id
+        JOIN purchase_subtotals ps ON ps.purchase_id = p.purchase_id
+        LEFT JOIN products pr ON pr.product_id = pl.product_id
+        LEFT JOIN product_uoms pu
+          ON pu.product_id = pl.product_id
+         AND pu.uom_id = pl.uom_id
+        UNION ALL
+        SELECT
+          srs.return_date AS event_date,
+          srs.purchase_id,
+          srs.item_id,
+          p.vendor_id,
+          srs.product_id,
+          COALESCE(pr.category, '') AS category,
+          -CAST(srs.qty_returned_base AS REAL) AS quantity_base,
+          CASE
+            WHEN srs.valuation_status = 'resolved' THEN -COALESCE(CAST(srs.return_value AS REAL), 0.0)
+            ELSE 0.0
+          END AS spend,
+          0.0 AS allocated_order_discount,
+          'purchase_return' AS event_type
+        FROM purchase_return_valuations srs
+        JOIN purchases p ON p.purchase_id = srs.purchase_id
+        LEFT JOIN products pr ON pr.product_id = srs.product_id;
 
         CREATE VIEW v_unresolved_purchase_returns AS
         SELECT transaction_id, purchase_id, item_id, product_id, uom_id,
@@ -3719,6 +3879,7 @@ def migrate_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
         """
     )
     _backfill_purchase_return_snapshots(conn)
+    _recreate_purchase_financial_events(conn)
 
 
 def _backfill_sale_return_snapshots(conn: sqlite3.Connection) -> None:
@@ -4132,6 +4293,88 @@ def _recreate_sale_financial_events(conn: sqlite3.Connection) -> None:
           ) AS remaining_due
         FROM sales s
         JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id;
+        """
+    )
+
+
+def _recreate_purchase_financial_events(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        DROP VIEW IF EXISTS purchase_financial_events;
+        CREATE VIEW purchase_financial_events AS
+        WITH purchase_lines AS (
+          SELECT
+            pi.item_id,
+            pi.purchase_id,
+            pi.product_id,
+            pi.uom_id,
+            CAST(pi.quantity AS REAL) AS quantity,
+            CAST(pi.quantity AS REAL)
+              * MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL)) AS line_subtotal
+          FROM purchase_items pi
+        ),
+        purchase_subtotals AS (
+          SELECT
+            purchase_id,
+            COALESCE(SUM(line_subtotal), 0.0) AS subtotal
+          FROM purchase_lines
+          GROUP BY purchase_id
+        )
+        SELECT
+          p.date AS event_date,
+          p.purchase_id,
+          pl.item_id,
+          p.vendor_id,
+          pl.product_id,
+          COALESCE(pr.category, '') AS category,
+          pl.quantity * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0) AS quantity_base,
+          CASE
+            WHEN ps.subtotal <= 0 THEN 0.0
+            ELSE pl.line_subtotal
+              * (
+                ps.subtotal -
+                CASE
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > ps.subtotal THEN ps.subtotal
+                  ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0)
+                END
+              ) / ps.subtotal
+          END AS spend,
+          CASE
+            WHEN ps.subtotal <= 0 THEN 0.0
+            ELSE pl.line_subtotal
+              * CASE
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) < 0 THEN 0.0
+                  WHEN COALESCE(CAST(p.order_discount AS REAL), 0.0) > ps.subtotal THEN 1.0
+                  ELSE COALESCE(CAST(p.order_discount AS REAL), 0.0) / ps.subtotal
+                END
+          END AS allocated_order_discount,
+          'purchase' AS event_type
+        FROM purchases p
+        JOIN purchase_lines pl ON pl.purchase_id = p.purchase_id
+        JOIN purchase_subtotals ps ON ps.purchase_id = p.purchase_id
+        LEFT JOIN products pr ON pr.product_id = pl.product_id
+        LEFT JOIN product_uoms pu
+          ON pu.product_id = pl.product_id
+         AND pu.uom_id = pl.uom_id
+        UNION ALL
+        SELECT
+          srs.return_date AS event_date,
+          srs.purchase_id,
+          srs.item_id,
+          p.vendor_id,
+          srs.product_id,
+          COALESCE(pr.category, '') AS category,
+          -CAST(srs.qty_returned_base AS REAL) AS quantity_base,
+          CASE
+            WHEN srs.valuation_status = 'resolved' THEN -COALESCE(CAST(srs.return_value AS REAL), 0.0)
+            ELSE 0.0
+          END AS spend,
+          0.0 AS allocated_order_discount,
+          'purchase_return' AS event_type
+        FROM purchase_return_valuations srs
+        JOIN purchases p ON p.purchase_id = srs.purchase_id
+        LEFT JOIN products pr ON pr.product_id = srs.product_id;
         """
     )
 

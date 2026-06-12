@@ -176,9 +176,16 @@ class FinancialReports:
         disb = []
         total_disb = 0.0
         for r in self.repo.purchase_disbursements_by_day(date_from, date_to):
-            amt = float(r["amount"] or 0.0)
-            disb.append({"date": str(r["date"]), "amount": amt})
-            total_disb += amt
+            gross = float(r["gross_outflow"] or 0.0)
+            refunds = float(r["refunds_received"] or 0.0)
+            net = float(r["net_outflow"] or 0.0)
+            disb.append({
+                "date": str(r["date"]),
+                "gross_outflow": gross,
+                "refunds_received": refunds,
+                "net_outflow": net,
+            })
+            total_disb += net
 
         return {
             "collections": cols,
@@ -236,6 +243,50 @@ class _DateAmountTableModel(QAbstractTableModel):
             if c == 1:
                 return Qt.AlignRight | Qt.AlignVCenter
             return Qt.AlignLeft | Qt.AlignVCenter
+        return None
+
+
+class _DisbursementBreakdownTableModel(QAbstractTableModel):
+    HEADERS = ("Date", "Gross Outflow", "Refunds Received", "Net Outflow")
+
+    def __init__(self, rows: Optional[List[dict]] = None, parent=None) -> None:
+        super().__init__(parent)
+        self._rows: List[dict] = rows or []
+
+    def set_rows(self, rows: List[dict]) -> None:
+        self.beginResetModel()
+        self._rows = rows or []
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()) -> int:  # type: ignore[override]
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()) -> int:  # type: ignore[override]
+        return 0 if parent.isValid() else 4
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):  # type: ignore[override]
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return self.HEADERS[section]
+        return str(section + 1)
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):  # type: ignore[override]
+        if not index.isValid():
+            return None
+        r, c = index.row(), index.column()
+        row = self._rows[r]
+        if role == Qt.DisplayRole:
+            if c == 0:
+                return row.get("date", "")
+            if c == 1:
+                return fmt_money(row.get("gross_outflow"))
+            if c == 2:
+                return fmt_money(row.get("refunds_received"))
+            if c == 3:
+                return fmt_money(row.get("net_outflow"))
+        if role == Qt.TextAlignmentRole:
+            return (Qt.AlignRight | Qt.AlignVCenter) if c in (1, 2, 3) else (Qt.AlignLeft | Qt.AlignVCenter)
         return None
 
 
@@ -389,7 +440,7 @@ class FinancialReportsTab(QWidget):
         self.tbl_disb = _BaseTableView()
         self.tbl_disb.setSelectionMode(QTableView.NoSelection)
         self.tbl_disb.setSortingEnabled(False)
-        self.model_disb = _DateAmountTableModel([])
+        self.model_disb = _DisbursementBreakdownTableModel([])
         self.tbl_disb.setModel(self.model_disb)
         splitter.addWidget(self.tbl_disb)
 
@@ -489,7 +540,7 @@ class FinancialReportsTab(QWidget):
         total_cols = float(data["total_collections"] or 0.0)
         total_disb = float(data["total_disbursements"] or 0.0)
         self.lbl_collect_total.setText(f"Collections: {fmt_money(total_cols)}")
-        self.lbl_disb_total.setText(f"Disbursements: {fmt_money(total_disb)}")
+        self.lbl_disb_total.setText(f"Net Disbursements: {fmt_money(total_disb)}")
 
         self._autosize(self.tbl_collect)
         self._autosize(self.tbl_disb)
@@ -531,7 +582,7 @@ class FinancialReportsTab(QWidget):
             date_from = self.dt_cash_from.date().toString("yyyy-MM-dd")
             date_to = self.dt_cash_to.date().toString("yyyy-MM-dd")
             total_cols = sum(float(r.get("amount") or 0.0) for r in self._rows_collect)
-            total_disb = sum(float(r.get("amount") or 0.0) for r in self._rows_disb)
+            total_disb = sum(float(r.get("net_outflow") or 0.0) for r in self._rows_disb)
 
             html = [
                 "<h2>Cash View</h2>",
@@ -541,7 +592,7 @@ class FinancialReportsTab(QWidget):
                 f"<p><b>Total Collections:</b> {fmt_money(total_cols)}</p>",
                 "<h3>Disbursements</h3>",
                 self._html_from_model(self.tbl_disb),
-                f"<p><b>Total Disbursements:</b> {fmt_money(total_disb)}</p>",
+                f"<p><b>Total Net Disbursements:</b> {fmt_money(total_disb)}</p>",
             ]
             self._render_pdf("\n".join(html), fn)
         except Exception as e:  # pragma: no cover

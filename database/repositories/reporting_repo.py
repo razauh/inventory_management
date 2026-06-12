@@ -56,73 +56,7 @@ class ReportingRepo:
         Purchase headers for remaining due calc as of a cutoff (inclusive).
         remaining = net total after returns - cleared payments - applied advances
         """
-        sql = """
-        WITH cutoff(as_of) AS (SELECT ?),
-        selected_purchases AS (
-            SELECT
-                p.purchase_id,
-                p.vendor_id,
-                p.date,
-                CAST(p.order_discount AS REAL) AS order_discount
-            FROM purchases p
-            WHERE p.vendor_id = ?
-              AND p.date <= (SELECT as_of FROM cutoff)
-        ),
-        line_totals AS (
-            SELECT
-                pi.purchase_id,
-                COALESCE(
-                    SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))),
-                    0.0
-                ) AS subtotal
-            FROM purchase_items pi
-            JOIN selected_purchases sp ON sp.purchase_id = pi.purchase_id
-            GROUP BY pi.purchase_id
-        ),
-        return_totals AS (
-            SELECT
-                prs.purchase_id,
-                COALESCE(SUM(CAST(prs.return_value AS REAL)), 0.0) AS returned_value
-            FROM purchase_return_snapshots prs
-            JOIN selected_purchases sp ON sp.purchase_id = prs.purchase_id
-            WHERE prs.return_date <= (SELECT as_of FROM cutoff)
-            GROUP BY prs.purchase_id
-        ),
-        payment_totals AS (
-            SELECT
-                pp.purchase_id,
-                COALESCE(SUM(CAST(pp.amount AS REAL)), 0.0) AS paid_amount
-            FROM purchase_payments pp
-            JOIN selected_purchases sp ON sp.purchase_id = pp.purchase_id
-            WHERE pp.clearing_state = 'cleared'
-              AND pp.cleared_date IS NOT NULL
-              AND pp.cleared_date <= (SELECT as_of FROM cutoff)
-            GROUP BY pp.purchase_id
-        ),
-        credit_totals AS (
-            SELECT
-                va.source_id AS purchase_id,
-                COALESCE(SUM(-CAST(va.amount AS REAL)), 0.0) AS advance_payment_applied
-            FROM vendor_advances va
-            JOIN selected_purchases sp ON sp.purchase_id = va.source_id
-            WHERE va.source_type = 'applied_to_purchase'
-              AND va.tx_date <= (SELECT as_of FROM cutoff)
-            GROUP BY va.source_id
-        )
-        SELECT
-            sp.purchase_id AS doc_no,
-            sp.date        AS date,
-            MAX(0.0, COALESCE(lt.subtotal, 0.0) - COALESCE(sp.order_discount, 0.0) - COALESCE(rt.returned_value, 0.0)) AS total_amount,
-            COALESCE(pt.paid_amount, 0.0) AS paid_amount,
-            COALESCE(ct.advance_payment_applied, 0.0) AS advance_payment_applied
-        FROM selected_purchases sp
-        LEFT JOIN line_totals lt ON lt.purchase_id = sp.purchase_id
-        LEFT JOIN return_totals rt ON rt.purchase_id = sp.purchase_id
-        LEFT JOIN payment_totals pt ON pt.purchase_id = sp.purchase_id
-        LEFT JOIN credit_totals ct ON ct.purchase_id = sp.purchase_id
-        ORDER BY sp.date, sp.purchase_id
-        """
-        return list(self.conn.execute(sql, (as_of, vendor_id)))
+        return self._vendor_headers_as_of_rows([vendor_id], as_of)
     
     def vendor_headers_as_of_batch(self, vendor_ids: list[int], as_of: str) -> list[sqlite3.Row]:
         """
@@ -130,10 +64,15 @@ class ReportingRepo:
         This method addresses N+1 query pattern by fetching all vendor headers in a single query.
         remaining = net total after returns - cleared payments - applied advances
         """
+        return self._vendor_headers_as_of_rows(vendor_ids, as_of)
+
+    def _vendor_headers_as_of_rows(
+        self, vendor_ids: Sequence[int], as_of: str
+    ) -> list[sqlite3.Row]:
         if not vendor_ids:
             return []
-            
-        placeholders = ','.join(['?' for _ in vendor_ids])
+
+        placeholders = ",".join("?" for _ in vendor_ids)
         sql = f"""
         WITH cutoff(as_of) AS (SELECT ?),
         selected_purchases AS (
@@ -146,25 +85,40 @@ class ReportingRepo:
             WHERE p.vendor_id IN ({placeholders})
               AND p.date <= (SELECT as_of FROM cutoff)
         ),
-        line_totals AS (
+        purchase_events AS (
             SELECT
-                pi.purchase_id,
-                COALESCE(
-                    SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))),
-                    0.0
-                ) AS subtotal
-            FROM purchase_items pi
-            JOIN selected_purchases sp ON sp.purchase_id = pi.purchase_id
-            GROUP BY pi.purchase_id
-        ),
-        return_totals AS (
+                p.purchase_id,
+                p.date AS event_date,
+                MAX(
+                    0.0,
+                    COALESCE(
+                        SUM(
+                            CAST(pi.quantity AS REAL)
+                            * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
+                        ),
+                        0.0
+                    ) - COALESCE(CAST(p.order_discount AS REAL), 0.0)
+                ) AS amount
+            FROM purchases p
+            JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+            JOIN selected_purchases sp ON sp.purchase_id = p.purchase_id
+            GROUP BY p.purchase_id, p.date, p.order_discount
+            UNION ALL
             SELECT
                 prs.purchase_id,
-                COALESCE(SUM(CAST(prs.return_value AS REAL)), 0.0) AS returned_value
+                prs.return_date AS event_date,
+                -CAST(prs.return_value AS REAL) AS amount
             FROM purchase_return_snapshots prs
             JOIN selected_purchases sp ON sp.purchase_id = prs.purchase_id
             WHERE prs.return_date <= (SELECT as_of FROM cutoff)
-            GROUP BY prs.purchase_id
+        ),
+        total_amounts AS (
+            SELECT
+                purchase_id,
+                COALESCE(SUM(amount), 0.0) AS total_amount
+            FROM purchase_events
+            WHERE event_date <= (SELECT as_of FROM cutoff)
+            GROUP BY purchase_id
         ),
         payment_totals AS (
             SELECT
@@ -191,12 +145,11 @@ class ReportingRepo:
             sp.vendor_id,
             sp.purchase_id AS doc_no,
             sp.date        AS date,
-            MAX(0.0, COALESCE(lt.subtotal, 0.0) - COALESCE(sp.order_discount, 0.0) - COALESCE(rt.returned_value, 0.0)) AS total_amount,
+            MAX(0.0, COALESCE(ta.total_amount, 0.0)) AS total_amount,
             COALESCE(pt.paid_amount, 0.0) AS paid_amount,
             COALESCE(ct.advance_payment_applied, 0.0) AS advance_payment_applied
         FROM selected_purchases sp
-        LEFT JOIN line_totals lt ON lt.purchase_id = sp.purchase_id
-        LEFT JOIN return_totals rt ON rt.purchase_id = sp.purchase_id
+        LEFT JOIN total_amounts ta ON ta.purchase_id = sp.purchase_id
         LEFT JOIN payment_totals pt ON pt.purchase_id = sp.purchase_id
         LEFT JOIN credit_totals ct ON ct.purchase_id = sp.purchase_id
         ORDER BY sp.vendor_id, sp.date, sp.purchase_id
@@ -249,7 +202,10 @@ class ReportingRepo:
                 s.sale_id,
                 s.customer_id,
                 s.date,
-                CAST(s.order_discount AS REAL) AS order_discount
+                CAST(s.total_amount AS REAL) AS total_amount,
+                CAST(s.order_discount AS REAL) AS order_discount,
+                CAST(s.paid_amount AS REAL) AS paid_amount,
+                CAST(s.advance_payment_applied AS REAL) AS advance_payment_applied
             FROM sales s
             WHERE s.customer_id = ?
               AND s.doc_type = 'sale'
@@ -286,6 +242,12 @@ class ReportingRepo:
               AND sp.cleared_date <= (SELECT as_of FROM cutoff)
             GROUP BY sp.sale_id
         ),
+        payment_activity AS (
+            SELECT DISTINCT sp.sale_id
+            FROM sale_payments sp
+            WHERE sp.clearing_state = 'cleared'
+              AND sp.cleared_date IS NOT NULL
+        ),
         credit_totals AS (
             SELECT
                 ca.source_id AS sale_id,
@@ -295,18 +257,31 @@ class ReportingRepo:
             WHERE ca.source_type = 'applied_to_sale'
               AND ca.tx_date <= (SELECT as_of FROM cutoff)
             GROUP BY ca.source_id
+        ),
+        credit_activity AS (
+            SELECT DISTINCT ca.source_id AS sale_id
+            FROM customer_advances ca
+            WHERE ca.source_type = 'applied_to_sale'
         )
         SELECT
             ss.sale_id     AS doc_no,
             ss.date        AS date,
-            MAX(0.0, COALESCE(lt.subtotal, 0.0) - COALESCE(ss.order_discount, 0.0) - COALESCE(rt.returned_value, 0.0)) AS total_amount,
-            COALESCE(pt.paid_amount, 0.0) AS paid_amount,
-            COALESCE(ct.advance_payment_applied, 0.0) AS advance_payment_applied
+            MAX(0.0, COALESCE(lt.subtotal, ss.total_amount, 0.0) - COALESCE(ss.order_discount, 0.0) - COALESCE(rt.returned_value, 0.0)) AS total_amount,
+            CASE
+              WHEN pa.sale_id IS NOT NULL THEN COALESCE(pt.paid_amount, 0.0)
+              ELSE COALESCE(ss.paid_amount, 0.0)
+            END AS paid_amount,
+            CASE
+              WHEN caa.sale_id IS NOT NULL THEN COALESCE(ct.advance_payment_applied, 0.0)
+              ELSE COALESCE(ss.advance_payment_applied, 0.0)
+            END AS advance_payment_applied
         FROM selected_sales ss
         LEFT JOIN line_totals lt ON lt.sale_id = ss.sale_id
         LEFT JOIN return_totals rt ON rt.sale_id = ss.sale_id
         LEFT JOIN payment_totals pt ON pt.sale_id = ss.sale_id
+        LEFT JOIN payment_activity pa ON pa.sale_id = ss.sale_id
         LEFT JOIN credit_totals ct ON ct.sale_id = ss.sale_id
+        LEFT JOIN credit_activity caa ON caa.sale_id = ss.sale_id
         ORDER BY ss.date, ss.sale_id
         """
         return list(self.conn.execute(sql, (as_of, customer_id)))
@@ -328,7 +303,10 @@ class ReportingRepo:
                 s.sale_id,
                 s.customer_id,
                 s.date,
-                CAST(s.order_discount AS REAL) AS order_discount
+                CAST(s.total_amount AS REAL) AS total_amount,
+                CAST(s.order_discount AS REAL) AS order_discount,
+                CAST(s.paid_amount AS REAL) AS paid_amount,
+                CAST(s.advance_payment_applied AS REAL) AS advance_payment_applied
             FROM sales s
             WHERE s.customer_id IN ({placeholders})
               AND s.doc_type = 'sale'
@@ -365,6 +343,12 @@ class ReportingRepo:
               AND sp.cleared_date <= (SELECT as_of FROM cutoff)
             GROUP BY sp.sale_id
         ),
+        payment_activity AS (
+            SELECT DISTINCT sp.sale_id
+            FROM sale_payments sp
+            WHERE sp.clearing_state = 'cleared'
+              AND sp.cleared_date IS NOT NULL
+        ),
         credit_totals AS (
             SELECT
                 ca.source_id AS sale_id,
@@ -374,19 +358,32 @@ class ReportingRepo:
             WHERE ca.source_type = 'applied_to_sale'
               AND ca.tx_date <= (SELECT as_of FROM cutoff)
             GROUP BY ca.source_id
+        ),
+        credit_activity AS (
+            SELECT DISTINCT ca.source_id AS sale_id
+            FROM customer_advances ca
+            WHERE ca.source_type = 'applied_to_sale'
         )
         SELECT
             ss.customer_id,
             ss.sale_id     AS doc_no,
             ss.date        AS date,
-            MAX(0.0, COALESCE(lt.subtotal, 0.0) - COALESCE(ss.order_discount, 0.0) - COALESCE(rt.returned_value, 0.0)) AS total_amount,
-            COALESCE(pt.paid_amount, 0.0) AS paid_amount,
-            COALESCE(ct.advance_payment_applied, 0.0) AS advance_payment_applied
+            MAX(0.0, COALESCE(lt.subtotal, ss.total_amount, 0.0) - COALESCE(ss.order_discount, 0.0) - COALESCE(rt.returned_value, 0.0)) AS total_amount,
+            CASE
+              WHEN pa.sale_id IS NOT NULL THEN COALESCE(pt.paid_amount, 0.0)
+              ELSE COALESCE(ss.paid_amount, 0.0)
+            END AS paid_amount,
+            CASE
+              WHEN caa.sale_id IS NOT NULL THEN COALESCE(ct.advance_payment_applied, 0.0)
+              ELSE COALESCE(ss.advance_payment_applied, 0.0)
+            END AS advance_payment_applied
         FROM selected_sales ss
         LEFT JOIN line_totals lt ON lt.sale_id = ss.sale_id
         LEFT JOIN return_totals rt ON rt.sale_id = ss.sale_id
         LEFT JOIN payment_totals pt ON pt.sale_id = ss.sale_id
+        LEFT JOIN payment_activity pa ON pa.sale_id = ss.sale_id
         LEFT JOIN credit_totals ct ON ct.sale_id = ss.sale_id
+        LEFT JOIN credit_activity caa ON caa.sale_id = ss.sale_id
         ORDER BY ss.customer_id, ss.date, ss.sale_id
         """
         params = [as_of] + customer_ids
@@ -869,20 +866,43 @@ class ReportingRepo:
 
     def purchase_disbursements_by_day(self, date_from: str, date_to: str) -> list[sqlite3.Row]:
         """
-        Cash disbursements grouped by cleared_date from purchase_payments (clearing_state='cleared').
+        Cash disbursements grouped by cleared_date.
+        Returns gross vendor payments, refunds received, and net outflow.
         """
         sql = """
+        WITH disbursement_events AS (
+          SELECT
+            pp.cleared_date AS date,
+            COALESCE(SUM(CASE WHEN CAST(pp.amount AS REAL) > 0 THEN CAST(pp.amount AS REAL) ELSE 0.0 END), 0.0) AS gross_outflow,
+            0.0 AS refunds_received
+          FROM purchase_payments pp
+          WHERE pp.clearing_state = 'cleared'
+            AND pp.cleared_date IS NOT NULL
+            AND pp.cleared_date >= ?
+            AND pp.cleared_date <= ?
+          GROUP BY pp.cleared_date
+          UNION ALL
+          SELECT
+            pr.cleared_date AS date,
+            0.0 AS gross_outflow,
+            COALESCE(SUM(CAST(pr.amount AS REAL)), 0.0) AS refunds_received
+          FROM purchase_refunds pr
+          WHERE pr.clearing_state = 'cleared'
+            AND pr.cleared_date IS NOT NULL
+            AND pr.cleared_date >= ?
+            AND pr.cleared_date <= ?
+          GROUP BY pr.cleared_date
+        )
         SELECT
-          pp.cleared_date AS date,
-          COALESCE(SUM(CAST(pp.amount AS REAL)), 0.0) AS amount
-        FROM purchase_payments pp
-        WHERE pp.clearing_state = 'cleared'
-          AND pp.cleared_date >= ?
-          AND pp.cleared_date <= ?
-        GROUP BY pp.cleared_date
-        ORDER BY pp.cleared_date
+          date,
+          COALESCE(SUM(gross_outflow), 0.0) AS gross_outflow,
+          COALESCE(SUM(refunds_received), 0.0) AS refunds_received,
+          COALESCE(SUM(gross_outflow), 0.0) - COALESCE(SUM(refunds_received), 0.0) AS net_outflow
+        FROM disbursement_events
+        GROUP BY date
+        ORDER BY date
         """
-        return list(self.conn.execute(sql, (date_from, date_to)))
+        return list(self.conn.execute(sql, (date_from, date_to, date_from, date_to)))
 
     # ----------------------------------------------------------------------
     # ------------------------------ SALES (NEW) ---------------------------

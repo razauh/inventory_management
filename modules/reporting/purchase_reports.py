@@ -350,8 +350,9 @@ class PurchaseReportsTab(QWidget):
         sql = f"""
             SELECT strftime('{fmt}', p.date) AS period,
                    COUNT(*) AS order_count,
-                   SUM(CAST(p.total_amount AS REAL)) AS spend
+                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
             FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
             LEFT JOIN vendors v ON v.vendor_id = p.vendor_id
             WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
               {"AND p.vendor_id = ?" if vendor_id else ""}
@@ -373,8 +374,9 @@ class PurchaseReportsTab(QWidget):
         sql = """
             SELECT v.name AS vendor_name,
                    COUNT(*) AS order_count,
-                   SUM(CAST(p.total_amount AS REAL)) AS spend
+                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
             FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
             JOIN vendors v ON v.vendor_id = p.vendor_id
             WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
               {vend}
@@ -398,24 +400,50 @@ class PurchaseReportsTab(QWidget):
 
         # ---- 3) Purchases by Product ----
         sql = """
-            SELECT pr.name AS product_name,
-                   SUM(CAST(pi.quantity AS REAL)) AS qty_base,
-                   SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))) AS spend
-            FROM purchases p
-            JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-            JOIN products pr       ON pr.product_id   = pi.product_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-              {vend}
-              {prod}
-              {cat}
-            GROUP BY pr.product_id, pr.name
+            WITH qty_by_product AS (
+                SELECT pi.product_id,
+                       pr.name AS product_name,
+                       COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+                FROM purchases p
+                JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+                LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
+                JOIN products pr ON pr.product_id = pi.product_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                  {vend}
+                  {prod}
+                  {cat}
+                GROUP BY pi.product_id, pr.name
+            ),
+            spend_by_product AS (
+                SELECT e.product_id,
+                       COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
+                FROM purchases p
+                JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                  {vend_spend}
+                  {prod_spend}
+                  {cat_spend}
+                GROUP BY e.product_id
+            )
+            SELECT q.product_name,
+                   q.qty_base,
+                   COALESCE(s.spend, 0.0) AS spend
+            FROM qty_by_product q
+            LEFT JOIN spend_by_product s ON s.product_id = q.product_id
             ORDER BY spend DESC, product_name
         """.format(
             vend="AND p.vendor_id = ?" if vendor_id else "",
             prod="AND pi.product_id = ?" if product_id else "",
             cat ="AND pr.category = ?" if category else "",
+            vend_spend="AND p.vendor_id = ?" if vendor_id else "",
+            prod_spend="AND e.product_id = ?" if product_id else "",
+            cat_spend="AND pr.category = ?" if category else "",
         )
         params = [df, dt]
+        if vendor_id: params.append(vendor_id)
+        if product_id: params.append(product_id)
+        if category: params.append(category)
+        params.extend([df, dt])
         if vendor_id: params.append(vendor_id)
         if product_id: params.append(product_id)
         if category: params.append(category)
@@ -426,24 +454,50 @@ class PurchaseReportsTab(QWidget):
 
         # ---- 4) Purchases by Category ----
         sql = """
-            SELECT pr.category AS category,
-                   SUM(CAST(pi.quantity AS REAL)) AS qty_base,
-                   SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))) AS spend
-            FROM purchases p
-            JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-            JOIN products pr       ON pr.product_id   = pi.product_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-              {vend}
-              {prod}
-              {cat_any}
-            GROUP BY pr.category
-            ORDER BY spend DESC, category
+            WITH qty_by_category AS (
+                SELECT CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END AS category,
+                       COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+                FROM purchases p
+                JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+                LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
+                JOIN products pr ON pr.product_id = pi.product_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                  {vend}
+                  {prod}
+                  {cat_any}
+                GROUP BY CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END
+            ),
+            spend_by_category AS (
+                SELECT CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END AS category,
+                       COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
+                FROM purchases p
+                JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
+                JOIN products pr ON pr.product_id = e.product_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                  {vend_spend}
+                  {prod_spend}
+                  {cat_spend}
+                GROUP BY CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END
+            )
+            SELECT q.category,
+                   q.qty_base,
+                   COALESCE(s.spend, 0.0) AS spend
+            FROM qty_by_category q
+            LEFT JOIN spend_by_category s ON s.category = q.category
+            ORDER BY spend DESC, q.category
         """.format(
             vend="AND p.vendor_id = ?" if vendor_id else "",
             prod="AND pi.product_id = ?" if product_id else "",
             cat_any="AND pr.category = ?" if category else "",
+            vend_spend="AND p.vendor_id = ?" if vendor_id else "",
+            prod_spend="AND e.product_id = ?" if product_id else "",
+            cat_spend="AND pr.category = ?" if category else "",
         )
         params = [df, dt]
+        if vendor_id: params.append(vendor_id)
+        if product_id: params.append(product_id)
+        if category: params.append(category)
+        params.extend([df, dt])
         if vendor_id: params.append(vendor_id)
         if product_id: params.append(product_id)
         if category: params.append(category)
@@ -456,8 +510,9 @@ class PurchaseReportsTab(QWidget):
         sql = """
             SELECT v.name AS vendor_name,
                    COUNT(*) AS order_count,
-                   SUM(CAST(p.total_amount AS REAL)) AS spend
+                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
             FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
             JOIN vendors v ON v.vendor_id = p.vendor_id
             WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
             GROUP BY v.vendor_id, v.name
@@ -472,21 +527,37 @@ class PurchaseReportsTab(QWidget):
 
         # ---- 6) Top Products ----
         sql = """
-            SELECT pr.name AS product_name,
-                   SUM(CAST(pi.quantity AS REAL)) AS qty_base,
-                   SUM(CAST(pi.quantity AS REAL) * (CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))) AS spend
-            FROM purchases p
-            JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-            JOIN products pr       ON pr.product_id   = pi.product_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY pr.product_id, pr.name
+            WITH qty_by_product AS (
+                SELECT pi.product_id,
+                       pr.name AS product_name,
+                       COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+                FROM purchases p
+                JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+                LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
+                JOIN products pr ON pr.product_id = pi.product_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                GROUP BY pi.product_id, pr.name
+            ),
+            spend_by_product AS (
+                SELECT e.product_id,
+                       COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
+                FROM purchases p
+                JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                GROUP BY e.product_id
+            )
+            SELECT q.product_name,
+                   q.qty_base,
+                   COALESCE(s.spend, 0.0) AS spend
+            FROM qty_by_product q
+            LEFT JOIN spend_by_product s ON s.product_id = q.product_id
             ORDER BY spend DESC
             LIMIT ?
         """
         rows = [{"product_name": r["product_name"],
                  "qty_base": float(r["qty_base"] or 0.0),
                  "spend": float(r["spend"] or 0.0)}
-                for r in self.conn.execute(sql, (df, dt, topn))]
+                for r in self.conn.execute(sql, (df, dt, df, dt, topn))]
         set_rows("top_products", rows)
 
         # ---- 7) Returns Summary ----
@@ -495,7 +566,7 @@ class PurchaseReportsTab(QWidget):
         try:
             sql = """
                 SELECT
-                  SUM(CAST(qty_returned AS REAL)) AS qty_returned,
+                  SUM(CAST(qty_returned_base AS REAL)) AS qty_returned,
                   SUM(CASE WHEN valuation_status = 'resolved'
                            THEN CAST(return_value AS REAL) END) AS return_value,
                   SUM(CASE WHEN valuation_status = 'unresolved' THEN 1 ELSE 0 END) AS unresolved_count
@@ -517,8 +588,9 @@ class PurchaseReportsTab(QWidget):
         sql = """
             SELECT p.payment_status,
                    COUNT(*) AS order_count,
-                   SUM(CAST(p.total_amount AS REAL)) AS spend
+                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
             FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
             WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
             GROUP BY p.payment_status
             ORDER BY spend DESC
@@ -531,14 +603,15 @@ class PurchaseReportsTab(QWidget):
         # ---- 9) Open Purchases ----
         sql = """
             SELECT p.purchase_id, p.date, v.name AS vendor_name,
-                   CAST(p.total_amount AS REAL) AS total_amount,
+                   COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
                    CAST(p.paid_amount  AS REAL) AS paid_amount,
                    CAST(p.advance_payment_applied AS REAL) AS adv,
-                   (CAST(p.total_amount AS REAL) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
+                   (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
             FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
             JOIN vendors v ON v.vendor_id = p.vendor_id
             WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-              AND (CAST(p.total_amount AS REAL) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
+              AND (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
             ORDER BY DATE(p.date) DESC, p.purchase_id DESC
         """
         rows = [{k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k])
@@ -548,11 +621,12 @@ class PurchaseReportsTab(QWidget):
         # ---- 10) Drill-down Purchases (matching filters) ----
         sql = """
             SELECT p.purchase_id, p.date, v.name AS vendor_name, p.payment_status,
-                   CAST(p.total_amount AS REAL) AS total_amount,
+                   COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
                    CAST(p.paid_amount  AS REAL) AS paid_amount,
                    CAST(p.advance_payment_applied AS REAL) AS adv,
-                   (CAST(p.total_amount AS REAL) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
+                   (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
             FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
             JOIN vendors v ON v.vendor_id = p.vendor_id
             WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
               {vend}

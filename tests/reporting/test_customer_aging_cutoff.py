@@ -20,10 +20,10 @@ def cutoff_db(tmp_path):
     conn.executescript(SQL)
 
     customer_id = conn.execute(
-        "INSERT INTO customers (name, contact_info) VALUES ('"'"'Cutoff Customer'"'"', '"'"'test@example.com'"'"')"
+        "INSERT INTO customers (name, contact_info) VALUES ('Cutoff Customer', 'test@example.com')"
     ).lastrowid
-    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('"'"'Piece'"'"')").lastrowid
-    product_id = conn.execute("INSERT INTO products (name) VALUES ('"'"'Cutoff Item'"'"')").lastrowid
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Cutoff Item')").lastrowid
     conn.execute(
         "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
         (product_id, uom_id),
