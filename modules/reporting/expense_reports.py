@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import html
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot
@@ -272,24 +273,24 @@ class ExpenseReportsTab(QWidget):
         try:
             date_from = self.dt_from.date().toString("yyyy-MM-dd")
             date_to = self.dt_to.date().toString("yyyy-MM-dd")
-            cat_txt = self.cmb_category.currentText()
+            cat_txt = html.escape(self.cmb_category.currentText())
 
-            html = []
-            html.append(f"<h2>Expense Reports</h2>")
-            html.append(f"<p><b>Period:</b> {date_from} to {date_to}<br>")
-            html.append(f"<b>Category:</b> {cat_txt}</p>")
+            html_content = []
+            html_content.append(f"<h2>Expense Reports</h2>")
+            html_content.append(f"<p><b>Period:</b> {date_from} to {date_to}<br>")
+            html_content.append(f"<b>Category:</b> {cat_txt}</p>")
 
             # Summary
-            html.append("<h3>Summary by Category</h3>")
-            html.append(self._html_from_model(self.tbl_summary))
-            html.append(f"<p><b>Grand Total:</b> {fmt_money(sum(float(r.get('total_amount') or 0.0) for r in self._rows_summary))}</p>")
+            html_content.append("<h3>Summary by Category</h3>")
+            html_content.append(self._html_from_model(self.tbl_summary))
+            html_content.append(f"<p><b>Grand Total:</b> {fmt_money(sum(float(r.get('total_amount') or 0.0) for r in self._rows_summary))}</p>")
 
             # Lines
             if self.model_lines.rowCount() > 0:
-                html.append("<h3>Expense Lines</h3>")
-                html.append(self._html_from_model(self.tbl_lines))
+                html_content.append("<h3>Expense Lines</h3>")
+                html_content.append(self._html_from_model(self.tbl_lines))
 
-            self._render_pdf("\n".join(html), fn)
+            self._render_pdf("\n".join(html_content), fn)
 
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export PDF:\n{e}")
@@ -306,14 +307,20 @@ class ExpenseReportsTab(QWidget):
         parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
         for c in range(cols):
             hdr = m.headerData(c, Qt.Horizontal, Qt.DisplayRole)
-            parts.append(f"<th>{hdr}</th>")
+            hdr_str = html.escape(str(hdr) if hdr is not None else "")
+            parts.append(f"<th>{hdr_str}</th>")
         parts.append("</tr></thead><tbody>")
         for r in range(rows):
             parts.append("<tr>")
             for c in range(cols):
                 idx: QModelIndex = m.index(r, c)
                 val = m.data(idx, Qt.DisplayRole)
-                parts.append(f"<td>{val if val is not None else ''}</td>")
+                align = m.data(idx, Qt.TextAlignmentRole)
+                align_style = ""
+                if align is not None and (int(align) & Qt.AlignRight):
+                    align_style = ' align="right"'
+                val_str = html.escape(str(val) if val is not None else "")
+                parts.append(f"<td{align_style}>{val_str}</td>")
             parts.append("</tr>")
         parts.append("</tbody></table>")
         return "".join(parts)

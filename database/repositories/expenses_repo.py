@@ -36,7 +36,7 @@ import sqlite3
 import math
 from datetime import date as py_date
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 
 class DomainError(Exception):
@@ -49,6 +49,14 @@ class ExpenseCategory:
     category_id: int | None
     name: str
 
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
 
 @dataclass
 class Expense:
@@ -58,6 +66,14 @@ class Expense:
     date: str
     category_id: int | None
     category_name: str | None
+
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
 
 
 class ExpensesRepo:
@@ -112,10 +128,12 @@ class ExpensesRepo:
             raise DomainError("Name cannot be empty.")
         was_in_transaction = self.conn.in_transaction
         name_n = name.strip()
-        self.conn.execute(
+        cur = self.conn.execute(
             "UPDATE expense_categories SET name=? WHERE category_id=?",
             (name_n, category_id),
         )
+        if cur.rowcount == 0:
+            raise DomainError(f"Category with ID {category_id} not found.")
         if not was_in_transaction:
             self.conn.commit()
 
@@ -123,10 +141,12 @@ class ExpensesRepo:
         """Remove a category. Translate FK violations into a domain error."""
         was_in_transaction = self.conn.in_transaction
         try:
-            self.conn.execute(
+            cur = self.conn.execute(
                 "DELETE FROM expense_categories WHERE category_id=?",
                 (category_id,),
             )
+            if cur.rowcount == 0:
+                raise DomainError(f"Category with ID {category_id} not found.")
             if not was_in_transaction:
                 self.conn.commit()
         except sqlite3.IntegrityError as e:
@@ -179,12 +199,11 @@ class ExpensesRepo:
             params.append(float(amount_max))
         return " AND ".join(where), params
 
-    def list_expenses(self, category_id: Optional[int] = None) -> List[Dict]:
+    def list_expenses(self, category_id: Optional[int] = None) -> List[Expense]:
         """
         List expenses, optionally filtering by category_id.
 
-        Returns a list of dictionaries with keys:
-          expense_id, description, amount, date, category_id, category_name
+        Returns a list of Expense objects.
         Sorted by descending date then descending expense_id.
         """
         if category_id is not None:
@@ -232,20 +251,20 @@ class ExpensesRepo:
                 ORDER BY DATE(e.date) DESC, e.expense_id DESC
                 """
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [Expense(**dict(r)) for r in rows]
 
     def search_expenses(
         self,
         query: str = "",
         date: Optional[str] = None,
         category_id: Optional[int] = None,
-    ) -> List[Dict]:
+    ) -> List[Expense]:
         """
         Search expenses by description, optional date and category.
 
         Performs a LIKE search on description.  Date filter uses DATE() to
         compare calendar days.  Category filter matches on exact ID.
-        Returns matching rows ordered by date descending then expense_id.
+        Returns matching rows as Expense objects ordered by date descending then expense_id.
         """
         where_str, params = self._build_where_clause(
             query=query, date=date, category_id=category_id
@@ -264,7 +283,7 @@ class ExpensesRepo:
             sql += " WHERE " + where_str
         sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
         rows = self.conn.execute(sql, tuple(params)).fetchall()
-        return [dict(r) for r in rows]
+        return [Expense(**dict(r)) for r in rows]
 
     def search_expenses_adv(
         self,
@@ -275,7 +294,7 @@ class ExpensesRepo:
         category_id: Optional[int] = None,
         amount_min: Optional[float] = None,
         amount_max: Optional[float] = None,
-    ) -> List[Dict]:
+    ) -> List[Expense]:
         """
         Advanced search by description, optional date, date range, category, and amount range.
 
@@ -311,7 +330,7 @@ class ExpensesRepo:
         sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
 
         rows = self.conn.execute(sql, tuple(params)).fetchall()
-        return [dict(r) for r in rows]
+        return [Expense(**dict(r)) for r in rows]
 
     def create_expense(
         self,
@@ -373,7 +392,7 @@ class ExpensesRepo:
             raise DomainError("Date must be in YYYY-MM-DD format.")
         was_in_transaction = self.conn.in_transaction
         desc_n = description.strip()
-        self.conn.execute(
+        cur = self.conn.execute(
             """
             UPDATE expenses
             SET description = ?, amount = ?, date = ?, category_id = ?
@@ -381,20 +400,24 @@ class ExpensesRepo:
             """,
             (desc_n, float(amount), date, category_id, expense_id),
         )
+        if cur.rowcount == 0:
+            raise DomainError(f"Expense with ID {expense_id} not found.")
         if not was_in_transaction:
             self.conn.commit()
 
     def delete_expense(self, expense_id: int) -> None:
         """Delete an expense by ID."""
         was_in_transaction = self.conn.in_transaction
-        self.conn.execute(
+        cur = self.conn.execute(
             "DELETE FROM expenses WHERE expense_id = ?",
             (expense_id,),
         )
+        if cur.rowcount == 0:
+            raise DomainError(f"Expense with ID {expense_id} not found.")
         if not was_in_transaction:
             self.conn.commit()
 
-    def get_expense(self, expense_id: int) -> Dict | None:
+    def get_expense(self, expense_id: int) -> Optional[Expense]:
         """
         Fetch a single expense by ID.  Returns None if not found.
         """
@@ -412,7 +435,7 @@ class ExpensesRepo:
             """,
             (expense_id,),
         ).fetchone()
-        return dict(row) if row else None
+        return Expense(**dict(row)) if row else None
 
     def total_by_category(
         self,
