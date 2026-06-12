@@ -115,6 +115,32 @@ class ExpenseController(BaseModule):
         else:
             effective_date = date
 
+        # Check invalid filter ranges
+        date_range_invalid = bool(date_from and date_to and date_from > date_to)
+        amount_range_invalid = bool(amount_min is not None and amount_max is not None and amount_min > amount_max)
+
+        if date_range_invalid:
+            self.view.date_from.setStyleSheet("background-color: #ffcccc;")
+            self.view.date_to.setStyleSheet("background-color: #ffcccc;")
+        else:
+            self.view.date_from.setStyleSheet("")
+            self.view.date_to.setStyleSheet("")
+
+        if amount_range_invalid:
+            self.view.amount_min.setStyleSheet("background-color: #ffcccc;")
+            self.view.amount_max.setStyleSheet("background-color: #ffcccc;")
+        else:
+            self.view.amount_min.setStyleSheet("")
+            self.view.amount_max.setStyleSheet("")
+
+        if date_range_invalid or amount_range_invalid:
+            model = ExpensesTableModel([])
+            self.view.tbl_expenses.setModel(model)
+            m_totals = QStandardItemModel()
+            m_totals.setHorizontalHeaderLabels(["Category", "Invalid Filter Range"])
+            self.view.tbl_totals.setModel(m_totals)
+            return
+
         rows = self.repo.search_expenses_adv(
             query=query,
             date=effective_date,

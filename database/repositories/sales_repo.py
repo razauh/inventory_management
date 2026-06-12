@@ -153,8 +153,12 @@ class SalesRepo:
             params += [f"%{query}%", f"%{query}%"]
 
         if date:
-            where.append("DATE(s.date) = DATE(?)")
-            params.append(date)
+            if query:
+                where.append("(s.sale_id = ? COLLATE NOCASE OR DATE(s.date) = DATE(?))")
+                params.extend([query, date])
+            else:
+                where.append("DATE(s.date) = DATE(?)")
+                params.append(date)
 
         sql = """
           SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,

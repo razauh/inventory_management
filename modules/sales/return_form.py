@@ -39,10 +39,12 @@ class SaleReturnForm(QDialog):
         self.edt_date = QDateEdit()
         self.edt_date.setCalendarPopup(True)
         self.edt_date.setDate(QDate.fromString(today_str(), "yyyy-MM-dd"))
+        self.chk_date = QCheckBox("Filter date")
+        self.edt_date.setEnabled(False)
         self.btn_find = QPushButton("Find")
         self._search_row.addWidget(QLabel("Search:"))
         self._search_row.addWidget(self.edt_q, 2)
-        self._search_row.addWidget(QLabel("Date:"))
+        self._search_row.addWidget(self.chk_date)
         self._search_row.addWidget(self.edt_date)
         self._search_row.addWidget(self.btn_find)
         lay.addLayout(self._search_row)
@@ -105,6 +107,7 @@ class SaleReturnForm(QDialog):
 
         # wiring
         self.btn_find.clicked.connect(self._search)
+        self.chk_date.toggled.connect(self.edt_date.setEnabled)
         self.tbl_sales.itemSelectionChanged.connect(self._load_items)
         self.tbl_items.cellChanged.connect(self._recalc)
         self.chk_return_all.toggled.connect(self._toggle_return_all)
@@ -203,7 +206,7 @@ class SaleReturnForm(QDialog):
         if not self.repo:
             return
         q = (self.edt_q.text() or "").strip()
-        d = self.edt_date.date().toString("yyyy-MM-dd") if self.edt_date.date() else None
+        d = self.edt_date.date().toString("yyyy-MM-dd") if self.chk_date.isChecked() else None
 
         # Prefer repo-side doc_type filtering; fallback to local filter
         try:

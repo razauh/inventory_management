@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS expense_categories (
 CREATE TABLE IF NOT EXISTS expenses (
     expense_id  INTEGER PRIMARY KEY AUTOINCREMENT,
     description TEXT   NOT NULL,
-    amount      NUMERIC NOT NULL CHECK (CAST(amount AS REAL) >= 0),
+    amount      NUMERIC NOT NULL CHECK (CAST(amount AS REAL) > 0),
     date        DATE    NOT NULL DEFAULT CURRENT_DATE,
     category_id INTEGER,
     FOREIGN KEY (category_id) REFERENCES expense_categories(category_id)
@@ -3312,6 +3312,12 @@ REQUIRED_TABLES = (
 )
 
 
+def _ensure_expense_amounts_positive(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='expenses';")
+    if cur.fetchone():
+        conn.execute("UPDATE expenses SET amount = 0.01 WHERE CAST(amount AS REAL) <= 0")
+
+
 def _ensure_customer_is_active(conn: sqlite3.Connection) -> None:
     """
     Safe migration for older DBs that created `customers` before `is_active` existed.
@@ -4048,6 +4054,8 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         _ensure_sale_return_snapshot_columns(conn, backfill=False)
+        # Clean existing non-positive amounts before applying new schema constraint
+        _ensure_expense_amounts_positive(conn)
         # Apply (idempotent) schema
         conn.executescript(SQL)
         # Backfill migrations for existing DBs missing columns

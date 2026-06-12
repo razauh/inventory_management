@@ -328,8 +328,8 @@ class ExpensesRepo:
         """
         if not description or not description.strip():
             raise DomainError("Description cannot be empty.")
-        if amount is None or float(amount) < 0:
-            raise DomainError("Amount must be non-negative.")
+        if amount is None or float(amount) <= 0:
+            raise DomainError("Amount must be positive.")
         was_in_transaction = self.conn.in_transaction
         desc_n = description.strip()
         cur = self.conn.execute(
@@ -355,8 +355,8 @@ class ExpensesRepo:
         """
         if not description or not description.strip():
             raise DomainError("Description cannot be empty.")
-        if amount is None or float(amount) < 0:
-            raise DomainError("Amount must be non-negative.")
+        if amount is None or float(amount) <= 0:
+            raise DomainError("Amount must be positive.")
         was_in_transaction = self.conn.in_transaction
         desc_n = description.strip()
         self.conn.execute(
