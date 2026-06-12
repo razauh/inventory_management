@@ -53,6 +53,65 @@ class SalesRepo:
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_source_quotation ON sales(source_id) WHERE source_type = 'quotation'"
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sales_document_sequences (
+                namespace TEXT NOT NULL CHECK (namespace IN ('sale', 'quotation')),
+                document_date DATE NOT NULL,
+                last_value INTEGER NOT NULL CHECK (last_value >= 0),
+                PRIMARY KEY (namespace, document_date)
+            )
+            """
+        )
+
+    def _allocate_document_id(self, namespace: str, document_date: str) -> str:
+        """Reserve the next per-date SO/QO number inside the caller's transaction."""
+        prefixes = {"sale": "SO", "quotation": "QO"}
+        try:
+            prefix = f"{prefixes[namespace]}{document_date.replace('-', '')}-"
+        except KeyError as exc:
+            raise ValueError(f"Unknown sales document namespace: {namespace}") from exc
+
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO sales_document_sequences(namespace, document_date, last_value)
+            VALUES (?, ?, 0)
+            """,
+            (namespace, document_date),
+        )
+        self.conn.execute(
+            """
+            UPDATE sales_document_sequences
+               SET last_value = MAX(
+                   last_value,
+                   COALESCE((
+                       SELECT MAX(CAST(SUBSTR(sale_id, ?) AS INTEGER))
+                         FROM sales
+                        WHERE sale_id LIKE ?
+                          AND SUBSTR(sale_id, ?) <> ''
+                          AND SUBSTR(sale_id, ?) NOT GLOB '*[^0-9]*'
+                   ), 0)
+               ) + 1
+             WHERE namespace = ? AND document_date = ?
+            """,
+            (
+                len(prefix) + 1,
+                prefix + "%",
+                len(prefix) + 1,
+                len(prefix) + 1,
+                namespace,
+                document_date,
+            ),
+        )
+        row = self.conn.execute(
+            """
+            SELECT last_value
+              FROM sales_document_sequences
+             WHERE namespace = ? AND document_date = ?
+            """,
+            (namespace, document_date),
+        ).fetchone()
+        return f"{prefix}{int(row['last_value']):04d}"
 
     # ---------------------------------------------------------------------
     # READ — SALES
@@ -370,13 +429,16 @@ class SalesRepo:
     # ---------------------------------------------------------------------
     # WRITE — SALES (doc_type='sale')
     # ---------------------------------------------------------------------
-    def create_sale(self, header: SaleHeader, items: Iterable[SaleItem], payment_info: dict | None = None):
+    def create_sale(self, header: SaleHeader, items: Iterable[SaleItem], payment_info: dict | None = None) -> str:
         """
         Create a SALE (doc_type='sale') and post inventory for each item.
         Optionally records an initial payment atomically in the same transaction.
+        A blank header ID is allocated in the same transaction as the insert.
         """
         items = self._validate_financials(header, items)
         with self.conn:
+            if not header.sale_id:
+                header.sale_id = self._allocate_document_id("sale", header.date)
             self._check_stock_availability(items)
             self._insert_header(header)
             for it in items:
@@ -395,12 +457,14 @@ class SalesRepo:
             self._refresh_sale_payment_status(header.sale_id)
 
             if payment_info:
+                payment_info["sale_id"] = header.sale_id
                 from .sale_payments_repo import SalePaymentsRepo
                 pay_repo = SalePaymentsRepo("")
                 pay_repo.record_payment_with_conn(self.conn, **payment_info)
                 self._refresh_sale_payment_status(header.sale_id)
 
             rebuild_dirty_valuations(self.conn)
+        return header.sale_id
 
     def update_sale(self, header: SaleHeader, items: Iterable[SaleItem]):
         """
@@ -507,10 +571,11 @@ class SalesRepo:
         *,
         quotation_status: str = "draft",
         expiry_date: Optional[str] = None,  # keep optional; schema allows
-    ) -> None:
+    ) -> str:
         """
         Create a QUOTATION: insert sales row with doc_type='quotation', quotation_status,
         zeroed payment fields, and items — NO inventory postings.
+        A blank header ID is allocated in the same transaction as the insert.
         """
         items = self._validate_financials(header, items)
         allowed_statuses = {"draft", "sent", "accepted", "expired", "cancelled"}
@@ -518,6 +583,8 @@ class SalesRepo:
             raise ValueError(f"Invalid quotation status: {quotation_status}")
         expiry_date = header.date
         with self.conn:
+            if not header.sale_id:
+                header.sale_id = self._allocate_document_id("quotation", header.date)
             # Insert header explicitly as quotation (enforce payment fields per schema)
             self.conn.execute(
                 """
@@ -548,6 +615,7 @@ class SalesRepo:
             for it in items:
                 it.sale_id = header.sale_id
                 self._insert_item(it)
+        return header.sale_id
 
     def update_quotation(
         self,
@@ -616,10 +684,10 @@ class SalesRepo:
     def convert_quotation_to_sale(
         self,
         qo_id: str,
-        new_so_id: str,
+        new_so_id: Optional[str],
         date: str,
         created_by: Optional[int],
-    ) -> None:
+    ) -> str:
         """
         Create a SALE from an existing QUOTATION:
           - Insert new sales row (doc_type='sale', source_type='quotation', source_id=qo_id)
@@ -628,6 +696,8 @@ class SalesRepo:
           - Mark quotation as converted (quotation_status='accepted')
         """
         with self.conn:
+            if not new_so_id:
+                new_so_id = self._allocate_document_id("sale", date)
             # Fetch quotation header
             qh = self.conn.execute(
                 "SELECT * FROM sales WHERE sale_id=? AND doc_type='quotation'",
@@ -746,6 +816,7 @@ class SalesRepo:
                 """,
                 (qo_id,),
             )
+        return new_so_id
 
     # ---------------------------------------------------------------------
     # RETURNS (with settlement)

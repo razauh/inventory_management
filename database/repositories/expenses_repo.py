@@ -267,6 +267,7 @@ class ExpensesRepo:
     def search_expenses_adv(
         self,
         query: str = "",
+        date: Optional[str] = None,
         date_from: Optional[str] = None,   # 'YYYY-MM-DD'
         date_to: Optional[str] = None,     # 'YYYY-MM-DD'
         category_id: Optional[int] = None,
@@ -274,9 +275,10 @@ class ExpensesRepo:
         amount_max: Optional[float] = None,
     ) -> List[Dict]:
         """
-        Advanced search by description, date range, category, and amount range.
+        Advanced search by description, optional date, date range, category, and amount range.
 
         - query: LIKE match on description (case-insensitive per collation)
+        - date: exact match on calendar day using DATE()
         - date_from/date_to: inclusive range on calendar days using DATE()
         - category_id: exact match on category id
         - amount_min/amount_max: inclusive numeric range (cast to REAL)
@@ -285,6 +287,7 @@ class ExpensesRepo:
         """
         where_str, params = self._build_where_clause(
             query=query,
+            date=date,
             date_from=date_from,
             date_to=date_to,
             category_id=category_id,

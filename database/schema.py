@@ -192,6 +192,13 @@ CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date);
 CREATE INDEX IF NOT EXISTS idx_sales_doc_type_date ON sales(doc_type, date);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_source_quotation ON sales(source_id) WHERE source_type = 'quotation';
 
+CREATE TABLE IF NOT EXISTS sales_document_sequences (
+    namespace     TEXT NOT NULL CHECK (namespace IN ('sale', 'quotation')),
+    document_date DATE NOT NULL,
+    last_value    INTEGER NOT NULL CHECK (last_value >= 0),
+    PRIMARY KEY (namespace, document_date)
+);
+
 -- (Removed separate quotations/quotation_items tables)
 
 /* -------- line items (with UoM mapping checks) -------- */

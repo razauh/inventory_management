@@ -104,50 +104,41 @@ class ExpenseController(BaseModule):
         date = self.view.selected_date
         cat_id = self.view.selected_category_id
 
-        # If any advanced filter is set, use the advanced search; else use legacy.
-        use_adv = any([
-            self.view.date_from_str,
-            self.view.date_to_str,
-            self.view.amount_min_val is not None,
-            self.view.amount_max_val is not None,
-        ])
+        date_from = self.view.date_from_str
+        date_to = self.view.date_to_str
+        amount_min = self.view.amount_min_val
+        amount_max = self.view.amount_max_val
 
-        if use_adv:
-            rows = self.repo.search_expenses_adv(
-                query=query,
-                date_from=self.view.date_from_str,
-                date_to=self.view.date_to_str,
-                category_id=cat_id,
-                amount_min=self.view.amount_min_val,
-                amount_max=self.view.amount_max_val,
-            )
+        # If date range is active, bypass/ignore the single date filter
+        if date_from or date_to:
+            effective_date = None
         else:
-            rows = self.repo.search_expenses(
-                query=query,
-                date=date,
-                category_id=cat_id,
-            )
+            effective_date = date
+
+        rows = self.repo.search_expenses_adv(
+            query=query,
+            date=effective_date,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=cat_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+        )
 
         model = ExpensesTableModel(rows)
         self.view.tbl_expenses.setModel(model)
         self.view.tbl_expenses.resizeColumnsToContents()
 
         # Refresh totals summary (currently overall totals by category)
-        if use_adv:
-            self._refresh_totals(
-                query=query,
-                date_from=self.view.date_from_str,
-                date_to=self.view.date_to_str,
-                category_id=cat_id,
-                amount_min=self.view.amount_min_val,
-                amount_max=self.view.amount_max_val,
-            )
-        else:
-            self._refresh_totals(
-                query=query,
-                date=date,
-                category_id=cat_id,
-            )
+        self._refresh_totals(
+            query=query,
+            date=effective_date,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=cat_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+        )
 
     def _refresh_totals(
         self,

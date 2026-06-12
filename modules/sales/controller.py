@@ -21,31 +21,6 @@ import datetime
 from PySide6.QtCore import QStandardPaths
 
 
-def new_sale_id(conn: sqlite3.Connection, date_str: str) -> str:
-    d = date_str.replace("-", "")
-    prefix = f"SO{d}-"
-    row = conn.execute(
-        "SELECT MAX(sale_id) AS m FROM sales WHERE sale_id LIKE ?",
-        (prefix + "%",),
-    ).fetchone()
-    last = int(row["m"].split("-")[-1]) if row and row["m"] else 0
-    return f"{prefix}{last+1:04d}"
-
-
-def new_quotation_id(conn: sqlite3.Connection, date_str: str) -> str:
-    """
-    Quotation IDs use prefix QO + yyyymmdd + -NNNN
-    """
-    d = date_str.replace("-", "")
-    prefix = f"QO{d}-"
-    row = conn.execute(
-        "SELECT MAX(sale_id) AS m FROM sales WHERE sale_id LIKE ?",
-        (prefix + "%",),
-    ).fetchone()
-    last = int(row["m"].split("-")[-1]) if row and row["m"] else 0
-    return f"{prefix}{last+1:04d}"
-
-
 class SalesStatusProxy(QSortFilterProxyModel):
     """
     Proxy model that can filter SALE rows by payment_status while leaving
@@ -725,7 +700,7 @@ class SalesController(BaseModule):
 
         if doc_type == "quotation":
             # Quotation creation: ID prefix QO, no inventory posting, no payments
-            qid = new_quotation_id(self.conn, p["date"])
+            qid = ""
 
             h = SaleHeader(
                 sale_id=qid,
@@ -756,7 +731,7 @@ class SalesController(BaseModule):
             ]
 
             try:
-                self.repo.create_quotation(
+                qid = self.repo.create_quotation(
                     h,
                     items,
                     quotation_status=p["quotation_status"],
@@ -778,7 +753,7 @@ class SalesController(BaseModule):
             return
 
         # --- sale path ---
-        sid = new_sale_id(self.conn, p["date"])
+        sid = ""
 
         # Header: payment fields start at 0/unpaid. Roll-up comes from sale_payments.
         h = SaleHeader(
@@ -845,7 +820,7 @@ class SalesController(BaseModule):
                     payment_info["instrument_type"] = "other"
 
         try:
-            self.repo.create_sale(h, items, payment_info)
+            sid = self.repo.create_sale(h, items, payment_info)
             if payment_info:
                 info(self.view, "Saved", f"Sale {sid} created and initial payment recorded.")
             else:
@@ -1070,13 +1045,11 @@ class SalesController(BaseModule):
             return
 
         date_for_so = today_str()  # you can change to reuse quotation date if you prefer
-        so_id = new_sale_id(self.conn, date_for_so)
-
         try:
             # Perform DB-side conversion first (marks quotation, creates sale)
-            self.repo.convert_quotation_to_sale(
+            so_id = self.repo.convert_quotation_to_sale(
                 qo_id=qo_id,
-                new_so_id=so_id,
+                new_so_id=None,
                 date=date_for_so,
                 created_by=(self.user["user_id"] if self.user else None),
             )

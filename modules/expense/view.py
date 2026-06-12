@@ -134,9 +134,16 @@ class ExpenseView(QWidget):
         self.date_from.setDisplayFormat("yyyy-MM-dd")
         self.date_from.setSpecialValueText("")               # blank when min sentinel
         self.date_from.setMinimumDate(QDate(1900, 1, 1))     # sentinel retained
-        # Default: one month back from today
-        self.date_from.setDate(QDate.currentDate().addMonths(-1))
+        self.date_from.setDate(self.date_from.minimumDate())
         adv_row.addWidget(self.date_from)
+
+        self.btn_clear_from = QPushButton("×")
+        self.btn_clear_from.setToolTip("Clear From date")
+        self.btn_clear_from.setFixedWidth(24)
+        self.btn_clear_from.clicked.connect(
+            lambda: self.date_from.setDate(self.date_from.minimumDate())
+        )
+        adv_row.addWidget(self.btn_clear_from)
 
         lbl_to = QLabel("To:")
         adv_row.addWidget(lbl_to)
@@ -145,9 +152,16 @@ class ExpenseView(QWidget):
         self.date_to.setDisplayFormat("yyyy-MM-dd")
         self.date_to.setSpecialValueText("")
         self.date_to.setMinimumDate(QDate(1900, 1, 1))
-        # Default: today
-        self.date_to.setDate(QDate.currentDate())
+        self.date_to.setDate(self.date_to.minimumDate())
         adv_row.addWidget(self.date_to)
+
+        self.btn_clear_to = QPushButton("×")
+        self.btn_clear_to.setToolTip("Clear To date")
+        self.btn_clear_to.setFixedWidth(24)
+        self.btn_clear_to.clicked.connect(
+            lambda: self.date_to.setDate(self.date_to.minimumDate())
+        )
+        adv_row.addWidget(self.btn_clear_to)
 
         # Amount range
         lbl_min = QLabel("Min:")
