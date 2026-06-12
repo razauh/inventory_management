@@ -299,3 +299,7 @@ class ReportingController(BaseModule):
         idx = self._key_to_index.get(key)
         if idx is not None and 0 <= idx < self.tabs.count():
             self.tabs.setCurrentIndex(idx)
+
+    def refresh(self) -> None:
+        """Refresh the currently active reporting tab."""
+        self._safe_refresh(self.tabs.currentWidget())

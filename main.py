@@ -534,6 +534,13 @@ class MainWindow(QMainWindow):
         if index < len(self.modules) and self.modules[index][1] is not None:
             # Module is already loaded, just show it
             self.stack.setCurrentIndex(index)
+            ctrl = self.modules[index][1]
+            if ctrl is not None and hasattr(ctrl, "refresh") and callable(ctrl.refresh):
+                try:
+                    ctrl.refresh()
+                except Exception as e:
+                    import sys
+                    print(f"Error refreshing module: {e}", file=sys.stderr)
             return
 
         self._load_module(index)

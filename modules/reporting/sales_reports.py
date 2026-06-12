@@ -1,6 +1,7 @@
 # inventory_management/modules/reporting/sales_reports.py
 from __future__ import annotations
 
+import html
 import sqlite3
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -483,23 +484,24 @@ class SalesReportsTab(QWidget):
         rows = m.rowCount()
         parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
         for c in range(cols):
-            parts.append(f"<th>{m.headerData(c, Qt.Horizontal, Qt.DisplayRole)}</th>")
+            header = m.headerData(c, Qt.Horizontal, Qt.DisplayRole)
+            parts.append(f"<th>{html.escape('' if header is None else str(header))}</th>")
         parts.append("</tr></thead><tbody>")
         for r in range(rows):
             parts.append("<tr>")
             for c in range(cols):
                 val = m.index(r, c).data(Qt.DisplayRole)
-                parts.append(f"<td>{'' if val is None else val}</td>")
+                parts.append(f"<td>{html.escape('' if val is None else str(val))}</td>")
             parts.append("</tr>")
         parts.append("</tbody></table>")
-        html = "".join(parts)
+        report_html = "".join(parts)
 
         from PySide6.QtWidgets import QFileDialog
         fn, _ = QFileDialog.getSaveFileName(self, "Export to PDF", "sales_report.pdf", "PDF Files (*.pdf)")
         if not fn:
             return
         doc = QTextDocument()
-        doc.setHtml(html)
+        doc.setHtml(report_html)
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(fn)

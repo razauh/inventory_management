@@ -508,3 +508,7 @@ class ExpenseController(BaseModule):
 
         except Exception as e:
             self._handle_error("Failed to print expenses", e)
+
+    def refresh(self) -> None:
+        """Refresh contract implementation."""
+        self._reload()
