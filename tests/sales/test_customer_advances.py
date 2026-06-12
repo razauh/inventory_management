@@ -23,7 +23,7 @@ def test_customer_advances_display(qtbot, conn):
     from pathlib import Path
     db_path = Path("data/test_myshop.db").resolve()
     
-    advances_repo = CustomerAdvancesRepo(db_path)
+    advances_repo = CustomerAdvancesRepo(conn)
     
     # Create a test customer
     cid = customers_repo.create(

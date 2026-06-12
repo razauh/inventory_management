@@ -831,13 +831,14 @@ class SalesRepo:
                         """
                         INSERT INTO sale_payments (
                             sale_id, date, amount, method, instrument_type,
-                            clearing_state, notes, created_by
-                        ) VALUES (?, ?, ?, 'Cash', 'other', 'cleared', ?, ?)
+                            clearing_state, cleared_date, notes, created_by
+                        ) VALUES (?, ?, ?, 'Cash', 'other', 'cleared', ?, ?, ?)
                         """,
                         (
                             sid,
                             date,
                             -cash_refund,
+                            date,
                             settlement_data.get("refund_notes") or "[Return refund]",
                             created_by,
                         ),

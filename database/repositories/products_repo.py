@@ -323,7 +323,7 @@ class ProductsRepo:
             try:
                 self.conn.execute(
                     """
-                    INSERT INTO product_sale_prices(product_id, price)
+                    INSERT OR REPLACE INTO product_sale_prices(product_id, price)
                     VALUES (?, ?)
                     """,
                     (int(product_id), p),

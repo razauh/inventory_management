@@ -34,6 +34,14 @@ def _create_sale(
     sale_db, *, sale_id="SAL-001", paid=0.0, advance=0.0, order_discount=0.0
 ):
     conn, customer_id, product_id, uom_id = sale_db
+    # Seed stock of product to avoid trigger blocking the sale
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, date)
+        VALUES (?, 100.0, ?, 'adjustment', '2026-06-11')
+        """,
+        (product_id, uom_id),
+    )
     repo = SalesRepo(conn)
     repo.create_sale(
         SaleHeader(
@@ -292,6 +300,15 @@ def test_financial_reports_post_return_value_and_cogs_on_return_date(sale_db):
     assert reporting.cogs_total("2026-06-12", "2026-06-12") == pytest.approx(-8.0)
     assert DashboardRepo(conn).total_sales("2026-06-12", "2026-06-12") == pytest.approx(-20.0)
     assert DashboardRepo(conn).cogs_for_sales("2026-06-12", "2026-06-12") == pytest.approx(-8.0)
+
+    # Test profit_loss_view nets return revenue and COGS reversal correctly
+    pl_rows = conn.execute("SELECT * FROM profit_loss_view WHERE period='2026-06'").fetchall()
+    assert len(pl_rows) == 1
+    row = pl_rows[0]
+    assert float(row["revenue"]) == pytest.approx(80.0)  # 100.0 sale - 20.0 return
+    assert float(row["cost_of_goods_sold"]) == pytest.approx(32.0)  # 40.0 sale - 8.0 return
+    assert float(row["gross_profit"]) == pytest.approx(48.0)
+
 
 
 def test_dashboard_and_sales_financials_use_net_remaining(sale_db):

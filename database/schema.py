@@ -2872,21 +2872,19 @@ WITH periods AS (
         SELECT date FROM sales WHERE doc_type = 'sale'
         UNION SELECT date FROM expenses
         UNION SELECT date FROM purchases
+        UNION SELECT return_date AS date FROM sale_return_snapshots
     )
 ),
 revenue AS (
-    SELECT strftime('%Y-%m', s.date) AS period,
-           SUM(CAST(s.total_amount AS REAL)) AS total_revenue
-    FROM sales s
-    WHERE s.doc_type = 'sale'
+    SELECT strftime('%Y-%m', event_date) AS period,
+           SUM(revenue) AS total_revenue
+    FROM sale_financial_events
     GROUP BY period
 ),
 cogs AS (
-    SELECT strftime('%Y-%m', s.date) AS period,
-           SUM(c.cogs_value) AS total_cogs
-    FROM sales s
-    JOIN sale_item_fifo_cogs c ON c.sale_id = s.sale_id
-    WHERE s.doc_type = 'sale'
+    SELECT strftime('%Y-%m', event_date) AS period,
+           SUM(cogs) AS total_cogs
+    FROM sale_financial_events
     GROUP BY period
 ),
 operating AS (
@@ -2929,6 +2927,7 @@ SELECT
   sp.bank_account_id,
   sp.sale_id            AS doc_id
 FROM sale_payments sp
+WHERE sp.clearing_state = 'cleared'
 UNION ALL
 SELECT
   'purchase' AS src,
@@ -2942,6 +2941,7 @@ SELECT
   pp.bank_account_id,
   pp.purchase_id        AS doc_id
 FROM purchase_payments pp
+WHERE pp.clearing_state = 'cleared'
 UNION ALL
 SELECT
   'purchase_refund' AS src,
@@ -3006,6 +3006,7 @@ SELECT
   NULL AS vendor_bank_account_id,    -- N/A for sales
   sp.sale_id            AS doc_id
 FROM sale_payments sp
+WHERE sp.clearing_state = 'cleared'
 UNION ALL
 SELECT
   'purchase' AS src,
@@ -3020,6 +3021,7 @@ SELECT
   pp.vendor_bank_account_id,
   pp.purchase_id        AS doc_id
 FROM purchase_payments pp
+WHERE pp.clearing_state = 'cleared'
 UNION ALL
 SELECT
   'purchase_refund' AS src,

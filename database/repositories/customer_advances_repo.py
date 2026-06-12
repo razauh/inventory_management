@@ -22,12 +22,27 @@ class CustomerAdvancesRepo:
       - 'applied_to_sale'
     """
 
-    def __init__(self, db_path: str | Path):
-        self.db_path = str(db_path)
+    def __init__(self, db_path: str | Path | sqlite3.Connection):
+        if isinstance(db_path, sqlite3.Connection):
+            self.conn = db_path
+            self.db_path = None
+        else:
+            self.db_path = str(db_path)
+            self.conn = None
 
     # ---- internals --------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
+        if self.conn is not None:
+            class ConnectionWrapper:
+                def __init__(self, conn):
+                    self.conn = conn
+                def __enter__(self):
+                    return self.conn
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    pass
+            return ConnectionWrapper(self.conn)
+
         con = sqlite3.connect(self.db_path)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON;")

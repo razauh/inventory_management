@@ -40,6 +40,7 @@ class SalePaymentsRepo:
         "Cash": "other",
         "Bank Transfer": "online",
         "Cheque": "cross_cheque",
+        "Cross Cheque": "cross_cheque",
         "Cash Deposit": "cash_deposit",
         # Card/Other don't require a specific type, but CHECK disallows NULL → use 'other'
         "Card": "other",
@@ -225,6 +226,12 @@ class SalePaymentsRepo:
         if not clearing_state:
             clearing_state = self.DEFAULT_CLEARING_STATE_BY_METHOD.get(method, "posted")
 
+        if clearing_state == "cleared" and not cleared_date:
+            if not date:
+                from datetime import date as dt_date
+                date = dt_date.today().isoformat()
+            cleared_date = date
+
         if clearing_state not in {"posted", "pending", "cleared", "bounced"}:
             raise ValueError("clearing_state must be one of: posted, pending, cleared, bounced")
 
@@ -383,6 +390,10 @@ class SalePaymentsRepo:
         """
         if clearing_state not in {"posted", "pending", "cleared", "bounced"}:
             raise ValueError("clearing_state must be one of: posted, pending, cleared, bounced")
+
+        if clearing_state == "cleared" and not cleared_date:
+            from datetime import date as dt_date
+            cleared_date = dt_date.today().isoformat()
 
         with self._connect() as con:
             # Get original values before update - this is atomic and will be part of our transaction

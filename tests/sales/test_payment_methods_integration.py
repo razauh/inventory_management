@@ -17,6 +17,27 @@ def test_db():
         "INSERT INTO customers (name, contact_info) VALUES ('Test Customer', '123')"
     ).lastrowid
 
+    # Seed User with ID 1
+    conn.execute(
+        "INSERT INTO users (user_id, username, password_hash, full_name, role) VALUES (1, 'admin', 'hash', 'Admin', 'admin')"
+    )
+
+    # Seed UOM and product with ID 1
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Widget A')").lastrowid
+    conn.execute(
+        "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+        (product_id, uom_id),
+    )
+    # Seed stock
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, date)
+        VALUES (?, 100.0, ?, 'adjustment', '2026-06-11')
+        """,
+        (product_id, uom_id),
+    )
+
     conn.execute(
         """
         INSERT INTO sales (
@@ -26,6 +47,10 @@ def test_db():
         ) VALUES ('SO-PAY-TEST', ?, '2026-06-11', 1000.0, 0.0, 'unpaid', 0.0, 0.0, 'sale')
         """,
         (customer_id,),
+    )
+
+    conn.execute(
+        "INSERT INTO company_info (company_id, company_name) VALUES (1, 'Test Company')"
     )
 
     # Insert a company bank account (id=1)

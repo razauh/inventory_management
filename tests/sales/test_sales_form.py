@@ -119,6 +119,14 @@ def test_font_sizes(qtbot, mock_repos):
 
 def test_sales_payload_with_product_text_editor(qtbot, mock_repos, ids):
     """Test payload generation with the text-based product editor."""
+    # Seed stock and price for Widget A (prod_A)
+    mock_repos["products"].conn.execute(
+        "INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, date) VALUES (?, 100.0, ?, 'adjustment', '2026-06-11')",
+        (ids["prod_A"], ids["uom_piece"]),
+    )
+    mock_repos["products"].set_manual_sale_price_base(ids["prod_A"], 10.0)
+    mock_repos["products"].conn.commit()
+
     customer_id = mock_repos["customers"].create(name="Payload User", contact_info="123", address="Street")
     form = SaleForm(None, customers=mock_repos["customers"], products=mock_repos["products"], bank_accounts=mock_repos["bank_accounts"])
     qtbot.addWidget(form)
@@ -131,6 +139,9 @@ def test_sales_payload_with_product_text_editor(qtbot, mock_repos, ids):
     form.tbl.item(0, 4).setText("100")
     form.tbl.item(0, 5).setText("1")
     form.tbl.item(0, 6).setText("10")
+
+    # Wait for the product debounce timer (300ms) to fire and load the product info
+    qtbot.wait(400)
 
     p = form.get_payload()
     assert p is not None, "Payload should be generated for text product entry"
@@ -178,6 +189,19 @@ def test_sales_payload_validation_rejects_any_error(qtbot, mock_repos, ids):
 
 def test_sales_form_prefill_preserves_historical_price_and_uom(qtbot, mock_repos, ids):
     """Test that if the form is prefilled with a specific UOM and historical price, they are preserved."""
+    # Seed stock and price for Widget A (prod_A)
+    mock_repos["products"].conn.execute(
+        "INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, date) VALUES (?, 100.0, ?, 'adjustment', '2026-06-11')",
+        (ids["prod_A"], ids["uom_piece"]),
+    )
+    mock_repos["products"].set_manual_sale_price_base(ids["prod_A"], 10.0)
+    # Map Box as an alternate UOM for prod_A in the test database
+    mock_repos["products"].conn.execute(
+        "INSERT OR IGNORE INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 0, 10.0)",
+        (ids["prod_A"], ids["uom_box"]),
+    )
+    mock_repos["products"].conn.commit()
+
     initial_data = {
         "sale_id": "SO-PREFILL-TEST",
         "customer_id": 1,
