@@ -389,78 +389,96 @@ class SalesReportsTab(QWidget):
         category = self._category_value()
         top_n = int(self.spn_topn.value())
 
-        def load_into(key: str, repo_method: str, *args) -> None:
+        loaded: Dict[str, List[Dict[str, Any]]] = {}
+
+        with self.repo.read_snapshot():
+            def load_rows(key: str, repo_method: str, *args) -> None:
+                try:
+                    fn = getattr(self.repo, repo_method)
+                    rows = fn(*args)
+                except AttributeError:
+                    if key == "returns_summary":
+                        loaded[key] = [{"metric": "Info", "value": f"Repo method '{repo_method}' not implemented."}]
+                    else:
+                        loaded[key] = []
+                    return
+                except Exception as e:
+                    if key == "returns_summary":
+                        loaded[key] = [{"metric": "Error", "value": str(e)}]
+                    else:
+                        loaded[key] = []
+                    return
+
+                out: List[Dict[str, Any]] = []
+                for r in rows or []:
+                    if hasattr(r, "keys"):
+                        out.append({k: r[k] for k in r.keys()})
+                    else:
+                        out.append(dict(r))
+                if key.startswith("margin_") and out:
+                    for row in out:
+                        rev = float(row.get("revenue") or 0.0)
+                        cogs = float(row.get("cogs") or 0.0)
+                        row["gross"] = row.get("gross", rev - cogs)
+                        row["margin_pct"] = (row["gross"] / rev) if rev else 0.0
+                if key == "drilldown" and out:
+                    for row in out:
+                        total = float(row.get("total_amount") or 0.0)
+                        paid = float(row.get("paid_amount") or 0.0)
+                        adv = float(row.get("advance_payment_applied") or 0.0)
+                        row["remaining"] = total - paid - adv
+
+                loaded[key] = out
+
+            load_rows("sales_by_day", "sales_by_period",
+                      date_from, date_to, gran, statuses, customer_id, product_id, category)
+            load_rows("sales_by_customer", "sales_by_customer",
+                      date_from, date_to, statuses, customer_id, product_id, category)
+            load_rows("sales_by_product", "sales_by_product",
+                      date_from, date_to, statuses, customer_id, product_id, category)
+            load_rows("sales_by_category", "sales_by_category",
+                      date_from, date_to, statuses, customer_id, product_id, category)
+            load_rows("margin_by_day", "margin_by_period",
+                      date_from, date_to, gran, statuses, customer_id, product_id, category)
+            load_rows("margin_by_customer", "margin_by_customer",
+                      date_from, date_to, statuses, customer_id, product_id, category)
+            load_rows("margin_by_product", "margin_by_product",
+                      date_from, date_to, statuses, customer_id, product_id, category)
+            load_rows("margin_by_category", "margin_by_category",
+                      date_from, date_to, statuses, customer_id, product_id, category)
+            load_rows("top_customers", "top_customers",
+                      date_from, date_to, statuses, int(top_n))
+            load_rows("top_products", "top_products",
+                      date_from, date_to, statuses, int(top_n))
+            load_rows("returns_summary", "returns_summary", date_from, date_to)
+            load_rows("status_breakdown", "status_breakdown",
+                      date_from, date_to, customer_id, product_id, category)
+            load_rows("drilldown", "drilldown_sales",
+                      date_from, date_to, statuses, customer_id, product_id, category)
+
+        def apply_rows(key: str) -> None:
             tv = self._tables[key]
             model: _SimpleTableModel = tv.model()  # type: ignore
-            try:
-                fn = getattr(self.repo, repo_method)
-            except AttributeError:
-                model.set_rows([{"metric": "Info", "value": f"Repo method '{repo_method}' not implemented."}] if key == "returns_summary" else [])
-                return
-            try:
-                rows = fn(*args)
-            except Exception as e:
-                model.set_rows([{"metric": "Error", "value": str(e)}] if key == "returns_summary" else [])
-                return
-
-            out: List[Dict[str, Any]] = []
-            for r in rows or []:
-                if hasattr(r, "keys"):
-                    out.append({k: r[k] for k in r.keys()})
-                else:
-                    out.append(dict(r))
-            if key.startswith("margin_") and out:
-                for row in out:
-                    rev = float(row.get("revenue") or 0.0)
-                    cogs = float(row.get("cogs") or 0.0)
-                    row["gross"] = row.get("gross", rev - cogs)
-                    row["margin_pct"] = (row["gross"] / rev) if rev else 0.0
-            if key == "drilldown" and out:
-                for row in out:
-                    total = float(row.get("total_amount") or 0.0)
-                    paid = float(row.get("paid_amount") or 0.0)
-                    adv = float(row.get("advance_payment_applied") or 0.0)
-                    row["remaining"] = total - paid - adv
-
-            model.set_rows(out)
+            model.set_rows(loaded.get(key, []))
             tv.resizeColumnsToContents()
             tv.horizontalHeader().setStretchLastSection(True)
 
-        load_into("sales_by_day", "sales_by_period",
-                  date_from, date_to, gran, statuses, customer_id, product_id, category)
-        load_into("sales_by_customer", "sales_by_customer",
-                  date_from, date_to, statuses, customer_id, product_id, category)
-        load_into("sales_by_product", "sales_by_product",
-                  date_from, date_to, statuses, customer_id, product_id, category)
-        load_into("sales_by_category", "sales_by_category",
-                  date_from, date_to, statuses, customer_id, product_id, category)
-        load_into("margin_by_day", "margin_by_period",
-                  date_from, date_to, gran, statuses, customer_id, product_id, category)
-        load_into("margin_by_customer", "margin_by_customer",
-                  date_from, date_to, statuses, customer_id, product_id, category)
-        load_into("margin_by_product", "margin_by_product",
-                  date_from, date_to, statuses, customer_id, product_id, category)
-        load_into("margin_by_category", "margin_by_category",
-                  date_from, date_to, statuses, customer_id, product_id, category)
-        load_into("top_customers", "top_customers",
-                  date_from, date_to, statuses, int(top_n))
-        load_into("top_products", "top_products",
-                  date_from, date_to, statuses, int(top_n))
-
-        try:
-            fn = getattr(self.repo, "returns_summary")
-            rows = fn(date_from, date_to)
-        except Exception:
-            rows = [{"metric": "Info", "value": "Repo.returns_summary not implemented"}]
-        model_rs: _SimpleTableModel = self._tables["returns_summary"].model()  # type: ignore
-        model_rs.set_rows([dict(r) if hasattr(r, "keys") else dict(r) for r in rows or []])
-        self._tables["returns_summary"].resizeColumnsToContents()
-        self._tables["returns_summary"].horizontalHeader().setStretchLastSection(True)
-
-        load_into("status_breakdown", "status_breakdown",
-                  date_from, date_to, customer_id, product_id, category)
-        load_into("drilldown", "drilldown_sales",
-                  date_from, date_to, statuses, customer_id, product_id, category)
+        for key in (
+            "sales_by_day",
+            "sales_by_customer",
+            "sales_by_product",
+            "sales_by_category",
+            "margin_by_day",
+            "margin_by_customer",
+            "margin_by_product",
+            "margin_by_category",
+            "top_customers",
+            "top_products",
+            "returns_summary",
+            "status_breakdown",
+            "drilldown",
+        ):
+            apply_rows(key)
 
     # -------------- Export helpers --------------
     def _active_table(self) -> Optional[_BaseTableView]:

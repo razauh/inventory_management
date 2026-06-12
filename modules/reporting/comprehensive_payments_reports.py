@@ -480,27 +480,31 @@ class ComprehensivePaymentReportsTab(QWidget):
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         date_basis = str(self.cmb_date_basis.currentData() or "posting")
         basis_label = ComprehensivePaymentReports._date_basis_label(date_basis)
-        
-        # Load summary by status
-        self._rows_summary = self.logic.payments_summary_by_status(date_from, date_to, date_basis=date_basis)
-        self.model_summary.set_rows(self._rows_summary)
-        summary_total = sum(r.get("total_amount", 0.0) for r in self._rows_summary)
-        self.lbl_summary_total.setText(f"Summary Total: {fmt_money(summary_total)}")
-        
-        # Load unprocessed payments
-        self._rows_unprocessed = self.logic.unprocessed_payments(date_from, date_to, date_basis=date_basis)
-        self.model_unprocessed.set_rows(self._rows_unprocessed)
-        unprocessed_total = sum(r.get("amount", 0.0) for r in self._rows_unprocessed)
-        self.lbl_unprocessed_total.setText(f"Unprocessed Total: {fmt_money(unprocessed_total)}")
-        
-        # Load all payments
-        self._rows_detailed = self.logic.all_payments_detailed(date_from, date_to, date_basis=date_basis)
-        self.model_detailed.set_rows(self._rows_detailed)
+
+        with self.logic.repo.read_snapshot():
+            rows_summary = self.logic.payments_summary_by_status(date_from, date_to, date_basis=date_basis)
+            summary_total = sum(r.get("total_amount", 0.0) for r in rows_summary)
+
+            rows_unprocessed = self.logic.unprocessed_payments(date_from, date_to, date_basis=date_basis)
+            unprocessed_total = sum(r.get("amount", 0.0) for r in rows_unprocessed)
+
+            rows_detailed = self.logic.all_payments_detailed(date_from, date_to, date_basis=date_basis)
+
+        self._rows_summary = rows_summary
+        self._rows_unprocessed = rows_unprocessed
+        self._rows_detailed = rows_detailed
+
+        self.model_summary.set_rows(rows_summary)
+        self.model_unprocessed.set_rows(rows_unprocessed)
+        self.model_detailed.set_rows(rows_detailed)
+
         self.lbl_basis.setText(f"Date basis: {basis_label}")
+        self.lbl_summary_total.setText(f"Summary Total: {fmt_money(summary_total)}")
+        self.lbl_unprocessed_total.setText(f"Unprocessed Total: {fmt_money(unprocessed_total)}")
         self.lbl_summary_title.setText(f"<b>Payments Summary by Status</b> — {date_from} to {date_to} ({basis_label})")
         self.lbl_unprocessed_title.setText(f"<b>Unprocessed Payments (Posted/Pending)</b> — {date_from} to {date_to} ({basis_label})")
         self.lbl_detailed_title.setText(f"<b>All Payments</b> — {date_from} to {date_to} ({basis_label})")
-        
+
         # Resize columns
         self._resize_table(self.tbl_summary)
         self._resize_table(self.tbl_unprocessed)

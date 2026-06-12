@@ -482,15 +482,57 @@ class FinancialReportsTab(QWidget):
 
     @Slot()
     def refresh(self) -> None:
-        self.refresh_ar_ap()
-        self.refresh_stmt()
-        self.refresh_cash()
+        as_of = self.dt_asof.date().toString("yyyy-MM-dd")
+        date_from_stmt = self.dt_stmt_from.date().toString("yyyy-MM-dd")
+        date_to_stmt = self.dt_stmt_to.date().toString("yyyy-MM-dd")
+        date_from_cash = self.dt_cash_from.date().toString("yyyy-MM-dd")
+        date_to_cash = self.dt_cash_to.date().toString("yyyy-MM-dd")
+
+        with self.logic.repo.read_snapshot():
+            snap = self.logic.ar_ap_snapshot_as_of(as_of)
+            stmt = self.logic.income_statement(date_from_stmt, date_to_stmt)
+            cash = self.logic.cash_collections_disbursements(date_from_cash, date_to_cash)
+
+        arap_rows = [
+            {"line_item": "Accounts Receivable (AR)", "amount": snap["AR_total_due"], "is_total": True},
+            {"line_item": "Accounts Payable (AP)", "amount": snap["AP_total_due"], "is_total": True},
+        ]
+        self._rows_arap = arap_rows
+        self.model_arap.set_rows(arap_rows)
+
+        stmt_rows: List[dict] = []
+        stmt_rows.append({"line_item": "Revenue", "amount": stmt["Revenue"]})
+        stmt_rows.append({"line_item": "COGS", "amount": stmt["COGS"]})
+        stmt_rows.append({"line_item": "Gross Profit", "amount": stmt["Gross Profit"], "is_total": True})
+        stmt_rows.append({"line_item": "Expenses", "amount": None, "is_header": True})
+        for e in stmt["Expenses"]:
+            stmt_rows.append({"line_item": f"  {e['category']}", "amount": e["amount"]})
+        stmt_rows.append({"line_item": "Total Expenses", "amount": stmt["total_expenses"], "is_total": True})
+        stmt_rows.append({"line_item": "Operating Income", "amount": stmt["Operating Income"], "is_total": True})
+        self._rows_stmt = stmt_rows
+        self.model_stmt.set_rows(stmt_rows)
+
+        collect_rows = cash["collections"]
+        disb_rows = cash["disbursements"]
+        self._rows_collect = collect_rows
+        self._rows_disb = disb_rows
+        self.model_collect.set_rows(collect_rows)
+        self.model_disb.set_rows(disb_rows)
+
+        self.lbl_collect_total.setText(f"Collections: {fmt_money(cash['total_collections'])}")
+        self.lbl_disb_total.setText(f"Net Disbursements: {fmt_money(cash['total_disbursements'])}")
+
+        self._autosize(self.tbl_arap)
+        self._autosize(self.tbl_stmt)
+        self._autosize(self.tbl_collect)
+        self._autosize(self.tbl_disb)
 
     # Header AR/AP
     @Slot()
     def refresh_ar_ap(self) -> None:
         as_of = self.dt_asof.date().toString("yyyy-MM-dd")
-        snap = self.logic.ar_ap_snapshot_as_of(as_of)
+        with self.logic.repo.read_snapshot():
+            snap = self.logic.ar_ap_snapshot_as_of(as_of)
         rows = [
             {"line_item": "Accounts Receivable (AR)", "amount": snap["AR_total_due"], "is_total": True},
             {"line_item": "Accounts Payable (AP)", "amount": snap["AP_total_due"], "is_total": True},
@@ -503,7 +545,8 @@ class FinancialReportsTab(QWidget):
     def refresh_stmt(self) -> None:
         date_from = self.dt_stmt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_stmt_to.date().toString("yyyy-MM-dd")
-        stmt = self.logic.income_statement(date_from, date_to)
+        with self.logic.repo.read_snapshot():
+            stmt = self.logic.income_statement(date_from, date_to)
 
         rows: List[dict] = []
         # Main lines
@@ -528,8 +571,8 @@ class FinancialReportsTab(QWidget):
     def refresh_cash(self) -> None:
         date_from = self.dt_cash_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_cash_to.date().toString("yyyy-MM-dd")
-
-        data = self.logic.cash_collections_disbursements(date_from, date_to)
+        with self.logic.repo.read_snapshot():
+            data = self.logic.cash_collections_disbursements(date_from, date_to)
 
         self._rows_collect = data["collections"]
         self._rows_disb = data["disbursements"]

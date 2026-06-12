@@ -337,329 +337,390 @@ class PurchaseReportsTab(QWidget):
         product_id = self._product_id()
         category = self._category_value()
 
-        # Small helper to execute & load into a table
-        def set_rows(key: str, rows: List[Dict[str, Any]]) -> None:
-            tv = self._tables[key]
-            model: _SimpleTableModel = tv.model()  # type: ignore
-            model.set_rows(rows)
-            tv.resizeColumnsToContents()
-            tv.horizontalHeader().setStretchLastSection(True)
+        loaded: Dict[str, List[Dict[str, Any]]] = {}
 
-        # ---- 1) Purchases by Period ----
-        fmt = {"daily": "%Y-%m-%d", "monthly": "%Y-%m", "yearly": "%Y"}[gran]
-        sql = f"""
-            SELECT strftime('{fmt}', p.date) AS period,
-                   COUNT(*) AS order_count,
-                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            LEFT JOIN vendors v ON v.vendor_id = p.vendor_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-              {"AND p.vendor_id = ?" if vendor_id else ""}
-              {"AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id AND pi.product_id = ?)" if product_id else ""}
-              {"AND EXISTS (SELECT 1 FROM purchase_items pi JOIN products pr ON pr.product_id = pi.product_id WHERE pi.purchase_id = p.purchase_id AND pr.category = ?)" if category else ""}
-            GROUP BY strftime('{fmt}', p.date)
-            ORDER BY period
-        """
-        params: List[Any] = [df, dt]
-        if vendor_id: params.append(vendor_id)
-        if product_id: params.append(product_id)
-        if category: params.append(category)
-        rows = []
-        for r in self.conn.execute(sql, params):
-            rows.append({"period": r["period"], "order_count": int(r["order_count"] or 0), "spend": float(r["spend"] or 0.0)})
-        set_rows("purch_by_period", rows)
-
-        # ---- 2) Purchases by Vendor ----
-        sql = """
-            SELECT v.name AS vendor_name,
-                   COUNT(*) AS order_count,
-                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            JOIN vendors v ON v.vendor_id = p.vendor_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-              {vend}
-              {prod}
-              {cat}
-            GROUP BY v.vendor_id, v.name
-            ORDER BY spend DESC, vendor_name
-        """.format(
-            vend="AND p.vendor_id = ?" if vendor_id else "",
-            prod="AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id AND pi.product_id = ?)" if product_id else "",
-            cat ="AND EXISTS (SELECT 1 FROM purchase_items pi JOIN products pr ON pr.product_id = pi.product_id WHERE pi.purchase_id = p.purchase_id AND pr.category = ?)" if category else "",
-        )
-        params = [df, dt]
-        if vendor_id: params.append(vendor_id)
-        if product_id: params.append(product_id)
-        if category: params.append(category)
-        rows = [{"vendor_name": r["vendor_name"],
-                 "order_count": int(r["order_count"] or 0),
-                 "spend": float(r["spend"] or 0.0)} for r in self.conn.execute(sql, params)]
-        set_rows("purch_by_vendor", rows)
-
-        # ---- 3) Purchases by Product ----
-        sql = """
-            WITH qty_by_product AS (
-                SELECT pi.product_id,
-                       pr.name AS product_name,
-                       COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+        with self.repo.read_snapshot():
+            # 1) Purchases by Period
+            fmt = {"daily": "%Y-%m-%d", "monthly": "%Y-%m", "yearly": "%Y"}[gran]
+            sql = f"""
+                SELECT strftime('{fmt}', p.date) AS period,
+                       COUNT(*) AS order_count,
+                       SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
                 FROM purchases p
-                JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-                LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
-                JOIN products pr ON pr.product_id = pi.product_id
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                LEFT JOIN vendors v ON v.vendor_id = p.vendor_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                  {"AND p.vendor_id = ?" if vendor_id else ""}
+                  {"AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id AND pi.product_id = ?)" if product_id else ""}
+                  {"AND EXISTS (SELECT 1 FROM purchase_items pi JOIN products pr ON pr.product_id = pi.product_id WHERE pi.purchase_id = p.purchase_id AND pr.category = ?)" if category else ""}
+                GROUP BY strftime('{fmt}', p.date)
+                ORDER BY period
+            """
+            params: List[Any] = [df, dt]
+            if vendor_id:
+                params.append(vendor_id)
+            if product_id:
+                params.append(product_id)
+            if category:
+                params.append(category)
+            loaded["purch_by_period"] = [
+                {"period": r["period"], "order_count": int(r["order_count"] or 0), "spend": float(r["spend"] or 0.0)}
+                for r in self.conn.execute(sql, params)
+            ]
+
+            # 2) Purchases by Vendor
+            sql = """
+                SELECT v.name AS vendor_name,
+                       COUNT(*) AS order_count,
+                       SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
+                FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                JOIN vendors v ON v.vendor_id = p.vendor_id
                 WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
                   {vend}
                   {prod}
                   {cat}
-                GROUP BY pi.product_id, pr.name
-            ),
-            spend_by_product AS (
-                SELECT e.product_id,
-                       COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
-                FROM purchases p
-                JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
-                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-                  {vend_spend}
-                  {prod_spend}
-                  {cat_spend}
-                GROUP BY e.product_id
+                GROUP BY v.vendor_id, v.name
+                ORDER BY spend DESC, vendor_name
+            """.format(
+                vend="AND p.vendor_id = ?" if vendor_id else "",
+                prod="AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id AND pi.product_id = ?)" if product_id else "",
+                cat="AND EXISTS (SELECT 1 FROM purchase_items pi JOIN products pr ON pr.product_id = pi.product_id WHERE pi.purchase_id = p.purchase_id AND pr.category = ?)" if category else "",
             )
-            SELECT q.product_name,
-                   q.qty_base,
-                   COALESCE(s.spend, 0.0) AS spend
-            FROM qty_by_product q
-            LEFT JOIN spend_by_product s ON s.product_id = q.product_id
-            ORDER BY spend DESC, product_name
-        """.format(
-            vend="AND p.vendor_id = ?" if vendor_id else "",
-            prod="AND pi.product_id = ?" if product_id else "",
-            cat ="AND pr.category = ?" if category else "",
-            vend_spend="AND p.vendor_id = ?" if vendor_id else "",
-            prod_spend="AND e.product_id = ?" if product_id else "",
-            cat_spend="AND pr.category = ?" if category else "",
-        )
-        params = [df, dt]
-        if vendor_id: params.append(vendor_id)
-        if product_id: params.append(product_id)
-        if category: params.append(category)
-        params.extend([df, dt])
-        if vendor_id: params.append(vendor_id)
-        if product_id: params.append(product_id)
-        if category: params.append(category)
-        rows = [{"product_name": r["product_name"],
-                 "qty_base": float(r["qty_base"] or 0.0),
-                 "spend": float(r["spend"] or 0.0)} for r in self.conn.execute(sql, params)]
-        set_rows("purch_by_product", rows)
+            params = [df, dt]
+            if vendor_id:
+                params.append(vendor_id)
+            if product_id:
+                params.append(product_id)
+            if category:
+                params.append(category)
+            loaded["purch_by_vendor"] = [
+                {
+                    "vendor_name": r["vendor_name"],
+                    "order_count": int(r["order_count"] or 0),
+                    "spend": float(r["spend"] or 0.0),
+                }
+                for r in self.conn.execute(sql, params)
+            ]
 
-        # ---- 4) Purchases by Category ----
-        sql = """
-            WITH qty_by_category AS (
-                SELECT CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END AS category,
-                       COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+            # 3) Purchases by Product
+            sql = """
+                WITH qty_by_product AS (
+                    SELECT pi.product_id,
+                           pr.name AS product_name,
+                           COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+                    FROM purchases p
+                    JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+                    LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
+                    JOIN products pr ON pr.product_id = pi.product_id
+                    WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                      {vend}
+                      {prod}
+                      {cat}
+                    GROUP BY pi.product_id, pr.name
+                ),
+                spend_by_product AS (
+                    SELECT e.product_id,
+                           COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
+                    FROM purchases p
+                    JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
+                    WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                      {vend_spend}
+                      {prod_spend}
+                      {cat_spend}
+                    GROUP BY e.product_id
+                )
+                SELECT q.product_name,
+                       q.qty_base,
+                       COALESCE(s.spend, 0.0) AS spend
+                FROM qty_by_product q
+                LEFT JOIN spend_by_product s ON s.product_id = q.product_id
+                ORDER BY spend DESC, product_name
+            """.format(
+                vend="AND p.vendor_id = ?" if vendor_id else "",
+                prod="AND pi.product_id = ?" if product_id else "",
+                cat="AND pr.category = ?" if category else "",
+                vend_spend="AND p.vendor_id = ?" if vendor_id else "",
+                prod_spend="AND e.product_id = ?" if product_id else "",
+                cat_spend="AND pr.category = ?" if category else "",
+            )
+            params = [df, dt]
+            if vendor_id:
+                params.append(vendor_id)
+            if product_id:
+                params.append(product_id)
+            if category:
+                params.append(category)
+            params.extend([df, dt])
+            if vendor_id:
+                params.append(vendor_id)
+            if product_id:
+                params.append(product_id)
+            if category:
+                params.append(category)
+            loaded["purch_by_product"] = [
+                {
+                    "product_name": r["product_name"],
+                    "qty_base": float(r["qty_base"] or 0.0),
+                    "spend": float(r["spend"] or 0.0),
+                }
+                for r in self.conn.execute(sql, params)
+            ]
+
+            # 4) Purchases by Category
+            sql = """
+                WITH qty_by_category AS (
+                    SELECT CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END AS category,
+                           COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+                    FROM purchases p
+                    JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+                    LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
+                    JOIN products pr ON pr.product_id = pi.product_id
+                    WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                      {vend}
+                      {prod}
+                      {cat_any}
+                    GROUP BY CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END
+                ),
+                spend_by_category AS (
+                    SELECT CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END AS category,
+                           COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
+                    FROM purchases p
+                    JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
+                    JOIN products pr ON pr.product_id = e.product_id
+                    WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                      {vend_spend}
+                      {prod_spend}
+                      {cat_spend}
+                    GROUP BY CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END
+                )
+                SELECT q.category,
+                       q.qty_base,
+                       COALESCE(s.spend, 0.0) AS spend
+                FROM qty_by_category q
+                LEFT JOIN spend_by_category s ON s.category = q.category
+                ORDER BY spend DESC, q.category
+            """.format(
+                vend="AND p.vendor_id = ?" if vendor_id else "",
+                prod="AND pi.product_id = ?" if product_id else "",
+                cat_any="AND pr.category = ?" if category else "",
+                vend_spend="AND p.vendor_id = ?" if vendor_id else "",
+                prod_spend="AND e.product_id = ?" if product_id else "",
+                cat_spend="AND pr.category = ?" if category else "",
+            )
+            params = [df, dt]
+            if vendor_id:
+                params.append(vendor_id)
+            if product_id:
+                params.append(product_id)
+            if category:
+                params.append(category)
+            params.extend([df, dt])
+            if vendor_id:
+                params.append(vendor_id)
+            if product_id:
+                params.append(product_id)
+            if category:
+                params.append(category)
+            loaded["purch_by_category"] = [
+                {
+                    "category": r["category"] if r["category"] is not None else "",
+                    "qty_base": float(r["qty_base"] or 0.0),
+                    "spend": float(r["spend"] or 0.0),
+                }
+                for r in self.conn.execute(sql, params)
+            ]
+
+            # 5) Top Vendors
+            sql = """
+                SELECT v.name AS vendor_name,
+                       COUNT(*) AS order_count,
+                       SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
                 FROM purchases p
-                JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-                LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
-                JOIN products pr ON pr.product_id = pi.product_id
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                JOIN vendors v ON v.vendor_id = p.vendor_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                GROUP BY v.vendor_id, v.name
+                ORDER BY spend DESC
+                LIMIT ?
+            """
+            loaded["top_vendors"] = [
+                {
+                    "vendor_name": r["vendor_name"],
+                    "order_count": int(r["order_count"] or 0),
+                    "spend": float(r["spend"] or 0.0),
+                }
+                for r in self.conn.execute(sql, (df, dt, topn))
+            ]
+
+            # 6) Top Products
+            sql = """
+                WITH qty_by_product AS (
+                    SELECT pi.product_id,
+                           pr.name AS product_name,
+                           COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
+                    FROM purchases p
+                    JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
+                    LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
+                    JOIN products pr ON pr.product_id = pi.product_id
+                    WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                    GROUP BY pi.product_id, pr.name
+                ),
+                spend_by_product AS (
+                    SELECT e.product_id,
+                           COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
+                    FROM purchases p
+                    JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
+                    WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                    GROUP BY e.product_id
+                )
+                SELECT q.product_name,
+                       q.qty_base,
+                       COALESCE(s.spend, 0.0) AS spend
+                FROM qty_by_product q
+                LEFT JOIN spend_by_product s ON s.product_id = q.product_id
+                ORDER BY spend DESC
+                LIMIT ?
+            """
+            loaded["top_products"] = [
+                {
+                    "product_name": r["product_name"],
+                    "qty_base": float(r["qty_base"] or 0.0),
+                    "spend": float(r["spend"] or 0.0),
+                }
+                for r in self.conn.execute(sql, (df, dt, df, dt, topn))
+            ]
+
+            # 7) Returns Summary
+            try:
+                sql = """
+                    SELECT
+                      SUM(CAST(qty_returned_base AS REAL)) AS qty_returned,
+                      SUM(CASE WHEN valuation_status = 'resolved'
+                               THEN CAST(return_value AS REAL) END) AS return_value,
+                      SUM(CASE WHEN valuation_status = 'unresolved' THEN 1 ELSE 0 END) AS unresolved_count
+                    FROM purchase_return_valuations
+                    WHERE DATE(return_date) BETWEEN DATE(?) AND DATE(?)
+                """
+                r = self.conn.execute(sql, (df, dt)).fetchone()
+                qty = float(r["qty_returned"] or 0.0) if r else 0.0
+                val = float(r["return_value"] or 0.0) if r else 0.0
+                unresolved = int(r["unresolved_count"] or 0) if r else 0
+                loaded["returns_summary"] = [
+                    {"metric": "Returned Qty (base)", "value": qty},
+                    {"metric": "Return Value", "value": val},
+                    {"metric": "Unresolved Legacy Returns", "value": unresolved},
+                ]
+            except Exception:
+                loaded["returns_summary"] = [{"metric": "Info", "value": "purchase_return_valuations view not found"}]
+
+            # 8) Status Breakdown
+            sql = """
+                SELECT p.payment_status,
+                       COUNT(*) AS order_count,
+                       SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
+                FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                GROUP BY p.payment_status
+                ORDER BY spend DESC
+            """
+            loaded["status_breakdown"] = [
+                {
+                    "payment_status": r["payment_status"],
+                    "order_count": int(r["order_count"] or 0),
+                    "spend": float(r["spend"] or 0.0),
+                }
+                for r in self.conn.execute(sql, (df, dt))
+            ]
+
+            # 9) Open Purchases
+            sql = """
+                SELECT p.purchase_id, p.date, v.name AS vendor_name,
+                       COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
+                       CAST(p.paid_amount  AS REAL) AS paid_amount,
+                       CAST(p.advance_payment_applied AS REAL) AS adv,
+                       (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
+                FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                JOIN vendors v ON v.vendor_id = p.vendor_id
+                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
+                  AND (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
+                ORDER BY DATE(p.date) DESC, p.purchase_id DESC
+            """
+            loaded["open_purchases"] = [
+                {k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k]) for k in r.keys()}
+                for r in self.conn.execute(sql, (df, dt))
+            ]
+
+            # 10) Drill-down Purchases
+            sql = """
+                SELECT p.purchase_id, p.date, v.name AS vendor_name, p.payment_status,
+                       COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
+                       CAST(p.paid_amount  AS REAL) AS paid_amount,
+                       CAST(p.advance_payment_applied AS REAL) AS adv,
+                       (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
+                FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+                JOIN vendors v ON v.vendor_id = p.vendor_id
                 WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
                   {vend}
                   {prod}
-                  {cat_any}
-                GROUP BY CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END
-            ),
-            spend_by_category AS (
-                SELECT CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END AS category,
-                       COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
-                FROM purchases p
-                JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
-                JOIN products pr ON pr.product_id = e.product_id
-                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-                  {vend_spend}
-                  {prod_spend}
-                  {cat_spend}
-                GROUP BY CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END
+                  {cat}
+                ORDER BY DATE(p.date) DESC, p.purchase_id DESC
+            """.format(
+                vend="AND p.vendor_id = ?" if vendor_id else "",
+                prod="AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id AND pi.product_id = ?)" if product_id else "",
+                cat="AND EXISTS (SELECT 1 FROM purchase_items pi JOIN products pr ON pr.product_id = pi.product_id WHERE pi.purchase_id = p.purchase_id AND pr.category = ?)" if category else "",
             )
-            SELECT q.category,
-                   q.qty_base,
-                   COALESCE(s.spend, 0.0) AS spend
-            FROM qty_by_category q
-            LEFT JOIN spend_by_category s ON s.category = q.category
-            ORDER BY spend DESC, q.category
-        """.format(
-            vend="AND p.vendor_id = ?" if vendor_id else "",
-            prod="AND pi.product_id = ?" if product_id else "",
-            cat_any="AND pr.category = ?" if category else "",
-            vend_spend="AND p.vendor_id = ?" if vendor_id else "",
-            prod_spend="AND e.product_id = ?" if product_id else "",
-            cat_spend="AND pr.category = ?" if category else "",
-        )
-        params = [df, dt]
-        if vendor_id: params.append(vendor_id)
-        if product_id: params.append(product_id)
-        if category: params.append(category)
-        params.extend([df, dt])
-        if vendor_id: params.append(vendor_id)
-        if product_id: params.append(product_id)
-        if category: params.append(category)
-        rows = [{"category": r["category"] if r["category"] is not None else "",
-                 "qty_base": float(r["qty_base"] or 0.0),
-                 "spend": float(r["spend"] or 0.0)} for r in self.conn.execute(sql, params)]
-        set_rows("purch_by_category", rows)
+            params = [df, dt]
+            if vendor_id:
+                params.append(vendor_id)
+            if product_id:
+                params.append(product_id)
+            if category:
+                params.append(category)
+            loaded["drilldown"] = [
+                {k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k]) for k in r.keys()}
+                for r in self.conn.execute(sql, params)
+            ]
 
-        # ---- 5) Top Vendors ----
-        sql = """
-            SELECT v.name AS vendor_name,
-                   COUNT(*) AS order_count,
-                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            JOIN vendors v ON v.vendor_id = p.vendor_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY v.vendor_id, v.name
-            ORDER BY spend DESC
-            LIMIT ?
-        """
-        rows = [{"vendor_name": r["vendor_name"],
-                 "order_count": int(r["order_count"] or 0),
-                 "spend": float(r["spend"] or 0.0)}
-                for r in self.conn.execute(sql, (df, dt, topn))]
-        set_rows("top_vendors", rows)
-
-        # ---- 6) Top Products ----
-        sql = """
-            WITH qty_by_product AS (
-                SELECT pi.product_id,
-                       pr.name AS product_name,
-                       COALESCE(SUM(CAST(pi.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)), 0.0) AS qty_base
-                FROM purchases p
-                JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-                LEFT JOIN product_uoms pu ON pu.product_id = pi.product_id AND pu.uom_id = pi.uom_id
-                JOIN products pr ON pr.product_id = pi.product_id
-                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-                GROUP BY pi.product_id, pr.name
-            ),
-            spend_by_product AS (
-                SELECT e.product_id,
-                       COALESCE(SUM(CAST(e.spend AS REAL)), 0.0) AS spend
-                FROM purchases p
-                JOIN purchase_financial_events e ON e.purchase_id = p.purchase_id
-                WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-                GROUP BY e.product_id
-            )
-            SELECT q.product_name,
-                   q.qty_base,
-                   COALESCE(s.spend, 0.0) AS spend
-            FROM qty_by_product q
-            LEFT JOIN spend_by_product s ON s.product_id = q.product_id
-            ORDER BY spend DESC
-            LIMIT ?
-        """
-        rows = [{"product_name": r["product_name"],
-                 "qty_base": float(r["qty_base"] or 0.0),
-                 "spend": float(r["spend"] or 0.0)}
-                for r in self.conn.execute(sql, (df, dt, df, dt, topn))]
-        set_rows("top_products", rows)
-
-        # ---- 7) Returns Summary ----
-        # Prefer the prebuilt view if present; else graceful degrade.
-        rows: List[Dict[str, Any]] = []
-        try:
+            # 11) Payments Timeline
             sql = """
-                SELECT
-                  SUM(CAST(qty_returned_base AS REAL)) AS qty_returned,
-                  SUM(CASE WHEN valuation_status = 'resolved'
-                           THEN CAST(return_value AS REAL) END) AS return_value,
-                  SUM(CASE WHEN valuation_status = 'unresolved' THEN 1 ELSE 0 END) AS unresolved_count
-                FROM purchase_return_valuations
-                WHERE DATE(return_date) BETWEEN DATE(?) AND DATE(?)
+                SELECT date AS date,
+                       SUM(CASE WHEN CAST(amount AS REAL) > 0 THEN CAST(amount AS REAL) ELSE 0.0 END) AS amount_out
+                FROM purchase_payments
+                WHERE DATE(date) BETWEEN DATE(?) AND DATE(?)
+                  AND clearing_state = 'cleared'
+                GROUP BY date
+                ORDER BY DATE(date)
             """
-            r = self.conn.execute(sql, (df, dt)).fetchone()
-            qty = float(r["qty_returned"] or 0.0) if r else 0.0
-            val = float(r["return_value"] or 0.0) if r else 0.0
-            unresolved = int(r["unresolved_count"] or 0) if r else 0
-            rows = [{"metric": "Returned Qty (base)", "value": qty},
-                    {"metric": "Return Value", "value": val},
-                    {"metric": "Unresolved Legacy Returns", "value": unresolved}]
-        except Exception:
-            rows = [{"metric": "Info", "value": "purchase_return_valuations view not found"}]
-        set_rows("returns_summary", rows)
+            loaded["payments_timeline"] = [
+                {"date": r["date"], "amount_out": float(r["amount_out"] or 0.0)}
+                for r in self.conn.execute(sql, (df, dt))
+            ]
 
-        # ---- 8) Status Breakdown ----
-        sql = """
-            SELECT p.payment_status,
-                   COUNT(*) AS order_count,
-                   SUM(COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))) AS spend
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY p.payment_status
-            ORDER BY spend DESC
-        """
-        rows = [{"payment_status": r["payment_status"],
-                 "order_count": int(r["order_count"] or 0),
-                 "spend": float(r["spend"] or 0.0)} for r in self.conn.execute(sql, (df, dt))]
-        set_rows("status_breakdown", rows)
+        def set_rows(key: str) -> None:
+            tv = self._tables[key]
+            model: _SimpleTableModel = tv.model()  # type: ignore
+            model.set_rows(loaded.get(key, []))
+            tv.resizeColumnsToContents()
+            tv.horizontalHeader().setStretchLastSection(True)
 
-        # ---- 9) Open Purchases ----
-        sql = """
-            SELECT p.purchase_id, p.date, v.name AS vendor_name,
-                   COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
-                   CAST(p.paid_amount  AS REAL) AS paid_amount,
-                   CAST(p.advance_payment_applied AS REAL) AS adv,
-                   (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            JOIN vendors v ON v.vendor_id = p.vendor_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-              AND (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
-            ORDER BY DATE(p.date) DESC, p.purchase_id DESC
-        """
-        rows = [{k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k])
-                 for k in r.keys()} for r in self.conn.execute(sql, (df, dt))]
-        set_rows("open_purchases", rows)
-
-        # ---- 10) Drill-down Purchases (matching filters) ----
-        sql = """
-            SELECT p.purchase_id, p.date, v.name AS vendor_name, p.payment_status,
-                   COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
-                   CAST(p.paid_amount  AS REAL) AS paid_amount,
-                   CAST(p.advance_payment_applied AS REAL) AS adv,
-                   (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            JOIN vendors v ON v.vendor_id = p.vendor_id
-            WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
-              {vend}
-              {prod}
-              {cat}
-            ORDER BY DATE(p.date) DESC, p.purchase_id DESC
-        """.format(
-            vend="AND p.vendor_id = ?" if vendor_id else "",
-            prod="AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id AND pi.product_id = ?)" if product_id else "",
-            cat ="AND EXISTS (SELECT 1 FROM purchase_items pi JOIN products pr ON pr.product_id = pi.product_id WHERE pi.purchase_id = p.purchase_id AND pr.category = ?)" if category else "",
-        )
-        params = [df, dt]
-        if vendor_id: params.append(vendor_id)
-        if product_id: params.append(product_id)
-        if category: params.append(category)
-        rows = [{k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k])
-                 for k in r.keys()} for r in self.conn.execute(sql, params)]
-        set_rows("drilldown", rows)
-
-        # ---- 11) Payments Timeline (cleared outflow by date) ----
-        # Uses purchase_payments with clearing_state='cleared'
-        sql = """
-            SELECT date AS date,
-                   SUM(CASE WHEN CAST(amount AS REAL) > 0 THEN CAST(amount AS REAL) ELSE 0.0 END) AS amount_out
-            FROM purchase_payments
-            WHERE DATE(date) BETWEEN DATE(?) AND DATE(?)
-              AND clearing_state = 'cleared'
-            GROUP BY date
-            ORDER BY DATE(date)
-        """
-        rows = [{"date": r["date"], "amount_out": float(r["amount_out"] or 0.0)}
-                for r in self.conn.execute(sql, (df, dt))]
-        set_rows("payments_timeline", rows)
+        for key in (
+            "purch_by_period",
+            "purch_by_vendor",
+            "purch_by_product",
+            "purch_by_category",
+            "top_vendors",
+            "top_products",
+            "returns_summary",
+            "status_breakdown",
+            "open_purchases",
+            "drilldown",
+            "payments_timeline",
+        ):
+            set_rows(key)
 
     # ------------------------------ Export ------------------------------
     def _active_table(self) -> Optional[_BaseTableView]:

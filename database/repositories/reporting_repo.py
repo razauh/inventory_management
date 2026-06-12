@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from typing import Iterable, Optional, Sequence
 
 
@@ -39,6 +40,23 @@ class ReportingRepo:
         """Context manager exit to ensure proper cleanup."""
         # Connection is typically managed by the caller, but we can ensure cleanup here
         pass
+
+    @contextmanager
+    def read_snapshot(self):
+        """
+        Run report reads against one SQLite snapshot.
+
+        If the caller already has an open transaction, leave it alone.
+        """
+        started = False
+        if not self.conn.in_transaction:
+            self.conn.execute("BEGIN")
+            started = True
+        try:
+            yield self.conn
+        finally:
+            if started and self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
     
     def close(self):
         """Explicitly close the database connection."""

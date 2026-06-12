@@ -273,26 +273,27 @@ class PaymentReportsTab(QWidget):
     def refresh(self) -> None:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
+        with self.repo.read_snapshot():
+            # Collections
+            rows_c = []
+            total_c = 0.0
+            for r in self.repo.sale_collections_by_day(date_from, date_to):
+                amt = float(r["amount"] or 0.0)
+                rows_c.append({"date": str(r["date"]), "amount": amt})
+                total_c += amt
 
-        # Collections
-        rows_c = []
-        total_c = 0.0
-        for r in self.repo.sale_collections_by_day(date_from, date_to):
-            amt = float(r["amount"] or 0.0)
-            rows_c.append({"date": str(r["date"]), "amount": amt})
-            total_c += amt
+            # Disbursements
+            rows_d = []
+            total_d = 0.0
+            for r in self.repo.purchase_disbursements_by_day(date_from, date_to):
+                gross = float(r["gross_outflow"] or 0.0)
+                refunds = float(r["refunds_received"] or 0.0)
+                net = float(r["net_outflow"] or 0.0)
+                rows_d.append({"date": str(r["date"]), "gross_outflow": gross, "refunds_received": refunds, "net_outflow": net})
+                total_d += net
+
         self._rows_collect = rows_c
         self.model_collect.set_rows(rows_c)
-
-        # Disbursements
-        rows_d = []
-        total_d = 0.0
-        for r in self.repo.purchase_disbursements_by_day(date_from, date_to):
-            gross = float(r["gross_outflow"] or 0.0)
-            refunds = float(r["refunds_received"] or 0.0)
-            net = float(r["net_outflow"] or 0.0)
-            rows_d.append({"date": str(r["date"]), "gross_outflow": gross, "refunds_received": refunds, "net_outflow": net})
-            total_d += net
         self._rows_disb = rows_d
         self.model_disb.set_rows(rows_d)
 

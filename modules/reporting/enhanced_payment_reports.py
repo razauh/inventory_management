@@ -262,80 +262,69 @@ class EnhancedPaymentReportsTab(QWidget):
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         basis_label = self._date_basis_label()
         date_expr = self._effective_date_expr
+        with self.repo.read_snapshot():
+            # Get all payments (collections and disbursements)
+            all_rows = []
 
-        # Get all payments (collections and disbursements)
-        all_rows = []
-        
-        # Collections (sale payments)
-        for r in self.repo.conn.execute("""
-            SELECT sp.date, sp.cleared_date, sp.amount, sp.clearing_state as state,
-                   {date_expr} AS effective_date
-            FROM sale_payments sp
-            WHERE {date_expr} >= ? AND {date_expr} <= ?
-            ORDER BY effective_date
-        """.format(date_expr=date_expr("sp")), (date_from, date_to)):
-            all_rows.append({
-                "date": r["effective_date"],
-                "amount": float(r["amount"] or 0.0),
-                "status": str(r["state"]),
-                "type": "Collection"
-            })
+            # Collections (sale payments)
+            for r in self.repo.conn.execute("""
+                SELECT sp.date, sp.cleared_date, sp.amount, sp.clearing_state as state,
+                       {date_expr} AS effective_date
+                FROM sale_payments sp
+                WHERE {date_expr} >= ? AND {date_expr} <= ?
+                ORDER BY effective_date
+            """.format(date_expr=date_expr("sp")), (date_from, date_to)):
+                all_rows.append({
+                    "date": r["effective_date"],
+                    "amount": float(r["amount"] or 0.0),
+                    "status": str(r["state"]),
+                    "type": "Collection"
+                })
 
-        # Disbursements (purchase payments)
-        for r in self.repo.conn.execute("""
-            SELECT pp.date, pp.cleared_date, pp.amount, pp.clearing_state as state,
-                   {date_expr} AS effective_date
-            FROM purchase_payments pp
-            WHERE {date_expr} >= ? AND {date_expr} <= ?
-            ORDER BY effective_date
-        """.format(date_expr=date_expr("pp")), (date_from, date_to)):
-            all_rows.append({
-                "date": r["effective_date"],
-                "amount": float(r["amount"] or 0.0),
-                "status": str(r["state"]),
-                "type": "Disbursement"
-            })
+            # Disbursements (purchase payments)
+            for r in self.repo.conn.execute("""
+                SELECT pp.date, pp.cleared_date, pp.amount, pp.clearing_state as state,
+                       {date_expr} AS effective_date
+                FROM purchase_payments pp
+                WHERE {date_expr} >= ? AND {date_expr} <= ?
+                ORDER BY effective_date
+            """.format(date_expr=date_expr("pp")), (date_from, date_to)):
+                all_rows.append({
+                    "date": r["effective_date"],
+                    "amount": float(r["amount"] or 0.0),
+                    "status": str(r["state"]),
+                    "type": "Disbursement"
+                })
 
-        # Vendor refunds (purchase_refunds)
-        for r in self.repo.conn.execute("""
-            SELECT pr.date, pr.cleared_date, pr.amount, pr.clearing_state as state,
-                   {date_expr} AS effective_date
-            FROM purchase_refunds pr
-            WHERE {date_expr} >= ? AND {date_expr} <= ?
-            ORDER BY effective_date
-        """.format(date_expr=date_expr("pr")), (date_from, date_to)):
-            all_rows.append({
-                "date": r["effective_date"],
-                "amount": float(r["amount"] or 0.0),
-                "status": str(r["state"]),
-                "type": "Vendor Refund"
-            })
+            # Vendor refunds (purchase_refunds)
+            for r in self.repo.conn.execute("""
+                SELECT pr.date, pr.cleared_date, pr.amount, pr.clearing_state as state,
+                       {date_expr} AS effective_date
+                FROM purchase_refunds pr
+                WHERE {date_expr} >= ? AND {date_expr} <= ?
+                ORDER BY effective_date
+            """.format(date_expr=date_expr("pr")), (date_from, date_to)):
+                all_rows.append({
+                    "date": r["effective_date"],
+                    "amount": float(r["amount"] or 0.0),
+                    "status": str(r["state"]),
+                    "type": "Vendor Refund"
+                })
 
-        # All payments table
+            all_total = sum(float(r.get("amount", 0.0)) for r in all_rows)
+            uncleared_rows = [r for r in all_rows if r.get("status") not in ["cleared"]]
+            uncleared_total = sum(float(r.get("amount", 0.0)) for r in uncleared_rows)
+
         self._rows_all_payments = all_rows
         self.model_all.set_rows(all_rows)
-        
-        # Calculate totals
-        all_total = sum(float(r.get("amount", 0.0)) for r in all_rows)
-        uncleared_rows = [r for r in all_rows if r.get("status") not in ["cleared"]]
-        uncleared_total = sum(float(r.get("amount", 0.0)) for r in uncleared_rows)
+        self.model_status.set_rows(all_rows)
+        self._rows_uncleared = uncleared_rows
+        self.model_uncleared.set_rows(uncleared_rows)
 
-        # Update UI
         self.lbl_all_total.setText(f"Total: {fmt_money(all_total)}")
         self.lbl_uncleared_total.setText(f"Uncleared: {fmt_money(uncleared_total)}")
         self.lbl_basis.setText(f"Date basis: {basis_label}")
-        
-        # All payments title
         self.lbl_all_title.setText(f"<b>All Payments</b> — {date_from} to {date_to} ({basis_label})")
-        
-        # By status table (same as all, but we could group differently)
-        self.model_status.set_rows(all_rows)
-        
-        # Uncleared table
-        self._rows_uncleared = uncleared_rows
-        self.model_uncleared.set_rows(uncleared_rows)
-        
-        # Update titles
         self.lbl_status_title.setText(f"<b>Payments by Status</b> — {date_from} to {date_to} ({basis_label})")
         self.lbl_uncleared_title.setText(f"<b>Uncleared Payments</b> — {date_from} to {date_to} ({basis_label})")
 
