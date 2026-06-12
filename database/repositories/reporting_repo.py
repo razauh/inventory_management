@@ -224,27 +224,61 @@ class ReportingRepo:
         expense_categories(category_id, name)
         expenses(expense_id, date, amount, category_id, ...)
         """
-        params: list[object] = [date_from, date_to]
-        where_extra = ""
         if category_id is not None:
-            where_extra = " AND e.category_id = ? "
-            params.append(category_id)
-
-        sql = f"""
-        SELECT
-            ec.category_id                     AS category_id,
-            ec.name                            AS category_name,
-            COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
-        FROM expense_categories ec
-        LEFT JOIN expenses e
-               ON e.category_id = ec.category_id
+            if category_id == 0:
+                sql = """
+                SELECT
+                    0                                  AS category_id,
+                    '(Uncategorized)'                  AS category_name,
+                    COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+                FROM expenses e
+                WHERE e.category_id IS NULL
+                  AND e.date >= ?
+                  AND e.date <= ?
+                """
+                params = [date_from, date_to]
+            else:
+                sql = """
+                SELECT
+                    ec.category_id                     AS category_id,
+                    ec.name                            AS category_name,
+                    COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+                FROM expense_categories ec
+                LEFT JOIN expenses e
+                       ON e.category_id = ec.category_id
+                      AND e.date >= ?
+                      AND e.date <= ?
+                WHERE ec.category_id = ?
+                GROUP BY ec.category_id, ec.name
+                """
+                params = [date_from, date_to, category_id]
+        else:
+            sql = """
+            SELECT
+                ec.category_id                     AS category_id,
+                ec.name                            AS category_name,
+                COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+            FROM expense_categories ec
+            LEFT JOIN expenses e
+                   ON e.category_id = ec.category_id
+                  AND e.date >= ?
+                  AND e.date <= ?
+            GROUP BY ec.category_id, ec.name
+            
+            UNION ALL
+            
+            SELECT
+                0                                  AS category_id,
+                '(Uncategorized)'                  AS category_name,
+                COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+            FROM expenses e
+            WHERE e.category_id IS NULL
               AND e.date >= ?
               AND e.date <= ?
-              {where_extra}
-        GROUP BY ec.category_id, ec.name
-        ORDER BY ec.name COLLATE NOCASE
-        """
-        # Return list for API compatibility, but consider using iterators for large datasets
+            ORDER BY category_name COLLATE NOCASE
+            """
+            params = [date_from, date_to, date_from, date_to]
+
         return list(self.conn.execute(sql, params))
 
     def expense_summary_by_category_iter(
@@ -254,26 +288,61 @@ class ReportingRepo:
         Generator version of expense_summary_by_category that yields rows one at a time.
         This prevents loading all results into memory at once for large datasets.
         """
-        params: list[object] = [date_from, date_to]
-        where_extra = ""
         if category_id is not None:
-            where_extra = " AND e.category_id = ? "
-            params.append(category_id)
-
-        sql = f"""
-        SELECT
-            ec.category_id                     AS category_id,
-            ec.name                            AS category_name,
-            COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
-        FROM expense_categories ec
-        LEFT JOIN expenses e
-               ON e.category_id = ec.category_id
+            if category_id == 0:
+                sql = """
+                SELECT
+                    0                                  AS category_id,
+                    '(Uncategorized)'                  AS category_name,
+                    COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+                FROM expenses e
+                WHERE e.category_id IS NULL
+                  AND e.date >= ?
+                  AND e.date <= ?
+                """
+                params = [date_from, date_to]
+            else:
+                sql = """
+                SELECT
+                    ec.category_id                     AS category_id,
+                    ec.name                            AS category_name,
+                    COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+                FROM expense_categories ec
+                LEFT JOIN expenses e
+                       ON e.category_id = ec.category_id
+                      AND e.date >= ?
+                      AND e.date <= ?
+                WHERE ec.category_id = ?
+                GROUP BY ec.category_id, ec.name
+                """
+                params = [date_from, date_to, category_id]
+        else:
+            sql = """
+            SELECT
+                ec.category_id                     AS category_id,
+                ec.name                            AS category_name,
+                COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+            FROM expense_categories ec
+            LEFT JOIN expenses e
+                   ON e.category_id = ec.category_id
+                  AND e.date >= ?
+                  AND e.date <= ?
+            GROUP BY ec.category_id, ec.name
+            
+            UNION ALL
+            
+            SELECT
+                0                                  AS category_id,
+                '(Uncategorized)'                  AS category_name,
+                COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+            FROM expenses e
+            WHERE e.category_id IS NULL
               AND e.date >= ?
               AND e.date <= ?
-              {where_extra}
-        GROUP BY ec.category_id, ec.name
-        ORDER BY ec.name COLLATE NOCASE
-        """
+            ORDER BY category_name COLLATE NOCASE
+            """
+            params = [date_from, date_to, date_from, date_to]
+
         cursor = self.conn.execute(sql, params)
         for row in cursor:
             yield row
@@ -287,18 +356,21 @@ class ReportingRepo:
         params: list[object] = [date_from, date_to]
         where_extra = ""
         if category_id is not None:
-            where_extra = " AND e.category_id = ? "
-            params.append(category_id)
+            if category_id == 0:
+                where_extra = " AND e.category_id IS NULL "
+            else:
+                where_extra = " AND e.category_id = ? "
+                params.append(category_id)
 
         sql = f"""
         SELECT
             e.expense_id                 AS expense_id,
             e.date                       AS date,
-            ec.name                      AS category_name,
+            COALESCE(ec.name, '(Uncategorized)') AS category_name,
             e.description                AS description,
             COALESCE(CAST(e.amount AS REAL), 0.0) AS amount
         FROM expenses e
-        JOIN expense_categories ec ON ec.category_id = e.category_id
+        LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
         WHERE e.date >= ?
           AND e.date <= ?
           {where_extra}
@@ -317,18 +389,21 @@ class ReportingRepo:
         params: list[object] = [date_from, date_to]
         where_extra = ""
         if category_id is not None:
-            where_extra = " AND e.category_id = ? "
-            params.append(category_id)
+            if category_id == 0:
+                where_extra = " AND e.category_id IS NULL "
+            else:
+                where_extra = " AND e.category_id = ? "
+                params.append(category_id)
 
         sql = f"""
         SELECT
             e.expense_id                 AS expense_id,
             e.date                       AS date,
-            ec.name                      AS category_name,
+            COALESCE(ec.name, '(Uncategorized)') AS category_name,
             e.description                AS description,
             COALESCE(CAST(e.amount AS REAL), 0.0) AS amount
         FROM expenses e
-        JOIN expense_categories ec ON ec.category_id = e.category_id
+        LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
         WHERE e.date >= ?
           AND e.date <= ?
           {where_extra}
@@ -574,9 +649,19 @@ class ReportingRepo:
                ON e.category_id = ec.category_id
               AND e.date >= ? AND e.date <= ?
         GROUP BY ec.category_id, ec.name
-        ORDER BY ec.name COLLATE NOCASE
+        
+        UNION ALL
+        
+        SELECT
+          0                                  AS category_id,
+          '(Uncategorized)'                  AS category_name,
+          COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+        FROM expenses e
+        WHERE e.category_id IS NULL
+          AND e.date >= ? AND e.date <= ?
+        ORDER BY category_name COLLATE NOCASE
         """
-        return list(self.conn.execute(sql, (date_from, date_to)))
+        return list(self.conn.execute(sql, (date_from, date_to, date_from, date_to)))
 
     def sale_collections_by_day(self, date_from: str, date_to: str) -> list[sqlite3.Row]:
         """

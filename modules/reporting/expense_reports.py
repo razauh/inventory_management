@@ -223,6 +223,7 @@ class ExpenseReportsTab(QWidget):
         self.cmb_category.blockSignals(True)
         self.cmb_category.clear()
         self.cmb_category.addItem("All Categories", None)
+        self.cmb_category.addItem("Uncategorized", 0)
         try:
             for cid, name in self.logic.list_categories():
                 self.cmb_category.addItem(name, cid)

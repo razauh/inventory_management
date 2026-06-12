@@ -25,8 +25,9 @@ class SaleDetails(QWidget):
     customer’s credit balance (if provided).
 
     Expected keys in set_data(dict):
-      sale_id, date, customer_name, total_amount, order_discount, overall_discount,
-      returned_qty, returned_value, net_after_returns, paid_amount, payment_status,
+      sale_id, date, customer_name, gross_total_amount, order_discount,
+      overall_discount, returned_qty, returned_value, net_total_amount,
+      paid_amount, advance_payment_applied, remaining_due, payment_status,
       doc_type ('sale' | 'quotation'),
       (optional) payments: list[dict] with columns such as date, method, amount,
                            clearing_state, ref_no/instrument_no, bank_name/account_title/account_no/bank_account_id
@@ -67,6 +68,7 @@ class SaleDetails(QWidget):
         self.lab_net_after = QLabel("-")
 
         self.lab_paid = QLabel("-")
+        self.lab_credit_applied = QLabel("-")
         self.lab_remain = QLabel("-")
         self.lab_status = QLabel("-")
 
@@ -76,14 +78,15 @@ class SaleDetails(QWidget):
         f.addRow("ID:", self.lab_id)
         f.addRow("Date:", self.lab_date)
         f.addRow("Customer:", self.lab_customer)
-        f.addRow("Total:", self.lab_total)
+        f.addRow("Gross Total:", self.lab_total)
         f.addRow("Order Discount:", self.lab_discount)
         f.addRow("Total Discount:", self.lab_total_discount)
         f.addRow("Returned Qty:", self.lab_returned_qty)
-        f.addRow("Returned Value:", self.lab_returned_val)
-        f.addRow("Net (after returns):", self.lab_net_after)
+        f.addRow("Returns:", self.lab_returned_val)
+        f.addRow("Net Total:", self.lab_net_after)
         f.addRow("Paid:", self.lab_paid)
-        f.addRow("Remaining:", self.lab_remain)
+        f.addRow("Credit Applied:", self.lab_credit_applied)
+        f.addRow("Due:", self.lab_remain)
         f.addRow("Status:", self.lab_status)
         f.addRow("Customer Credit:", self.lab_credit)
 
@@ -133,7 +136,8 @@ class SaleDetails(QWidget):
             self.lab_id, self.lab_date, self.lab_customer,
             self.lab_total, self.lab_discount, self.lab_total_discount,
             self.lab_returned_qty, self.lab_returned_val, self.lab_net_after,
-            self.lab_paid, self.lab_remain, self.lab_status, self.lab_credit
+            self.lab_paid, self.lab_credit_applied, self.lab_remain,
+            self.lab_status, self.lab_credit
         ):
             w.setText("-")
         self._load_payments([])
@@ -245,22 +249,34 @@ class SaleDetails(QWidget):
         self.lab_customer.setText(r.get("customer_name", "-"))
 
         # Money (header-level)
-        total_amount = float(r.get("total_amount", 0.0) or 0.0)
+        gross_total = float(
+            r.get("gross_total_amount", r.get("total_amount", 0.0)) or 0.0
+        )
         order_discount = float(r.get("order_discount", 0.0) or 0.0)
         paid_amount = float(r.get("paid_amount", 0.0) or 0.0)
+        credit_applied = float(r.get("advance_payment_applied", 0.0) or 0.0)
+        net_total = float(
+            r.get(
+                "net_total_amount",
+                r.get("calculated_total_amount", r.get("net_after_returns", 0.0)),
+            )
+            or 0.0
+        )
+        remaining_due = float(r.get("remaining_due", 0.0) or 0.0)
 
-        self.lab_total.setText(fmt_money(total_amount))
+        self.lab_total.setText(fmt_money(gross_total))
         self.lab_discount.setText(fmt_money(order_discount))
         self.lab_total_discount.setText(fmt_money(r.get("overall_discount", 0.0)))
 
         # Returns summary
         self.lab_returned_qty.setText(f"{float(r.get('returned_qty', 0.0) or 0.0):g}")
         self.lab_returned_val.setText(fmt_money(r.get("returned_value", 0.0)))
-        self.lab_net_after.setText(fmt_money(r.get("net_after_returns", 0.0)))
+        self.lab_net_after.setText(fmt_money(net_total))
 
-        # Paid / remaining / status
+        # Settlement summary
         self.lab_paid.setText(fmt_money(paid_amount))
-        self.lab_remain.setText(fmt_money(r.get("remaining_due", max(0.0, total_amount - paid_amount))))
+        self.lab_credit_applied.setText(fmt_money(credit_applied))
+        self.lab_remain.setText(fmt_money(remaining_due))
         self.lab_status.setText(r.get("payment_status", "-"))
 
         # Optional: customer credit balance

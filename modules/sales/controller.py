@@ -456,11 +456,13 @@ class SalesController(BaseModule):
             position = self.repo.get_receivable_position(r["sale_id"])
             r["returned_qty"] = float(rt.get("qty", 0.0))
             r["returned_value"] = float(position["returned_value"])
-            r["net_after_returns"] = float(position["net_total_amount"])
+            r["gross_total_amount"] = float(position["gross_total_amount"])
+            r["net_total_amount"] = float(position["net_total_amount"])
         except Exception:
             r["returned_qty"] = 0.0
             r["returned_value"] = 0.0
-            r["net_after_returns"] = float(r.get("total_amount", 0.0))
+            r["gross_total_amount"] = float(r.get("total_amount", 0.0))
+            r["net_total_amount"] = float(r.get("total_amount", 0.0))
 
         self.view.items.set_rows(items)
 
@@ -486,8 +488,10 @@ class SalesController(BaseModule):
 
             # Financials including credit applied (NEW: include advance_payment_applied)
             fin = self._fetch_sale_financials(r["sale_id"])
+            r["paid_amount"] = fin["paid_amount"]
             r["advance_payment_applied"] = fin["advance_payment_applied"]
             r["calculated_total_amount"] = fin["calculated_total_amount"]
+            r["net_total_amount"] = fin["calculated_total_amount"]
             r["paid_plus_credit"] = fin["paid_amount"] + fin["advance_payment_applied"]
             r["remaining_due"] = fin["remaining_due"]
         else:
