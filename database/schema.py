@@ -453,6 +453,99 @@ CREATE TABLE IF NOT EXISTS sale_payments (
 CREATE INDEX IF NOT EXISTS idx_sale_payments_sale ON sale_payments(sale_id);
 CREATE INDEX IF NOT EXISTS idx_sale_payments_date ON sale_payments(date);
 
+CREATE TABLE IF NOT EXISTS sale_payment_state_reversals (
+  reversal_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  payment_id   INTEGER NOT NULL,
+  old_state    TEXT NOT NULL CHECK (old_state IN ('cleared','bounced')),
+  new_state    TEXT NOT NULL DEFAULT 'pending' CHECK (new_state = 'pending'),
+  admin_user_id INTEGER NOT NULL,
+  reason       TEXT NOT NULL CHECK (TRIM(reason) <> ''),
+  requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  consumed_at  TIMESTAMP,
+  FOREIGN KEY (payment_id) REFERENCES sale_payments(payment_id) ON DELETE CASCADE,
+  FOREIGN KEY (admin_user_id) REFERENCES users(user_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_payment_reversal_pending
+  ON sale_payment_state_reversals(payment_id)
+  WHERE consumed_at IS NULL;
+
+DROP TRIGGER IF EXISTS trg_sale_payment_reversal_authorize;
+CREATE TRIGGER trg_sale_payment_reversal_authorize
+BEFORE INSERT ON sale_payment_state_reversals
+FOR EACH ROW
+BEGIN
+  SELECT CASE
+    WHEN NOT EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = NEW.admin_user_id
+        AND LOWER(u.role) = 'admin'
+        AND u.is_active = 1
+    )
+    THEN RAISE(ABORT, 'Payment state reversal requires an active admin user')
+  END;
+  SELECT CASE
+    WHEN NOT EXISTS (
+      SELECT 1 FROM sale_payments sp
+      WHERE sp.payment_id = NEW.payment_id
+        AND sp.clearing_state = NEW.old_state
+    )
+    THEN RAISE(ABORT, 'Payment state changed before reversal authorization')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_payment_state_guard;
+CREATE TRIGGER trg_sale_payment_state_guard
+BEFORE UPDATE OF clearing_state ON sale_payments
+FOR EACH ROW
+WHEN NEW.clearing_state <> OLD.clearing_state
+ AND NOT (
+   (OLD.clearing_state = 'posted' AND NEW.clearing_state = 'pending')
+   OR (OLD.clearing_state = 'pending' AND NEW.clearing_state IN ('cleared','bounced'))
+   OR EXISTS (
+     SELECT 1 FROM sale_payment_state_reversals r
+     WHERE r.payment_id = OLD.payment_id
+       AND r.old_state = OLD.clearing_state
+       AND r.new_state = NEW.clearing_state
+       AND r.consumed_at IS NULL
+   )
+ )
+BEGIN
+  SELECT RAISE(ABORT, 'Invalid sale payment clearing-state transition');
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_payment_reversal_consume;
+CREATE TRIGGER trg_sale_payment_reversal_consume
+AFTER UPDATE OF clearing_state ON sale_payments
+FOR EACH ROW
+WHEN NEW.clearing_state <> OLD.clearing_state
+ AND EXISTS (
+   SELECT 1 FROM sale_payment_state_reversals r
+   WHERE r.payment_id = OLD.payment_id
+     AND r.old_state = OLD.clearing_state
+     AND r.new_state = NEW.clearing_state
+     AND r.consumed_at IS NULL
+ )
+BEGIN
+  INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
+  SELECT r.admin_user_id,
+         'payment_state_reversal',
+         'sale_payments',
+         CAST(OLD.payment_id AS TEXT),
+         'Reopened payment from ' || OLD.clearing_state || ' to ' || NEW.clearing_state || '. Reason: ' || r.reason
+    FROM sale_payment_state_reversals r
+   WHERE r.payment_id = OLD.payment_id
+     AND r.old_state = OLD.clearing_state
+     AND r.new_state = NEW.clearing_state
+     AND r.consumed_at IS NULL;
+
+  UPDATE sale_payment_state_reversals
+     SET consumed_at = CURRENT_TIMESTAMP
+   WHERE payment_id = OLD.payment_id
+     AND old_state = OLD.clearing_state
+     AND new_state = NEW.clearing_state
+     AND consumed_at IS NULL;
+END;
+
 /* === Payments per purchase (vendor) === */
 CREATE TABLE IF NOT EXISTS purchase_payments (
   payment_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3304,6 +3397,7 @@ REQUIRED_TABLES = (
     "error_logs",
     "company_bank_accounts",
     "sale_payments",
+    "sale_payment_state_reversals",
     "purchase_payments",
     "vendor_bank_accounts",
     "purchase_refunds",

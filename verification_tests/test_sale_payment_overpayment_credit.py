@@ -5,6 +5,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,6 +30,18 @@ SQL = _load_symbol(PROJECT_ROOT / "database" / "schema.py", "SQL")
 def _create_sale_db(db_path: Path) -> None:
     with sqlite3.connect(db_path) as con:
         con.executescript(SQL)
+        con.execute(
+            """
+            INSERT INTO users (user_id, username, password_hash, full_name, role)
+            VALUES (1, 'admin', 'hash', 'Admin User', 'admin')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO users (user_id, username, password_hash, full_name, role)
+            VALUES (2, 'staff', 'hash', 'Staff User', 'user')
+            """
+        )
         customer_id = con.execute(
             """
             INSERT INTO customers (name, contact_info, address)
@@ -124,7 +138,7 @@ def test_pending_overpayment_creates_one_credit_when_cleared(tmp_path: Path) -> 
     assert credits[0]["source_id"] == str(payment_id)
 
 
-def test_bouncing_payment_reverses_credit(tmp_path: Path) -> None:
+def test_admin_reopening_reverses_credit_and_writes_audit(tmp_path: Path) -> None:
     db_path = tmp_path / "bounce-overpayment.sqlite"
     _create_sale_db(db_path)
     repo = SalePaymentsRepo(db_path)
@@ -137,20 +151,47 @@ def test_bouncing_payment_reverses_credit(tmp_path: Path) -> None:
         clearing_state="cleared",
     )
 
-    # Transition to bounced
-    repo.update_clearing_state(payment_id, clearing_state="bounced")
+    repo.reopen_clearing_state(
+        payment_id,
+        admin_user_id=1,
+        reason="Bank reconciliation correction",
+    )
 
     payment, credits = _fetch_credit_state(db_path, payment_id)
-    # The payment itself should have its converted fields reset
+    assert payment["clearing_state"] == "pending"
     assert payment["overpayment_converted"] == 0
     assert float(payment["converted_to_credit"] or 0) == 0.0
-    # There should be 2 entries in customer_advances (original 20 and reversal -20)
     assert len(credits) == 2
     assert float(credits[0]["amount"]) == 20.0
     assert float(credits[1]["amount"]) == -20.0
+    with sqlite3.connect(db_path) as con:
+        reversal = con.execute(
+            """
+            SELECT old_state, new_state, admin_user_id, reason, consumed_at
+              FROM sale_payment_state_reversals
+             WHERE payment_id = ?
+            """,
+            (payment_id,),
+        ).fetchone()
+        audit = con.execute(
+            """
+            SELECT user_id, action_type
+              FROM audit_logs
+             WHERE table_name = 'sale_payments' AND record_id = ?
+            """,
+            (str(payment_id),),
+        ).fetchone()
+    assert reversal[:4] == (
+        "cleared",
+        "pending",
+        1,
+        "Bank reconciliation correction",
+    )
+    assert reversal[4] is not None
+    assert audit == (1, "payment_state_reversal")
 
 
-def test_bouncing_fails_if_credit_consumed(tmp_path: Path) -> None:
+def test_admin_reopening_fails_if_credit_consumed(tmp_path: Path) -> None:
     db_path = tmp_path / "bounce-fail.sqlite"
     _create_sale_db(db_path)
     repo = SalePaymentsRepo(db_path)
@@ -176,9 +217,85 @@ def test_bouncing_fails_if_credit_consumed(tmp_path: Path) -> None:
         )
         con.commit()
 
-    # Bouncing should fail because only 5 credit balance remains, but we need 20 to reverse the overpayment
-    with pytest.raises(ValueError, match="Cannot revert payment clearing.*already been consumed"):
-        repo.update_clearing_state(payment_id, clearing_state="bounced")
+    with pytest.raises(ValueError, match="Cannot reopen payment.*already been consumed"):
+        repo.reopen_clearing_state(
+            payment_id,
+            admin_user_id=1,
+            reason="Bank reconciliation correction",
+        )
+
+
+def test_normal_payment_transitions_are_restricted(tmp_path: Path) -> None:
+    db_path = tmp_path / "payment-transitions.sqlite"
+    _create_sale_db(db_path)
+    repo = SalePaymentsRepo(db_path)
+
+    payment_id = repo.record_payment(
+        sale_id="SALE-OVERPAY",
+        amount=20,
+        method="Other",
+        clearing_state="posted",
+    )
+    repo.update_clearing_state(payment_id, clearing_state="pending")
+    repo.update_clearing_state(payment_id, clearing_state="bounced")
+
+    with pytest.raises(ValueError, match="Invalid payment clearing transition"):
+        repo.update_clearing_state(payment_id, clearing_state="cleared")
+
+    repo.reopen_clearing_state(
+        payment_id,
+        admin_user_id=1,
+        reason="Customer supplied corrected instrument",
+    )
+    repo.update_clearing_state(payment_id, clearing_state="cleared")
+    assert repo.get(payment_id)["clearing_state"] == "cleared"
+
+
+def test_schema_blocks_invalid_direct_transition(tmp_path: Path) -> None:
+    db_path = tmp_path / "payment-transition-trigger.sqlite"
+    _create_sale_db(db_path)
+    repo = SalePaymentsRepo(db_path)
+    payment_id = repo.record_payment(
+        sale_id="SALE-OVERPAY",
+        amount=20,
+        method="Other",
+        clearing_state="pending",
+    )
+
+    with sqlite3.connect(db_path) as con:
+        with pytest.raises(sqlite3.IntegrityError, match="Invalid sale payment clearing-state transition"):
+            con.execute(
+                "UPDATE sale_payments SET clearing_state = 'posted' WHERE payment_id = ?",
+                (payment_id,),
+            )
+
+
+def test_reopening_requires_active_admin_and_reason(tmp_path: Path) -> None:
+    db_path = tmp_path / "payment-reversal-admin.sqlite"
+    _create_sale_db(db_path)
+    repo = SalePaymentsRepo(db_path)
+    payment_id = repo.record_payment(
+        sale_id="SALE-OVERPAY",
+        amount=20,
+        method="Cash",
+        clearing_state="cleared",
+    )
+
+    with pytest.raises(ValueError, match="reason is required"):
+        repo.reopen_clearing_state(payment_id, admin_user_id=1, reason=" ")
+    with pytest.raises(ValueError, match="active admin"):
+        repo.reopen_clearing_state(payment_id, admin_user_id=2, reason="Correction")
+
+    with sqlite3.connect(db_path) as con:
+        with pytest.raises(sqlite3.IntegrityError, match="active admin"):
+            con.execute(
+                """
+                INSERT INTO sale_payment_state_reversals (
+                    payment_id, old_state, new_state, admin_user_id, reason
+                ) VALUES (?, 'cleared', 'pending', 2, 'Direct SQL attempt')
+                """,
+                (payment_id,),
+            )
 
 
 def test_multiple_payments_grant_only_incremental_excess(tmp_path: Path) -> None:
@@ -212,4 +329,3 @@ def test_multiple_payments_grant_only_incremental_excess(tmp_path: Path) -> None
     assert len(credits) == 1
     assert float(credits[0]["amount"]) == 60.0
     assert credits[0]["source_id"] == str(p2)
-

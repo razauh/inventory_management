@@ -58,6 +58,12 @@ class SalePaymentsRepo:
         "Cash Deposit": "pending",  # cash deposit pending verification
     }
 
+    NORMAL_CLEARING_TRANSITIONS: set[tuple[str, str]] = {
+        ("posted", "pending"),
+        ("pending", "cleared"),
+        ("pending", "bounced"),
+    }
+
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
 
@@ -385,8 +391,9 @@ class SalePaymentsRepo:
         ref_no: Optional[str] = None,
     ) -> int:
         """
-        Update the clearing_state (posted/pending/cleared/bounced) and optional dates.
-        When changing to 'cleared', this will also process any overpayment as customer credit.
+        Apply a normal clearing transition and optional dates.
+        Allowed transitions are posted -> pending and pending -> cleared/bounced.
+        Administrative reopening uses reopen_clearing_state().
         """
         if clearing_state not in {"posted", "pending", "cleared", "bounced"}:
             raise ValueError("clearing_state must be one of: posted, pending, cleared, bounced")
@@ -409,44 +416,11 @@ class SalePaymentsRepo:
             if old_clearing_state == clearing_state:
                 return 1
 
-            if old_clearing_state == "bounced":
-                raise ValueError("Cannot change state of a bounced payment")
-
-            # Check reversal if transitioning from cleared to non-cleared
-            if old_clearing_state == "cleared" and clearing_state != "cleared":
-                converted_amount = float(original_values["converted_to_credit"] or 0.0)
-                if converted_amount > 1e-9:
-                    sale_row = con.execute(
-                        "SELECT customer_id FROM sales WHERE sale_id = ?",
-                        (original_values["sale_id"],)
-                    ).fetchone()
-                    customer_id = int(sale_row["customer_id"])
-
-                    current_balance = con.execute(
-                        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS bal FROM customer_advances WHERE customer_id = ?",
-                        (customer_id,)
-                    ).fetchone()["bal"]
-
-                    if current_balance < converted_amount - 1e-9:
-                        raise ValueError(
-                            f"Cannot revert payment clearing: customer credit of {converted_amount:g} has already been consumed. "
-                            f"Current credit balance: {current_balance:g}."
-                        )
-
-                    # Deduct the credit by inserting a negative row in customer_advances
-                    con.execute(
-                        """
-                        INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id, notes, created_by)
-                        VALUES (?, CURRENT_DATE, ?, 'deposit', ?, ?, ?)
-                        """,
-                        (customer_id, -converted_amount, str(payment_id), f"Reversal of excess credit from reverted payment #{payment_id}", None)
-                    )
-
-                    # Reset converted_to_credit and overpayment_converted on the payment row BEFORE updating clearing_state
-                    con.execute(
-                        "UPDATE sale_payments SET overpayment_converted = 0, converted_to_credit = 0 WHERE payment_id = ?",
-                        (payment_id,)
-                    )
+            transition = (str(old_clearing_state), clearing_state)
+            if transition not in self.NORMAL_CLEARING_TRANSITIONS:
+                raise ValueError(
+                    f"Invalid payment clearing transition: {old_clearing_state} -> {clearing_state}"
+                )
 
             # Only update if the state is actually different (atomic check prevents race condition)
             update_query = """
@@ -544,6 +518,120 @@ class SalePaymentsRepo:
                         )
 
             return rows_affected
+
+    def reopen_clearing_state(
+        self,
+        payment_id: int,
+        *,
+        admin_user_id: int,
+        reason: str,
+    ) -> int:
+        """Reopen a cleared or bounced payment to pending with an audit record."""
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValueError("A reversal reason is required")
+
+        with self._connect() as con:
+            admin = con.execute(
+                """
+                SELECT role, is_active
+                  FROM users
+                 WHERE user_id = ?
+                """,
+                (admin_user_id,),
+            ).fetchone()
+            if (
+                admin is None
+                or str(admin["role"]).lower() != "admin"
+                or int(admin["is_active"] or 0) != 1
+            ):
+                raise ValueError("Payment state reversal requires an active admin user")
+
+            payment = con.execute(
+                """
+                SELECT sale_id, clearing_state, converted_to_credit
+                  FROM sale_payments
+                 WHERE payment_id = ?
+                """,
+                (payment_id,),
+            ).fetchone()
+            if payment is None:
+                raise ValueError(f"Payment not found: {payment_id}")
+
+            old_state = str(payment["clearing_state"])
+            if old_state not in {"cleared", "bounced"}:
+                raise ValueError(
+                    f"Only cleared or bounced payments can be reopened; current state is {old_state}"
+                )
+
+            converted_amount = float(payment["converted_to_credit"] or 0.0)
+            if converted_amount > 1e-9:
+                sale_row = con.execute(
+                    "SELECT customer_id FROM sales WHERE sale_id = ?",
+                    (payment["sale_id"],),
+                ).fetchone()
+                customer_id = int(sale_row["customer_id"])
+                current_balance = float(
+                    con.execute(
+                        """
+                        SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS balance
+                          FROM customer_advances
+                         WHERE customer_id = ?
+                        """,
+                        (customer_id,),
+                    ).fetchone()["balance"]
+                )
+                if current_balance < converted_amount - 1e-9:
+                    raise ValueError(
+                        f"Cannot reopen payment: customer credit of {converted_amount:g} has already been consumed. "
+                        f"Current credit balance: {current_balance:g}."
+                    )
+                con.execute(
+                    """
+                    INSERT INTO customer_advances (
+                        customer_id, tx_date, amount, source_type,
+                        source_id, notes, created_by
+                    ) VALUES (?, CURRENT_DATE, ?, 'deposit', ?, ?, ?)
+                    """,
+                    (
+                        customer_id,
+                        -converted_amount,
+                        str(payment_id),
+                        f"Admin reopening of excess credit from payment #{payment_id}",
+                        admin_user_id,
+                    ),
+                )
+                con.execute(
+                    """
+                    UPDATE sale_payments
+                       SET overpayment_converted = 0,
+                           converted_to_credit = 0
+                     WHERE payment_id = ?
+                    """,
+                    (payment_id,),
+                )
+
+            con.execute(
+                """
+                INSERT INTO sale_payment_state_reversals (
+                    payment_id, old_state, new_state, admin_user_id, reason
+                ) VALUES (?, ?, 'pending', ?, ?)
+                """,
+                (payment_id, old_state, admin_user_id, reason),
+            )
+            cur = con.execute(
+                """
+                UPDATE sale_payments
+                   SET clearing_state = 'pending',
+                       cleared_date = NULL
+                 WHERE payment_id = ?
+                   AND clearing_state = ?
+                """,
+                (payment_id, old_state),
+            )
+            if cur.rowcount != 1:
+                raise ValueError(f"Another operation changed payment {payment_id} state concurrently")
+            return 1
 
 
     def list_by_sale(self, sale_id: str) -> list[sqlite3.Row]:
