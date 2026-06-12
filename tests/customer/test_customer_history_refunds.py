@@ -1,4 +1,4 @@
-from modules.customer.history import CustomerHistoryService
+from inventory_management.modules.customer.history import CustomerHistoryService
 
 
 def test_timeline_labels_negative_sale_payment_as_refund(monkeypatch):

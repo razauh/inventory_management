@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -12,12 +11,6 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-# database/__init__.py imports an optional seeder absent from this checkout.
-# Use the package path directly so this focused test stays independent of app startup imports.
-database_package = types.ModuleType("inventory_management.database")
-database_package.__path__ = [str(PROJECT_ROOT / "database")]
-sys.modules.setdefault("inventory_management.database", database_package)
 
 from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QApplication

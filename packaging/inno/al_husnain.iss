@@ -8,6 +8,7 @@
 AppId={{9B04F844-06E0-4E6B-9B3F-6D5E1D39B0E5}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppMutex=AlHusnainMutex
 DefaultDirName={localappdata}\Programs\Al Husnain
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

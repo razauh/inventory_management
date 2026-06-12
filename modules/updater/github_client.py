@@ -37,7 +37,11 @@ def fetch_releases(owner: str, repo: str, *, timeout: float = 8.0) -> tuple[Rele
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = response.read().decode("utf-8")
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            raise UpdateCheckError("GitHub API rate limit exceeded. Please try again later.") from exc
+        raise UpdateCheckError(f"Unable to fetch GitHub releases: {exc}") from exc
+    except (OSError, urllib.error.URLError) as exc:
         raise UpdateCheckError(f"Unable to fetch GitHub releases: {exc}") from exc
 
     try:

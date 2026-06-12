@@ -45,3 +45,29 @@ def test_select_checksum_asset_finds_sha256sums():
 
     assert selected is not None
     assert selected.name == "SHA256SUMS.txt"
+
+
+def test_check_for_update_skips_release_without_checksum(monkeypatch):
+    from inventory_management.modules.updater.service import UpdaterService
+    
+    release = ReleaseInfo(
+        tag_name="v1.2.4",
+        version="1.2.4",
+        title="v1.2.4",
+        body="",
+        html_url="https://github.com/example/repo/releases/tag/v1.2.4",
+        prerelease=False,
+        draft=False,
+        assets=[
+            ReleaseAsset("AlHusnain-Setup-v1.2.4.exe", "https://example.com/AlHusnain-Setup-v1.2.4.exe"),
+            # No checksum asset here!
+        ],
+    )
+    
+    monkeypatch.setattr("inventory_management.modules.updater.service.has_internet", lambda: True)
+    monkeypatch.setattr("inventory_management.modules.updater.service.fetch_releases", lambda owner, repo: [release])
+    
+    service = UpdaterService(local_version="1.2.3")
+    update_info = service.check_for_update()
+    
+    assert update_info is None

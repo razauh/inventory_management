@@ -1,61 +1,12 @@
-import importlib.util
 import sqlite3
-import sys
-import types
-from pathlib import Path
 
 from PySide6.QtWidgets import QCheckBox
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def load_symbol(path: Path, name: str, module_name: str | None = None):
-    spec = importlib.util.spec_from_file_location(module_name or path.stem, path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return getattr(module, name)
-
-
-CustomersRepo = load_symbol(
-    PROJECT_ROOT / "database" / "repositories" / "customers_repo.py",
-    "CustomersRepo",
-)
-Customer = load_symbol(
-    PROJECT_ROOT / "database" / "repositories" / "customers_repo.py",
-    "Customer",
-)
-SQL = load_symbol(PROJECT_ROOT / "database" / "schema.py", "SQL")
-CustomerForm = load_symbol(
-    PROJECT_ROOT / "modules" / "customer" / "form.py",
-    "CustomerForm",
-    "inventory_management.modules.customer.form",
-)
-database_module = sys.modules.setdefault(
-    "inventory_management.database",
-    types.ModuleType("inventory_management.database"),
-)
-database_module.__path__ = []
-repositories_module = sys.modules.setdefault(
-    "inventory_management.database.repositories",
-    types.ModuleType("inventory_management.database.repositories"),
-)
-repositories_module.__path__ = []
-customers_repo_module = types.ModuleType("inventory_management.database.repositories.customers_repo")
-customers_repo_module.Customer = Customer
-sys.modules["inventory_management.database.repositories.customers_repo"] = customers_repo_module
-CustomersTableModel = load_symbol(
-    PROJECT_ROOT / "modules" / "customer" / "model.py",
-    "CustomersTableModel",
-    "inventory_management.modules.customer.model",
-)
-CustomerDetails = load_symbol(
-    PROJECT_ROOT / "modules" / "customer" / "details.py",
-    "CustomerDetails",
-    "inventory_management.modules.customer.details",
-)
+from inventory_management.database.repositories.customers_repo import CustomersRepo, Customer
+from inventory_management.database.schema import SQL
+from inventory_management.modules.customer.form import CustomerForm
+from inventory_management.modules.customer.model import CustomersTableModel
+from inventory_management.modules.customer.details import CustomerDetails
 
 
 def make_db():

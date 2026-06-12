@@ -722,6 +722,12 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Hold named mutex on Windows during app execution to prevent installer collisions
+    if sys.platform == "win32":
+        import ctypes
+        global _app_mutex
+        _app_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "AlHusnainMutex")
+
     # Filter out warnings about signal disconnection
     import warnings
     warnings.filterwarnings("ignore",

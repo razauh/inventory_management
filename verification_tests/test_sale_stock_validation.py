@@ -2,17 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-import types
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT.parent))
-
-database_package = types.ModuleType("inventory_management.database")
-database_package.__path__ = [str(PROJECT_ROOT / "database")]
-sys.modules.setdefault("inventory_management.database", database_package)
 
 from inventory_management.database.repositories.sales_repo import SaleHeader, SaleItem, SalesRepo
 from inventory_management.database.schema import init_schema

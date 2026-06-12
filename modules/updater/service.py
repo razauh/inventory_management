@@ -47,6 +47,9 @@ class UpdaterService:
                 log_event(self._log, "asset", "No supported Windows installer asset found.", tag=release.tag_name)
                 continue
             checksum = select_checksum_asset(release)
+            if checksum is None:
+                log_event(self._log, "asset", "No checksum asset found.", tag=release.tag_name)
+                continue
             log_event(self._log, "available", "Update available.", tag=release.tag_name, asset=installer.name)
             return UpdateInfo(
                 local_version=self.local_version,

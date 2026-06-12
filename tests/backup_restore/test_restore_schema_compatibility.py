@@ -3,8 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from constants import SCHEMA_VERSION
-from database.schema import REQUIRED_TABLES
+from inventory_management.constants import SCHEMA_VERSION
+from inventory_management.database.schema import REQUIRED_TABLES
 from inventory_management.modules.backup_restore import sqlite_ops
 from inventory_management.modules.backup_restore.service import RestoreJob, _Callbacks
 
