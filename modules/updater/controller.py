@@ -16,6 +16,17 @@ from .verifier import parse_expected_sha256, verify_sha256
 from .views import UpdateAvailableDialog, UpdateProgressDialog
 
 
+def _cleanup_dir(dir_path: Path) -> None:
+    try:
+        if dir_path.exists():
+            for item in dir_path.iterdir():
+                if item.is_file():
+                    item.unlink()
+            dir_path.rmdir()
+    except Exception:
+        pass
+
+
 class UpdateDownloadWorker(QThread):
     progress = Signal(int)
     status = Signal(str)
@@ -27,6 +38,8 @@ class UpdateDownloadWorker(QThread):
         self.update = update
 
     def run(self) -> None:
+        download_dir = None
+        succeeded = False
         try:
             download_dir = Path(tempfile.mkdtemp(prefix="alhusnain-update-"))
             self.status.emit("Downloading update installer...")
@@ -56,9 +69,13 @@ class UpdateDownloadWorker(QThread):
                 raise RuntimeError("Release checksum did not include the installer asset.")
 
             verify_sha256(installer, expected)
+            succeeded = True
             self.finished_successfully.emit(str(installer))
         except Exception as exc:
             self.failed.emit(f"{exc.__class__.__name__}: {exc}")
+        finally:
+            if not succeeded and download_dir is not None:
+                _cleanup_dir(download_dir)
 
 
 class UpdaterController(QObject):
@@ -119,29 +136,53 @@ class UpdaterController(QObject):
         self.open_update_dialog(update)
 
     def open_update_dialog(self, update: UpdateInfo) -> None:
-        while True:
-            dialog = UpdateAvailableDialog(update, self._main_window)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                log_event(self._log, "postponed", "User postponed update.", tag=update.release.tag_name)
-                return
-            if dialog.choice == "backup":
-                self._open_backup_screen()
-                continue
-            if dialog.choice == "install":
-                self._confirm_and_install(update)
-                return
+        dialog = UpdateAvailableDialog(update, self._main_window)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            log_event(self._log, "postponed", "User postponed update.", tag=update.release.tag_name)
+            return
+        if dialog.choice == "backup":
+            backup_controller = None
+            if hasattr(self._main_window, "_get_backup_restore_controller"):
+                backup_controller = self._main_window._get_backup_restore_controller()
 
-    def _open_backup_screen(self) -> None:
+            dlg = self._open_backup_screen()
+            if backup_controller is not None and dlg is not None:
+                started = False
+
+                def on_start_backup() -> None:
+                    nonlocal started
+                    started = True
+
+                def on_finished(result: int = 0) -> None:
+                    if not started:
+                        self.open_update_dialog(update)
+
+                def on_backup_completed(path: str) -> None:
+                    try:
+                        backup_controller.backup_completed.disconnect(on_backup_completed)
+                    except Exception:
+                        pass
+                    self.open_update_dialog(update)
+
+                dlg.start_backup.connect(on_start_backup)
+                dlg.finished.connect(on_finished)
+                backup_controller.backup_completed.connect(on_backup_completed)
+            return
+        if dialog.choice == "install":
+            self._confirm_and_install(update)
+            return
+
+    def _open_backup_screen(self) -> QDialog | None:
         if hasattr(self._main_window, "_get_backup_restore_controller"):
             controller = self._main_window._get_backup_restore_controller()
             if controller is not None and hasattr(controller, "open_backup_dialog"):
-                controller.open_backup_dialog()
-                return
+                return controller.open_backup_dialog()
         QMessageBox.warning(
             self._main_window,
             "Backup Required",
             "Open Backup & Restore and create a backup before installing the update.",
         )
+        return None
 
     def _confirm_and_install(self, update: UpdateInfo) -> None:
         backup_ok = self._offer_programmatic_backup()
@@ -195,6 +236,7 @@ class UpdaterController(QObject):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
+            _cleanup_dir(installer_path.parent)
             return
         self._launch_installer(installer_path)
 
@@ -219,7 +261,7 @@ class UpdaterController(QObject):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return False
-        return bool(controller.create_backup_for_update())
+        return bool(controller.create_backup_for_update(parent=self._main_window))
 
     def _confirm_skip_backup(self) -> bool:
         return QMessageBox.warning(

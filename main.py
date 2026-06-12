@@ -513,7 +513,7 @@ class MainWindow(QMainWindow):
     def _get_updater_controller(self):
         controller = getattr(self, "_updater_controller", None)
         if controller is None:
-            from modules.updater import UpdaterController
+            from inventory_management.modules.updater import UpdaterController
             controller = UpdaterController(self)
             self._updater_controller = controller
         return controller

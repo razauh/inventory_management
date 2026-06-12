@@ -37,6 +37,17 @@ def parse_version(raw: str) -> ParsedVersion | None:
     )
 
 
+def _prerelease_key(prerelease: str) -> tuple:
+    key = []
+    for part in (prerelease or "").split("."):
+        for chunk in re.findall(r"\d+|\D+", part):
+            if chunk.isdigit():
+                key.append((0, int(chunk)))
+            else:
+                key.append((1, chunk))
+    return tuple(key)
+
+
 def is_newer(remote: str, local: str, *, include_prerelease: bool = False) -> bool:
     remote_version = parse_version(remote)
     local_version = parse_version(local)
@@ -52,4 +63,4 @@ def is_newer(remote: str, local: str, *, include_prerelease: bool = False) -> bo
         return False
     if not remote_version.prerelease:
         return True
-    return remote_version.prerelease > local_version.prerelease
+    return _prerelease_key(remote_version.prerelease) > _prerelease_key(local_version.prerelease)

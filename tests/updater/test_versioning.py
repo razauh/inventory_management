@@ -18,3 +18,10 @@ def test_is_newer_rejects_same_older_invalid_and_prerelease_by_default():
 
 def test_is_newer_can_include_prerelease():
     assert is_newer("v1.3.0-beta.1", "1.2.3", include_prerelease=True) is True
+
+
+def test_is_newer_handles_numeric_prereleases():
+    assert is_newer("v1.3.0-beta10", "1.3.0-beta2", include_prerelease=True) is True
+    assert is_newer("v1.3.0-beta2", "1.3.0-beta10", include_prerelease=True) is False
+    assert is_newer("v1.3.0-beta.10", "1.3.0-beta.2", include_prerelease=True) is True
+    assert is_newer("v1.3.0-beta.2", "1.3.0-beta.10", include_prerelease=True) is False

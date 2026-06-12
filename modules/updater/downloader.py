@@ -24,7 +24,7 @@ def download_asset(
         raise DownloadError("Only HTTPS downloads are allowed.")
     target_dir = dest_dir or Path(tempfile.mkdtemp(prefix="alhusnain-update-"))
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / asset.name
+    target = target_dir / Path(asset.name).name
     part = target.with_suffix(target.suffix + ".part")
 
     request = urllib.request.Request(asset.download_url, headers={"User-Agent": "Al-Husnain-Updater"})

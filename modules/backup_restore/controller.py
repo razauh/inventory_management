@@ -28,6 +28,7 @@ from PySide6.QtCore import Qt, QObject, Signal, Slot, QCoreApplication, QTimer, 
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
+    QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -166,13 +167,13 @@ class BackupRestoreController(QObject):
         # Nothing long-lived besides QSettings and signals
         self._widget = None
 
-    def open_backup_dialog(self) -> None:
-        self._open_backup_dialog()
+    def open_backup_dialog(self) -> Optional[QDialog]:
+        return self._open_backup_dialog()
 
     def open_restore_dialog(self) -> None:
         self._open_restore_dialog()
 
-    def create_backup_for_update(self, dest_dir: Optional[str] = None) -> bool:
+    def create_backup_for_update(self, dest_dir: Optional[str] = None, parent: Optional[QWidget] = None) -> bool:
         if self._is_job_active():
             self._show_active_job_message()
             return False
@@ -184,12 +185,12 @@ class BackupRestoreController(QObject):
         try:
             base_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
-            QMessageBox.critical(self._widget, "Backup Error", str(exc))
+            QMessageBox.critical(parent or self._widget, "Backup Error", str(exc))
             return False
 
         stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         dest = base_dir / f"Al_Husnain_pre_update_{stamp}.imsdb"
-        prog = ProgressDialog(parent=self._widget or None)
+        prog = ProgressDialog(parent=parent or self._widget or None)
         loop = QEventLoop()
         result = {"ok": False}
 
@@ -315,10 +316,10 @@ class BackupRestoreController(QObject):
     # -------- Dialog launchers --------
 
     @Slot()
-    def _open_backup_dialog(self) -> None:
+    def _open_backup_dialog(self) -> Optional[QDialog]:
         if self._is_job_active():
             self._show_active_job_message()
-            return
+            return None
 
         from .views import BackupDialog, ProgressDialog  # lazy import
         from . import __init__ as pkg_init  # for module title if needed
@@ -329,6 +330,7 @@ class BackupRestoreController(QObject):
         # Wire dialog → start job
         dlg.start_backup.connect(lambda dest: self._start_backup(dest, prog))
         dlg.show()
+        return dlg
 
     @Slot()
     def _open_restore_dialog(self) -> None:
