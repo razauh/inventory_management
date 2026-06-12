@@ -917,6 +917,68 @@ class ReportingRepo:
         return f" AND s.payment_status IN ({marks}) ", list(statuses)
 
     @staticmethod
+    def _historical_status_where(
+        statuses: Optional[Sequence[str]],
+        as_of_date: Optional[str],
+    ) -> tuple[str, list[object]]:
+        if not statuses:
+            return "", []
+        if not as_of_date:
+            marks = ",".join("?" for _ in statuses)
+            return f" AND s.payment_status IN ({marks}) ", list(statuses)
+
+        marks = ",".join("?" for _ in statuses)
+        paid_total_expr = """
+COALESCE((
+  SELECT MAX(0.0, COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0))
+  FROM sale_payments sp
+  WHERE sp.sale_id = s.sale_id
+    AND sp.clearing_state = 'cleared'
+    AND sp.cleared_date IS NOT NULL
+    AND sp.cleared_date <= ?
+), 0.0)
+"""
+        status_expr = f"""
+CASE
+  WHEN {paid_total_expr} + COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
+       >= COALESCE(CAST(s.total_amount AS REAL), 0.0)
+  THEN 'paid'
+  WHEN {paid_total_expr} + COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0) > 0
+  THEN 'partial'
+  ELSE 'unpaid'
+END
+"""
+        where = f" AND ({status_expr}) IN ({marks}) "
+        return where, [as_of_date, as_of_date, *statuses]
+
+    @staticmethod
+    def _historical_status_expr(as_of_date: Optional[str]) -> tuple[str, list[object]]:
+        if not as_of_date:
+            return "s.payment_status", []
+
+        paid_total_expr = """
+COALESCE((
+  SELECT MAX(0.0, COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0))
+  FROM sale_payments sp
+  WHERE sp.sale_id = s.sale_id
+    AND sp.clearing_state = 'cleared'
+    AND sp.cleared_date IS NOT NULL
+    AND sp.cleared_date <= ?
+), 0.0)
+"""
+        status_expr = f"""
+CASE
+  WHEN {paid_total_expr} + COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
+       >= COALESCE(CAST(s.total_amount AS REAL), 0.0)
+  THEN 'paid'
+  WHEN {paid_total_expr} + COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0) > 0
+  THEN 'partial'
+  ELSE 'unpaid'
+END
+"""
+        return status_expr, [as_of_date, as_of_date]
+
+    @staticmethod
     def _customer_where(customer_id: Optional[int]) -> tuple[str, list[object]]:
         if customer_id is None:
             return "", []
@@ -952,16 +1014,16 @@ class ReportingRepo:
         date_from: str,
         date_to: str,
         statuses: Optional[Sequence[str]] = None,
+        status_as_of: Optional[str] = None,
         customer_id: Optional[int] = None,
         product_id: Optional[int] = None,
         category: Optional[str] = None,
     ) -> tuple[str, list[object]]:
         where = " WHERE e.event_date >= ? AND e.event_date <= ? "
         params: list[object] = [date_from, date_to]
-        if statuses:
-            marks = ",".join("?" for _ in statuses)
-            where += f" AND s.payment_status IN ({marks}) "
-            params.extend(statuses)
+        sw, sp = ReportingRepo._historical_status_where(statuses, status_as_of)
+        where += sw
+        params.extend(sp)
         if customer_id is not None:
             where += " AND e.customer_id = ? "
             params.append(customer_id)
@@ -1032,7 +1094,7 @@ class ReportingRepo:
         }.get(granularity, "%Y-%m-%d")
 
         where, params = self._event_where(
-            date_from, date_to, statuses, customer_id, product_id, category
+            date_from, date_to, statuses, date_to, customer_id, product_id, category
         )
 
         sql = f"""
@@ -1060,7 +1122,7 @@ class ReportingRepo:
         category: Optional[str],
     ) -> list[sqlite3.Row]:
         where, params = self._event_where(
-            date_from, date_to, statuses, customer_id, product_id, category
+            date_from, date_to, statuses, date_to, customer_id, product_id, category
         )
         sql = f"""
         SELECT
@@ -1095,7 +1157,7 @@ class ReportingRepo:
     ) -> list[sqlite3.Row]:
         """Net sales, quantity, and COGS by product."""
         where, params = self._event_where(
-            date_from, date_to, statuses, customer_id, product_id, category
+            date_from, date_to, statuses, date_to, customer_id, product_id, category
         )
 
         sql = f"""
@@ -1131,7 +1193,7 @@ class ReportingRepo:
     ) -> list[sqlite3.Row]:
         """Net sales, quantity, and COGS by product category."""
         where, params = self._event_where(
-            date_from, date_to, statuses, customer_id, product_id, category
+            date_from, date_to, statuses, date_to, customer_id, product_id, category
         )
 
         sql = f"""
@@ -1172,7 +1234,7 @@ class ReportingRepo:
         }.get(granularity, "%Y-%m-%d")
 
         where, params = self._event_where(
-            date_from, date_to, statuses, customer_id, product_id, category
+            date_from, date_to, statuses, date_to, customer_id, product_id, category
         )
 
         sql = f"""
@@ -1244,7 +1306,7 @@ class ReportingRepo:
         statuses: Optional[Sequence[str]],
         limit_n: int,
     ) -> list[sqlite3.Row]:
-        where, params = self._event_where(date_from, date_to, statuses)
+        where, params = self._event_where(date_from, date_to, statuses, date_to)
 
         sql = f"""
         SELECT
@@ -1272,7 +1334,7 @@ class ReportingRepo:
         limit_n: int,
     ) -> list[sqlite3.Row]:
         """Rank products by net revenue and quantity."""
-        where, params = self._event_where(date_from, date_to, statuses)
+        where, params = self._event_where(date_from, date_to, statuses, date_to)
 
         sql = f"""
         SELECT
@@ -1376,21 +1438,30 @@ class ReportingRepo:
         category: Optional[str],
     ) -> list[sqlite3.Row]:
         where, params = self._event_where(
-            date_from, date_to, None, customer_id, product_id, category
+            date_from, date_to, None, None, customer_id, product_id, category
         )
+        status_expr, status_params = self._historical_status_expr(date_to)
 
         sql = f"""
+        WITH filtered AS (
+          SELECT
+            {status_expr} AS payment_status,
+            e.event_type,
+            e.sale_id,
+            e.revenue
+          FROM sale_financial_events e
+          JOIN sales s ON s.sale_id = e.sale_id
+          {where}
+        )
         SELECT
-          s.payment_status AS payment_status,
-          COUNT(DISTINCT CASE WHEN e.event_type = 'sale' THEN e.sale_id END) AS order_count,
-          COALESCE(SUM(CAST(e.revenue AS REAL)), 0.0) AS revenue
-        FROM sale_financial_events e
-        JOIN sales s ON s.sale_id = e.sale_id
-        {where}
-        GROUP BY s.payment_status
-        ORDER BY s.payment_status
+          payment_status,
+          COUNT(DISTINCT CASE WHEN event_type = 'sale' THEN sale_id END) AS order_count,
+          COALESCE(SUM(CAST(revenue AS REAL)), 0.0) AS revenue
+        FROM filtered
+        GROUP BY payment_status
+        ORDER BY payment_status
         """
-        return list(self.conn.execute(sql, params))
+        return list(self.conn.execute(sql, [*status_params, *params]))
 
     # ---- Drill-down sales ----
 
@@ -1410,9 +1481,10 @@ class ReportingRepo:
         params: list[object] = [date_from, date_to]
         where = " WHERE s.doc_type = 'sale' AND s.date >= ? AND s.date <= ? "
 
-        sw, sp = self._statuses_where(statuses)
+        sw, sp = self._historical_status_where(statuses, date_to)
         where += sw
         params += sp
+        status_expr, status_params = self._historical_status_expr(date_to)
 
         cw, cp = self._customer_where(customer_id)
         where += cw
@@ -1427,19 +1499,23 @@ class ReportingRepo:
         params += kp
 
         sql = f"""
-        SELECT
-          s.sale_id                       AS sale_id,
-          s.date                          AS date,
-          cu.name                         AS customer_name,
-          s.payment_status                AS payment_status,
-          srt.canonical_total_amount AS total_amount,
-          srt.paid_amount AS paid_amount,
-          srt.advance_payment_applied AS advance_payment_applied,
-          srt.remaining_due AS remaining_due
-        FROM sales s
-        JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-        LEFT JOIN customers cu ON cu.customer_id = s.customer_id
-        {where}
-        ORDER BY s.date DESC, s.sale_id DESC
+        WITH filtered AS (
+          SELECT
+            s.sale_id                       AS sale_id,
+            s.date                          AS date,
+            cu.name                         AS customer_name,
+            {status_expr}                   AS payment_status,
+            srt.canonical_total_amount AS total_amount,
+            srt.paid_amount AS paid_amount,
+            srt.advance_payment_applied AS advance_payment_applied,
+            srt.remaining_due AS remaining_due
+          FROM sales s
+          JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+          LEFT JOIN customers cu ON cu.customer_id = s.customer_id
+          {where}
+        )
+        SELECT *
+        FROM filtered
+        ORDER BY date DESC, sale_id DESC
         """
-        return list(self.conn.execute(sql, params))
+        return list(self.conn.execute(sql, [*status_params, *params]))
