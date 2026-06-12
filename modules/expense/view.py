@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 from PySide6.QtCore import Qt, QDate
-import warnings
 
 
 class ExpenseView(QWidget):
@@ -218,18 +217,7 @@ class ExpenseView(QWidget):
         self.tbl_totals.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self.tbl_totals)
 
-    # Backward compatibility: legacy name for the Print button
-    @property
-    def btn_export_csv(self) -> QPushButton:
-        """
-        Deprecated alias for btn_print (was previously used for CSV export).
-        """
-        warnings.warn(
-            "ExpenseView.btn_export_csv is deprecated; use btn_print instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.btn_print
+
 
     # ----------------------------------------------------------------------
     # Convenience properties for the controller

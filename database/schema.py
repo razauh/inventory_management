@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS expenses (
     category_id INTEGER,
     FOREIGN KEY (category_id) REFERENCES expense_categories(category_id)
 );
+CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
+CREATE INDEX IF NOT EXISTS idx_expenses_category_id_date ON expenses(category_id, date);
 
 /* -------- UoMs & products -------- */
 CREATE TABLE IF NOT EXISTS uoms (

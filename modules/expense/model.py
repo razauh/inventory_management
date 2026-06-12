@@ -23,40 +23,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from ...utils.helpers import fmt_money
 
 
-class ExpenseCategoriesModel(QAbstractTableModel):
-    """Table model for listing expense categories."""
 
-    #: Column headers for the categories table.
-    HEADERS: List[str] = ["ID", "Name"]
-
-    def __init__(self, rows: List[Dict[str, Any]]):
-        super().__init__()
-        self._rows = rows or []
-
-    # Required overrides ---------------------------------------------------
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # type: ignore[override]
-        return len(self._rows)
-
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # type: ignore[override]
-        return len(self.HEADERS)
-
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:  # type: ignore[override]
-        if not index.isValid():
-            return None
-        row = self._rows[index.row()]
-        if role in (Qt.DisplayRole, Qt.EditRole):
-            col = index.column()
-            if col == 0:
-                return row.get("category_id")
-            if col == 1:
-                return row.get("name")
-        return None
-
-    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole) -> Any:  # type: ignore[override]
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.HEADERS[section]
-        return super().headerData(section, orientation, role)
 
 
 class ExpensesTableModel(QAbstractTableModel):
