@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -72,3 +74,42 @@ class UpdateAvailableDialog(QDialog):
     def _install(self) -> None:
         self.choice = "install"
         self.accept()
+
+
+class UpdateProgressDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Downloading Update")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        self._allow_close = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        self.status_label = QLabel("Preparing to download...")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
+
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
+
+    def set_status(self, text: str) -> None:
+        self.status_label.setText(text)
+
+    def set_progress(self, val: int) -> None:
+        self.progress_bar.setValue(val)
+
+    def allow_close(self) -> None:
+        self._allow_close = True
+
+    def closeEvent(self, event) -> None:
+        if self._allow_close:
+            event.accept()
+        else:
+            event.ignore()
