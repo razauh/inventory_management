@@ -61,9 +61,20 @@ class CategoryDialog(QDialog):
         if not name:
             QMessageBox.information(self, "Name", "Enter a category name.")
             return
-        self.repo.create_category(name)
-        self.edt_name.clear()
-        self._reload()
+        try:
+            self.repo.create_category(name)
+            self.edt_name.clear()
+            self._reload()
+        except sqlite3.IntegrityError:
+            QMessageBox.information(
+                self,
+                "Duplicate",
+                "A category with this name already exists."
+            )
+        except DomainError as e:
+            QMessageBox.information(self, "Invalid", str(e))
+        except Exception as e:
+            QMessageBox.information(self, "Error", f"Failed to add category:\n{e}")
 
     def _rename(self):
         cat_id = self._selected_id()
@@ -74,9 +85,20 @@ class CategoryDialog(QDialog):
         if not name:
             QMessageBox.information(self, "Name", "Enter a new name.")
             return
-        self.repo.update_category(cat_id, name)
-        self.edt_name.clear()
-        self._reload()
+        try:
+            self.repo.update_category(cat_id, name)
+            self.edt_name.clear()
+            self._reload()
+        except sqlite3.IntegrityError:
+            QMessageBox.information(
+                self,
+                "Duplicate",
+                "A category with this name already exists."
+            )
+        except DomainError as e:
+            QMessageBox.information(self, "Invalid", str(e))
+        except Exception as e:
+            QMessageBox.information(self, "Error", f"Failed to rename category:\n{e}")
 
     def _delete(self):
         cat_id = self._selected_id()
