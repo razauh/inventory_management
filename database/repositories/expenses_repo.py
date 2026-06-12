@@ -33,6 +33,8 @@ deletion of categories that are still referenced).
 """
 
 import sqlite3
+import math
+from datetime import date as py_date
 from dataclasses import dataclass
 from typing import Optional, List, Dict
 
@@ -328,8 +330,14 @@ class ExpensesRepo:
         """
         if not description or not description.strip():
             raise DomainError("Description cannot be empty.")
-        if amount is None or float(amount) <= 0:
-            raise DomainError("Amount must be positive.")
+        if amount is None or not math.isfinite(amount) or float(amount) <= 0:
+            raise DomainError("Amount must be a finite positive number.")
+        if not date:
+            raise DomainError("Date cannot be empty.")
+        try:
+            py_date.fromisoformat(date)
+        except ValueError:
+            raise DomainError("Date must be in YYYY-MM-DD format.")
         was_in_transaction = self.conn.in_transaction
         desc_n = description.strip()
         cur = self.conn.execute(
@@ -355,8 +363,14 @@ class ExpensesRepo:
         """
         if not description or not description.strip():
             raise DomainError("Description cannot be empty.")
-        if amount is None or float(amount) <= 0:
-            raise DomainError("Amount must be positive.")
+        if amount is None or not math.isfinite(amount) or float(amount) <= 0:
+            raise DomainError("Amount must be a finite positive number.")
+        if not date:
+            raise DomainError("Date cannot be empty.")
+        try:
+            py_date.fromisoformat(date)
+        except ValueError:
+            raise DomainError("Date must be in YYYY-MM-DD format.")
         was_in_transaction = self.conn.in_transaction
         desc_n = description.strip()
         self.conn.execute(

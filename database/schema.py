@@ -83,8 +83,8 @@ CREATE TABLE IF NOT EXISTS expense_categories (
 CREATE TABLE IF NOT EXISTS expenses (
     expense_id  INTEGER PRIMARY KEY AUTOINCREMENT,
     description TEXT   NOT NULL,
-    amount      NUMERIC NOT NULL CHECK (CAST(amount AS REAL) > 0),
-    date        DATE    NOT NULL DEFAULT CURRENT_DATE,
+    amount      NUMERIC NOT NULL CHECK (CAST(amount AS REAL) > 0 AND typeof(amount) IN ('integer', 'real')),
+    date        DATE    NOT NULL DEFAULT CURRENT_DATE CHECK (date LIKE '____-__-__'),
     category_id INTEGER,
     FOREIGN KEY (category_id) REFERENCES expense_categories(category_id)
 );
