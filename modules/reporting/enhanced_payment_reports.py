@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QDateEdit,
+    QComboBox,
     QPushButton,
     QSplitter,
     QFileDialog,
@@ -151,6 +152,13 @@ class EnhancedPaymentReportsTab(QWidget):
         self.dt_to.setDate(today)
         bar.addWidget(self.dt_to)
 
+        bar.addSpacing(8)
+        bar.addWidget(QLabel("Date basis:"))
+        self.cmb_date_basis = QComboBox()
+        self.cmb_date_basis.addItem("Posting date", userData="posting")
+        self.cmb_date_basis.addItem("Cash date", userData="cash")
+        bar.addWidget(self.cmb_date_basis)
+
         bar.addStretch(1)
         self.btn_refresh = QPushButton("Refresh")
         self.btn_pdf = QPushButton("Export PDF…")
@@ -214,8 +222,11 @@ class EnhancedPaymentReportsTab(QWidget):
         # Totals footer
         foot = QHBoxLayout()
         foot.addStretch(1)
+        self.lbl_basis = QLabel("Date basis: Posting date")
         self.lbl_all_total = QLabel("Total: 0.00")
         self.lbl_uncleared_total = QLabel("Uncleared: 0.00")
+        foot.addWidget(self.lbl_basis)
+        foot.addSpacing(16)
         foot.addWidget(self.lbl_all_total)
         foot.addSpacing(16)
         foot.addWidget(self.lbl_uncleared_total)
@@ -227,25 +238,44 @@ class EnhancedPaymentReportsTab(QWidget):
         self.btn_csv.clicked.connect(self._on_export_csv)
         self.dt_from.dateChanged.connect(lambda *_: self.refresh())
         self.dt_to.dateChanged.connect(lambda *_: self.refresh())
+        self.cmb_date_basis.currentIndexChanged.connect(lambda *_: self.refresh())
+
+    def _date_basis_key(self) -> str:
+        return str(self.cmb_date_basis.currentData() or "posting")
+
+    def _date_basis_label(self) -> str:
+        return "Cash date" if self._date_basis_key() == "cash" else "Posting date"
+
+    def _effective_date_expr(self, alias: str) -> str:
+        if self._date_basis_key() == "cash":
+            return (
+                f"CASE WHEN {alias}.clearing_state = 'cleared' "
+                f"AND {alias}.cleared_date IS NOT NULL AND {alias}.cleared_date != '' "
+                f"THEN {alias}.cleared_date ELSE {alias}.date END"
+            )
+        return f"{alias}.date"
 
     # ---- Data refresh ----
     @Slot()
     def refresh(self) -> None:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
+        basis_label = self._date_basis_label()
+        date_expr = self._effective_date_expr
 
         # Get all payments (collections and disbursements)
         all_rows = []
         
         # Collections (sale payments)
         for r in self.repo.conn.execute("""
-            SELECT sp.date, sp.cleared_date, sp.amount, sp.clearing_state as state
+            SELECT sp.date, sp.cleared_date, sp.amount, sp.clearing_state as state,
+                   {date_expr} AS effective_date
             FROM sale_payments sp
-            WHERE sp.date >= ? AND sp.date <= ?
-            ORDER BY sp.date
-        """, (date_from, date_to)):
+            WHERE {date_expr} >= ? AND {date_expr} <= ?
+            ORDER BY effective_date
+        """.format(date_expr=date_expr("sp")), (date_from, date_to)):
             all_rows.append({
-                "date": r["cleared_date"] if r["state"] == "cleared" else r["date"],
+                "date": r["effective_date"],
                 "amount": float(r["amount"] or 0.0),
                 "status": str(r["state"]),
                 "type": "Collection"
@@ -253,13 +283,14 @@ class EnhancedPaymentReportsTab(QWidget):
 
         # Disbursements (purchase payments)
         for r in self.repo.conn.execute("""
-            SELECT pp.date, pp.cleared_date, pp.amount, pp.clearing_state as state
+            SELECT pp.date, pp.cleared_date, pp.amount, pp.clearing_state as state,
+                   {date_expr} AS effective_date
             FROM purchase_payments pp
-            WHERE pp.date >= ? AND pp.date <= ?
-            ORDER BY pp.date
-        """, (date_from, date_to)):
+            WHERE {date_expr} >= ? AND {date_expr} <= ?
+            ORDER BY effective_date
+        """.format(date_expr=date_expr("pp")), (date_from, date_to)):
             all_rows.append({
-                "date": r["cleared_date"] if r["state"] == "cleared" else r["date"],
+                "date": r["effective_date"],
                 "amount": float(r["amount"] or 0.0),
                 "status": str(r["state"]),
                 "type": "Disbursement"
@@ -267,13 +298,14 @@ class EnhancedPaymentReportsTab(QWidget):
 
         # Vendor refunds (purchase_refunds)
         for r in self.repo.conn.execute("""
-            SELECT pr.date, pr.cleared_date, pr.amount, pr.clearing_state as state
+            SELECT pr.date, pr.cleared_date, pr.amount, pr.clearing_state as state,
+                   {date_expr} AS effective_date
             FROM purchase_refunds pr
-            WHERE pr.date >= ? AND pr.date <= ?
-            ORDER BY pr.date
-        """, (date_from, date_to)):
+            WHERE {date_expr} >= ? AND {date_expr} <= ?
+            ORDER BY effective_date
+        """.format(date_expr=date_expr("pr")), (date_from, date_to)):
             all_rows.append({
-                "date": r["cleared_date"] if r["state"] == "cleared" else r["date"],
+                "date": r["effective_date"],
                 "amount": float(r["amount"] or 0.0),
                 "status": str(r["state"]),
                 "type": "Vendor Refund"
@@ -291,9 +323,10 @@ class EnhancedPaymentReportsTab(QWidget):
         # Update UI
         self.lbl_all_total.setText(f"Total: {fmt_money(all_total)}")
         self.lbl_uncleared_total.setText(f"Uncleared: {fmt_money(uncleared_total)}")
+        self.lbl_basis.setText(f"Date basis: {basis_label}")
         
         # All payments title
-        self.lbl_all_title.setText(f"<b>All Payments</b> — {date_from} to {date_to}")
+        self.lbl_all_title.setText(f"<b>All Payments</b> — {date_from} to {date_to} ({basis_label})")
         
         # By status table (same as all, but we could group differently)
         self.model_status.set_rows(all_rows)
@@ -303,8 +336,8 @@ class EnhancedPaymentReportsTab(QWidget):
         self.model_uncleared.set_rows(uncleared_rows)
         
         # Update titles
-        self.lbl_status_title.setText(f"<b>Payments by Status</b> — {date_from} to {date_to}")
-        self.lbl_uncleared_title.setText(f"<b>Uncleared Payments</b> — {date_from} to {date_to}")
+        self.lbl_status_title.setText(f"<b>Payments by Status</b> — {date_from} to {date_to} ({basis_label})")
+        self.lbl_uncleared_title.setText(f"<b>Uncleared Payments</b> — {date_from} to {date_to} ({basis_label})")
 
         # Auto-size tables
         self._autosize(self.tbl_all)
@@ -330,6 +363,10 @@ class EnhancedPaymentReportsTab(QWidget):
             import csv
             with open(fn, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
+                w.writerow(["Report", "Enhanced Payments"])
+                w.writerow(["Date basis", self._date_basis_label()])
+                w.writerow(["Period", f"{self.dt_from.date().toString('yyyy-MM-dd')} to {self.dt_to.date().toString('yyyy-MM-dd')}"])
+                w.writerow([])
                 w.writerow(["All Payments"])
                 w.writerow(["Date", "Amount", "Status", "Type"])
                 for r in self._rows_all_payments:
@@ -345,6 +382,7 @@ class EnhancedPaymentReportsTab(QWidget):
     def _html_export(self) -> str:
         df = self.dt_from.date().toString("yyyy-MM-dd")
         dt = self.dt_to.date().toString("yyyy-MM-dd")
+        basis_label = self._date_basis_label()
 
         def _table(title: str, rows: List[dict]) -> str:
             if not rows:
@@ -368,6 +406,7 @@ class EnhancedPaymentReportsTab(QWidget):
         html = [
             "<h2>Enhanced Payment Reports</h2>",
             f"<p><b>Period:</b> {df} to {dt}</p>",
+            f"<p><b>Date basis:</b> {basis_label}</p>",
             _table("All Payments", self._rows_all_payments),
             f"<p><b>Total Payments:</b> {fmt_money(total_all)}</p>",
             _table("Uncleared Payments", self._rows_uncleared),

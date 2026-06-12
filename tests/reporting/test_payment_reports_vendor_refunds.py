@@ -125,3 +125,97 @@ def test_comprehensive_payment_models_use_field_keys() -> None:
     assert detailed_model.data(detailed_model.index(0, 0), Qt.DisplayRole) == "2026-06-12"
     assert detailed_model.data(detailed_model.index(0, 5), Qt.DisplayRole) == "PO-REFUND"
     assert detailed_model.data(detailed_model.index(0, 2), Qt.DisplayRole) == "15.00"
+
+
+def test_enhanced_payment_reports_follow_selected_date_basis(app, qtbot) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SQL)
+    vendor_id = conn.execute(
+        "INSERT INTO vendors (name, contact_info) VALUES (?, ?)",
+        ("Basis Vendor", "basis@example.com"),
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO purchases (
+            purchase_id, vendor_id, date, total_amount, order_discount,
+            payment_status, paid_amount, advance_payment_applied, notes, created_by
+        ) VALUES ('PO-BASIS', ?, '2026-06-10', 50.0, 0.0, 'partial', 50.0, 0.0, NULL, NULL)
+        """,
+        (int(vendor_id),),
+    )
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, cleared_date, clearing_state
+        ) VALUES ('PO-BASIS', '2026-06-10', 50.0, 'Cash', '2026-06-12', 'cleared')
+        """
+    )
+
+    try:
+        tab = EnhancedPaymentReportsTab(conn)
+        qtbot.addWidget(tab)
+
+        tab.cmb_date_basis.setCurrentIndex(0)
+        tab.dt_from.setDate(QDate.fromString("2026-06-10", "yyyy-MM-dd"))
+        tab.dt_to.setDate(QDate.fromString("2026-06-10", "yyyy-MM-dd"))
+        tab.refresh()
+        assert [row["date"] for row in tab._rows_all_payments] == ["2026-06-10"]
+        assert "Posting date" in tab.lbl_all_title.text()
+
+        tab.cmb_date_basis.setCurrentIndex(1)
+        tab.dt_from.setDate(QDate.fromString("2026-06-12", "yyyy-MM-dd"))
+        tab.dt_to.setDate(QDate.fromString("2026-06-12", "yyyy-MM-dd"))
+        tab.refresh()
+        assert [row["date"] for row in tab._rows_all_payments] == ["2026-06-12"]
+        assert "Cash date" in tab.lbl_all_title.text()
+
+        tab.cmb_date_basis.setCurrentIndex(0)
+        tab.dt_from.setDate(QDate.fromString("2026-06-12", "yyyy-MM-dd"))
+        tab.dt_to.setDate(QDate.fromString("2026-06-12", "yyyy-MM-dd"))
+        tab.refresh()
+        assert tab._rows_all_payments == []
+    finally:
+        conn.close()
+
+
+def test_comprehensive_payment_reports_follow_selected_date_basis() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SQL)
+    vendor_id = conn.execute(
+        "INSERT INTO vendors (name, contact_info) VALUES (?, ?)",
+        ("Basis Vendor", "basis@example.com"),
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO purchases (
+            purchase_id, vendor_id, date, total_amount, order_discount,
+            payment_status, paid_amount, advance_payment_applied, notes, created_by
+        ) VALUES ('PO-BASIS', ?, '2026-06-10', 50.0, 0.0, 'partial', 50.0, 0.0, NULL, NULL)
+        """,
+        (int(vendor_id),),
+    )
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, cleared_date, clearing_state
+        ) VALUES ('PO-BASIS', '2026-06-10', 50.0, 'Cash', '2026-06-12', 'cleared')
+        """
+    )
+
+    try:
+        reports = ComprehensivePaymentReports(conn)
+
+        posting_rows = reports.all_payments_detailed("2026-06-10", "2026-06-10", date_basis="posting")
+        assert [row["date"] for row in posting_rows] == ["2026-06-10"]
+
+        cash_rows = reports.all_payments_detailed("2026-06-12", "2026-06-12", date_basis="cash")
+        assert [row["date"] for row in cash_rows] == ["2026-06-12"]
+
+        no_rows = reports.all_payments_detailed("2026-06-12", "2026-06-12", date_basis="posting")
+        assert no_rows == []
+    finally:
+        conn.close()

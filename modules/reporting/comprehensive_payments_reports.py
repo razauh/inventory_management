@@ -139,15 +139,31 @@ class ComprehensivePaymentReports:
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
         self.repo = ReportingRepo(conn)
+
+    @staticmethod
+    def _date_basis_label(date_basis: str) -> str:
+        return "Cash date" if date_basis == "cash" else "Posting date"
+
+    @staticmethod
+    def _date_expr(alias: str, date_basis: str) -> str:
+        if date_basis == "cash":
+            return (
+                f"CASE WHEN {alias}.clearing_state = 'cleared' "
+                f"AND {alias}.cleared_date IS NOT NULL AND {alias}.cleared_date != '' "
+                f"THEN {alias}.cleared_date ELSE {alias}.date END"
+            )
+        return f"{alias}.date"
     
     def payments_summary_by_status(
         self, 
         date_from: str, 
         date_to: str, 
-        payment_type: Optional[str] = None  # 'collection' or 'disbursement' or None for both
+        payment_type: Optional[str] = None,  # 'collection' or 'disbursement' or None for both
+        date_basis: str = "posting",
     ) -> List[Dict]:
         """Get payment summary grouped by status"""
-        where_clause = "WHERE p.date >= ? AND p.date <= ?"
+        date_expr = self._date_expr("p", date_basis)
+        where_clause = f"WHERE {date_expr} >= ? AND {date_expr} <= ?"
         params = [date_from, date_to]
         
         query = f"""
@@ -200,15 +216,20 @@ class ComprehensivePaymentReports:
         self, 
         date_from: str, 
         date_to: str, 
-        payment_type: Optional[str] = None
+        payment_type: Optional[str] = None,
+        date_basis: str = "posting",
     ) -> List[Dict]:
         """Get payments that are not cleared (posted/pending)"""
-        where_clause = "WHERE p.date >= ? AND p.date <= ? AND p.clearing_state IN ('posted', 'pending')"
+        date_expr = self._date_expr("p", date_basis)
+        where_clause = (
+            f"WHERE {date_expr} >= ? AND {date_expr} <= ? "
+            "AND p.clearing_state IN ('posted', 'pending')"
+        )
         params = [date_from, date_to]
         
         query = f"""
         SELECT 
-            p.date,
+            {date_expr} AS date,
             'Collection' AS type,
             p.amount,
             p.method,
@@ -221,7 +242,7 @@ class ComprehensivePaymentReports:
         UNION ALL
         
         SELECT 
-            p.date,
+            {date_expr} AS date,
             'Disbursement' AS type,
             p.amount,
             p.method,
@@ -234,7 +255,7 @@ class ComprehensivePaymentReports:
         UNION ALL
 
         SELECT 
-            p.date,
+            {date_expr} AS date,
             'Vendor Refund' AS type,
             p.amount,
             p.method,
@@ -244,7 +265,7 @@ class ComprehensivePaymentReports:
         FROM purchase_refunds p
         {where_clause}
         ORDER BY date DESC
-        """
+        """.format(date_expr=date_expr)
         
         rows = list(self.conn.execute(query, params * 3))
         result = []
@@ -264,15 +285,17 @@ class ComprehensivePaymentReports:
         self, 
         date_from: str, 
         date_to: str, 
-        payment_type: Optional[str] = None
+        payment_type: Optional[str] = None,
+        date_basis: str = "posting",
     ) -> List[Dict]:
         """Get all payments with full details"""
-        where_clause = "WHERE p.date >= ? AND p.date <= ?"
+        date_expr = self._date_expr("p", date_basis)
+        where_clause = f"WHERE {date_expr} >= ? AND {date_expr} <= ?"
         params = [date_from, date_to]
         
         query = f"""
         SELECT 
-            p.date,
+            {date_expr} AS date,
             'Collection' AS type,
             p.amount,
             p.method,
@@ -285,7 +308,7 @@ class ComprehensivePaymentReports:
         UNION ALL
         
         SELECT 
-            p.date,
+            {date_expr} AS date,
             'Disbursement' AS type,
             p.amount,
             p.method,
@@ -298,7 +321,7 @@ class ComprehensivePaymentReports:
         UNION ALL
 
         SELECT 
-            p.date,
+            {date_expr} AS date,
             'Vendor Refund' AS type,
             p.amount,
             p.method,
@@ -308,7 +331,7 @@ class ComprehensivePaymentReports:
         FROM purchase_refunds p
         {where_clause}
         ORDER BY date DESC, type
-        """
+        """.format(date_expr=date_expr)
         
         rows = list(self.conn.execute(query, params * 3))
         result = []
@@ -365,6 +388,12 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.dt_to.setDisplayFormat("yyyy-MM-dd")
         self.dt_to.setDate(today)
         filter_layout.addWidget(self.dt_to)
+
+        filter_layout.addWidget(QLabel("Date basis:"))
+        self.cmb_date_basis = QComboBox()
+        self.cmb_date_basis.addItem("Posting date", userData="posting")
+        self.cmb_date_basis.addItem("Cash date", userData="cash")
+        filter_layout.addWidget(self.cmb_date_basis)
         
         filter_layout.addStretch(1)
         
@@ -389,7 +418,8 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.model_summary = _PaymentSummaryTableModel([])
         self.tbl_summary.setModel(self.model_summary)
         
-        summary_layout.addWidget(QLabel("<b>Payments Summary by Status</b>"))
+        self.lbl_summary_title = QLabel("<b>Payments Summary by Status</b>")
+        summary_layout.addWidget(self.lbl_summary_title)
         summary_layout.addWidget(self.tbl_summary)
         self.tabs.addTab(summary_widget, "By Status")
         
@@ -403,7 +433,8 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.model_unprocessed = _DetailedPaymentsTableModel([])
         self.tbl_unprocessed.setModel(self.model_unprocessed)
         
-        unprocessed_layout.addWidget(QLabel("<b>Unprocessed Payments (Posted/Pending)</b>"))
+        self.lbl_unprocessed_title = QLabel("<b>Unprocessed Payments (Posted/Pending)</b>")
+        unprocessed_layout.addWidget(self.lbl_unprocessed_title)
         unprocessed_layout.addWidget(self.tbl_unprocessed)
         self.tabs.addTab(unprocessed_widget, "Unprocessed")
         
@@ -417,7 +448,8 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.model_detailed = _DetailedPaymentsTableModel([])
         self.tbl_detailed.setModel(self.model_detailed)
         
-        all_layout.addWidget(QLabel("<b>All Payments</b>"))
+        self.lbl_detailed_title = QLabel("<b>All Payments</b>")
+        all_layout.addWidget(self.lbl_detailed_title)
         all_layout.addWidget(self.tbl_detailed)
         self.tabs.addTab(all_widget, "All Payments")
         
@@ -426,8 +458,11 @@ class ComprehensivePaymentReportsTab(QWidget):
         # Footer with totals
         footer_layout = QHBoxLayout()
         footer_layout.addStretch(1)
+        self.lbl_basis = QLabel("Date basis: Posting date")
         self.lbl_summary_total = QLabel("Summary Total: 0.00")
         self.lbl_unprocessed_total = QLabel("Unprocessed Total: 0.00")
+        footer_layout.addWidget(self.lbl_basis)
+        footer_layout.addSpacing(12)
         footer_layout.addWidget(self.lbl_summary_total)
         footer_layout.addWidget(self.lbl_unprocessed_total)
         layout.addLayout(footer_layout)
@@ -437,27 +472,34 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.btn_export.clicked.connect(self._export_all)
         self.dt_from.dateChanged.connect(self.refresh)
         self.dt_to.dateChanged.connect(self.refresh)
+        self.cmb_date_basis.currentIndexChanged.connect(lambda *_: self.refresh())
     
     @Slot()
     def refresh(self) -> None:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
+        date_basis = str(self.cmb_date_basis.currentData() or "posting")
+        basis_label = ComprehensivePaymentReports._date_basis_label(date_basis)
         
         # Load summary by status
-        self._rows_summary = self.logic.payments_summary_by_status(date_from, date_to)
+        self._rows_summary = self.logic.payments_summary_by_status(date_from, date_to, date_basis=date_basis)
         self.model_summary.set_rows(self._rows_summary)
         summary_total = sum(r.get("total_amount", 0.0) for r in self._rows_summary)
         self.lbl_summary_total.setText(f"Summary Total: {fmt_money(summary_total)}")
         
         # Load unprocessed payments
-        self._rows_unprocessed = self.logic.unprocessed_payments(date_from, date_to)
+        self._rows_unprocessed = self.logic.unprocessed_payments(date_from, date_to, date_basis=date_basis)
         self.model_unprocessed.set_rows(self._rows_unprocessed)
         unprocessed_total = sum(r.get("amount", 0.0) for r in self._rows_unprocessed)
         self.lbl_unprocessed_total.setText(f"Unprocessed Total: {fmt_money(unprocessed_total)}")
         
         # Load all payments
-        self._rows_detailed = self.logic.all_payments_detailed(date_from, date_to)
+        self._rows_detailed = self.logic.all_payments_detailed(date_from, date_to, date_basis=date_basis)
         self.model_detailed.set_rows(self._rows_detailed)
+        self.lbl_basis.setText(f"Date basis: {basis_label}")
+        self.lbl_summary_title.setText(f"<b>Payments Summary by Status</b> — {date_from} to {date_to} ({basis_label})")
+        self.lbl_unprocessed_title.setText(f"<b>Unprocessed Payments (Posted/Pending)</b> — {date_from} to {date_to} ({basis_label})")
+        self.lbl_detailed_title.setText(f"<b>All Payments</b> — {date_from} to {date_to} ({basis_label})")
         
         # Resize columns
         self._resize_table(self.tbl_summary)
@@ -481,6 +523,11 @@ class ComprehensivePaymentReportsTab(QWidget):
             import csv
             with open(fn, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
+                
+                writer.writerow(["Report", "Comprehensive Payments"])
+                writer.writerow(["Date basis", self.lbl_basis.text().replace("Date basis: ", "")])
+                writer.writerow(["Period", f"{self.dt_from.date().toString('yyyy-MM-dd')} to {self.dt_to.date().toString('yyyy-MM-dd')}"])
+                writer.writerow([])
                 
                 # Write summary data
                 writer.writerow(["PAYMENT SUMMARY BY STATUS"])

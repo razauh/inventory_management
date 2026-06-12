@@ -1295,19 +1295,37 @@ class ReportingRepo:
     def returns_summary(self, date_from: str, date_to: str) -> list[sqlite3.Row]:
         """
         Sale return indicators:
-          - refunds_sum: SUM of negative sale_payments.amount between dates (any clearing_state)
-          - returns_qty_base: returned base quantity
-          - returns_value: immutable returned revenue value
-          - cogs_reversed: immutable original-sale COGS reversal
+          - Requested Refunds: SUM of negative sale_payments.amount by posting date
+          - Cleared Refunds: SUM of negative sale_payments.amount by cleared_date,
+            limited to clearing_state='cleared'
+          - Returned Qty (base): returned base quantity
+          - Return Value: immutable returned revenue value
+          - COGS Reversed: immutable original-sale COGS reversal
         """
-        # refunds (negative payments)
-        sql_refunds = """
+        # Refund requests follow posting date.
+        sql_requested_refunds = """
         SELECT COALESCE(SUM(CASE WHEN CAST(sp.amount AS REAL) < 0 THEN CAST(sp.amount AS REAL) ELSE 0 END), 0.0) AS refunds_sum
         FROM sale_payments sp
         WHERE sp.date >= ? AND sp.date <= ?
         """
-        refunds = self.conn.execute(sql_refunds, (date_from, date_to)).fetchone()
-        refunds_sum = float(refunds["refunds_sum"] if refunds and refunds["refunds_sum"] is not None else 0.0)
+        requested = self.conn.execute(sql_requested_refunds, (date_from, date_to)).fetchone()
+        requested_refunds_sum = float(
+            requested["refunds_sum"] if requested and requested["refunds_sum"] is not None else 0.0
+        )
+
+        # Cleared cash follows cleared_date and cleared state.
+        sql_cleared_refunds = """
+        SELECT COALESCE(SUM(CASE WHEN CAST(sp.amount AS REAL) < 0 THEN CAST(sp.amount AS REAL) ELSE 0 END), 0.0) AS refunds_sum
+        FROM sale_payments sp
+        WHERE sp.clearing_state = 'cleared'
+          AND sp.cleared_date IS NOT NULL
+          AND sp.cleared_date >= ?
+          AND sp.cleared_date <= ?
+        """
+        cleared = self.conn.execute(sql_cleared_refunds, (date_from, date_to)).fetchone()
+        cleared_refunds_sum = float(
+            cleared["refunds_sum"] if cleared and cleared["refunds_sum"] is not None else 0.0
+        )
 
         # returns qty (base)
         sql_qty = """
@@ -1335,15 +1353,17 @@ class ReportingRepo:
 
         # Return as rows {metric, value}
         cur = self.conn.cursor()
-        cur.execute("SELECT ? AS metric, ? AS value", ("refunds_sum", refunds_sum))
+        cur.execute("SELECT ? AS metric, ? AS value", ("Requested Refunds", requested_refunds_sum))
         row1 = cur.fetchone()
-        cur.execute("SELECT ? AS metric, ? AS value", ("returns_qty_base", qty_base))
+        cur.execute("SELECT ? AS metric, ? AS value", ("Cleared Refunds", cleared_refunds_sum))
         row2 = cur.fetchone()
-        cur.execute("SELECT ? AS metric, ? AS value", ("returns_value", returns_value))
+        cur.execute("SELECT ? AS metric, ? AS value", ("Returned Qty (base)", qty_base))
         row3 = cur.fetchone()
-        cur.execute("SELECT ? AS metric, ? AS value", ("cogs_reversed", cogs_reversed))
+        cur.execute("SELECT ? AS metric, ? AS value", ("Return Value", returns_value))
         row4 = cur.fetchone()
-        return [row1, row2, row3, row4]
+        cur.execute("SELECT ? AS metric, ? AS value", ("COGS Reversed", cogs_reversed))
+        row5 = cur.fetchone()
+        return [row1, row2, row3, row4, row5]
 
     # ---- Status breakdown ----
 
