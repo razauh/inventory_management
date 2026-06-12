@@ -1119,6 +1119,17 @@ class SalesController(BaseModule):
         try:
             from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
             pay_repo = SalePaymentsRepo(self._db_path)
+            payment = pay_repo.get(payment_id)
+            selected = self._selected_row()
+            if (
+                payment is None
+                or selected is None
+                or str(payment["sale_id"]) != str(selected["sale_id"])
+                or str(payment["clearing_state"]).lower() != "pending"
+            ):
+                info(self.view, "Update failed", "Select a pending payment from the current sale.")
+                self._sync_details()
+                return
             cleared_date = today_str() if new == "cleared" else None
             pay_repo.update_clearing_state(
                 payment_id=payment_id,

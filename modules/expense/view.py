@@ -186,6 +186,12 @@ class ExpenseView(QWidget):
 
         # stretch to keep filters compact on the left
         adv_row.addStretch(1)
+
+        self.lbl_filter_error = QLabel("")
+        self.lbl_filter_error.setStyleSheet("color: red; font-weight: bold;")
+        self.lbl_filter_error.setVisible(False)
+        adv_row.addWidget(self.lbl_filter_error)
+
         root.addLayout(adv_row)
 
         # ------------------------------------------------------------------

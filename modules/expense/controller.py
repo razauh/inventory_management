@@ -133,13 +133,19 @@ class ExpenseController(BaseModule):
             self.view.amount_min.setStyleSheet("")
             self.view.amount_max.setStyleSheet("")
 
-        if date_range_invalid or amount_range_invalid:
-            model = ExpensesTableModel([])
-            self.view.tbl_expenses.setModel(model)
-            m_totals = QStandardItemModel()
-            m_totals.setHorizontalHeaderLabels(["Category", "Invalid Filter Range"])
-            self.view.tbl_totals.setModel(m_totals)
+        errors = []
+        if date_range_invalid:
+            errors.append("From date > To date")
+        if amount_range_invalid:
+            errors.append("Min amount > Max amount")
+
+        if errors:
+            self.view.lbl_filter_error.setText(" | ".join(errors))
+            self.view.lbl_filter_error.setVisible(True)
             return
+        else:
+            self.view.lbl_filter_error.setVisible(False)
+            self.view.lbl_filter_error.setText("")
 
         rows = self.repo.search_expenses_adv(
             query=query,
