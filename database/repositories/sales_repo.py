@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+import math
 import sqlite3
 from typing import Iterable, Optional
 
@@ -178,6 +179,43 @@ class SalesRepo:
     # ---------------------------------------------------------------------
     # INTERNAL WRITES
     # ---------------------------------------------------------------------
+    @staticmethod
+    def _validate_financials(
+        header: SaleHeader, items: Iterable[SaleItem]
+    ) -> list[SaleItem]:
+        item_list = list(items)
+        if not item_list:
+            raise ValueError("At least one sale item is required")
+
+        subtotal = 0.0
+        for index, item in enumerate(item_list, start=1):
+            quantity = float(item.quantity)
+            unit_price = float(item.unit_price)
+            item_discount = float(item.item_discount)
+            if not all(math.isfinite(value) for value in (quantity, unit_price, item_discount)):
+                raise ValueError(f"Sale item {index} contains a non-finite financial value")
+            if quantity <= 0:
+                raise ValueError(f"Sale item {index} quantity must be greater than zero")
+            if unit_price < 0:
+                raise ValueError(f"Sale item {index} unit price cannot be negative")
+            if item_discount < 0:
+                raise ValueError(f"Sale item {index} discount cannot be negative")
+            if item_discount > unit_price:
+                raise ValueError(f"Sale item {index} discount cannot exceed unit price")
+            subtotal += quantity * (unit_price - item_discount)
+
+        order_discount = float(header.order_discount)
+        if not math.isfinite(order_discount):
+            raise ValueError("Order discount must be a finite number")
+        if order_discount < 0:
+            raise ValueError("Order discount cannot be negative")
+        if order_discount > subtotal + 1e-9:
+            raise ValueError("Order discount cannot exceed the net subtotal")
+
+        header.order_discount = order_discount
+        header.total_amount = max(0.0, subtotal - order_discount)
+        return item_list
+
     def _insert_header(self, h: SaleHeader):
         """
         Insert a SALE header (doc_type defaults to 'sale' in schema).
@@ -337,6 +375,7 @@ class SalesRepo:
         Create a SALE (doc_type='sale') and post inventory for each item.
         Optionally records an initial payment atomically in the same transaction.
         """
+        items = self._validate_financials(header, items)
         with self.conn:
             self._check_stock_availability(items)
             self._insert_header(header)
@@ -367,6 +406,7 @@ class SalesRepo:
         """
         Update a SALE (doc_type must be 'sale'). Rebuild items & inventory.
         """
+        items = self._validate_financials(header, items)
         with self.conn:
             # Ensure we’re editing a sale row
             row = self.conn.execute(
@@ -472,6 +512,7 @@ class SalesRepo:
         Create a QUOTATION: insert sales row with doc_type='quotation', quotation_status,
         zeroed payment fields, and items — NO inventory postings.
         """
+        items = self._validate_financials(header, items)
         with self.conn:
             # Insert header explicitly as quotation (enforce payment fields per schema)
             self.conn.execute(
@@ -516,6 +557,7 @@ class SalesRepo:
         Update a QUOTATION: rebuild items; keep doc_type='quotation';
         enforce payment fields to zero/unpaid.
         """
+        items = self._validate_financials(header, items)
         with self.conn:
             row = self.conn.execute("SELECT doc_type FROM sales WHERE sale_id=?", (header.sale_id,)).fetchone()
             if not row or row["doc_type"] != "quotation":
@@ -591,15 +633,47 @@ class SalesRepo:
                     f"Quotation {qo_id} has status '{qh['quotation_status']}' and cannot be converted."
                 )
 
-            # Optionally re-derive totals from view; fallback to header values
-            tot = self.conn.execute(
+            q_items = self.conn.execute(
                 """
-                SELECT CAST(calculated_total_amount AS REAL) AS total_after_od
-                FROM sale_detailed_totals WHERE sale_id=?
+                SELECT product_id,
+                       CAST(quantity AS REAL)      AS quantity,
+                       uom_id,
+                       CAST(unit_price AS REAL)    AS unit_price,
+                       CAST(item_discount AS REAL) AS item_discount
+                  FROM sale_items
+                 WHERE sale_id=?
+                 ORDER BY item_id
                 """,
                 (qo_id,),
-            ).fetchone()
-            total_amount = float(tot["total_after_od"]) if tot and tot["total_after_od"] is not None else float(qh["total_amount"])
+            ).fetchall()
+            converted_items = [
+                SaleItem(
+                    item_id=None,
+                    sale_id=new_so_id,
+                    product_id=int(item["product_id"]),
+                    quantity=float(item["quantity"]),
+                    uom_id=int(item["uom_id"]),
+                    unit_price=float(item["unit_price"]),
+                    item_discount=float(item["item_discount"]),
+                )
+                for item in q_items
+            ]
+            converted_header = SaleHeader(
+                sale_id=new_so_id,
+                customer_id=int(qh["customer_id"]),
+                date=date,
+                total_amount=float(qh["total_amount"]),
+                order_discount=float(qh["order_discount"] or 0.0),
+                payment_status="unpaid",
+                paid_amount=0.0,
+                advance_payment_applied=0.0,
+                notes=qh["notes"],
+                created_by=created_by,
+                source_type="quotation",
+                source_id=qo_id,
+            )
+            converted_items = self._validate_financials(converted_header, converted_items)
+            self._check_stock_availability(converted_items)
 
             # Insert new SALE header (doc_type defaults to 'sale')
             self.conn.execute(
@@ -614,35 +688,18 @@ class SalesRepo:
                 """,
                 (
                     new_so_id,
-                    int(qh["customer_id"]),
-                    date,
-                    total_amount,
-                    float(qh["order_discount"] or 0.0),
-                    qh["notes"],
-                    created_by,
-                    qo_id,
+                    converted_header.customer_id,
+                    converted_header.date,
+                    converted_header.total_amount,
+                    converted_header.order_discount,
+                    converted_header.notes,
+                    converted_header.created_by,
+                    converted_header.source_id,
                 ),
             )
 
-            # Copy items from quotation
-            q_items = self.conn.execute(
-                """
-                SELECT product_id,
-                       CAST(quantity AS REAL)      AS quantity,
-                       uom_id,
-                       CAST(unit_price AS REAL)    AS unit_price,
-                       CAST(item_discount AS REAL) AS item_discount
-                  FROM sale_items
-                 WHERE sale_id=?
-                 ORDER BY item_id
-                """,
-                (qo_id,),
-            ).fetchall()
-
-            self._check_stock_availability(q_items)
-
             # Insert items for the new sale + inventory postings
-            for qi in q_items:
+            for item in converted_items:
                 cur = self.conn.execute(
                     """
                     INSERT INTO sale_items (
@@ -651,11 +708,11 @@ class SalesRepo:
                     """,
                     (
                         new_so_id,
-                        int(qi["product_id"]),
-                        float(qi["quantity"]),
-                        int(qi["uom_id"]),
-                        float(qi["unit_price"]),
-                        float(qi["item_discount"]),
+                        item.product_id,
+                        item.quantity,
+                        item.uom_id,
+                        item.unit_price,
+                        item.item_discount,
                     ),
                 )
                 new_item_id = int(cur.lastrowid)
@@ -663,9 +720,9 @@ class SalesRepo:
                 # Inventory posting for SALE
                 self._insert_inventory_sale(
                     item_id=new_item_id,
-                    product_id=int(qi["product_id"]),
-                    uom_id=int(qi["uom_id"]),
-                    qty=float(qi["quantity"]),
+                    product_id=item.product_id,
+                    uom_id=item.uom_id,
+                    qty=item.quantity,
                     sid=new_so_id,
                     date=date,
                     created_by=created_by,

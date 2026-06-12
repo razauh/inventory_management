@@ -1,4 +1,5 @@
 import re
+import math
 
 import logging
 from PySide6.QtWidgets import (
@@ -920,6 +921,10 @@ class SaleForm(QDialog):
                 disc  = num(7)
 
                 row_has_errors = False
+                if not all(math.isfinite(value) for value in (qty, unit, disc)):
+                    msg = f"Row {r+1}: Quantity, Unit Price, and Discount must be finite numbers."
+                    errors.append(msg)
+                    row_has_errors = True
                 if qty <= 0:
                     msg = f"Row {r+1}: Quantity must be greater than 0."
                     errors.append(msg)
@@ -930,6 +935,10 @@ class SaleForm(QDialog):
                     row_has_errors = True
                 if disc < 0:
                     msg = f"Row {r+1}: Discount cannot be negative."
+                    errors.append(msg)
+                    row_has_errors = True
+                elif disc > unit:
+                    msg = f"Row {r+1}: Discount cannot exceed Unit Price."
                     errors.append(msg)
                     row_has_errors = True
 
@@ -998,12 +1007,23 @@ class SaleForm(QDialog):
         try:
             od = float(self.txt_discount.text() or 0)
         except Exception:
-            od = 0.0
+            self._warn("Invalid Order Discount", "Order Discount must be a valid number.", self.txt_discount)
+            return None
 
         # reuse your totals helpers
         sub_raw = self._calc_raw_subtotal()
         line_disc = self._calc_line_discount()
-        total = max(0.0, sub_raw - (line_disc + od))
+        net_subtotal = sub_raw - line_disc
+        if not math.isfinite(od):
+            self._warn("Invalid Order Discount", "Order Discount must be a finite number.", self.txt_discount)
+            return None
+        if od < 0:
+            self._warn("Invalid Order Discount", "Order Discount cannot be negative.", self.txt_discount)
+            return None
+        if od > net_subtotal + 1e-9:
+            self._warn("Invalid Order Discount", "Order Discount cannot exceed the net subtotal.", self.txt_discount)
+            return None
+        total = max(0.0, net_subtotal - od)
 
         payload = {
             "customer_id": int(cid),

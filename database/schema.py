@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
     uom_id        INTEGER NOT NULL,
     unit_price    NUMERIC NOT NULL CHECK (CAST(unit_price AS REAL) >= 0),
     item_discount NUMERIC NOT NULL DEFAULT 0 CHECK (CAST(item_discount AS REAL) >= 0),
+    CHECK (CAST(item_discount AS REAL) <= CAST(unit_price AS REAL)),
     FOREIGN KEY (sale_id)                 REFERENCES sales(sale_id) ON DELETE CASCADE,
     FOREIGN KEY (product_id)              REFERENCES products(product_id),
     FOREIGN KEY (uom_id)                  REFERENCES uoms(uom_id),
@@ -259,6 +260,24 @@ CREATE TABLE IF NOT EXISTS sale_items (
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale    ON sale_items(sale_id);
 CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
 CREATE INDEX IF NOT EXISTS idx_sale_items_uom     ON sale_items(uom_id);
+
+DROP TRIGGER IF EXISTS trg_sale_items_discount_bound_ins;
+CREATE TRIGGER trg_sale_items_discount_bound_ins
+BEFORE INSERT ON sale_items
+FOR EACH ROW
+WHEN CAST(NEW.item_discount AS REAL) > CAST(NEW.unit_price AS REAL)
+BEGIN
+  SELECT RAISE(ABORT, 'Item discount cannot exceed unit price');
+END;
+
+DROP TRIGGER IF EXISTS trg_sale_items_discount_bound_upd;
+CREATE TRIGGER trg_sale_items_discount_bound_upd
+BEFORE UPDATE OF unit_price, item_discount ON sale_items
+FOR EACH ROW
+WHEN CAST(NEW.item_discount AS REAL) > CAST(NEW.unit_price AS REAL)
+BEGIN
+  SELECT RAISE(ABORT, 'Item discount cannot exceed unit price');
+END;
 
 /* -------- inventory ledger -------- */
 CREATE TABLE IF NOT EXISTS inventory_transactions (

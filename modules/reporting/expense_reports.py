@@ -233,8 +233,7 @@ class ExpenseReportsTab(QWidget):
 
     # ---- Behavior ----
 
-    @Slot()
-    def refresh(self) -> None:
+    def _refresh_impl(self) -> None:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         category_id = self.cmb_category.currentData()
@@ -343,8 +342,4 @@ class ExpenseReportsTab(QWidget):
     # The controller expects a generic `refresh()` (for consistency with other tabs).
     @Slot()
     def refresh(self) -> None:
-        self.refresh.__wrapped__(self) if hasattr(self.refresh, "__wrapped__") else self._refresh_impl()
-
-    def _refresh_impl(self) -> None:
-        # Idempotent implementation
-        pass
+        self._refresh_impl()

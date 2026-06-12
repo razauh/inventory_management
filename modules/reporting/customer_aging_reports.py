@@ -274,8 +274,14 @@ class CustomerAgingTab(QWidget):
         self._rows_snapshot: List[dict] = []  # keep raw rows for selection drill-down
         self._rows_invoices: List[dict] = []
 
+        # Background worker for report generation
+        self._worker: Optional[CustomerAgingWorker] = None
+
         self._build_ui()
         self._wire_signals()
+
+        # Populate customer combo
+        self._reload_customers()
 
     # ---- UI construction ----
     def _build_ui(self) -> None:
@@ -368,25 +374,7 @@ class CustomerAgingTab(QWidget):
 
     # ---- Behavior ----
 
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
-        super().__init__(parent)
-        self.conn = conn
-        self.logic = CustomerAgingReports(conn)
-
-        self._rows_snapshot: List[dict] = []  # keep raw rows for selection drill-down
-        self._rows_invoices: List[dict] = []
-
-        # Background worker for report generation
-        self._worker: Optional[CustomerAgingWorker] = None
-
-        self._build_ui()
-        self._wire_signals()
-
-        # Populate customer combo
-        self._reload_customers()
-
-    @Slot()
-    def refresh(self) -> None:
+    def _refresh_impl(self) -> None:
         # Cancel any existing worker
         if self._worker and self._worker.isRunning():
             self._worker.quit()
@@ -539,9 +527,4 @@ class CustomerAgingTab(QWidget):
     # Public hook the controller calls on tab change
     @Slot()
     def refresh(self) -> None:
-        self.refresh.__wrapped__(self) if hasattr(self.refresh, "__wrapped__") else self._refresh_impl()
-
-    # Keep actual logic separate (helps if decorators are added later)
-    def _refresh_impl(self) -> None:
-        # Idempotent implementation
-        pass
+        self._refresh_impl()
