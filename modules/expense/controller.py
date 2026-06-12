@@ -455,7 +455,9 @@ class ExpenseController(BaseModule):
                 total_amount = 0.0
                 for r in range(rows):
                     idx = model.index(r, cols - 1)
-                    val = model.data(idx, Qt.DisplayRole)
+                    val = model.data(idx, Qt.UserRole)
+                    if val is None:
+                        val = model.data(idx, Qt.DisplayRole)
                     try:
                         total_amount += float(val or 0.0)
                     except (ValueError, TypeError):

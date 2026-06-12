@@ -1540,12 +1540,50 @@ class SalesController(BaseModule):
             }
 
             # Keep gross invoice totals, but use the canonical net receivable for balance.
-            paid_amount = float(doc_data.get('paid_amount', 0.0))
-            advance_payment_applied = float(doc_data.get('advance_payment_applied', 0.0))
             position = self.repo.get_receivable_position(sale_id)
+            paid_amount = float(position['paid_amount'])
+            advance_payment_applied = float(position['advance_payment_applied'])
             remaining = float(position['remaining_due'])
             enriched_data['totals']['returned_value'] = float(position['returned_value'])
             enriched_data['totals']['net_total'] = float(position['net_total_amount'])
+
+            return_rows = self.conn.execute(
+                """
+                SELECT
+                  srs.return_date,
+                  p.name AS product_name,
+                  u.unit_name AS uom_name,
+                  CAST(srs.returned_quantity AS REAL) AS returned_quantity,
+                  CAST(srs.return_value AS REAL) AS return_value
+                FROM sale_return_snapshots srs
+                JOIN products p ON p.product_id = srs.product_id
+                JOIN uoms u ON u.uom_id = srs.uom_id
+                WHERE srs.sale_id = ?
+                ORDER BY srs.return_date, srs.transaction_id
+                """,
+                (sale_id,),
+            ).fetchall()
+            enriched_data['returns'] = [dict(row) for row in return_rows]
+
+            credit_row = self.conn.execute(
+                """
+                SELECT
+                  COALESCE(SUM(CASE WHEN source_type='return_credit'
+                                    THEN CAST(amount AS REAL) ELSE 0 END), 0.0)
+                    AS return_credit,
+                  COALESCE(SUM(CASE WHEN source_type='applied_to_sale'
+                                    THEN -CAST(amount AS REAL) ELSE 0 END), 0.0)
+                    AS applied_credit
+                FROM customer_advances
+                WHERE source_id = ?
+                  AND source_type IN ('return_credit', 'applied_to_sale')
+                """,
+                (sale_id,),
+            ).fetchone()
+            enriched_data['return_credit'] = float(credit_row['return_credit'] or 0.0)
+            enriched_data['applied_credit'] = float(
+                credit_row['applied_credit'] or advance_payment_applied
+            )
 
             enriched_data['paid_amount'] = paid_amount
             enriched_data['advance_payment_applied'] = advance_payment_applied
@@ -1590,6 +1628,17 @@ class SalesController(BaseModule):
             payments: list[dict] = []
             for row in raw_payments:
                 d = dict(row)
+                amount = float(d.get("amount") or 0.0)
+                d["amount"] = amount
+                state = str(d.get("clearing_state") or "posted").lower()
+                if amount < 0:
+                    d["entry_type"] = "Payment Refund"
+                elif state == "pending":
+                    d["entry_type"] = "Pending Payment"
+                elif state == "bounced":
+                    d["entry_type"] = "Bounced Payment"
+                else:
+                    d["entry_type"] = "Payment"
                 bid = d.get("bank_account_id")
                 if bid is not None:
                     try:

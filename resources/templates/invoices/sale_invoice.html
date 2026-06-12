@@ -177,11 +177,51 @@ XXXXXX: XXXXXX
         </tr>
         {% endif %}
         <tr class="rule">
-          <td class="t-right"><strong>Total</strong></td>
+          <td class="t-right"><strong>Gross Total</strong></td>
           <td class="t-right"><strong>{{ '%.2f' % totals.total }}</strong></td>
+        </tr>
+        {% if totals.returned_value %}
+        <tr>
+          <td class="t-right muted">Returns</td>
+          <td class="t-right">-{{ '%.2f' % totals.returned_value }}</td>
+        </tr>
+        {% endif %}
+        <tr class="rule">
+          <td class="t-right"><strong>Net Total</strong></td>
+          <td class="t-right"><strong>{{ '%.2f' % totals.net_total }}</strong></td>
         </tr>
       </table>
     </div>
+
+    {% if returns %}
+    <div class="payment-details">
+      <div class="payment-card">
+        <h3>Return Summary</h3>
+        <table aria-label="Return summary">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Product</th>
+              <th class="t-right">Returned Qty</th>
+              <th>Unit</th>
+              <th class="t-right">Return Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in returns %}
+            <tr>
+              <td>{{ r.return_date }}</td>
+              <td>{{ r.product_name }}</td>
+              <td class="t-right">{{ '%.2f' % r.returned_quantity }}</td>
+              <td>{{ r.uom_name }}</td>
+              <td class="t-right">{{ '%.2f' % r.return_value }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
 
     <!-- Payments / Balance (sales only) -->
     <div class="totals" style="margin-top:8px;">
@@ -190,8 +230,20 @@ XXXXXX: XXXXXX
           <td class="t-right muted">Paid to Date</td>
           <td class="t-right">{{ '%.2f' % paid_amount }}</td>
         </tr>
+        {% if applied_credit %}
+        <tr>
+          <td class="t-right muted">Applied Credit</td>
+          <td class="t-right">{{ '%.2f' % applied_credit }}</td>
+        </tr>
+        {% endif %}
+        {% if return_credit %}
+        <tr>
+          <td class="t-right muted">Return Credit Issued</td>
+          <td class="t-right">{{ '%.2f' % return_credit }}</td>
+        </tr>
+        {% endif %}
         <tr class="rule">
-          <td class="t-right"><strong>Remaining</strong></td>
+          <td class="t-right"><strong>Amount Due</strong></td>
           <td class="t-right">
             <strong>{{ '%.2f' % remaining }}</strong>
           </td>
@@ -208,6 +260,7 @@ XXXXXX: XXXXXX
           <thead>
             <tr>
               <th>Date</th>
+              <th>Entry</th>
               <th>Method</th>
               <th class="t-right">Amount</th>
               <th>Status</th>
@@ -219,8 +272,9 @@ XXXXXX: XXXXXX
             {% for p in payments %}
             <tr>
               <td>{{ p.date or '' }}</td>
+              <td>{{ p.entry_type }}</td>
               <td>{{ p.method }}</td>
-              <td class="t-right">{{ '%.2f' % p.amount }}</td>
+              <td class="t-right">{{ '%.2f' % (p.amount|abs) }}</td>
               <td>{{ p.clearing_state or 'N/A' }}</td>
               <td>{{ p.bank_account_label or '—' }}</td>
               <td>

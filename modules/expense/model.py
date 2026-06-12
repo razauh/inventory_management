@@ -81,6 +81,15 @@ class ExpensesTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
         row = self._rows[index.row()]
+        if role == Qt.UserRole:
+            col = index.column()
+            if col == 4:
+                return float(row.get("amount", 0.0))
+            return None
+        if role == Qt.EditRole:
+            col = index.column()
+            if col == 4:
+                return float(row.get("amount", 0.0))
         if role in (Qt.DisplayRole, Qt.EditRole):
             col = index.column()
             if col == 0:
