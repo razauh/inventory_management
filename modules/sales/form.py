@@ -142,12 +142,39 @@ class SaleForm(QDialog):
         self.date = QDateEdit(); self.date.setCalendarPopup(True)
         self.date.setDate(QDate.fromString(initial["date"], "yyyy-MM-dd") if initial and initial.get("date") else QDate.fromString(today_str(), "yyyy-MM-dd"))
 
+        self.quotation_status = QComboBox()
+        for label, value in (
+            ("Draft", "draft"),
+            ("Sent", "sent"),
+            ("Accepted", "accepted"),
+            ("Expired", "expired"),
+            ("Cancelled", "cancelled"),
+        ):
+            self.quotation_status.addItem(label, value)
+        self.quotation_expiry = QDateEdit()
+        self.quotation_expiry.setDisplayFormat("yyyy-MM-dd")
+        self.quotation_expiry.setEnabled(False)
+        self.quotation_expiry.setDate(self.date.date())
+        if initial and initial.get("quotation_status"):
+            status_index = self.quotation_status.findData(str(initial["quotation_status"]))
+            if status_index >= 0:
+                self.quotation_status.setCurrentIndex(status_index)
+
         self.txt_discount = QLineEdit(); self.txt_discount.setPlaceholderText("0")
         self.txt_notes = QLineEdit()
 
         # make header fields narrower
         maxw = 360
-        for w in (self.cmb_customer, self.edt_contact, self.btn_add_customer, self.date, self.txt_discount, self.txt_notes):
+        for w in (
+            self.cmb_customer,
+            self.edt_contact,
+            self.btn_add_customer,
+            self.date,
+            self.quotation_status,
+            self.quotation_expiry,
+            self.txt_discount,
+            self.txt_notes,
+        ):
             w.setMaximumWidth(maxw)
 
         # --- items box & table ---
@@ -298,6 +325,9 @@ class SaleForm(QDialog):
         customer_info_layout.addRow("Contact", self.edt_contact)
         customer_info_layout.addRow("", self.btn_add_customer)
         customer_info_layout.addRow("Date*", self.date)
+        if self.mode == "quotation":
+            customer_info_layout.addRow("Status", self.quotation_status)
+            customer_info_layout.addRow("Valid Through", self.quotation_expiry)
         customer_info_layout.addRow("Order Discount", self.txt_discount)
         customer_info_layout.addRow("Notes", self.txt_notes)
 
@@ -373,6 +403,7 @@ class SaleForm(QDialog):
         self.tbl.cellChanged.connect(self._cell_changed)
         self.btn_add_row.clicked.connect(self._add_row)
         self.txt_discount.textChanged.connect(self._refresh_totals)
+        self.date.dateChanged.connect(self.quotation_expiry.setDate)
         self.pay_method.currentTextChanged.connect(self._toggle_bank_fields)
 
         # Add keyboard shortcut for adding new row (Ctrl+N)
@@ -1035,6 +1066,10 @@ class SaleForm(QDialog):
             "line_discount_total": line_disc,
             "subtotal_raw": sub_raw,
         }
+
+        if self.mode == "quotation":
+            payload["quotation_status"] = self.quotation_status.currentData()
+            payload["expiry_date"] = payload["date"]
 
         # --- Initial payment only in SALE mode ---
         if self.mode == "sale":

@@ -756,7 +756,12 @@ class SalesController(BaseModule):
             ]
 
             try:
-                self.repo.create_quotation(h, items)
+                self.repo.create_quotation(
+                    h,
+                    items,
+                    quotation_status=p["quotation_status"],
+                    expiry_date=p["expiry_date"],
+                )
                 info(self.view, "Saved", f"Quotation {qid} created.")
 
                 # Check if this was called from print button
@@ -767,6 +772,7 @@ class SalesController(BaseModule):
                     self._print_quotation_invoice(qid)
             except Exception as e:
                 info(self.view, "Error", f"Could not create quotation: {e}")
+                return
             self._reload()
             self._sync_details()
             return
@@ -878,9 +884,18 @@ class SalesController(BaseModule):
         header_with_customer = self.repo.get_header_with_customer(r["sale_id"])
 
         init = {
+            "sale_id": r["sale_id"],
             "customer_id": r["customer_id"],
             "customer_name": header_with_customer.get("customer_name") if header_with_customer else None,
             "date": r["date"],
+            "quotation_status": (
+                header_with_customer.get("quotation_status")
+                if header_with_customer else r.get("quotation_status")
+            ),
+            "expiry_date": (
+                header_with_customer.get("expiry_date")
+                if header_with_customer else r.get("expiry_date")
+            ),
             "order_discount": r.get("order_discount"),
             "notes": r.get("notes"),
             "items": [
@@ -948,13 +963,20 @@ class SalesController(BaseModule):
                     for it in p["items"]
                 ]
                 try:
-                    self.repo.update_quotation(h, items)  # should not post inventory
+                    self.repo.update_quotation(
+                        h,
+                        items,
+                        quotation_status=p["quotation_status"],
+                        expiry_date=p["expiry_date"],
+                    )  # should not post inventory
                     info(self.view, "Saved", f"Quotation {sid} updated.")
                 except Exception as e:
                     info(self.view, "Error", f"Could not update quotation: {e}")
+                    return
             else:
                 info(self.view, "Not available",
                      "Updating quotations requires SalesRepo.update_quotation(...).")
+                return
             # Handle optional print-after-save for quotations
             should_print_after_save = p.get('_should_print', False)
             if should_print_after_save:
@@ -1618,6 +1640,7 @@ class SalesController(BaseModule):
         if header_row:
             doc_data = dict(header_row)
             doc_data["id"] = doc_data.get("sale_id", "")
+            doc_data["expiry_date"] = doc_data.get("expiry_date") or doc_data.get("date", "")
             enriched_data["doc"] = doc_data
             enriched_data["customer"] = {
                 "name": doc_data.get("customer_name", ""),

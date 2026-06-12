@@ -93,6 +93,7 @@ class ExpenseController(BaseModule):
         self.view.cmb_category.blockSignals(True)
         self.view.cmb_category.clear()
         self.view.cmb_category.addItem("(All)", userData=None)
+        self.view.cmb_category.addItem("(Uncategorized)", userData=0)
         for c in cats:
             self.view.cmb_category.addItem(c.name, userData=c.category_id)
         self.view.cmb_category.blockSignals(False)
@@ -132,19 +133,62 @@ class ExpenseController(BaseModule):
         self.view.tbl_expenses.resizeColumnsToContents()
 
         # Refresh totals summary (currently overall totals by category)
-        self._refresh_totals()
+        if use_adv:
+            self._refresh_totals(
+                query=query,
+                date_from=self.view.date_from_str,
+                date_to=self.view.date_to_str,
+                category_id=cat_id,
+                amount_min=self.view.amount_min_val,
+                amount_max=self.view.amount_max_val,
+            )
+        else:
+            self._refresh_totals(
+                query=query,
+                date=date,
+                category_id=cat_id,
+            )
 
-    def _refresh_totals(self) -> None:
+    def _refresh_totals(
+        self,
+        query: str = "",
+        date: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        category_id: Optional[int] = None,
+        amount_min: Optional[float] = None,
+        amount_max: Optional[float] = None,
+    ) -> None:
         """Populate the totals table (totals by category)."""
         try:
-            totals: List[Dict] = self.repo.total_by_category()
+            totals: List[Dict] = self.repo.total_by_category(
+                query=query,
+                date=date,
+                date_from=date_from,
+                date_to=date_to,
+                category_id=category_id,
+                amount_min=amount_min,
+                amount_max=amount_max,
+            )
         except Exception as e:
             # Fail gracefully; keep UI usable even if aggregate query fails
             totals = []
             ui.info(self.view, "Totals", f"Could not load totals: {e}")
 
+        # Check if any filter is active to label the scope clearly
+        has_filters = any([
+            query,
+            date,
+            date_from,
+            date_to,
+            category_id is not None,
+            amount_min is not None,
+            amount_max is not None,
+        ])
+        header_total = "Filtered Total" if has_filters else "Total"
+
         m = QStandardItemModel()
-        m.setHorizontalHeaderLabels(["Category", "Total"])
+        m.setHorizontalHeaderLabels(["Category", header_total])
 
         for r in totals:
             # Expected keys: category_name, total_amount (fallback to name/amount variants)

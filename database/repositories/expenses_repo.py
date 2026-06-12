@@ -139,6 +139,44 @@ class ExpensesRepo:
     # Expense operations
     # ------------------------------------------------------------------
 
+    def _build_where_clause(
+        self,
+        query: str = "",
+        date: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        category_id: Optional[int] = None,
+        amount_min: Optional[float] = None,
+        amount_max: Optional[float] = None,
+    ) -> tuple[str, list]:
+        where: List[str] = []
+        params: List = []
+        if query:
+            where.append("e.description LIKE ?")
+            params.append(f"%{query.strip()}%")
+        if date:
+            where.append("DATE(e.date) = DATE(?)")
+            params.append(date)
+        if date_from:
+            where.append("DATE(e.date) >= DATE(?)")
+            params.append(date_from)
+        if date_to:
+            where.append("DATE(e.date) <= DATE(?)")
+            params.append(date_to)
+        if category_id is not None:
+            if category_id == 0:
+                where.append("e.category_id IS NULL")
+            else:
+                where.append("e.category_id = ?")
+                params.append(category_id)
+        if amount_min is not None:
+            where.append("CAST(e.amount AS REAL) >= ?")
+            params.append(float(amount_min))
+        if amount_max is not None:
+            where.append("CAST(e.amount AS REAL) <= ?")
+            params.append(float(amount_max))
+        return " AND ".join(where), params
+
     def list_expenses(self, category_id: Optional[int] = None) -> List[Dict]:
         """
         List expenses, optionally filtering by category_id.
@@ -148,21 +186,36 @@ class ExpensesRepo:
         Sorted by descending date then descending expense_id.
         """
         if category_id is not None:
-            rows = self.conn.execute(
-                """
-                SELECT e.expense_id,
-                       e.description,
-                       CAST(e.amount AS REAL) AS amount,
-                       e.date,
-                       e.category_id,
-                       c.name AS category_name
-                FROM expenses e
-                LEFT JOIN expense_categories c ON c.category_id = e.category_id
-                WHERE e.category_id = ?
-                ORDER BY DATE(e.date) DESC, e.expense_id DESC
-                """,
-                (category_id,),
-            ).fetchall()
+            if category_id == 0:
+                rows = self.conn.execute(
+                    """
+                    SELECT e.expense_id,
+                           e.description,
+                           CAST(e.amount AS REAL) AS amount,
+                           e.date,
+                           e.category_id,
+                           NULL AS category_name
+                    FROM expenses e
+                    WHERE e.category_id IS NULL
+                    ORDER BY DATE(e.date) DESC, e.expense_id DESC
+                    """
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    """
+                    SELECT e.expense_id,
+                           e.description,
+                           CAST(e.amount AS REAL) AS amount,
+                           e.date,
+                           e.category_id,
+                           c.name AS category_name
+                    FROM expenses e
+                    LEFT JOIN expense_categories c ON c.category_id = e.category_id
+                    WHERE e.category_id = ?
+                    ORDER BY DATE(e.date) DESC, e.expense_id DESC
+                    """,
+                    (category_id,),
+                ).fetchall()
         else:
             rows = self.conn.execute(
                 """
@@ -192,17 +245,9 @@ class ExpensesRepo:
         compare calendar days.  Category filter matches on exact ID.
         Returns matching rows ordered by date descending then expense_id.
         """
-        where: List[str] = []
-        params: List = []
-        if query:
-            where.append("e.description LIKE ?")
-            params.append(f"%{query.strip()}%")
-        if date:
-            where.append("DATE(e.date) = DATE(?)")
-            params.append(date)
-        if category_id is not None:
-            where.append("e.category_id = ?")
-            params.append(category_id)
+        where_str, params = self._build_where_clause(
+            query=query, date=date, category_id=category_id
+        )
         sql = """
             SELECT e.expense_id,
                    e.description,
@@ -213,8 +258,8 @@ class ExpensesRepo:
             FROM expenses e
             LEFT JOIN expense_categories c ON c.category_id = e.category_id
         """
-        if where:
-            sql += " WHERE " + " AND ".join(where)
+        if where_str:
+            sql += " WHERE " + where_str
         sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
         rows = self.conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
@@ -238,33 +283,14 @@ class ExpensesRepo:
 
         Returns rows ordered by date (DESC) then expense_id (DESC).
         """
-        where: List[str] = []
-        params: List = []
-
-        if query:
-            where.append("e.description LIKE ?")
-            params.append(f"%{query.strip()}%")
-
-        if date_from:
-            where.append("DATE(e.date) >= DATE(?)")
-            params.append(date_from)
-
-        if date_to:
-            where.append("DATE(e.date) <= DATE(?)")
-            params.append(date_to)
-
-        if category_id is not None:
-            where.append("e.category_id = ?")
-            params.append(category_id)
-
-        if amount_min is not None:
-            where.append("CAST(e.amount AS REAL) >= ?")
-            params.append(float(amount_min))
-
-        if amount_max is not None:
-            where.append("CAST(e.amount AS REAL) <= ?")
-            params.append(float(amount_max))
-
+        where_str, params = self._build_where_clause(
+            query=query,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+        )
         sql = """
             SELECT e.expense_id,
                    e.description,
@@ -275,8 +301,8 @@ class ExpensesRepo:
             FROM expenses e
             LEFT JOIN expense_categories c ON c.category_id = e.category_id
         """
-        if where:
-            sql += " WHERE " + " AND ".join(where)
+        if where_str:
+            sql += " WHERE " + where_str
         sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
 
         rows = self.conn.execute(sql, tuple(params)).fetchall()
@@ -371,7 +397,16 @@ class ExpensesRepo:
         ).fetchone()
         return dict(row) if row else None
 
-    def total_by_category(self) -> List[Dict]:
+    def total_by_category(
+        self,
+        query: str = "",
+        date: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        category_id: Optional[int] = None,
+        amount_min: Optional[float] = None,
+        amount_max: Optional[float] = None,
+    ) -> List[Dict]:
         """
         Compute the total amount spent in each category.
 
@@ -379,15 +414,68 @@ class ExpensesRepo:
         ordered by category name with keys: category_id, category_name,
         total_amount.
         """
-        rows = self.conn.execute(
-            """
+        # Part 1: Named categories
+        where_str, params = self._build_where_clause(
+            query=query,
+            date=date,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+        )
+
+        if where_str:
+            on_clause = f" ON e.category_id = c.category_id AND {where_str} "
+        else:
+            on_clause = " ON e.category_id = c.category_id "
+
+        sql_parts = []
+        sql_parts.append(f"""
             SELECT c.category_id,
                    c.name AS category_name,
                    CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total_amount
             FROM expense_categories c
-            LEFT JOIN expenses e ON e.category_id = c.category_id
-            GROUP BY c.category_id
-            ORDER BY c.name
-            """
-        ).fetchall()
+            LEFT JOIN expenses e {on_clause}
+            GROUP BY c.category_id, c.name
+        """)
+
+        # Part 2: Uncategorized
+        if category_id is None or category_id == 0:
+            uncat_where_str, uncat_params = self._build_where_clause(
+                query=query,
+                date=date,
+                date_from=date_from,
+                date_to=date_to,
+                category_id=None,
+                amount_min=amount_min,
+                amount_max=amount_max,
+            )
+            if uncat_where_str:
+                uncat_clause = f" e.category_id IS NULL AND {uncat_where_str} "
+            else:
+                uncat_clause = " e.category_id IS NULL "
+
+            sql_parts.append(f"""
+                UNION ALL
+
+                SELECT 0 AS category_id,
+                       '(Uncategorized)' AS category_name,
+                       CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total_amount
+                FROM expenses e
+                WHERE {uncat_clause}
+            """)
+            exec_params = params + uncat_params
+        else:
+            exec_params = params
+
+        full_sql = f"""
+            SELECT category_id, category_name, total_amount
+            FROM (
+                {" ".join(sql_parts)}
+            )
+            ORDER BY category_name
+        """
+
+        rows = self.conn.execute(full_sql, tuple(exec_params)).fetchall()
         return [dict(r) for r in rows]

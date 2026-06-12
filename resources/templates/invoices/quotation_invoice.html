@@ -136,7 +136,7 @@
     <!-- Validity note (required for quotation) -->
     <div class="validity" style="margin-top: 10px;">
       <strong>Validity:</strong>
-      This quotation is only valid for {{ doc.date }}. Prices are subject to change.
+      This quotation is only valid through {{ doc.expiry_date or doc.date }}. Prices are subject to change.
     </div>
 
     <!-- Footer -->
