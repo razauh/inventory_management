@@ -98,11 +98,11 @@ class ExpenseReports:
     def list_categories(self) -> List[tuple[int, str]]:
         """
         Read categories for the combo box.
-        Expected table: expense_categories(id, name)
+        Expected table: expense_categories(category_id, name)
         """
         # Performance optimization: Use single query to fetch all categories
-        rows = list(self.conn.execute("SELECT id, name FROM expense_categories ORDER BY name COLLATE NOCASE"))
-        return [(int(r["id"]), str(r["name"])) for r in rows]
+        rows = list(self.conn.execute("SELECT category_id, name FROM expense_categories ORDER BY name COLLATE NOCASE"))
+        return [(int(r["category_id"]), str(r["name"])) for r in rows]
 
 
 # ------------------------------ UI Tab --------------------------------------
@@ -226,9 +226,9 @@ class ExpenseReportsTab(QWidget):
         try:
             for cid, name in self.logic.list_categories():
                 self.cmb_category.addItem(name, cid)
-        except Exception:
-            # Keep "All Categories" if lookup fails
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("Failed to load expense categories")
         self.cmb_category.blockSignals(False)
 
     # ---- Behavior ----

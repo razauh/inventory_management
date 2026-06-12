@@ -840,8 +840,12 @@ class SalesController(BaseModule):
                 info(self.view, "Saved", f"Sale {sid} created and initial payment recorded.")
             else:
                 info(self.view, "Saved", f"Sale {sid} created.")
-        except Exception as e:
+        except (ValueError, sqlite3.Error) as e:
             info(self.view, "Error", f"Could not create sale:\n{e}")
+            return
+        except Exception:
+            logging.exception("Unexpected error while creating sale %s", sid)
+            info(self.view, "Error", "Could not create sale due to an unexpected error.")
             return
 
         # Check if this was called from print button
@@ -983,8 +987,12 @@ class SalesController(BaseModule):
         ]
         try:
             self.repo.update_sale(h, items)
-        except Exception as e:
+        except (ValueError, sqlite3.Error) as e:
             info(self.view, "Error", f"Could not update sale:\n{e}")
+            return
+        except Exception:
+            logging.exception("Unexpected error while updating sale %s", sid)
+            info(self.view, "Error", "Could not update sale due to an unexpected error.")
             return
 
         # Check if this was called from print button
@@ -1002,7 +1010,17 @@ class SalesController(BaseModule):
         if not r:
             info(self.view, "Select", "Select a row to delete.")
             return
-        self.repo.delete_sale(r["sale_id"])
+        sid = r["sale_id"]
+        try:
+            self.repo.delete_sale(sid)
+        except (ValueError, sqlite3.Error) as e:
+            info(self.view, "Error", f"Could not delete sale:\n{e}")
+            return
+        except Exception:
+            logging.exception("Unexpected error while deleting sale %s", sid)
+            info(self.view, "Error", "Could not delete sale due to an unexpected error.")
+            return
+
         info(self.view, "Deleted", f"{r['sale_id']} removed.")
         self._reload()
         self._sync_details()
