@@ -21,6 +21,9 @@ import datetime
 from PySide6.QtCore import QStandardPaths
 
 
+_log = logging.getLogger(__name__)
+
+
 class SalesStatusProxy(QSortFilterProxyModel):
     """
     Proxy model that can filter SALE rows by payment_status while leaving
@@ -106,8 +109,10 @@ class SalesController(BaseModule):
             self.view.details.paymentStatusChangeRequested.connect(
                 self._on_payment_status_change_requested
             )
+        except (AttributeError, TypeError) as exc:
+            _log.warning("Sales details payment-status signal is unavailable: %s", exc)
         except Exception:
-            pass
+            _log.exception("Unexpected error wiring sales details payment-status signal")
 
         # Controller-level state
         self._doc_type: str = "sale"   # 'sale' | 'quotation' (mirrors view toggle)
@@ -125,7 +130,11 @@ class SalesController(BaseModule):
         try:
             from ...database.repositories.bank_accounts_repo import BankAccountsRepo  # type: ignore
             self.bank_accounts = BankAccountsRepo(conn)
+        except ImportError as exc:
+            _log.warning("Bank accounts repository is unavailable: %s", exc)
+            self.bank_accounts = None
         except Exception:
+            _log.exception("Unexpected error creating bank accounts repository")
             self.bank_accounts = None
 
         # Path for path-based repos (payments/advances)
@@ -149,8 +158,12 @@ class SalesController(BaseModule):
                 # row columns: seq, name, file
                 file_path = row[2] if isinstance(row, tuple) else row["file"]
                 return file_path or ":memory:"
+        except sqlite3.Error:
+            _log.exception("Could not read sales database path from connection")
+        except (IndexError, KeyError, TypeError):
+            _log.exception("Sales database path row has an unexpected shape")
         except Exception:
-            pass
+            _log.exception("Unexpected error reading sales database path")
         return ":memory:"
 
     def get_widget(self) -> QWidget:
@@ -288,9 +301,23 @@ class SalesController(BaseModule):
             # some implementations might have different signature; try (query, doc_type) kw-agnostic
             try:
                 rows_to_use = list(self.repo.search_sales(self._search_text, self._doc_type))
-            except Exception:
+            except (TypeError, sqlite3.Error):
+                _log.exception(
+                    "Sales search fallback failed for doc_type=%s",
+                    self._doc_type,
+                )
                 rows_to_use = None
+            except Exception:
+                _log.exception(
+                    "Unexpected error in sales search fallback for doc_type=%s",
+                    self._doc_type,
+                )
+                rows_to_use = None
+        except sqlite3.Error:
+            _log.exception("Sales search query failed for doc_type=%s", self._doc_type)
+            rows_to_use = None
         except Exception:
+            _log.exception("Unexpected error searching sales for doc_type=%s", self._doc_type)
             rows_to_use = None
 
         # Fallback behavior if search_sales is not available
@@ -298,7 +325,11 @@ class SalesController(BaseModule):
             if self._doc_type == "quotation":
                 try:
                     rows_to_use = list(self.repo.list_quotations())
+                except sqlite3.Error:
+                    _log.exception("Could not list quotations after sales search fallback")
+                    rows_to_use = []
                 except Exception:
+                    _log.exception("Unexpected error listing quotations after sales search fallback")
                     rows_to_use = []
             else:
                 rows_to_use = list(self.repo.list_sales())
@@ -414,8 +445,10 @@ class SalesController(BaseModule):
             try:
                 if hasattr(self.view, "payments"):
                     self.view.payments.set_rows([])
+            except (AttributeError, RuntimeError):
+                _log.exception("Could not clear sales payments view")
             except Exception:
-                pass
+                _log.exception("Unexpected error clearing sales payments view")
             self.view.details.set_data(None)
             return
 
@@ -433,7 +466,14 @@ class SalesController(BaseModule):
             r["returned_value"] = float(position["returned_value"])
             r["gross_total_amount"] = float(position["gross_total_amount"])
             r["net_total_amount"] = float(position["net_total_amount"])
+        except (sqlite3.Error, KeyError, TypeError, ValueError):
+            _log.exception("Could not load return totals for sale_id=%s", r.get("sale_id"))
+            r["returned_qty"] = 0.0
+            r["returned_value"] = 0.0
+            r["gross_total_amount"] = float(r.get("total_amount", 0.0))
+            r["net_total_amount"] = float(r.get("total_amount", 0.0))
         except Exception:
+            _log.exception("Unexpected error loading return totals for sale_id=%s", r.get("sale_id"))
             r["returned_qty"] = 0.0
             r["returned_value"] = 0.0
             r["gross_total_amount"] = float(r.get("total_amount", 0.0))
@@ -449,7 +489,14 @@ class SalesController(BaseModule):
                 from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
                 pay_repo = SalePaymentsRepo(self._db_path)
                 payments_rows = list(pay_repo.list_by_sale(r["sale_id"])) or []
+            except ImportError as exc:
+                _log.warning("Sale payments repository is unavailable: %s", exc)
+                payments_rows = []
+            except sqlite3.Error:
+                _log.exception("Could not load payments for sale_id=%s", r.get("sale_id"))
+                payments_rows = []
             except Exception:
+                _log.exception("Unexpected error loading payments for sale_id=%s", r.get("sale_id"))
                 payments_rows = []
 
             # Customer credit balance
@@ -458,7 +505,14 @@ class SalesController(BaseModule):
                 adv_repo = CustomerAdvancesRepo(self._db_path)
                 bal = adv_repo.get_balance(int(r.get("customer_id") or 0))
                 r["customer_credit_balance"] = float(bal or 0.0)
+            except ImportError as exc:
+                _log.warning("Customer advances repository is unavailable: %s", exc)
+                r["customer_credit_balance"] = None
+            except (sqlite3.Error, TypeError, ValueError):
+                _log.exception("Could not load customer credit for sale_id=%s", r.get("sale_id"))
+                r["customer_credit_balance"] = None
             except Exception:
+                _log.exception("Unexpected error loading customer credit for sale_id=%s", r.get("sale_id"))
                 r["customer_credit_balance"] = None
 
             # Financials including credit applied (NEW: include advance_payment_applied)
@@ -485,15 +539,19 @@ class SalesController(BaseModule):
         try:
             if hasattr(self.view, "payments"):
                 self.view.payments.set_rows(payments_rows)
+        except (AttributeError, RuntimeError):
+            _log.exception("Could not update sales payments view")
         except Exception:
-            pass
+            _log.exception("Unexpected error updating sales payments view")
 
         # Finally update the details panel and its mode (if supported)
         try:
             if hasattr(self.view.details, "set_mode"):
                 self.view.details.set_mode(self._doc_type)
+        except (AttributeError, RuntimeError):
+            _log.exception("Could not set sales details mode to %s", self._doc_type)
         except Exception:
-            pass
+            _log.exception("Unexpected error setting sales details mode to %s", self._doc_type)
         self.view.details.set_data(r)
 
     # ---- helpers to open SaleForm with/without 'mode' ---------------------
@@ -572,7 +630,11 @@ class SalesController(BaseModule):
                 if _id is not None and _name is not None:
                     norm.append({"id": int(_id), "name": str(_name)})
             return norm
+        except (sqlite3.Error, KeyError, TypeError, ValueError):
+            _log.exception("Could not list company bank accounts for sales payment dialog")
+            return []
         except Exception:
+            _log.exception("Unexpected error listing company bank accounts for sales payment dialog")
             return []
 
     def _list_sales_for_customer(self, customer_id: int) -> list[dict]:
@@ -596,8 +658,10 @@ class SalesController(BaseModule):
                         "remaining_due": float(d.get("remaining_due") or 0.0),
                     })
                 return out
+        except (sqlite3.Error, KeyError, TypeError, ValueError, AttributeError):
+            _log.exception("Sales repository customer lookup failed for customer_id=%s", customer_id)
         except Exception:
-            pass
+            _log.exception("Unexpected sales repository customer lookup failure for customer_id=%s", customer_id)
 
         # Safe fallback SQL (keeps compatibility with existing schema used elsewhere in this module)
         try:
@@ -628,7 +692,11 @@ class SalesController(BaseModule):
                     "remaining_due": float(row["remaining_due"]),
                 })
             return out
+        except (sqlite3.Error, KeyError, TypeError, ValueError):
+            _log.exception("Sales SQL fallback failed for customer_id=%s", customer_id)
+            return []
         except Exception:
+            _log.exception("Unexpected sales SQL fallback failure for customer_id=%s", customer_id)
             return []
 
     def _eligible_sales_for_application(self, customer_id: int) -> list[dict]:

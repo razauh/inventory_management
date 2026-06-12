@@ -19,7 +19,12 @@ without Qt can still import this package):
 - SaleItemsView
 """
 
+import logging
+
 from .controller import SalesController
+
+
+_log = logging.getLogger(__name__)
 
 # UI/model pieces are optional to avoid a hard Qt dependency during headless tests
 try:
@@ -29,7 +34,19 @@ try:
     from .return_form import SaleReturnForm  # type: ignore
     from .details import SaleDetails  # type: ignore
     from .items import SaleItemsView  # type: ignore
+except ImportError as exc:  # pragma: no cover
+    _log.debug("Optional sales UI components are unavailable: %s", exc)
+    SalesView = None  # type: ignore
+    PaymentsView = None  # type: ignore
+    PaymentsTableModel = None  # type: ignore
+    SalesTableModel = None  # type: ignore
+    SaleItemsModel = None  # type: ignore
+    SaleForm = None  # type: ignore
+    SaleReturnForm = None  # type: ignore
+    SaleDetails = None  # type: ignore
+    SaleItemsView = None  # type: ignore
 except Exception:  # pragma: no cover
+    _log.exception("Unexpected error importing optional sales UI components")
     SalesView = None  # type: ignore
     PaymentsView = None  # type: ignore
     PaymentsTableModel = None  # type: ignore
