@@ -23,6 +23,7 @@ class DomainError(Exception):
 
 
 def rebuild_dirty_valuations(conn: sqlite3.Connection, product_id: int | None = None) -> int:
+    """Maintenance helper for write paths and manual repair jobs."""
     rows = conn.execute(
         """
         SELECT product_id, earliest_impacted
@@ -294,7 +295,7 @@ class InventoryRepo:
     # ------------------------------------------------------------------
     def stock_on_hand(self, product_id: int) -> Dict | None:
         """
-        Return a snapshot for a single product from v_stock_on_hand.
+        Return a read-only snapshot for a single product from v_stock_on_hand.
 
         Expected (ideal) view columns:
           product_id, product_name, uom_name, on_hand_qty, unit_value, total_value
@@ -302,10 +303,7 @@ class InventoryRepo:
         If `unit_value` or `total_value` are missing from the view, this method
         fills what it can and computes total_value = on_hand_qty * unit_value
         when both pieces are available. Returns None if the product isn't found.
-
-        Reconciles pending valuation_dirty rows for this product before reading.
         """
-        rebuild_dirty_valuations(self.conn, int(product_id))
         # NOTE: We rely on the schema-level UNIQUE index
         # `idx_product_uoms_one_base` (product_id WHERE is_base = 1) to ensure
         # there is at most one base UoM row per product.

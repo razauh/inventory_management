@@ -5,9 +5,6 @@ import sqlite3
 from contextlib import contextmanager
 import logging
 
-from .inventory_repo import rebuild_dirty_valuations
-
-
 class DomainError(Exception):
     """Domain-level error the controller/UI can surface (toast/snackbar)."""
     pass
@@ -408,7 +405,6 @@ class ProductsRepo:
         }
 
     def on_hand_base(self, product_id: int) -> float:
-        rebuild_dirty_valuations(self.conn, int(product_id))
         r = self.conn.execute(
             "SELECT CAST(qty_in_base AS REAL) AS q FROM v_stock_on_hand WHERE product_id=?",
             (product_id,),

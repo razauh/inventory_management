@@ -4,8 +4,6 @@ from __future__ import annotations
 import sqlite3
 from typing import Iterable, Optional, Sequence
 
-from .inventory_repo import rebuild_dirty_valuations
-
 
 class ReportingRepo:
     """
@@ -603,12 +601,11 @@ class ReportingRepo:
 
     def stock_on_hand_current(self) -> list[sqlite3.Row]:
         """
-        Current snapshot from v_stock_on_hand.
+        Read-only current snapshot from v_stock_on_hand.
         View columns (per schema): product_id, qty_in_base, unit_value, total_value, valuation_date
         We also join products to provide product_name and alias qty_in_base -> qty_base
         to match the UI layer.
         """
-        rebuild_dirty_valuations(self.conn)
         sql = """
         SELECT
           v.product_id,
@@ -625,10 +622,9 @@ class ReportingRepo:
 
     def stock_on_hand_current_iter(self) -> Iterable[sqlite3.Row]:
         """
-        Generator version of stock_on_hand_current that yields rows one at a time.
+        Read-only generator version of stock_on_hand_current.
         This prevents loading all results into memory at once for large datasets.
         """
-        rebuild_dirty_valuations(self.conn)
         sql = """
         SELECT
           v.product_id,
@@ -647,10 +643,9 @@ class ReportingRepo:
 
     def stock_on_hand_as_of(self, as_of: str) -> list[sqlite3.Row]:
         """
-        Latest valuation row per product where valuation_date <= as_of.
+        Read-only latest valuation row per product where valuation_date <= as_of.
         stock_valuation_history columns: product_id, valuation_date, quantity, unit_value, total_value
         """
-        rebuild_dirty_valuations(self.conn)
         sql = """
         WITH latest AS (
           SELECT svh.product_id,
@@ -675,10 +670,9 @@ class ReportingRepo:
 
     def stock_on_hand_as_of_iter(self, as_of: str) -> Iterable[sqlite3.Row]:
         """
-        Generator version of stock_on_hand_as_of that yields rows one at a time.
+        Read-only generator version of stock_on_hand_as_of.
         This prevents loading all results into memory at once for large datasets.
         """
-        rebuild_dirty_valuations(self.conn)
         sql = """
         WITH latest AS (
           SELECT svh.product_id,
@@ -777,9 +771,8 @@ class ReportingRepo:
 
     def valuation_history(self, product_id: int, limit: int) -> list[sqlite3.Row]:
         """
-        Latest N valuation rows for a product.
+        Read-only latest N valuation rows for a product.
         """
-        rebuild_dirty_valuations(self.conn, int(product_id))
         sql = """
         SELECT
           svh.product_id,

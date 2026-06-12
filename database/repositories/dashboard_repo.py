@@ -4,8 +4,6 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
-from .inventory_repo import rebuild_dirty_valuations
-
 
 def _to_float(x: Optional[Any]) -> float:
     try:
@@ -18,7 +16,8 @@ class DashboardRepo:
     """
     Thin query layer for the Dashboard.
 
-    Query methods reconcile pending inventory valuation rows before reading stock.
+    Query methods read current stock views.
+    Valuation repair stays in write-side maintenance paths.
     Each method returns either a float or a list[dict].
 
     Performance note:
@@ -197,7 +196,6 @@ class DashboardRepo:
         Products with on-hand < min_stock_level.
         v_stock_on_hand may not have a row; treat missing qty as 0.
         """
-        rebuild_dirty_valuations(self.conn)
         sql = """
             SELECT COUNT(*) AS c
             FROM products p
@@ -211,7 +209,6 @@ class DashboardRepo:
             return 0
 
     def low_stock_rows(self, limit_n: int = 20) -> List[Dict[str, Any]]:
-        rebuild_dirty_valuations(self.conn)
         sql = """
             SELECT
               p.product_id,
