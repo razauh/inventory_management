@@ -19,8 +19,8 @@ class ProductsTableModel(QAbstractTableModel):
         if not index.isValid(): 
             return None
         p = self._rows[index.row()]
+        c = index.column()
         if role in (Qt.DisplayRole, Qt.EditRole):
-            c = index.column()
             return [
                 p.product_id,
                 p.name,
@@ -29,6 +29,16 @@ class ProductsTableModel(QAbstractTableModel):
                 p.description or "",
                 p.base_uom_name or "",
                 p.alt_uom_names or "",
+            ][c]
+        if role == Qt.UserRole:
+            return [
+                p.product_id,
+                (p.name or "").lower(),
+                (p.category or "").lower(),
+                float(p.min_stock_level or 0.0),
+                (p.description or "").lower(),
+                (p.base_uom_name or "").lower(),
+                (p.alt_uom_names or "").lower(),
             ][c]
         return None
         

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
 )
 from PySide6.QtCore import Qt
-from ...utils.validators import non_empty, is_positive_number, try_parse_float
+from ...utils.validators import non_empty, try_parse_float
 from ...utils.ui_helpers import info  # optional: to show a friendly message
 
 class UomPicker(QComboBox):
@@ -45,31 +45,29 @@ class UomPicker(QComboBox):
             self.setEditText(txt)
         self.blockSignals(False)
         
-    def _ensure_current_exists(self):
-        """
-        If the typed text doesn't match the selected item, create/select it.
-        """
+    def current_uom_ref(self) -> dict | None:
         typed = (self.currentText() or "").strip()
         if not typed:
-            return
+            return None
+        current_index = self.currentIndex()
+        current_text = self.itemText(current_index).strip() if current_index >= 0 else ""
+        data = self.currentData()
+        if data is not None and typed == current_text:
+            return {"uom_id": int(data), "unit_name": typed}
         if typed.lower() in self._names:
-            # make sure the combo selection matches the typed text
             i = self.findText(typed, Qt.MatchFixedString)
             if i >= 0:
-                self.setCurrentIndex(i)
-            return
-        # create new and select it
-        new_id = self.repo.add_uom(typed)
-        self._reload(keep_text=typed)
-        i = self.findText(typed, Qt.MatchFixedString)
-        if i >= 0:
-            self.setCurrentIndex(i)
-            
+                data = self.itemData(i)
+                if data is not None:
+                    return {"uom_id": int(data), "unit_name": typed}
+        return {"uom_name": typed}
+
     def current_uom_id(self) -> int | None:
-        # Make sure the typed entry is materialized
-        self._ensure_current_exists()
-        data = self.currentData()
-        return int(data) if data is not None else None
+        ref = self.current_uom_ref()
+        if not ref:
+            return None
+        uom_id = ref.get("uom_id")
+        return int(uom_id) if uom_id is not None else None
 
 class ProductForm(QDialog):
     def __init__(self, parent=None, repo=None, initial_product=None, initial_uoms=None, initial_roles=None):
@@ -188,8 +186,7 @@ class ProductForm(QDialog):
         root.addWidget(self.buttons)
         
         # State
-        self._base_id: int | None = None
-        self._sales_alts: list[dict] = []     # {"uom_id": int, "factor_to_base": float}
+        self._sales_alts: list[dict] = []     # {"uom_id": int|string, "unit_name": str, "factor_to_base": float}
         
         # Wire
         self.chk_sales.toggled.connect(self._toggle_blocks)
@@ -214,13 +211,17 @@ class ProductForm(QDialog):
             if base_row:
                 i = self.cmb_base.findText(base_row["unit_name"], Qt.MatchFixedString)
                 if i >= 0: self.cmb_base.setCurrentIndex(i)
-                self._base_id = base_row["uom_id"]
             # split alts by roles (default to sales if no roles saved)
             for m in self.initial_uoms:
                 if m["is_base"]: continue
                 u = m["uom_id"]; f = float(m["factor_to_base"])
                 role = self.initial_roles.get(u, {"for_sales": 1})
-                if role.get("for_sales"):  self._append_unique(self._sales_alts, u, f)
+                if role.get("for_sales"):
+                    self._append_unique(
+                        self._sales_alts,
+                        {"uom_id": u, "unit_name": m.get("unit_name", f"UoM#{u}")},
+                        f,
+                    )
             self.chk_sales.setChecked(len(self._sales_alts) > 0)
             
         self._refresh_tables()
@@ -234,25 +235,50 @@ class ProductForm(QDialog):
         # Alternates still depend on toggles
         for w in (self.cmb_sales_alt, self.txt_sales_factor, self.btn_sales_add, self.tbl_sales):
             w.setEnabled(on_s)
-            
+
+    def _uom_ref_key(self, ref: dict | None) -> str | None:
+        if not ref:
+            return None
+        name = str(ref.get("unit_name") or ref.get("uom_name") or "").strip().lower()
+        if name:
+            return name
+        uom_id = ref.get("uom_id")
+        if uom_id is not None:
+            return f"id:{int(uom_id)}"
+        return None
+
+    def _uom_ref_label(self, ref: dict | None) -> str:
+        if not ref:
+            return ""
+        name = str(ref.get("unit_name") or ref.get("uom_name") or "").strip()
+        if name:
+            return name
+        uom_id = ref.get("uom_id")
+        if uom_id is not None:
+            return self._uom_name(int(uom_id))
+        return ""
+        
     def _uom_name(self, uom_id: int) -> str:
         for u in self.repo.list_uoms():
             if u["uom_id"] == uom_id:
                 return u["unit_name"]
         return f"UoM#{uom_id}"
         
-    def _append_unique(self, lst: list[dict], uom_id: int, factor: float):
+    def _append_unique(self, lst: list[dict], ref: dict, factor: float):
+        key = self._uom_ref_key(ref)
         for a in lst:
-            if a["uom_id"] == uom_id:
+            if self._uom_ref_key(a) == key:
                 a["factor_to_base"] = factor
                 return
-        lst.append({"uom_id": uom_id, "factor_to_base": factor})
+        entry = dict(ref)
+        entry["factor_to_base"] = factor
+        lst.append(entry)
         
     def _refresh_tables(self):
         # sales table (show "units per base" instead of raw factor_to_base)
         self.tbl_sales.setRowCount(len(self._sales_alts))
         for r, a in enumerate(self._sales_alts):
-            self.tbl_sales.setItem(r, 0, QTableWidgetItem(self._uom_name(a["uom_id"])))
+            self.tbl_sales.setItem(r, 0, QTableWidgetItem(self._uom_ref_label(a)))
             f_db = float(a.get("factor_to_base") or 0.0)
             units_per_base = (1.0 / f_db) if f_db not in (0.0, 0) else 0.0
             self.tbl_sales.setItem(r, 1, QTableWidgetItem(f'{units_per_base:g}' if units_per_base else ""))
@@ -265,16 +291,11 @@ class ProductForm(QDialog):
         return None, None
             
     # ---------- add/remove ----------
-    def _ensure_base_selected(self):
-        if self._base_id is None:
-            self._base_id = self.cmb_base.current_uom_id()
-        return self._base_id is not None
-        
     def _add_sales_alt(self):
         if not self.chk_sales.isChecked():
             return
-        u = self.cmb_sales_alt.current_uom_id()
-        if u is None:
+        alt_ref = self.cmb_sales_alt.current_uom_ref()
+        if not alt_ref:
             return
         t = self.txt_sales_factor.text().strip()
         ok, units_per_base = try_parse_float(t)
@@ -286,10 +307,14 @@ class ProductForm(QDialog):
         # and the user enters 100 pieces per box, then:
         #   factor_to_base = 1 base / 100 alt = 0.01
         f = 1.0 / units_per_base
-        if not self._ensure_base_selected(): return
-        if u == self._base_id:  # base already 1.0, nothing to add
-            self._refresh_tables(); return
-        self._append_unique(self._sales_alts, u, f)
+        base_ref = self.cmb_base.current_uom_ref()
+        if not base_ref:
+            info(self, "Select", "Please choose a Base UoM first.")
+            return
+        if self._uom_ref_key(base_ref) == self._uom_ref_key(alt_ref):
+            info(self, "Invalid value", "Base UoM cannot also be a sales alternate.")
+            return
+        self._append_unique(self._sales_alts, alt_ref, f)
         self._refresh_tables()
         
     def _remove_selected_alt(self):
@@ -304,7 +329,7 @@ class ProductForm(QDialog):
         lst = self._sales_alts if which == 'sales' else None
         if lst is None: return
         for i, a in enumerate(lst):
-            if self._uom_name(a["uom_id"]) == name:
+            if self._uom_ref_label(a) == name:
                 del lst[i]
                 break
         self._refresh_tables()
@@ -338,15 +363,23 @@ class ProductForm(QDialog):
             
         sales_on = self.chk_sales.isChecked()
         # BASE: always required/available
-        base_id = self._base_id or self.cmb_base.current_uom_id()
-        if base_id is None:
+        base_ref = self.cmb_base.current_uom_ref()
+        if not base_ref:
             self.base_uom_error.setText("Base UoM is required")
             self.base_uom_error.show()
             self.cmb_base.setFocus()
             return None
+        base_key = self._uom_ref_key(base_ref)
         
         # Alternates only if their toggle is on
         sales = list(self._sales_alts) if sales_on else []
+        if sales_on:
+            for alt_ref in sales:
+                if self._uom_ref_key(alt_ref) == base_key:
+                    self.base_uom_error.setText("Base UoM cannot also be a sales alternate")
+                    self.base_uom_error.show()
+                    self.cmb_base.setFocus()
+                    return None
         return {
             "product": {
                 "name": self.name.text().strip(),
@@ -358,7 +391,7 @@ class ProductForm(QDialog):
                 # 'enabled' indicates whether alternates are used (base is always present)
                 "enabled": sales_on,
                 "enabled_sales": sales_on,
-                "base_uom_id": base_id,     # always present now
+                "base_uom": base_ref,
                 "sales_alts": sales,
             },
         }

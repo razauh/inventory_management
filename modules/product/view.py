@@ -1,28 +1,60 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel
+from __future__ import annotations
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
 from ...widgets.table_view import TableView
+from .components import ProductDetailsPanel, ProductSummaryBar, ProductToolbar
+
 
 class ProductView(QWidget):
+    selection_changed = Signal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        
-        # Top row: actions + search
-        row = QHBoxLayout()
-        self.btn_add = QPushButton("Add")
-        self.btn_import = QPushButton("Import Products")
-        self.btn_edit = QPushButton("Delete Product")
-        # self.btn_del = QPushButton("Delete")
-        row.addWidget(self.btn_add)
-        row.addWidget(self.btn_import)
-        row.addWidget(self.btn_edit)
-        # row.addWidget(self.btn_del)
-        row.addStretch(1)
-        
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        self.toolbar = ProductToolbar()
+        self.btn_add = self.toolbar.btn_add
+        self.btn_import = self.toolbar.btn_import
+        self.btn_edit = self.toolbar.btn_edit
+        self.btn_delete = self.toolbar.btn_delete
+        self.btn_price = self.toolbar.btn_price
+
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search products (name, category, id, description)…")
-        row.addWidget(QLabel("Search:"))
-        row.addWidget(self.search, 2)
-        
-        layout.addLayout(row)
+        self.search.setPlaceholderText("Search products by id, name, category, description, or UoM")
+        self.toolbar.wire(self.search)
+        root.addWidget(self.toolbar)
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Search:"))
+        search_row.addWidget(self.search, 1)
+        root.addLayout(search_row)
+
+        self.summary = ProductSummaryBar()
+        root.addWidget(self.summary)
+
+        body = QSplitter(Qt.Horizontal)
+        body.setChildrenCollapsible(False)
+
         self.table = TableView()
-        layout.addWidget(self.table, 1)
+        body.addWidget(self.table)
+
+        self.details = ProductDetailsPanel()
+        self.details.setMinimumWidth(240)
+        body.addWidget(self.details)
+        body.setStretchFactor(0, 4)
+        body.setStretchFactor(1, 1)
+        body.setSizes([840, 240])
+
+        root.addWidget(body, 1)

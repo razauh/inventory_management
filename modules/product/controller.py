@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 import logging
 from pathlib import Path
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QItemSelectionModel
 from PySide6.QtWidgets import (
     QWidget,
     QLineEdit,
@@ -20,6 +20,7 @@ from ..base_module import BaseModule
 from .view import ProductView
 from .form import ProductForm
 from .model import ProductsTableModel
+from .components import ProductSummary
 from ...database.repositories.products_repo import ProductsRepo, DomainError
 from ...utils.ui_helpers import info, error
 from ...utils.validators import try_parse_float
@@ -39,13 +40,18 @@ class PriceDialog(QDialog):
         parent: QWidget | None,
         *,
         product_id: int,
+        product_label: str | None,
         base_uom_name: str | None,
         cost_base: float,
         sale_base: float,
         alt_uoms: list[dict],
     ):
         super().__init__(parent)
-        self.setWindowTitle(f"Set price for product #{product_id}")
+        label = (product_label or "").strip()
+        if label:
+            self.setWindowTitle(f"Set price for {label} (#{product_id})")
+        else:
+            self.setWindowTitle(f"Set price for product #{product_id}")
         self._alt_uoms = alt_uoms
         self._cost_base = float(cost_base or 0.0)
         self._syncing = False  # avoid recursive updates
@@ -91,6 +97,9 @@ class PriceDialog(QDialog):
         self.edt_alt_price = QLineEdit()
         self.edt_alt_price.setPlaceholderText("0.00")
         self.lbl_alt_cost = QLabel("")  # updated when UoM changes
+        self.lbl_error = QLabel("")
+        self.lbl_error.setStyleSheet("color: #a33;")
+        self.lbl_error.setWordWrap(True)
         alt_box.addWidget(QLabel("Retail UoM:"))
         alt_box.addWidget(self.cmb_alt)
         alt_box.addWidget(QLabel("Sale price per retail unit:"))
@@ -98,6 +107,7 @@ class PriceDialog(QDialog):
         alt_box.addWidget(self.lbl_alt_cost)
         alt_box.addStretch(1)
         root.addLayout(alt_box)
+        root.addWidget(self.lbl_error)
 
         # Buttons
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
@@ -109,6 +119,8 @@ class PriceDialog(QDialog):
         self.cmb_alt.currentIndexChanged.connect(self._on_alt_uom_changed)
         self.edt_base_price.textChanged.connect(self._on_base_price_changed)
         self.edt_alt_price.textChanged.connect(self._on_alt_price_changed)
+        self.edt_base_price.textChanged.connect(lambda: self.lbl_error.clear())
+        self.edt_alt_price.textChanged.connect(lambda: self.lbl_error.clear())
 
         # Initialize alt cost/price from current base if possible
         self._on_alt_uom_changed()
@@ -203,6 +215,14 @@ class PriceDialog(QDialog):
             return None
         return float(base_price)
 
+    def accept(self):
+        price = self.result_base_price()
+        if price is None:
+            self.lbl_error.setText("Enter a valid non-negative sale price.")
+            return
+        self.lbl_error.clear()
+        super().accept()
+
 
 class ProductController(BaseModule):
     def __init__(self, conn: sqlite3.Connection):
@@ -224,28 +244,140 @@ class ProductController(BaseModule):
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_import.clicked.connect(self._import_products)
         self.view.btn_edit.clicked.connect(self._edit)
-        # self.view.btn_del.clicked.connect(self._delete)
+        self.view.btn_delete.clicked.connect(self._delete)
+        self.view.btn_price.clicked.connect(self._set_price)
         self.view.search.textChanged.connect(self._apply_filter)
         self._wired = True
 
-    def _build_model(self):
+    def _build_model(self, selected_pid: int | None = None):
         rows = self.repo.list_products()
         self.base_model = ProductsTableModel(rows)
         self.proxy = QSortFilterProxyModel(self.view)
         self.proxy.setSourceModel(self.base_model)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.proxy.setSortRole(Qt.UserRole)
         self.proxy.setFilterKeyColumn(-1)
         self.view.table.setModel(self.proxy)
         self.view.table.resizeColumnsToContents()
+        try:
+            self.view.table.selectionModel().selectionChanged.connect(self._update_selected_details)
+        except Exception:
+            pass
+        self._apply_filter(self.view.search.text())
+        self._restore_selection(selected_pid)
+        self._update_summary(rows)
+        self._update_selected_details()
 
     def _reload(self):
-        self._build_model()
+        self._build_model(self._selected_id())
 
     def _apply_filter(self, text: str):
         self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
+        self._update_selected_details()
+
+    def _resolve_uom_ref(self, ref: dict) -> int:
+        uom_id = ref.get("uom_id")
+        if uom_id is not None:
+            return int(uom_id)
+        name = str(ref.get("unit_name") or ref.get("uom_name") or "").strip()
+        if not name:
+            raise ValueError("UoM name is required.")
+        return int(self.repo.add_uom(name))
+
+    def _set_action_state(self, enabled: bool):
+        self.view.btn_edit.setEnabled(enabled)
+        self.view.btn_delete.setEnabled(enabled)
+        self.view.btn_price.setEnabled(enabled)
+
+    def _restore_selection(self, product_id: int | None):
+        if product_id is None:
+            self.view.table.clearSelection()
+            self._set_action_state(False)
+            return
+        selection_model = self.view.table.selectionModel()
+        if selection_model is None:
+            return
+        for row in range(self.proxy.rowCount()):
+            idx = self.proxy.index(row, 0)
+            if str(self.proxy.data(idx, Qt.DisplayRole)) == str(product_id):
+                selection_model.select(
+                    idx,
+                    QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+                )
+                self.view.table.scrollTo(idx)
+                self._set_action_state(True)
+                return
+        self.view.table.clearSelection()
+        self._set_action_state(False)
+
+    def _update_summary(self, rows):
+        low_stock = 0
+        priced = 0
+        with_uoms = 0
+        for p in rows:
+            pid = getattr(p, "product_id", None)
+            if pid is None:
+                continue
+            min_stock = float(getattr(p, "min_stock_level", 0.0) or 0.0)
+            on_hand = float(self.repo.on_hand_base(int(pid)) or 0.0)
+            if min_stock > 0 and on_hand < min_stock:
+                low_stock += 1
+            sale_price = float(self.repo.latest_prices_base(int(pid)).get("sale") or 0.0)
+            if sale_price > 0:
+                priced += 1
+            if getattr(p, "base_uom_name", None):
+                with_uoms += 1
+        self.view.summary.set_summary(
+            ProductSummary(
+                total=len(rows),
+                low_stock=low_stock,
+                priced=priced,
+                with_uoms=with_uoms,
+            )
+        )
+
+    def _update_selected_details(self, *_):
+        pid = self._selected_id()
+        if not pid:
+            self._set_action_state(False)
+            if self.view.search.text().strip() and self.proxy.rowCount() == 0:
+                self.view.details.set_empty(
+                    "No products found",
+                    "Clear the search to see products again.",
+                )
+            else:
+                self.view.details.clear()
+            return
+        self._set_action_state(True)
+        try:
+            self.view.selection_changed.emit(int(pid))
+        except Exception:
+            pass
+        product = self.repo.get(pid)
+        if not product:
+            self.view.details.clear()
+            return
+        uoms = self.repo.product_uoms(pid)
+        base = next((u for u in uoms if u.get("is_base")), None)
+        alts = [u for u in uoms if not u.get("is_base")]
+        prices = self.repo.latest_prices_base(pid)
+        self.view.details.set_product(
+            product_id=product.product_id or pid,
+            name=product.name,
+            category=product.category,
+            min_stock_level=product.min_stock_level,
+            base_uom_name=(base.get("unit_name") if base else product.base_uom_name),
+            alt_uom_names=", ".join(u.get("unit_name", "") for u in alts) or product.alt_uom_names,
+            sale_price=float(prices.get("sale") or 0.0),
+            cost_price=float(prices.get("cost") or 0.0),
+            description=product.description,
+        )
 
     def _selected_id(self) -> int | None:
-        idxs = self.view.table.selectionModel().selectedRows()
+        selection_model = self.view.table.selectionModel()
+        if selection_model is None:
+            return None
+        idxs = selection_model.selectedRows()
         if not idxs:
             return None
         src_index = self.proxy.mapToSource(idxs[0])
@@ -274,17 +406,20 @@ class ProductController(BaseModule):
         try:
             def save_product():
                 pid = self.repo.create(**pdata["product"])
-                base_id = pdata["uoms"]["base_uom_id"]
+                base_id = self._resolve_uom_ref(pdata["uoms"]["base_uom"])
                 self.repo.set_base_uom(pid, base_id)
                 roles = {base_id: (True, True)}
                 all_alts = {}
                 if pdata["uoms"]["enabled_sales"]:
                     for a in pdata["uoms"]["sales_alts"]:
-                        all_alts[a["uom_id"]] = a
-                        prev = roles.get(a["uom_id"], (False, False))
-                        roles[a["uom_id"]] = (True, prev[1])
-                for a in all_alts.values():
-                    self.repo.add_alt_uom(pid, a["uom_id"], a["factor_to_base"])
+                        alt_id = self._resolve_uom_ref(a)
+                        if alt_id == base_id:
+                            raise ValueError("Base UoM cannot also be a sales alternate.")
+                        all_alts[alt_id] = a
+                        prev = roles.get(alt_id, (False, False))
+                        roles[alt_id] = (True, prev[1])
+                for alt_id, a in all_alts.items():
+                    self.repo.add_alt_uom(pid, alt_id, a["factor_to_base"])
                 if len(roles) > 1:
                     self.repo.upsert_roles(pid, roles)
                 return pid
@@ -371,17 +506,20 @@ class ProductController(BaseModule):
         try:
             def save_product():
                 self.repo.update(pid, **pdata["product"])
-                base_id = pdata["uoms"]["base_uom_id"]
+                base_id = self._resolve_uom_ref(pdata["uoms"]["base_uom"])
                 self.repo.set_base_uom(pid, base_id)
                 roles_map = {base_id: (True, True)}
                 all_alts = {}
                 if pdata["uoms"]["enabled_sales"]:
                     for a in pdata["uoms"]["sales_alts"]:
-                        all_alts[a["uom_id"]] = a
-                        prev = roles_map.get(a["uom_id"], (False, False))
-                        roles_map[a["uom_id"]] = (True, prev[1])
-                for a in all_alts.values():
-                    self.repo.add_alt_uom(pid, a["uom_id"], a["factor_to_base"])
+                        alt_id = self._resolve_uom_ref(a)
+                        if alt_id == base_id:
+                            raise ValueError("Base UoM cannot also be a sales alternate.")
+                        all_alts[alt_id] = a
+                        prev = roles_map.get(alt_id, (False, False))
+                        roles_map[alt_id] = (True, prev[1])
+                for alt_id, a in all_alts.items():
+                    self.repo.add_alt_uom(pid, alt_id, a["factor_to_base"])
                 if len(roles_map) > 1:
                     self.repo.upsert_roles(pid, roles_map)
 
@@ -400,6 +538,17 @@ class ProductController(BaseModule):
         pid = self._selected_id()
         if not pid:
             info(self.view, "Select", "Please select a product to delete.")
+            return
+        current = self.repo.get(pid)
+        label = current.name if current else f"product #{pid}"
+        reply = QMessageBox.question(
+            self.view,
+            "Delete Product",
+            f"Delete {label} (#{pid})?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
             return
         try:
             # products_repo.delete() already blocks deletion when referenced (transactions/mappings)
@@ -441,10 +590,12 @@ class ProductController(BaseModule):
         base = next((u for u in uoms if u.get("is_base")), None)
         alts = [u for u in uoms if not u.get("is_base")]
         base_name = base.get("unit_name", "Base") if base else "Base"
+        current_product = self.repo.get(pid)
 
         dlg = PriceDialog(
             self.view,
             product_id=pid,
+            product_label=current_product.name if current_product else None,
             base_uom_name=base_name,
             cost_base=cost_base,
             sale_base=current_sale,

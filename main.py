@@ -265,7 +265,7 @@ class MainWindow(QMainWindow):
     def open_inventory_sub(self, sub: str):
         """
         Ensure the Inventory module is visible and switch its internal tab.
-        sub: 'valuation' | 'transactions'
+        sub: 'valuation' | 'transactions' | 'adjustments'
         """
         idx = self._find_module_index("Inventory")
         if idx is None:
@@ -290,7 +290,7 @@ class MainWindow(QMainWindow):
             from PySide6.QtWidgets import QTabWidget
             tab = w.findChild(QTabWidget)
             if tab:
-                mapping = {"valuation": 0, "transactions": 1}
+                mapping = {"valuation": 0, "transactions": 1, "adjustments": 2}
                 if sub in mapping and 0 <= mapping[sub] < tab.count():
                     tab.setCurrentIndex(mapping[sub])
         except Exception:

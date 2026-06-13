@@ -16,7 +16,6 @@ def test_inventory_controller_does_not_keep_dead_repo_wiring():
         if isinstance(node, ast.ImportFrom):
             if node.module in {
                 "database.repositories.inventory_repo",
-                "database.repositories.products_repo",
                 "utils.ui_helpers",
                 "utils.helpers",
             }:
@@ -40,6 +39,5 @@ def test_inventory_controller_does_not_keep_dead_repo_wiring():
                                 ):
                                     init_assigns.add(target.attr)
 
-    assert not imports
-    assert "inv" not in init_assigns
-    assert "prod" not in init_assigns
+    assert imports == {"InventoryRepo"}
+    assert {"_repo", "_adjustment_view", "_valuation_view", "_transactions_view"}.issubset(init_assigns)

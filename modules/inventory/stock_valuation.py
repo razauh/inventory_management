@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
 )
 
+from ...utils.helpers import fmt_money
 from ...utils import ui_helpers as ui
 from ...database.repositories.inventory_repo import InventoryRepo  # type: ignore
 
@@ -119,9 +120,13 @@ class StockValuationWidget(QWidget):
         self.lbl_status.setStyleSheet("color:#666; font-size:11px;")
         grid.addWidget(self.lbl_status, 3, 0, 1, 2, Qt.AlignLeft)
 
-        self.lbl_note = QLabel("Source: v_stock_on_hand")
+        self.lbl_note = QLabel("Source: current stock snapshot")
         self.lbl_note.setStyleSheet("color:#666; font-size:11px;")
         grid.addWidget(self.lbl_note, 4, 0, 1, 2, Qt.AlignLeft)
+
+        self.lbl_money_note = QLabel("Money values are shown in the app's base currency.")
+        self.lbl_money_note.setStyleSheet("color:#666; font-size:11px;")
+        grid.addWidget(self.lbl_money_note, 5, 0, 1, 2, Qt.AlignLeft)
 
         root.addWidget(self.grp_card, 0)
 
@@ -240,7 +245,7 @@ class StockValuationWidget(QWidget):
     # ----------------------------------------------------------------------
     def _on_filters_changed(self) -> None:
         """React to product change: load snapshot or clear if none selected."""
-        pid = self._selected_product_id()
+        pid, _reason = self._resolve_selected_product()
         if pid is None:
             self._clear_card("Select a product")
             return
@@ -248,11 +253,18 @@ class StockValuationWidget(QWidget):
 
     def _refresh_clicked(self) -> None:
         name_raw = (self.txt_product.text() or "").strip()
-        pid = self._selected_product_id()
+        pid, reason = self._resolve_selected_product()
         if pid is None:
             if name_raw:
                 try:
-                    ui.info(self, "Not found", f"Product '{name_raw}' was not found.")
+                    if reason == "ambiguous":
+                        ui.info(
+                            self,
+                            "Ambiguous product",
+                            f"Product '{name_raw}' matches more than one product. Pick one with its ID.",
+                        )
+                    else:
+                        ui.info(self, "Not found", f"Product '{name_raw}' was not found.")
                 except Exception as e:
                     logging.getLogger(__name__).warning(
                         "Failed to show 'Product not found' dialog for %r: %s",
@@ -260,6 +272,7 @@ class StockValuationWidget(QWidget):
                         e,
                         exc_info=True,
                     )
+                self._clear_card("Select a product")
                 return
             self._clear_card("Select a product")
             return
@@ -268,10 +281,10 @@ class StockValuationWidget(QWidget):
     # ----------------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------------
-    def _selected_product_id(self) -> Optional[int]:
+    def _resolve_selected_product(self) -> tuple[Optional[int], Optional[str]]:
         raw = (self.txt_product.text() or "").strip()
         if not raw:
-            return None
+            return None, None
 
         # Prefer explicit "Name (ID: N)" format when present
         if raw.endswith(")") and "(ID:" in raw:
@@ -279,7 +292,7 @@ class StockValuationWidget(QWidget):
                 start = raw.rfind("(ID:") + len("(ID:")
                 end = raw.rfind(")")
                 id_str = raw[start:end].strip()
-                return int(id_str)
+                return int(id_str), None
             except Exception:
                 # Fall back to name-based lookup below
                 pass
@@ -291,12 +304,13 @@ class StockValuationWidget(QWidget):
         name = lookup_name.lower()
         ids = self._name_to_id.get(name) or []
         if not ids:
-            return None
-        # If multiple IDs share the same name, use the first one by default.
+            return None, "not_found"
+        if len(ids) > 1:
+            return None, "ambiguous"
         try:
-            return int(ids[0])
+            return int(ids[0]), None
         except Exception:
-            return None
+            return None, "not_found"
 
     def _set_status(self, text: str) -> None:
         self.lbl_status.setText(text)
@@ -346,6 +360,6 @@ class StockValuationWidget(QWidget):
             on_hand_str = f"{qty_str} {uom or ''}".strip()
 
         self.val_on_hand.setText(on_hand_str)
-        self.val_unit_value.setText(_fmt_float(unit))
-        self.val_total_value.setText(_fmt_float(total))
+        self.val_unit_value.setText(fmt_money(unit))
+        self.val_total_value.setText(fmt_money(total))
         self._set_status("Snapshot loaded")

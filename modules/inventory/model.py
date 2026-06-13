@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
 
@@ -29,6 +30,13 @@ class TransactionsTableModel(QAbstractTableModel):
       - notes
     """
     HEADERS: List[str] = ["ID", "Date", "Type", "Product", "Qty", "UoM", "Notes"]
+    TYPE_LABELS = {
+        "purchase": "Purchase",
+        "sale": "Sale",
+        "purchase_return": "Purchase Return",
+        "sale_return": "Sale Return",
+        "adjustment": "Adjustment",
+    }
 
     def __init__(self, rows: Optional[List[Dict[str, Any]]] = None) -> None:
         super().__init__()
@@ -63,7 +71,7 @@ class TransactionsTableModel(QAbstractTableModel):
                 elif col == 1:  # Date
                     return _get("date")
                 elif col == 2:  # Type
-                    return _get("transaction_type", "type")
+                    return self._format_type(_get("transaction_type", "type"))
                 elif col == 3:  # Product
                     return _get("product")
                 elif col == 4:  # Qty
@@ -85,6 +93,46 @@ class TransactionsTableModel(QAbstractTableModel):
                 return int(Qt.AlignRight | Qt.AlignVCenter)
 
         return None
+
+    def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
+        reverse = order == Qt.DescendingOrder
+
+        def _sort_key(row: Dict[str, Any]):
+            def _get(*keys, default=""):
+                for k in keys:
+                    if k in row and row[k] is not None:
+                        return row[k]
+                return default
+
+            if column == 0:
+                try:
+                    return int(_get("transaction_id", "id", default=0) or 0)
+                except Exception:
+                    return 0
+            if column == 1:
+                raw = str(_get("date", default=""))
+                try:
+                    return (0, datetime.strptime(raw, "%Y-%m-%d"))
+                except Exception:
+                    return (1, raw)
+            if column == 2:
+                return self._format_type(_get("transaction_type", "type")).casefold()
+            if column == 3:
+                return str(_get("product", default="")).casefold()
+            if column == 4:
+                try:
+                    return float(_get("quantity", "qty", default=0) or 0.0)
+                except Exception:
+                    return 0.0
+            if column == 5:
+                return str(_get("unit_name", "uom", default="")).casefold()
+            if column == 6:
+                return str(_get("notes", default="")).casefold()
+            return 0
+
+        self.beginResetModel()
+        self._rows.sort(key=_sort_key, reverse=reverse)
+        self.endResetModel()
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole) -> Any:
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
@@ -112,3 +160,16 @@ class TransactionsTableModel(QAbstractTableModel):
     def rows(self) -> List[Dict[str, Any]]:
         """Return a shallow copy of all rows."""
         return list(self._rows)
+
+    @classmethod
+    def _format_type(cls, raw: Any) -> str:
+        if raw is None:
+            return ""
+        text = str(raw).strip()
+        if not text:
+            return ""
+        return cls.TYPE_LABELS.get(text, text.replace("_", " ").title())
+
+    @property
+    def headers(self) -> tuple[str, ...]:
+        return tuple(self.HEADERS)

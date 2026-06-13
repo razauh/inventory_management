@@ -4,9 +4,8 @@
 Product module package exports.
 
 - ProductController: orchestrates product CRUD and UoM role management.
-- Optional UI parts (ProductView, ProductForm, UomPicker)
-  and models (ProductsTableModel, ProductFilterProxy) are imported defensively
-  so tests/headless environments can import this package without a Qt runtime.
+- Optional UI parts and models are imported defensively so tests/headless
+  environments can import this package without a Qt runtime.
 """
 
 # Core controller (safe to import without a GUI)
@@ -17,12 +16,17 @@ try:
     from .view import ProductView  # type: ignore
     from .form import ProductForm, UomPicker  # type: ignore
     from .model import ProductsTableModel, ProductFilterProxy  # type: ignore
+    from .components import ProductToolbar, ProductSummaryBar, ProductDetailsPanel, ProductSummary  # type: ignore
 except Exception:  # pragma: no cover
     ProductView = None  # type: ignore
     ProductForm = None  # type: ignore
     UomPicker = None  # type: ignore
     ProductsTableModel = None  # type: ignore
     ProductFilterProxy = None  # type: ignore
+    ProductToolbar = None  # type: ignore
+    ProductSummaryBar = None  # type: ignore
+    ProductDetailsPanel = None  # type: ignore
+    ProductSummary = None  # type: ignore
 
 __all__ = [
     "ProductController",
@@ -31,4 +35,8 @@ __all__ = [
     "UomPicker",
     "ProductsTableModel",
     "ProductFilterProxy",
+    "ProductToolbar",
+    "ProductSummaryBar",
+    "ProductDetailsPanel",
+    "ProductSummary",
 ]

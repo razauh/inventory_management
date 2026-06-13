@@ -41,9 +41,18 @@ def test_inventory_controller_uses_active_inventory_widgets_only():
     imported_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in {
+            "view",
+            "model",
             "transactions",
             "stock_valuation",
+            "database.repositories.inventory_repo",
         }:
             imported_names.update(alias.name for alias in node.names)
 
-    assert imported_names == {"TransactionsView", "StockValuationWidget"}
+    assert imported_names == {
+        "InventoryView",
+        "TransactionsTableModel",
+        "TransactionsView",
+        "StockValuationWidget",
+        "InventoryRepo",
+    }

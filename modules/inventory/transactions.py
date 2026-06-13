@@ -184,7 +184,7 @@ class TransactionsView(QWidget):
                 else:
                     pid = int(r[0])
                     name = r[1]
-                self.cmb_product.addItem(name, userData=pid)
+                self.cmb_product.addItem(f"{name} (ID: {pid})", userData=pid)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:
@@ -237,9 +237,11 @@ class TransactionsView(QWidget):
             return
 
         self._last_invalid_range = None
+        current_model = self.tbl_txn.model()
         try:
-            # if self.repo is a raw connection, wrap it just for this call
-            repo = self.repo if isinstance(self.repo, InventoryRepo) else InventoryRepo(self.repo)
+            # Reuse an InventoryRepo or repo-like test double when available.
+            # Fall back to wrapping a raw sqlite connection only.
+            repo = self.repo if hasattr(self.repo, "find_transactions") else InventoryRepo(self.repo)
 
             rows = repo.find_transactions(
                 date_from=self.date_from_str,
@@ -249,7 +251,14 @@ class TransactionsView(QWidget):
             )
         except Exception as e:
             ui.info(self, "Error", f"Failed to load transactions: {e}")
-            rows = []
+            if current_model is None:
+                current_model = TransactionsTableModel([])
+                self.tbl_txn.setModel(current_model)
+                maybe_resize_columns(self.tbl_txn)
+            self.lbl_filter_summary.setText(
+                "Load failed. Last successful rows stay visible."
+            )
+            return
 
         model = TransactionsTableModel(rows)
         self.tbl_txn.setModel(model)
@@ -288,7 +297,7 @@ class TransactionsView(QWidget):
 
         filters = ", ".join(parts) if parts else "no date or product filter"
         self.lbl_filter_summary.setText(
-            f"Showing {row_count} transaction(s), limit {self.limit_value}, {filters}."
+            f"Showing {row_count} transaction(s) from the loaded subset, limit {self.limit_value}, {filters}."
         )
 
     def _on_export_csv(self) -> None:
@@ -311,7 +320,7 @@ class TransactionsView(QWidget):
             return
 
         # Determine headers
-        headers = getattr(model, "headers", None)
+        headers = getattr(model, "HEADERS", None) or getattr(model, "headers", None)
         if not headers:
             headers = ["ID", "Date", "Type", "Product", "Qty", "UoM", "Notes"]
 
@@ -328,6 +337,6 @@ class TransactionsView(QWidget):
                         idx = model.index(r, c)
                         row_out.append(idx.data())
                     writer.writerow(safe_csv_row(row_out))
-            ui.info(self, "Exported", f"Saved {model.rowCount()} rows to:\n{path}")
+            ui.info(self, "Exported", f"Saved {model.rowCount()} loaded row(s) to:\n{path}")
         except Exception as e:
             ui.info(self, "Error", f"Failed to export CSV:\n{e}")
