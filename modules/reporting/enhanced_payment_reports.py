@@ -36,6 +36,11 @@ except Exception:  # pragma: no cover
         except Exception:
             return "0.00"
 
+from .html_export import escape_html
+from .csv_export import safe_csv_row
+from .date_range import validate_date_range
+from .large_results import maybe_resize_columns
+
 from ...database.repositories.reporting_repo import ReportingRepo
 
 
@@ -43,7 +48,7 @@ from ...database.repositories.reporting_repo import ReportingRepo
 from PySide6.QtCore import QAbstractTableModel, QModelIndex
 
 class _DateAmountStatusTableModel(QAbstractTableModel):
-    HEADERS = ("Date", "Amount", "Status", "Type")
+    HEADERS = ("Date", "Cash Amount", "Status", "Type")
 
     def __init__(self, rows: Optional[List[dict]] = None, parent=None) -> None:
         super().__init__(parent)
@@ -102,6 +107,8 @@ class _DateAmountStatusTableModel(QAbstractTableModel):
 
 # ------------------------------ All-Payments Reports Tab ------------------------
 class EnhancedPaymentReportsTab(QWidget):
+    MAX_ROWS = 1000
+
     """
     Enhanced Payments reports showing complete payment picture:
       • All payments by status (not just cleared)
@@ -223,11 +230,20 @@ class EnhancedPaymentReportsTab(QWidget):
         foot = QHBoxLayout()
         foot.addStretch(1)
         self.lbl_basis = QLabel("Date basis: Posting date")
-        self.lbl_all_total = QLabel("Total: 0.00")
+        self.lbl_inflow_total = QLabel("Inflows: 0.00")
+        self.lbl_outflow_total = QLabel("Outflows: 0.00")
+        self.lbl_refund_total = QLabel("Refunds: 0.00")
+        self.lbl_net_total = QLabel("Net Cash: 0.00")
         self.lbl_uncleared_total = QLabel("Uncleared: 0.00")
         foot.addWidget(self.lbl_basis)
         foot.addSpacing(16)
-        foot.addWidget(self.lbl_all_total)
+        foot.addWidget(self.lbl_inflow_total)
+        foot.addSpacing(12)
+        foot.addWidget(self.lbl_outflow_total)
+        foot.addSpacing(12)
+        foot.addWidget(self.lbl_refund_total)
+        foot.addSpacing(12)
+        foot.addWidget(self.lbl_net_total)
         foot.addSpacing(16)
         foot.addWidget(self.lbl_uncleared_total)
         root.addLayout(foot)
@@ -246,6 +262,24 @@ class EnhancedPaymentReportsTab(QWidget):
     def _date_basis_label(self) -> str:
         return "Cash date" if self._date_basis_key() == "cash" else "Posting date"
 
+    @staticmethod
+    def _cash_direction_totals(rows: List[dict]) -> tuple[float, float, float, float]:
+        inflow = 0.0
+        outflow = 0.0
+        refunds = 0.0
+        for row in rows:
+            amount = float(row.get("amount") or 0.0)
+            kind = str(row.get("type") or "").strip().lower()
+            if kind == "disbursement":
+                outflow += amount
+            elif kind == "vendor refund":
+                refunds += amount
+                inflow += amount
+            else:
+                inflow += amount
+        net = inflow - outflow
+        return inflow, outflow, refunds, net
+
     def _effective_date_expr(self, alias: str) -> str:
         if self._date_basis_key() == "cash":
             return (
@@ -258,6 +292,8 @@ class EnhancedPaymentReportsTab(QWidget):
     # ---- Data refresh ----
     @Slot()
     def refresh(self) -> None:
+        if not self._validate_date_ranges():
+            return
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         basis_label = self._date_basis_label()
@@ -311,8 +347,9 @@ class EnhancedPaymentReportsTab(QWidget):
                     "type": "Vendor Refund"
                 })
 
-            all_total = sum(float(r.get("amount", 0.0)) for r in all_rows)
-            uncleared_rows = [r for r in all_rows if r.get("status") not in ["cleared"]]
+            all_rows = all_rows[: self.MAX_ROWS]
+            inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(all_rows)
+            uncleared_rows = [r for r in all_rows if r.get("status") not in ["cleared"]][: self.MAX_ROWS]
             uncleared_total = sum(float(r.get("amount", 0.0)) for r in uncleared_rows)
 
         self._rows_all_payments = all_rows
@@ -321,7 +358,10 @@ class EnhancedPaymentReportsTab(QWidget):
         self._rows_uncleared = uncleared_rows
         self.model_uncleared.set_rows(uncleared_rows)
 
-        self.lbl_all_total.setText(f"Total: {fmt_money(all_total)}")
+        self.lbl_inflow_total.setText(f"Inflows: {fmt_money(inflow_total)}")
+        self.lbl_outflow_total.setText(f"Outflows: {fmt_money(outflow_total)}")
+        self.lbl_refund_total.setText(f"Refunds: {fmt_money(refund_total)}")
+        self.lbl_net_total.setText(f"Net Cash: {fmt_money(net_total)}")
         self.lbl_uncleared_total.setText(f"Uncleared: {fmt_money(uncleared_total)}")
         self.lbl_basis.setText(f"Date basis: {basis_label}")
         self.lbl_all_title.setText(f"<b>All Payments</b> — {date_from} to {date_to} ({basis_label})")
@@ -345,6 +385,8 @@ class EnhancedPaymentReportsTab(QWidget):
             QMessageBox.warning(self, "Export failed", f"Could not export PDF:\n{e}")
 
     def _on_export_csv(self) -> None:
+        if not self._validate_date_ranges():
+            return
         fn, _ = QFileDialog.getSaveFileName(self, "Export Payments to CSV", "enhanced_payments.csv", "CSV Files (*.csv)")
         if not fn:
             return
@@ -353,20 +395,30 @@ class EnhancedPaymentReportsTab(QWidget):
             with open(fn, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["Report", "Enhanced Payments"])
-                w.writerow(["Date basis", self._date_basis_label()])
-                w.writerow(["Period", f"{self.dt_from.date().toString('yyyy-MM-dd')} to {self.dt_to.date().toString('yyyy-MM-dd')}"])
+                w.writerow(safe_csv_row(["Date basis", self._date_basis_label()]))
+                w.writerow(safe_csv_row(["Period", f"{self.dt_from.date().toString('yyyy-MM-dd')} to {self.dt_to.date().toString('yyyy-MM-dd')}"]))
+                w.writerow([])
+                inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(self._rows_all_payments)
+                w.writerow(["Cash Direction Totals"])
+                w.writerow(["Inflows", f"{inflow_total:.2f}"])
+                w.writerow(["Outflows", f"{outflow_total:.2f}"])
+                w.writerow(["Refunds", f"{refund_total:.2f}"])
+                w.writerow(["Net Cash", f"{net_total:.2f}"])
                 w.writerow([])
                 w.writerow(["All Payments"])
-                w.writerow(["Date", "Amount", "Status", "Type"])
+                w.writerow(["Date", "Cash Amount", "Status", "Type"])
                 for r in self._rows_all_payments:
-                    w.writerow([r["date"], f"{float(r['amount']):.2f}", r["status"], r["type"]])
+                    w.writerow(safe_csv_row([r["date"], f"{float(r['amount']):.2f}", r["status"], r["type"]]))
                 w.writerow([])
                 w.writerow(["Uncleared Payments"])
-                w.writerow(["Date", "Amount", "Status", "Type"])
+                w.writerow(["Date", "Cash Amount", "Status", "Type"])
                 for r in self._rows_uncleared:
-                    w.writerow([r["date"], f"{float(r['amount']):.2f}", r["status"], r["type"]])
+                    w.writerow(safe_csv_row([r["date"], f"{float(r['amount']):.2f}", r["status"], r["type"]]))
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export CSV:\n{e}")
+
+    def _validate_date_ranges(self) -> bool:
+        return validate_date_range(self, self.dt_from.date(), self.dt_to.date(), "Payment period")
 
     def _html_export(self) -> str:
         df = self.dt_from.date().toString("yyyy-MM-dd")
@@ -375,29 +427,32 @@ class EnhancedPaymentReportsTab(QWidget):
 
         def _table(title: str, rows: List[dict]) -> str:
             if not rows:
-                return f"<h3>{title}</h3><p>No data</p>"
+                return f"<h3>{escape_html(title)}</h3><p>No data</p>"
                 
-            parts = [f'<h3>{title}</h3>', '<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>",
-                     "<th>Date</th>", "<th>Amount</th>", "<th>Status</th>", "<th>Type</th>", "</tr></thead><tbody>"]
+            parts = [f'<h3>{escape_html(title)}</h3>', '<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>",
+                     "<th>Date</th>", "<th>Cash Amount</th>", "<th>Status</th>", "<th>Type</th>", "</tr></thead><tbody>"]
             for r in rows:
                 parts.append("<tr>")
-                parts.append(f"<td>{r.get('date','')}</td>")
+                parts.append(f"<td>{escape_html(r.get('date',''))}</td>")
                 parts.append(f"<td style='text-align:right'>{fmt_money(r.get('amount'))}</td>")
-                parts.append(f"<td>{r.get('status','')}</td>")
-                parts.append(f"<td>{r.get('type','')}</td>")
+                parts.append(f"<td>{escape_html(r.get('status',''))}</td>")
+                parts.append(f"<td>{escape_html(r.get('type',''))}</td>")
                 parts.append("</tr>")
             parts.append("</tbody></table>")
             return "".join(parts)
 
-        total_all = sum(float(r.get("amount") or 0.0) for r in self._rows_all_payments)
+        inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(self._rows_all_payments)
         total_uncleared = sum(float(r.get("amount") or 0.0) for r in self._rows_uncleared)
 
         html = [
             "<h2>Enhanced Payment Reports</h2>",
-            f"<p><b>Period:</b> {df} to {dt}</p>",
-            f"<p><b>Date basis:</b> {basis_label}</p>",
+            f"<p><b>Period:</b> {escape_html(df)} to {escape_html(dt)}</p>",
+            f"<p><b>Date basis:</b> {escape_html(basis_label)}</p>",
             _table("All Payments", self._rows_all_payments),
-            f"<p><b>Total Payments:</b> {fmt_money(total_all)}</p>",
+            f"<p><b>Inflows:</b> {fmt_money(inflow_total)}</p>",
+            f"<p><b>Outflows:</b> {fmt_money(outflow_total)}</p>",
+            f"<p><b>Refunds:</b> {fmt_money(refund_total)}</p>",
+            f"<p><b>Net Cash:</b> {fmt_money(net_total)}</p>",
             _table("Uncleared Payments", self._rows_uncleared),
             f"<p><b>Total Uncleared:</b> {fmt_money(total_uncleared)}</p>",
         ]
@@ -419,5 +474,4 @@ class EnhancedPaymentReportsTab(QWidget):
 
     # ---- Misc helpers ----
     def _autosize(self, tv: QTableView) -> None:
-        tv.resizeColumnsToContents()
-        tv.horizontalHeader().setStretchLastSection(True)
+        maybe_resize_columns(tv)

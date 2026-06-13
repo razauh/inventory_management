@@ -57,6 +57,12 @@ class ReportingRepo:
         finally:
             if started and self.conn.in_transaction:
                 self.conn.execute("ROLLBACK")
+
+    @staticmethod
+    def _limit_clause(limit: Optional[int]) -> tuple[str, list[object]]:
+        if limit is None:
+            return "", []
+        return " LIMIT ? ", [int(limit)]
     
     def close(self):
         """Explicitly close the database connection."""
@@ -444,7 +450,7 @@ class ReportingRepo:
     # ----------------------------------------------------------------------
 
     def expense_summary_by_category(
-        self, date_from: str, date_to: str, category_id: Optional[int]
+        self, date_from: str, date_to: str, category_id: Optional[int], limit: Optional[int] = 1000
     ) -> list[sqlite3.Row]:
         """
         Totals per category in [date_from, date_to].
@@ -492,6 +498,9 @@ class ReportingRepo:
             """
             params = [date_from, date_to]
 
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         return list(self.conn.execute(sql, params))
 
     def expense_summary_by_category_iter(
@@ -548,7 +557,7 @@ class ReportingRepo:
             yield row
 
     def expense_lines(
-        self, date_from: str, date_to: str, category_id: Optional[int]
+        self, date_from: str, date_to: str, category_id: Optional[int], limit: Optional[int] = 1000
     ) -> list[sqlite3.Row]:
         """
         Raw expense lines for the period and optional category.
@@ -577,6 +586,8 @@ class ReportingRepo:
         ORDER BY e.date DESC, e.expense_id DESC
         """
         # Return list for API compatibility, but consider using iterators for large datasets
+        sql += " LIMIT ? "
+        params.append(int(limit)) if limit is not None else None
         return list(self.conn.execute(sql, params))
 
     def expense_lines_iter(
@@ -617,7 +628,7 @@ class ReportingRepo:
     # ------------------------------ INVENTORY -----------------------------
     # ----------------------------------------------------------------------
 
-    def stock_on_hand_current(self) -> list[sqlite3.Row]:
+    def stock_on_hand_current(self, limit: Optional[int] = 1000) -> list[sqlite3.Row]:
         """
         Read-only current snapshot from v_stock_on_hand.
         View columns (per schema): product_id, qty_in_base, unit_value, total_value, valuation_date
@@ -636,9 +647,11 @@ class ReportingRepo:
         LEFT JOIN products p ON p.product_id = v.product_id
         ORDER BY p.name COLLATE NOCASE
         """
-        return list(self.conn.execute(sql))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        return list(self.conn.execute(sql, lim_params))
 
-    def stock_on_hand_current_iter(self) -> Iterable[sqlite3.Row]:
+    def stock_on_hand_current_iter(self, limit: Optional[int] = None) -> Iterable[sqlite3.Row]:
         """
         Read-only generator version of stock_on_hand_current.
         This prevents loading all results into memory at once for large datasets.
@@ -655,11 +668,13 @@ class ReportingRepo:
         LEFT JOIN products p ON p.product_id = v.product_id
         ORDER BY p.name COLLATE NOCASE
         """
-        cursor = self.conn.execute(sql)
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        cursor = self.conn.execute(sql, lim_params)
         for row in cursor:
             yield row
 
-    def stock_on_hand_as_of(self, as_of: str) -> list[sqlite3.Row]:
+    def stock_on_hand_as_of(self, as_of: str, limit: Optional[int] = 1000) -> list[sqlite3.Row]:
         """
         Read-only latest valuation row per product where valuation_date <= as_of.
         stock_valuation_history columns: product_id, valuation_date, quantity, unit_value, total_value
@@ -684,9 +699,11 @@ class ReportingRepo:
         LEFT JOIN products p ON p.product_id = svh.product_id
         ORDER BY p.name COLLATE NOCASE
         """
-        return list(self.conn.execute(sql, (as_of,)))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        return list(self.conn.execute(sql, [as_of, *lim_params]))
 
-    def stock_on_hand_as_of_iter(self, as_of: str) -> Iterable[sqlite3.Row]:
+    def stock_on_hand_as_of_iter(self, as_of: str, limit: Optional[int] = None) -> Iterable[sqlite3.Row]:
         """
         Read-only generator version of stock_on_hand_as_of.
         This prevents loading all results into memory at once for large datasets.
@@ -711,11 +728,13 @@ class ReportingRepo:
         LEFT JOIN products p ON p.product_id = svh.product_id
         ORDER BY p.name COLLATE NOCASE
         """
-        cursor = self.conn.execute(sql, (as_of,))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        cursor = self.conn.execute(sql, [as_of, *lim_params])
         for row in cursor:
             yield row
 
-    def inventory_transactions(self, date_from: str, date_to: str, product_id: int | None) -> list[sqlite3.Row]:
+    def inventory_transactions(self, date_from: str, date_to: str, product_id: int | None, limit: Optional[int] = 1000) -> list[sqlite3.Row]:
         """
         Return transactions with both posted qty/UoM and base-qty conversion.
         Columns returned (UI expects): date, product_id, type, quantity, unit_name,
@@ -748,10 +767,12 @@ class ReportingRepo:
         {where_extra}
         ORDER BY it.date ASC, it.transaction_id ASC
         """
-        # Return list for API compatibility, but consider using iterators for large datasets
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         return list(self.conn.execute(sql, params))
 
-    def inventory_transactions_iter(self, date_from: str, date_to: str, product_id: int | None) -> Iterable[sqlite3.Row]:
+    def inventory_transactions_iter(self, date_from: str, date_to: str, product_id: int | None, limit: Optional[int] = None) -> Iterable[sqlite3.Row]:
         """
         Generator version of inventory_transactions that yields rows one at a time.
         This prevents loading all results into memory at once for large datasets.
@@ -783,6 +804,9 @@ class ReportingRepo:
         {where_extra}
         ORDER BY it.date ASC, it.transaction_id ASC
         """
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         cursor = self.conn.execute(sql, params)
         for row in cursor:
             yield row
@@ -829,7 +853,9 @@ class ReportingRepo:
         row = self.conn.execute(sql, (date_from, date_to)).fetchone()
         return float(row["cogs"] if row and row["cogs"] is not None else 0.0)
 
-    def expenses_by_category(self, date_from: str, date_to: str) -> list[sqlite3.Row]:
+    def expenses_by_category(
+        self, date_from: str, date_to: str, limit: Optional[int] = 1000
+    ) -> list[sqlite3.Row]:
         """
         Detailed expense totals by category for P&L middle block.
         Returns category_id, category_name, total_amount (names match UI).
@@ -856,9 +882,11 @@ class ReportingRepo:
           AND e.date >= ? AND e.date <= ?
         ORDER BY category_name COLLATE NOCASE
         """
-        return list(self.conn.execute(sql, (date_from, date_to, date_from, date_to)))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        return list(self.conn.execute(sql, [date_from, date_to, date_from, date_to, *lim_params]))
 
-    def sale_collections_by_day(self, date_from: str, date_to: str) -> list[sqlite3.Row]:
+    def sale_collections_by_day(self, date_from: str, date_to: str, limit: Optional[int] = 1000) -> list[sqlite3.Row]:
         """
         Cash collections grouped by cleared_date from sale_payments (clearing_state='cleared').
         """
@@ -873,9 +901,11 @@ class ReportingRepo:
         GROUP BY sp.cleared_date
         ORDER BY sp.cleared_date
         """
-        return list(self.conn.execute(sql, (date_from, date_to)))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        return list(self.conn.execute(sql, [date_from, date_to, *lim_params]))
 
-    def purchase_disbursements_by_day(self, date_from: str, date_to: str) -> list[sqlite3.Row]:
+    def purchase_disbursements_by_day(self, date_from: str, date_to: str, limit: Optional[int] = 1000) -> list[sqlite3.Row]:
         """
         Cash disbursements grouped by cleared_date.
         Returns gross vendor payments, refunds received, and net outflow.
@@ -913,7 +943,9 @@ class ReportingRepo:
         GROUP BY date
         ORDER BY date
         """
-        return list(self.conn.execute(sql, (date_from, date_to, date_from, date_to)))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        return list(self.conn.execute(sql, [date_from, date_to, date_from, date_to, *lim_params]))
 
     # ----------------------------------------------------------------------
     # ------------------------------ SALES (NEW) ---------------------------
@@ -1097,6 +1129,7 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         fmt = {
             "daily": "%Y-%m-%d",
@@ -1119,6 +1152,9 @@ END
         GROUP BY STRFTIME('{fmt}', DATE(e.event_date))
         ORDER BY period
         """
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         return list(self.conn.execute(sql, params))
 
     # ---- Sales by customer ----
@@ -1131,6 +1167,7 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         where, params = self._event_where(
             date_from, date_to, statuses, date_to, customer_id, product_id, category
@@ -1153,6 +1190,9 @@ END
         GROUP BY e.customer_id, cu.name
         ORDER BY revenue DESC, cu.name COLLATE NOCASE
         """
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         return list(self.conn.execute(sql, params))
 
     # ---- Sales by product ----
@@ -1165,6 +1205,7 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         """Net sales, quantity, and COGS by product."""
         where, params = self._event_where(
@@ -1189,6 +1230,9 @@ END
         GROUP BY e.product_id, p.name
         ORDER BY revenue DESC, p.name COLLATE NOCASE
         """
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         return list(self.conn.execute(sql, params))
 
     # ---- Sales by category ----
@@ -1201,6 +1245,7 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         """Net sales, quantity, and COGS by product category."""
         where, params = self._event_where(
@@ -1224,6 +1269,9 @@ END
         GROUP BY CASE WHEN e.category = '' THEN '(Uncategorized)' ELSE e.category END
         ORDER BY revenue DESC, category COLLATE NOCASE
         """
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         return list(self.conn.execute(sql, params))
 
     # ---- Margin by period (daily/monthly/yearly) ----
@@ -1237,6 +1285,7 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         fmt = {
             "daily": "%Y-%m-%d",
@@ -1264,6 +1313,9 @@ END
         GROUP BY STRFTIME('{fmt}', DATE(e.event_date))
         ORDER BY period
         """
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        params.extend(lim_params)
         return list(self.conn.execute(sql, params))
 
     # ---- Margin by customer ----
@@ -1276,10 +1328,11 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         # Reuse the sales_by_customer logic but include margin fields; already implemented there.
         # Expose a dedicated method for the UI for clarity (same SQL pattern).
-        return self.sales_by_customer(date_from, date_to, statuses, customer_id, product_id, category)
+        return self.sales_by_customer(date_from, date_to, statuses, customer_id, product_id, category, limit=limit)
 
     # ---- Margin by product ----
 
@@ -1291,9 +1344,10 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         # Same output as sales_by_product with margin columns; reusing the same query is acceptable.
-        return self.sales_by_product(date_from, date_to, statuses, customer_id, product_id, category)
+        return self.sales_by_product(date_from, date_to, statuses, customer_id, product_id, category, limit=limit)
 
     # ---- Margin by category ----
 
@@ -1305,8 +1359,9 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
-        return self.sales_by_category(date_from, date_to, statuses, customer_id, product_id, category)
+        return self.sales_by_category(date_from, date_to, statuses, customer_id, product_id, category, limit=limit)
 
     # ---- Top customers ----
 
@@ -1447,6 +1502,7 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         where, params = self._event_where(
             date_from, date_to, None, None, customer_id, product_id, category
@@ -1472,7 +1528,9 @@ END
         GROUP BY payment_status
         ORDER BY payment_status
         """
-        return list(self.conn.execute(sql, [*status_params, *params]))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        return list(self.conn.execute(sql, [*status_params, *params, *lim_params]))
 
     # ---- Drill-down sales ----
 
@@ -1484,6 +1542,7 @@ END
         customer_id: Optional[int],
         product_id: Optional[int],
         category: Optional[str],
+        limit: Optional[int] = 1000,
     ) -> list[sqlite3.Row]:
         """
         Return header-level rows filtered by the same criteria,
@@ -1529,4 +1588,6 @@ END
         FROM filtered
         ORDER BY date DESC, sale_id DESC
         """
-        return list(self.conn.execute(sql, [*status_params, *params]))
+        lim_sql, lim_params = self._limit_clause(limit)
+        sql += lim_sql
+        return list(self.conn.execute(sql, [*status_params, *params, *lim_params]))

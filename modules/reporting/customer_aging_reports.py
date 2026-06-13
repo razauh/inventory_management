@@ -32,6 +32,8 @@ from .model import (
     AgingSnapshotTableModel,
     OpenInvoicesTableModel,
 )
+from .html_export import escape_html, html_table_from_model
+from .large_results import maybe_resize_columns
 from ...database import get_db_path
 from ...database.repositories.reporting_repo import ReportingRepo
 
@@ -269,6 +271,8 @@ class CustomerAgingWorker(QThread):
 
 
 class CustomerAgingTab(QWidget):
+    MAX_ROWS = 1000
+
     """
     UI wrapper for Customer Aging:
       - Toolbar: As-of date, Customer (All / one), Refresh, Print/PDF
@@ -422,7 +426,7 @@ class CustomerAgingTab(QWidget):
 
     def _on_snapshot_computed(self, results: List[dict]) -> None:
         """Called when background worker finishes computing the snapshot."""
-        self._rows_snapshot = results
+        self._rows_snapshot = results[: self.MAX_ROWS]
         self.model_snapshot.set_rows(self._rows_snapshot)
         self._autosize(self.tbl_snapshot)
 
@@ -430,7 +434,7 @@ class CustomerAgingTab(QWidget):
         cust_id = self.cmb_customer.currentData()
         if isinstance(cust_id, int):
             as_of = self.dt_asof.date().toString("yyyy-MM-dd")
-            self._rows_invoices = self.logic.list_open_invoices(cust_id, as_of)
+            self._rows_invoices = self.logic.list_open_invoices(cust_id, as_of)[: self.MAX_ROWS]
             self.model_invoices.set_rows(self._rows_invoices)
             self._autosize(self.tbl_invoices)
         else:
@@ -452,8 +456,7 @@ class CustomerAgingTab(QWidget):
         QMessageBox.warning(self, "Error", f"Error computing report: {error_msg}")
 
     def _autosize(self, tv: QTableView) -> None:
-        tv.resizeColumnsToContents()
-        tv.horizontalHeader().setStretchLastSection(True)
+        maybe_resize_columns(tv)
 
     @Slot()
     def _on_print_pdf(self) -> None:
@@ -467,9 +470,9 @@ class CustomerAgingTab(QWidget):
         try:
             # Build a simple HTML doc
             as_of = self.dt_asof.date().toString("yyyy-MM-dd")
-            cust_txt = self.cmb_customer.currentText()
+            cust_txt = escape_html(self.cmb_customer.currentText())
             html = []
-            html.append(f"<h2>Customer Aging (as of {as_of})</h2>")
+            html.append(f"<h2>Customer Aging (as of {escape_html(as_of)})</h2>")
             html.append(f"<p><b>Customer Filter:</b> {cust_txt}</p>")
 
             # Snapshot table
@@ -486,28 +489,7 @@ class CustomerAgingTab(QWidget):
             QMessageBox.warning(self, "Export failed", f"Could not export PDF:\n{e}")
 
     def _html_from_model(self, tv: QTableView) -> str:
-        """
-        Create a lightweight HTML table from the current model/selection.
-        """
-        m = tv.model()
-        if m is None:
-            return "<p>(No data)</p>"
-        cols = m.columnCount()
-        rows = m.rowCount()
-        parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
-        for c in range(cols):
-            hdr = m.headerData(c, Qt.Horizontal, Qt.DisplayRole)
-            parts.append(f"<th>{hdr}</th>")
-        parts.append("</tr></thead><tbody>")
-        for r in range(rows):
-            parts.append("<tr>")
-            for c in range(cols):
-                idx: QModelIndex = m.index(r, c)
-                val = m.data(idx, Qt.DisplayRole)
-                parts.append(f"<td>{val if val is not None else ''}</td>")
-            parts.append("</tr>")
-        parts.append("</tbody></table>")
-        return "".join(parts)
+        return html_table_from_model(tv.model())
 
     def _render_pdf(self, html: str, filepath: str) -> None:
         """
@@ -541,7 +523,7 @@ class CustomerAgingTab(QWidget):
         if cust_id is None:
             self.model_invoices.set_rows([])
             return
-        self._rows_invoices = self.logic.list_open_invoices(int(cust_id), as_of)
+        self._rows_invoices = self.logic.list_open_invoices(int(cust_id), as_of)[: self.MAX_ROWS]
         self.model_invoices.set_rows(self._rows_invoices)
         self._autosize(self.tbl_invoices)
 

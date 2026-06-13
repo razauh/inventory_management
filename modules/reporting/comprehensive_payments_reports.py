@@ -7,7 +7,7 @@ from typing import List, Optional, Dict, Any
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDateEdit, QComboBox, 
-    QPushButton, QSplitter, QTabWidget, QTableView, QFrame, QHeaderView,
+    QPushButton, QSplitter, QTabWidget, QTableView, QFrame,
     QFileDialog, QMessageBox, QAbstractItemView
 )
 
@@ -29,6 +29,9 @@ except Exception:  # pragma: no cover
 
 # Reporting repo
 from ...database.repositories.reporting_repo import ReportingRepo
+from .csv_export import safe_csv_row
+from .date_range import validate_date_range
+from .large_results import maybe_resize_columns
 
 
 # ------------------------------ Data Models -----------------------------------
@@ -95,7 +98,7 @@ class _PaymentSummaryTableModel(_BasePaymentsTableModel):
     """Model for payment summary by status"""
     def __init__(self, rows: Optional[List[Dict]] = None, parent=None):
         super().__init__(
-            headers=["Status", "Payment Type", "Count", "Total Amount"],
+            headers=["Status", "Payment Type", "Count", "Cash Amount"],
             field_map=["status", "type", "count", "total_amount"],
             rows=rows,
             money_fields=["total_amount"],
@@ -123,7 +126,7 @@ class _DetailedPaymentsTableModel(_BasePaymentsTableModel):
     """Model for detailed payment listings"""
     def __init__(self, rows: Optional[List[Dict]] = None, parent=None):
         super().__init__(
-            headers=["Date", "Type", "Amount", "Method", "Status", "Document ID", "Notes"],
+            headers=["Date", "Type", "Cash Amount", "Method", "Status", "Document ID", "Notes"],
             field_map=["date", "type", "amount", "method", "status", "doc_id", "notes"],
             rows=rows,
             money_fields=["amount"],
@@ -153,6 +156,24 @@ class ComprehensivePaymentReports:
                 f"THEN {alias}.cleared_date ELSE {alias}.date END"
             )
         return f"{alias}.date"
+
+    @staticmethod
+    def _cash_direction_totals(rows: List[Dict[str, Any]]) -> tuple[float, float, float, float]:
+        inflow = 0.0
+        outflow = 0.0
+        refunds = 0.0
+        for row in rows:
+            amount = float(row.get("amount") or row.get("total_amount") or 0.0)
+            kind = str(row.get("type") or "").strip().lower()
+            if kind == "disbursement":
+                outflow += amount
+            elif kind == "vendor refund":
+                refunds += amount
+                inflow += amount
+            else:
+                inflow += amount
+        net = inflow - outflow
+        return inflow, outflow, refunds, net
     
     def payments_summary_by_status(
         self, 
@@ -350,6 +371,8 @@ class ComprehensivePaymentReports:
 
 # ------------------------------ UI Tab ----------------------------------------
 class ComprehensivePaymentReportsTab(QWidget):
+    MAX_ROWS = 1000
+
     """Comprehensive Payment Reports UI"""
     
     def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
@@ -459,12 +482,19 @@ class ComprehensivePaymentReportsTab(QWidget):
         footer_layout = QHBoxLayout()
         footer_layout.addStretch(1)
         self.lbl_basis = QLabel("Date basis: Posting date")
-        self.lbl_summary_total = QLabel("Summary Total: 0.00")
-        self.lbl_unprocessed_total = QLabel("Unprocessed Total: 0.00")
+        self.lbl_inflow_total = QLabel("Inflows: 0.00")
+        self.lbl_outflow_total = QLabel("Outflows: 0.00")
+        self.lbl_refund_total = QLabel("Refunds: 0.00")
+        self.lbl_net_total = QLabel("Net Cash: 0.00")
         footer_layout.addWidget(self.lbl_basis)
         footer_layout.addSpacing(12)
-        footer_layout.addWidget(self.lbl_summary_total)
-        footer_layout.addWidget(self.lbl_unprocessed_total)
+        footer_layout.addWidget(self.lbl_inflow_total)
+        footer_layout.addSpacing(12)
+        footer_layout.addWidget(self.lbl_outflow_total)
+        footer_layout.addSpacing(12)
+        footer_layout.addWidget(self.lbl_refund_total)
+        footer_layout.addSpacing(12)
+        footer_layout.addWidget(self.lbl_net_total)
         layout.addLayout(footer_layout)
     
     def _wire_signals(self) -> None:
@@ -476,19 +506,19 @@ class ComprehensivePaymentReportsTab(QWidget):
     
     @Slot()
     def refresh(self) -> None:
+        if not self._validate_date_ranges():
+            return
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         date_basis = str(self.cmb_date_basis.currentData() or "posting")
         basis_label = ComprehensivePaymentReports._date_basis_label(date_basis)
 
         with self.logic.repo.read_snapshot():
-            rows_summary = self.logic.payments_summary_by_status(date_from, date_to, date_basis=date_basis)
-            summary_total = sum(r.get("total_amount", 0.0) for r in rows_summary)
+            rows_summary = self.logic.payments_summary_by_status(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
 
-            rows_unprocessed = self.logic.unprocessed_payments(date_from, date_to, date_basis=date_basis)
-            unprocessed_total = sum(r.get("amount", 0.0) for r in rows_unprocessed)
+            rows_unprocessed = self.logic.unprocessed_payments(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
 
-            rows_detailed = self.logic.all_payments_detailed(date_from, date_to, date_basis=date_basis)
+            rows_detailed = self.logic.all_payments_detailed(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
 
         self._rows_summary = rows_summary
         self._rows_unprocessed = rows_unprocessed
@@ -499,8 +529,11 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.model_detailed.set_rows(rows_detailed)
 
         self.lbl_basis.setText(f"Date basis: {basis_label}")
-        self.lbl_summary_total.setText(f"Summary Total: {fmt_money(summary_total)}")
-        self.lbl_unprocessed_total.setText(f"Unprocessed Total: {fmt_money(unprocessed_total)}")
+        inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(rows_detailed)
+        self.lbl_inflow_total.setText(f"Inflows: {fmt_money(inflow_total)}")
+        self.lbl_outflow_total.setText(f"Outflows: {fmt_money(outflow_total)}")
+        self.lbl_refund_total.setText(f"Refunds: {fmt_money(refund_total)}")
+        self.lbl_net_total.setText(f"Net Cash: {fmt_money(net_total)}")
         self.lbl_summary_title.setText(f"<b>Payments Summary by Status</b> — {date_from} to {date_to} ({basis_label})")
         self.lbl_unprocessed_title.setText(f"<b>Unprocessed Payments (Posted/Pending)</b> — {date_from} to {date_to} ({basis_label})")
         self.lbl_detailed_title.setText(f"<b>All Payments</b> — {date_from} to {date_to} ({basis_label})")
@@ -511,12 +544,12 @@ class ComprehensivePaymentReportsTab(QWidget):
         self._resize_table(self.tbl_detailed)
     
     def _resize_table(self, table: QTableView) -> None:
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setStretchLastSection(True)
+        maybe_resize_columns(table)
     
     def _export_all(self) -> None:
         """Export all payment data to CSV"""
+        if not self._validate_date_ranges():
+            return
         fn, _ = QFileDialog.getSaveFileName(
             self, "Export All Payment Reports", "comprehensive_payments.csv", "CSV Files (*.csv)"
         )
@@ -529,28 +562,36 @@ class ComprehensivePaymentReportsTab(QWidget):
                 writer = csv.writer(f)
                 
                 writer.writerow(["Report", "Comprehensive Payments"])
-                writer.writerow(["Date basis", self.lbl_basis.text().replace("Date basis: ", "")])
-                writer.writerow(["Period", f"{self.dt_from.date().toString('yyyy-MM-dd')} to {self.dt_to.date().toString('yyyy-MM-dd')}"])
+                writer.writerow(safe_csv_row(["Date basis", self.lbl_basis.text().replace("Date basis: ", "")]))
+                writer.writerow(safe_csv_row(["Period", f"{self.dt_from.date().toString('yyyy-MM-dd')} to {self.dt_to.date().toString('yyyy-MM-dd')}"]))
                 writer.writerow([])
                 
                 # Write summary data
                 writer.writerow(["PAYMENT SUMMARY BY STATUS"])
-                writer.writerow(["Status", "Type", "Count", "Total Amount"])
+                writer.writerow(["Status", "Type", "Count", "Cash Amount"])
                 for row in self._rows_summary:
-                    writer.writerow([
+                    writer.writerow(safe_csv_row([
                         row.get("status", ""),
                         row.get("type", ""),
                         row.get("count", 0),
                         f"{row.get('total_amount', 0.0):.2f}"
-                    ])
+                    ]))
                 
                 writer.writerow([])  # Empty row
+
+                inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(self._rows_detailed)
+                writer.writerow(["CASH DIRECTION TOTALS"])
+                writer.writerow(["Inflows", f"{inflow_total:.2f}"])
+                writer.writerow(["Outflows", f"{outflow_total:.2f}"])
+                writer.writerow(["Refunds", f"{refund_total:.2f}"])
+                writer.writerow(["Net Cash", f"{net_total:.2f}"])
+                writer.writerow([])
                 
                 # Write unprocessed payments
                 writer.writerow(["UNPROCESSED PAYMENTS"])
-                writer.writerow(["Date", "Type", "Amount", "Method", "Status", "Document ID", "Notes"])
+                writer.writerow(["Date", "Type", "Cash Amount", "Method", "Status", "Document ID", "Notes"])
                 for row in self._rows_unprocessed:
-                    writer.writerow([
+                    writer.writerow(safe_csv_row([
                         row.get("date", ""),
                         row.get("type", ""),
                         f"{row.get('amount', 0.0):.2f}",
@@ -558,15 +599,15 @@ class ComprehensivePaymentReportsTab(QWidget):
                         row.get("status", ""),
                         row.get("doc_id", ""),
                         row.get("notes", "")
-                    ])
+                    ]))
                 
                 writer.writerow([])  # Empty row
                 
                 # Write all payments
                 writer.writerow(["ALL PAYMENTS"])
-                writer.writerow(["Date", "Type", "Amount", "Method", "Status", "Document ID", "Notes"])
+                writer.writerow(["Date", "Type", "Cash Amount", "Method", "Status", "Document ID", "Notes"])
                 for row in self._rows_detailed:
-                    writer.writerow([
+                    writer.writerow(safe_csv_row([
                         row.get("date", ""),
                         row.get("type", ""),
                         f"{row.get('amount', 0.0):.2f}",
@@ -574,8 +615,11 @@ class ComprehensivePaymentReportsTab(QWidget):
                         row.get("status", ""),
                         row.get("doc_id", ""),
                         row.get("notes", "")
-                    ])
+                    ]))
             
             QMessageBox.information(self, "Export Complete", f"Data exported to {fn}")
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", f"Could not export data:\n{e}")
+
+    def _validate_date_ranges(self) -> bool:
+        return validate_date_range(self, self.dt_from.date(), self.dt_to.date(), "Payment period")

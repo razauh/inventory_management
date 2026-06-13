@@ -36,6 +36,9 @@ except Exception:  # pragma: no cover
             return "0.00"
 
 from .model import AgingSnapshotTableModel, OpenInvoicesTableModel
+from .html_export import escape_html, html_table_from_model
+from .csv_export import safe_csv_row
+from .large_results import maybe_resize_columns
 from ...database.repositories.reporting_repo import ReportingRepo
 
 
@@ -53,6 +56,8 @@ def _days_between(older_yyyy_mm_dd: str, asof_yyyy_mm_dd: str) -> int:
 
 
 class VendorAgingTab(QWidget):
+    MAX_ROWS = 1000
+
     """
     Vendor Aging:
       - Top: filter bar (As of, Refresh, Export)
@@ -251,7 +256,7 @@ class VendorAgingTab(QWidget):
 
         # Sort by name ASC (model sorts visually too; keep deterministic data order)
         rows.sort(key=lambda r: r["name"].lower())
-        return rows
+        return rows[: self.MAX_ROWS]
 
     def _load_open_for_row(self, row_index: int, as_of: str) -> None:
         """Populate bottom table with open purchases for the selected vendor."""
@@ -285,6 +290,7 @@ class VendorAgingTab(QWidget):
 
         # Most recent first helps users
         opens.sort(key=lambda r: (r["date"], r["doc_no"]), reverse=True)
+        opens = opens[: self.MAX_ROWS]
         self._open_rows = opens
         self.model_open.set_rows(opens)
         self._autosize(self.tbl_open)
@@ -309,25 +315,7 @@ class VendorAgingTab(QWidget):
     # ---------------------------- Export ---------------------------------
 
     def _html_from_table(self, tv: QTableView, title: str) -> str:
-        m = tv.model()
-        if m is None:
-            return "<p>(No data)</p>"
-        cols = m.columnCount()
-        rows = m.rowCount()
-        parts = [f"<h3>{title}</h3>", '<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
-        for c in range(cols):
-            hdr = m.headerData(c, Qt.Horizontal, Qt.DisplayRole)
-            parts.append(f"<th>{hdr}</th>")
-        parts.append("</tr></thead><tbody>")
-        for r in range(rows):
-            parts.append("<tr>")
-            for c in range(cols):
-                idx: QModelIndex = m.index(r, c)
-                val = m.data(idx, Qt.DisplayRole)
-                parts.append(f"<td>{val if val is not None else ''}</td>")
-            parts.append("</tr>")
-        parts.append("</tbody></table>")
-        return "".join(parts)
+        return html_table_from_model(tv.model(), title)
 
     def _render_pdf(self, html: str, filepath: str) -> None:
         from PySide6.QtGui import QTextDocument
@@ -352,7 +340,7 @@ class VendorAgingTab(QWidget):
             as_of = self.dt_asof.date().toString("yyyy-MM-dd")
             html = [
                 "<h2>Vendor Aging</h2>",
-                f"<p><b>As of:</b> {as_of}</p>",
+                f"<p><b>As of:</b> {escape_html(as_of)}</p>",
                 self._html_from_table(self.tbl_aging, "Aging Summary"),
                 self._html_from_table(self.tbl_open, "Open Purchases (Selected Vendor)"),
             ]
@@ -380,7 +368,7 @@ class VendorAgingTab(QWidget):
                     writer.writerow(hdr)
                     for r in range(m.rowCount()):
                         row_vals = [m.index(r, c).data(Qt.DisplayRole) for c in range(m.columnCount())]
-                        writer.writerow(row_vals)
+                        writer.writerow(safe_csv_row(row_vals))
                     writer.writerow([])
 
                 # Open items for selected vendor
@@ -391,15 +379,14 @@ class VendorAgingTab(QWidget):
                     writer.writerow(hdr2)
                     for r in range(m2.rowCount()):
                         row_vals2 = [m2.index(r, c).data(Qt.DisplayRole) for c in range(m2.columnCount())]
-                        writer.writerow(row_vals2)
+                        writer.writerow(safe_csv_row(row_vals2))
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export CSV:\n{e}")
 
     # ---------------------------- Helpers --------------------------------
 
     def _autosize(self, tv: QTableView) -> None:
-        tv.resizeColumnsToContents()
-        tv.horizontalHeader().setStretchLastSection(True)
+        maybe_resize_columns(tv)
 
     # Optional API for the launcher/filters (safe to ignore if not used)
     def set_filters(self, filters: Dict) -> None:

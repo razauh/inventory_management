@@ -34,6 +34,11 @@ except Exception:  # pragma: no cover
         except Exception:
             return "0.00"
 
+from .html_export import escape_html
+from .csv_export import safe_csv_row
+from .date_range import validate_date_range
+from .large_results import maybe_resize_columns
+
 from ...database.repositories.reporting_repo import ReportingRepo
 
 
@@ -271,6 +276,8 @@ class PaymentReportsTab(QWidget):
     # ---- Data refresh ----
     @Slot()
     def refresh(self) -> None:
+        if not self._validate_date_ranges():
+            return
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         with self.repo.read_snapshot():
@@ -318,6 +325,8 @@ class PaymentReportsTab(QWidget):
             QMessageBox.warning(self, "Export failed", f"Could not export PDF:\n{e}")
 
     def _on_export_csv(self) -> None:
+        if not self._validate_date_ranges():
+            return
         fn, _ = QFileDialog.getSaveFileName(self, "Export Payments to CSV", "payments.csv", "CSV Files (*.csv)")
         if not fn:
             return
@@ -329,20 +338,23 @@ class PaymentReportsTab(QWidget):
                 w.writerow(["Collections"])
                 w.writerow(["Date", "Amount"])
                 for r in self._rows_collect:
-                    w.writerow([r["date"], f"{float(r['amount']):.2f}"])
+                    w.writerow(safe_csv_row([r["date"], f"{float(r['amount']):.2f}"]))
                 w.writerow([])
                 # Disbursements
                 w.writerow(["Disbursements"])
                 w.writerow(["Date", "Gross Outflow", "Refunds Received", "Net Outflow"])
                 for r in self._rows_disb:
-                    w.writerow([
+                    w.writerow(safe_csv_row([
                         r["date"],
                         f"{float(r['gross_outflow']):.2f}",
                         f"{float(r['refunds_received']):.2f}",
                         f"{float(r['net_outflow']):.2f}",
-                    ])
+                    ]))
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export CSV:\n{e}")
+
+    def _validate_date_ranges(self) -> bool:
+        return validate_date_range(self, self.dt_from.date(), self.dt_to.date(), "Payment period")
 
     def _html_export(self) -> str:
         df = self.dt_from.date().toString("yyyy-MM-dd")
@@ -351,11 +363,11 @@ class PaymentReportsTab(QWidget):
         def _table(rows: List[dict], headers: List[str]) -> str:
             parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
             for header in headers:
-                parts.append(f"<th>{header}</th>")
+                parts.append(f"<th>{escape_html(header)}</th>")
             parts.append("</tr></thead><tbody>")
             for r in rows:
                 parts.append("<tr>")
-                parts.append(f"<td>{r.get('date','')}</td>")
+                parts.append(f"<td>{escape_html(r.get('date',''))}</td>")
                 for key in ("amount", "gross_outflow", "refunds_received", "net_outflow"):
                     if key in r:
                         parts.append(f"<td style='text-align:right'>{fmt_money(r.get(key))}</td>")
@@ -368,7 +380,7 @@ class PaymentReportsTab(QWidget):
 
         html = [
             "<h2>Payment Reports</h2>",
-            f"<p><b>Period:</b> {df} to {dt}</p>",
+            f"<p><b>Period:</b> {escape_html(df)} to {escape_html(dt)}</p>",
             "<h3>Collections (cleared)</h3>",
             _table(self._rows_collect, ["Date", "Amount"]),
             f"<p><b>Total Collections:</b> {fmt_money(total_c)}</p>",
@@ -394,5 +406,4 @@ class PaymentReportsTab(QWidget):
 
     # ---- Misc helpers ----
     def _autosize(self, tv: QTableView) -> None:
-        tv.resizeColumnsToContents()
-        tv.horizontalHeader().setStretchLastSection(True)
+        maybe_resize_columns(tv)

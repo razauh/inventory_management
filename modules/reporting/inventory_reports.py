@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from itertools import islice
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot, QAbstractTableModel
@@ -38,6 +39,10 @@ except Exception:  # pragma: no cover
         except Exception:
             return "0.00"
 
+from .html_export import escape_html, html_table_from_model
+from .date_range import validate_date_range
+from .large_results import maybe_resize_columns
+
 from .model import (
     InventoryStockOnHandTableModel,
     InventoryTransactionsTableModel,
@@ -49,6 +54,7 @@ from ...database.repositories.reporting_repo import ReportingRepo
 
 
 class InventoryReports:
+    MAX_ROWS = 1000
     """
     Thin logic layer built on ReportingRepo for inventory reporting.
     """
@@ -64,7 +70,7 @@ class InventoryReports:
         self.conn.row_factory = sqlite3.Row
 
     def stock_on_hand_current(self) -> List[dict]:
-        rows = self.repo.stock_on_hand_current()
+        rows = islice(self.repo.stock_on_hand_current_iter(), self.MAX_ROWS)
         id_to_name = self._product_name_map()
         out: List[dict] = []
         for r in rows:
@@ -114,7 +120,7 @@ class InventoryReports:
         return out
 
     def stock_on_hand_as_of(self, as_of: str) -> List[dict]:
-        rows = self.repo.stock_on_hand_as_of(as_of)
+        rows = islice(self.repo.stock_on_hand_as_of_iter(as_of), self.MAX_ROWS)
         id_to_name = self._product_name_map()
         out: List[dict] = []
         for r in rows:
@@ -158,7 +164,7 @@ class InventoryReports:
         return out
 
     def transactions(self, date_from: str, date_to: str, product_id: Optional[int]) -> List[dict]:
-        rows = self.repo.inventory_transactions(date_from, date_to, product_id)
+        rows = islice(self.repo.inventory_transactions_iter(date_from, date_to, product_id), self.MAX_ROWS)
         # Map product_id -> name to show a nice label if not already present
         id_to_name = self._product_name_map()
         out: List[dict] = []
@@ -549,7 +555,7 @@ class InventoryReportsTab(QWidget):
                 html.append("<p><b>View:</b> Current</p>")
             else:
                 as_of = self.dt_stock_asof.date().toString("yyyy-MM-dd")
-                html.append(f"<p><b>View:</b> As of {as_of}</p>")
+                html.append(f"<p><b>View:</b> As of {escape_html(as_of)}</p>")
             html.append(self._html_from_model(self.tbl_stock))
             self._render_pdf("\n".join(html), fn)
         except Exception as e:  # pragma: no cover
@@ -560,6 +566,8 @@ class InventoryReportsTab(QWidget):
     @Slot()
     def refresh_txn(self) -> None:
         self.logic.refresh_product_cache(self.conn)
+        if not self._validate_txn_range():
+            return
         date_from = self.dt_txn_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_txn_to.date().toString("yyyy-MM-dd")
         pid = self.cmb_txn_product.currentData()
@@ -574,13 +582,15 @@ class InventoryReportsTab(QWidget):
         if not fn:
             return
         try:
+            if not self._validate_txn_range():
+                return
             date_from = self.dt_txn_from.date().toString("yyyy-MM-dd")
             date_to = self.dt_txn_to.date().toString("yyyy-MM-dd")
-            prod_txt = self.cmb_txn_product.currentText()
+            prod_txt = escape_html(self.cmb_txn_product.currentText())
 
             html = []
             html.append("<h2>Inventory Transactions</h2>")
-            html.append(f"<p><b>Period:</b> {date_from} to {date_to}<br>")
+            html.append(f"<p><b>Period:</b> {escape_html(date_from)} to {escape_html(date_to)}<br>")
             html.append(f"<b>Product:</b> {prod_txt}</p>")
             html.append(self._html_from_model(self.tbl_txn))
             self._render_pdf("\n".join(html), fn)
@@ -597,7 +607,6 @@ class InventoryReportsTab(QWidget):
             self.model_val.set_rows([])
             self._autosize(self.tbl_val)
             return
-
         lim = int(self.cmb_val_limit.currentText() or "100")
         self._rows_valhist = self.logic.valuation_history(pid, lim)
         self.model_val.set_rows(self._rows_valhist)
@@ -608,8 +617,8 @@ class InventoryReportsTab(QWidget):
         if not fn:
             return
         try:
-            prod_txt = self.cmb_val_product.currentText()
-            lim = self.cmb_val_limit.currentText()
+            prod_txt = escape_html(self.cmb_val_product.currentText())
+            lim = escape_html(self.cmb_val_limit.currentText())
 
             html = []
             html.append("<h2>Valuation History</h2>")
@@ -619,35 +628,16 @@ class InventoryReportsTab(QWidget):
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export PDF:\n{e}")
 
+    def _validate_txn_range(self) -> bool:
+        return validate_date_range(self, self.dt_txn_from.date(), self.dt_txn_to.date(), "Transaction period")
+
     # ---- Shared helpers ----
 
     def _autosize(self, tv: QTableView) -> None:
-        tv.resizeColumnsToContents()
-        tv.horizontalHeader().setStretchLastSection(True)
+        maybe_resize_columns(tv)
 
     def _html_from_model(self, tv: QTableView) -> str:
-        """
-        Lightweight HTML table dump of a QTableView's model.
-        """
-        m = tv.model()
-        if m is None:
-            return "<p>(No data)</p>"
-        cols = m.columnCount()
-        rows = m.rowCount()
-        parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
-        for c in range(cols):
-            hdr = m.headerData(c, Qt.Horizontal, Qt.DisplayRole)
-            parts.append(f"<th>{hdr}</th>")
-        parts.append("</tr></thead><tbody>")
-        for r in range(rows):
-            parts.append("<tr>")
-            for c in range(cols):
-                idx: QModelIndex = m.index(r, c)
-                val = m.data(idx, Qt.DisplayRole)
-                parts.append(f"<td>{val if val is not None else ''}</td>")
-            parts.append("</tr>")
-        parts.append("</tbody></table>")
-        return "".join(parts)
+        return html_table_from_model(tv.model())
 
     def _render_pdf(self, html: str, filepath: str) -> None:
         """

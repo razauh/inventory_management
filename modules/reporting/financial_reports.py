@@ -36,6 +36,9 @@ except Exception:  # pragma: no cover
             return "0.00"
 
 from .model import FinancialStatementTableModel
+from .html_export import escape_html, html_table_from_model
+from .date_range import validate_date_range
+from .large_results import maybe_resize_columns
 from ...database.repositories.reporting_repo import ReportingRepo
 
 
@@ -294,6 +297,8 @@ class _DisbursementBreakdownTableModel(QAbstractTableModel):
 
 
 class FinancialReportsTab(QWidget):
+    MAX_ROWS = 1000
+
     """
     Financial Reports UI:
       - Header: AR/AP snapshot (as-of)
@@ -490,8 +495,8 @@ class FinancialReportsTab(QWidget):
 
         with self.logic.repo.read_snapshot():
             snap = self.logic.ar_ap_snapshot_as_of(as_of)
-            stmt = self.logic.income_statement(date_from_stmt, date_to_stmt)
-            cash = self.logic.cash_collections_disbursements(date_from_cash, date_to_cash)
+            stmt = self.logic.income_statement(date_from_stmt, date_to_stmt) if self._validate_stmt_range() else None
+            cash = self.logic.cash_collections_disbursements(date_from_cash, date_to_cash) if self._validate_cash_range() else None
 
         arap_rows = [
             {"line_item": "Accounts Receivable (AR)", "amount": snap["AR_total_due"], "is_total": True},
@@ -500,27 +505,30 @@ class FinancialReportsTab(QWidget):
         self._rows_arap = arap_rows
         self.model_arap.set_rows(arap_rows)
 
-        stmt_rows: List[dict] = []
-        stmt_rows.append({"line_item": "Revenue", "amount": stmt["Revenue"]})
-        stmt_rows.append({"line_item": "COGS", "amount": stmt["COGS"]})
-        stmt_rows.append({"line_item": "Gross Profit", "amount": stmt["Gross Profit"], "is_total": True})
-        stmt_rows.append({"line_item": "Expenses", "amount": None, "is_header": True})
-        for e in stmt["Expenses"]:
-            stmt_rows.append({"line_item": f"  {e['category']}", "amount": e["amount"]})
-        stmt_rows.append({"line_item": "Total Expenses", "amount": stmt["total_expenses"], "is_total": True})
-        stmt_rows.append({"line_item": "Operating Income", "amount": stmt["Operating Income"], "is_total": True})
-        self._rows_stmt = stmt_rows
-        self.model_stmt.set_rows(stmt_rows)
+        if stmt is not None:
+            stmt_rows: List[dict] = []
+            stmt_rows.append({"line_item": "Revenue", "amount": stmt["Revenue"]})
+            stmt_rows.append({"line_item": "COGS", "amount": stmt["COGS"]})
+            stmt_rows.append({"line_item": "Gross Profit", "amount": stmt["Gross Profit"], "is_total": True})
+            stmt_rows.append({"line_item": "Expenses", "amount": None, "is_header": True})
+            for e in stmt["Expenses"]:
+                stmt_rows.append({"line_item": f"  {e['category']}", "amount": e["amount"]})
+            stmt_rows.append({"line_item": "Total Expenses", "amount": stmt["total_expenses"], "is_total": True})
+            stmt_rows.append({"line_item": "Operating Income", "amount": stmt["Operating Income"], "is_total": True})
+            stmt_rows = stmt_rows[: self.MAX_ROWS]
+            self._rows_stmt = stmt_rows
+            self.model_stmt.set_rows(stmt_rows)
 
-        collect_rows = cash["collections"]
-        disb_rows = cash["disbursements"]
-        self._rows_collect = collect_rows
-        self._rows_disb = disb_rows
-        self.model_collect.set_rows(collect_rows)
-        self.model_disb.set_rows(disb_rows)
+        if cash is not None:
+            collect_rows = cash["collections"][: self.MAX_ROWS]
+            disb_rows = cash["disbursements"][: self.MAX_ROWS]
+            self._rows_collect = collect_rows
+            self._rows_disb = disb_rows
+            self.model_collect.set_rows(collect_rows)
+            self.model_disb.set_rows(disb_rows)
 
-        self.lbl_collect_total.setText(f"Collections: {fmt_money(cash['total_collections'])}")
-        self.lbl_disb_total.setText(f"Net Disbursements: {fmt_money(cash['total_disbursements'])}")
+            self.lbl_collect_total.setText(f"Collections: {fmt_money(cash['total_collections'])}")
+            self.lbl_disb_total.setText(f"Net Disbursements: {fmt_money(cash['total_disbursements'])}")
 
         self._autosize(self.tbl_arap)
         self._autosize(self.tbl_stmt)
@@ -537,12 +545,14 @@ class FinancialReportsTab(QWidget):
             {"line_item": "Accounts Receivable (AR)", "amount": snap["AR_total_due"], "is_total": True},
             {"line_item": "Accounts Payable (AP)", "amount": snap["AP_total_due"], "is_total": True},
         ]
-        self.model_arap.set_rows(rows)
+        self.model_arap.set_rows(rows[: self.MAX_ROWS])
         self._autosize(self.tbl_arap)
 
     # Income Statement
     @Slot()
     def refresh_stmt(self) -> None:
+        if not self._validate_stmt_range():
+            return
         date_from = self.dt_stmt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_stmt_to.date().toString("yyyy-MM-dd")
         with self.logic.repo.read_snapshot():
@@ -563,19 +573,21 @@ class FinancialReportsTab(QWidget):
         # Operating income
         rows.append({"line_item": "Operating Income", "amount": stmt["Operating Income"], "is_total": True})
 
-        self.model_stmt.set_rows(rows)
+        self.model_stmt.set_rows(rows[: self.MAX_ROWS])
         self._autosize(self.tbl_stmt)
 
     # Cash View
     @Slot()
     def refresh_cash(self) -> None:
+        if not self._validate_cash_range():
+            return
         date_from = self.dt_cash_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_cash_to.date().toString("yyyy-MM-dd")
         with self.logic.repo.read_snapshot():
             data = self.logic.cash_collections_disbursements(date_from, date_to)
 
-        self._rows_collect = data["collections"]
-        self._rows_disb = data["disbursements"]
+        self._rows_collect = data["collections"][: self.MAX_ROWS]
+        self._rows_disb = data["disbursements"][: self.MAX_ROWS]
 
         self.model_collect.set_rows(self._rows_collect)
         self.model_disb.set_rows(self._rows_disb)
@@ -596,7 +608,7 @@ class FinancialReportsTab(QWidget):
             return
         try:
             as_of = self.dt_asof.date().toString("yyyy-MM-dd")
-            html = [f"<h2>AR/AP Snapshot</h2>", f"<p><b>As of:</b> {as_of}</p>", self._html_from_model(self.tbl_arap)]
+            html = [f"<h2>AR/AP Snapshot</h2>", f"<p><b>As of:</b> {escape_html(as_of)}</p>", self._html_from_model(self.tbl_arap)]
             self._render_pdf("\n".join(html), fn)
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export PDF:\n{e}")
@@ -606,11 +618,13 @@ class FinancialReportsTab(QWidget):
         if not fn:
             return
         try:
+            if not self._validate_stmt_range():
+                return
             date_from = self.dt_stmt_from.date().toString("yyyy-MM-dd")
             date_to = self.dt_stmt_to.date().toString("yyyy-MM-dd")
             html = [
                 "<h2>Income Statement</h2>",
-                f"<p><b>Period:</b> {date_from} to {date_to}</p>",
+                f"<p><b>Period:</b> {escape_html(date_from)} to {escape_html(date_to)}</p>",
                 self._html_from_model(self.tbl_stmt),
             ]
             self._render_pdf("\n".join(html), fn)
@@ -622,6 +636,8 @@ class FinancialReportsTab(QWidget):
         if not fn:
             return
         try:
+            if not self._validate_cash_range():
+                return
             date_from = self.dt_cash_from.date().toString("yyyy-MM-dd")
             date_to = self.dt_cash_to.date().toString("yyyy-MM-dd")
             total_cols = sum(float(r.get("amount") or 0.0) for r in self._rows_collect)
@@ -629,7 +645,7 @@ class FinancialReportsTab(QWidget):
 
             html = [
                 "<h2>Cash View</h2>",
-                f"<p><b>Period:</b> {date_from} to {date_to}</p>",
+                f"<p><b>Period:</b> {escape_html(date_from)} to {escape_html(date_to)}</p>",
                 "<h3>Collections</h3>",
                 self._html_from_model(self.tbl_collect),
                 f"<p><b>Total Collections:</b> {fmt_money(total_cols)}</p>",
@@ -644,32 +660,10 @@ class FinancialReportsTab(QWidget):
     # ---- Shared helpers ----
 
     def _autosize(self, tv: QTableView) -> None:
-        tv.resizeColumnsToContents()
-        tv.horizontalHeader().setStretchLastSection(True)
+        maybe_resize_columns(tv)
 
     def _html_from_model(self, tv: QTableView) -> str:
-        """
-        Lightweight HTML table dump of a QTableView's model.
-        """
-        m = tv.model()
-        if m is None:
-            return "<p>(No data)</p>"
-        cols = m.columnCount()
-        rows = m.rowCount()
-        parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
-        for c in range(cols):
-            hdr = m.headerData(c, Qt.Horizontal, Qt.DisplayRole)
-            parts.append(f"<th>{hdr}</th>")
-        parts.append("</tr></thead><tbody>")
-        for r in range(rows):
-            parts.append("<tr>")
-            for c in range(cols):
-                idx: QModelIndex = m.index(r, c)
-                val = m.data(idx, Qt.DisplayRole)
-                parts.append(f"<td>{val if val is not None else ''}</td>")
-            parts.append("</tr>")
-        parts.append("</tbody></table>")
-        return "".join(parts)
+        return html_table_from_model(tv.model())
 
     def _render_pdf(self, html: str, filepath: str) -> None:
         """
@@ -687,3 +681,9 @@ class FinancialReportsTab(QWidget):
         printer.setPageMargins(12, 12, 12, 12, QPrinter.Point)
 
         doc.print_(printer)
+
+    def _validate_stmt_range(self) -> bool:
+        return validate_date_range(self, self.dt_stmt_from.date(), self.dt_stmt_to.date(), "Income statement period")
+
+    def _validate_cash_range(self) -> bool:
+        return validate_date_range(self, self.dt_cash_from.date(), self.dt_cash_to.date(), "Cash view period")

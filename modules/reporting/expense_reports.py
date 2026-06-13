@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import html
+from itertools import islice
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot
@@ -28,6 +29,8 @@ except Exception:  # pragma: no cover
     _BaseTableView = QTableView
 
 from .model import ExpenseSummaryTableModel, ExpenseListTableModel
+from .date_range import date_range_strings, validate_date_range
+from .large_results import maybe_resize_columns
 
 # Money formatting (reuse app helper if present)
 try:
@@ -47,6 +50,7 @@ from ...database.repositories.reporting_repo import ReportingRepo
 
 
 class ExpenseReports:
+    MAX_ROWS = 1000
     """
     Thin logic layer for Expense reporting built on top of ReportingRepo.
     """
@@ -63,7 +67,7 @@ class ExpenseReports:
         Return rows:
           { category_id, category_name, total_amount }
         """
-        rows = self.repo.expense_summary_by_category(date_from, date_to, category_id)
+        rows = islice(self.repo.expense_summary_by_category_iter(date_from, date_to, category_id), self.MAX_ROWS)
         return [
             {
                 "category_id": int(r["category_id"]),
@@ -81,7 +85,7 @@ class ExpenseReports:
           { expense_id, date, category_name, description, amount }
         Ordered by date desc, id desc (enforced in repo).
         """
-        rows = self.repo.expense_lines(date_from, date_to, category_id)
+        rows = islice(self.repo.expense_lines_iter(date_from, date_to, category_id), self.MAX_ROWS)
         out: List[dict] = []
         for r in rows:
             out.append(
@@ -236,6 +240,8 @@ class ExpenseReportsTab(QWidget):
     # ---- Behavior ----
 
     def _refresh_impl(self) -> None:
+        if not self._validate_date_ranges():
+            return
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         category_id = self.cmb_category.currentData()
@@ -256,8 +262,7 @@ class ExpenseReportsTab(QWidget):
         self.lbl_total.setText(f"Total: {fmt_money(grand_total)}")
 
     def _autosize(self, tv: QTableView) -> None:
-        tv.resizeColumnsToContents()
-        tv.horizontalHeader().setStretchLastSection(True)
+        maybe_resize_columns(tv)
 
     # ---- Print / PDF ----
 
@@ -271,8 +276,9 @@ class ExpenseReportsTab(QWidget):
             return
 
         try:
-            date_from = self.dt_from.date().toString("yyyy-MM-dd")
-            date_to = self.dt_to.date().toString("yyyy-MM-dd")
+            if not self._validate_date_ranges():
+                return
+            date_from, date_to = date_range_strings(self.dt_from.date(), self.dt_to.date())
             cat_txt = html.escape(self.cmb_category.currentText())
 
             html_content = []
@@ -294,6 +300,9 @@ class ExpenseReportsTab(QWidget):
 
         except Exception as e:  # pragma: no cover
             QMessageBox.warning(self, "Export failed", f"Could not export PDF:\n{e}")
+
+    def _validate_date_ranges(self) -> bool:
+        return validate_date_range(self, self.dt_from.date(), self.dt_to.date(), "Expense period")
 
     def _html_from_model(self, tv: QTableView) -> str:
         """

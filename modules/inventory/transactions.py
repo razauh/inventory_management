@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
 )
 
 from .model import TransactionsTableModel
+from ..reporting.csv_export import safe_csv_row
+from ..reporting.large_results import maybe_resize_columns
 from ...utils import ui_helpers as ui
 from ...database.repositories.inventory_repo import InventoryRepo
 
@@ -227,7 +229,7 @@ class TransactionsView(QWidget):
         if self._has_invalid_date_range():
             model = TransactionsTableModel([])
             self.tbl_txn.setModel(model)
-            self.tbl_txn.resizeColumnsToContents()
+            maybe_resize_columns(self.tbl_txn)
             self._show_invalid_date_range_message()
             self.lbl_filter_summary.setText(
                 "Invalid date range. 'From' must be on or before 'To'."
@@ -251,7 +253,7 @@ class TransactionsView(QWidget):
 
         model = TransactionsTableModel(rows)
         self.tbl_txn.setModel(model)
-        self.tbl_txn.resizeColumnsToContents()
+        maybe_resize_columns(self.tbl_txn)
         self._update_filter_summary(model.rowCount())
 
     def _has_invalid_date_range(self) -> bool:
@@ -325,7 +327,7 @@ class TransactionsView(QWidget):
                     for c in range(cols):
                         idx = model.index(r, c)
                         row_out.append(idx.data())
-                    writer.writerow(row_out)
+                    writer.writerow(safe_csv_row(row_out))
             ui.info(self, "Exported", f"Saved {model.rowCount()} rows to:\n{path}")
         except Exception as e:
             ui.info(self, "Error", f"Failed to export CSV:\n{e}")

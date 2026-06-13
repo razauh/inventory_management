@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from itertools import islice
 from typing import Any, Dict, List, Optional, Sequence
 
 from PySide6.QtCore import Qt, QDate, QModelIndex, Slot, QAbstractTableModel
@@ -26,6 +27,12 @@ except Exception:  # pragma: no cover
             return f"{float(x or 0.0):,.2f}"
         except Exception:
             return "0.00"
+
+from .html_export import html_table_from_model
+from .csv_export import safe_csv_row
+from .date_range import validate_date_range
+from .large_results import maybe_resize_columns
+from ...database.repositories.reporting_repo import ReportingRepo
 
 
 # ------------------------------ Simple model ------------------------------
@@ -86,6 +93,9 @@ class _SimpleTableModel(QAbstractTableModel):
 
 # ------------------------------ Purchases Reports Tab -----------------------
 class PurchaseReportsTab(QWidget):
+    MAX_ROWS_PER_TABLE = 1000
+    PAGE_SIZE = 100
+
     """
     Rich purchase analytics:
 
@@ -106,6 +116,9 @@ class PurchaseReportsTab(QWidget):
         super().__init__(parent)
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
+        self.repo = ReportingRepo(conn)
+        self._loaded_rows: Dict[str, List[Dict[str, Any]]] = {}
+        self._page_index: Dict[str, int] = {}
 
         self._build_ui()
         self._wire()
@@ -189,6 +202,12 @@ class PurchaseReportsTab(QWidget):
 
         self.btn_apply = QPushButton("Apply")
         self._fix_width(self.btn_apply, 80)
+        self.btn_prev_page = QPushButton("Prev Page")
+        self._fix_width(self.btn_prev_page, 100)
+        self.btn_next_page = QPushButton("Next Page")
+        self._fix_width(self.btn_next_page, 100)
+        self.lbl_page = QLabel("Page 1 / 1")
+        self.lbl_page.setMinimumWidth(120)
         self.btn_pdf = QPushButton("Export PDF…")
         self._fix_width(self.btn_pdf, 110)
         self.btn_csv = QPushButton("Export CSV…")
@@ -213,6 +232,9 @@ class PurchaseReportsTab(QWidget):
         al.addWidget(self.spn_topn)
         al.addStretch(1)
         al.addWidget(self.btn_apply)
+        al.addWidget(self.btn_prev_page)
+        al.addWidget(self.lbl_page)
+        al.addWidget(self.btn_next_page)
         al.addWidget(self.btn_pdf)
         al.addWidget(self.btn_csv)
         grid.addWidget(act, 1, 2, 3, 1)
@@ -299,8 +321,11 @@ class PurchaseReportsTab(QWidget):
 
     def _wire(self) -> None:
         self.btn_apply.clicked.connect(self.refresh)
+        self.btn_prev_page.clicked.connect(self._prev_page)
+        self.btn_next_page.clicked.connect(self._next_page)
         self.btn_pdf.clicked.connect(self._export_pdf)
         self.btn_csv.clicked.connect(self._export_csv)
+        self.tabs.currentChanged.connect(lambda *_: self._sync_page_label())
 
     # ---------- Helpers: current filters ----------
     def _vendor_id(self) -> Optional[int]:
@@ -329,6 +354,8 @@ class PurchaseReportsTab(QWidget):
     # ------------------------------ Refresh ------------------------------
     @Slot()
     def refresh(self) -> None:
+        if not self._validate_date_ranges():
+            return
         df = self.dt_from.date().toString("yyyy-MM-dd")
         dt = self.dt_to.date().toString("yyyy-MM-dd")
         gran = self.cmb_gran.currentText()
@@ -700,12 +727,16 @@ class PurchaseReportsTab(QWidget):
                 for r in self.conn.execute(sql, (df, dt))
             ]
 
+        self._loaded_rows = {k: v[: self.MAX_ROWS_PER_TABLE] for k, v in loaded.items()}
+
         def set_rows(key: str) -> None:
             tv = self._tables[key]
             model: _SimpleTableModel = tv.model()  # type: ignore
-            model.set_rows(loaded.get(key, []))
-            tv.resizeColumnsToContents()
-            tv.horizontalHeader().setStretchLastSection(True)
+            rows = self._loaded_rows.get(key, [])
+            page = max(0, self._page_index.get(key, 0))
+            start = page * self.PAGE_SIZE
+            model.set_rows(rows[start:start + self.PAGE_SIZE])
+            maybe_resize_columns(tv)
 
         for key in (
             "purch_by_period",
@@ -721,6 +752,7 @@ class PurchaseReportsTab(QWidget):
             "payments_timeline",
         ):
             set_rows(key)
+        self._sync_page_label()
 
     # ------------------------------ Export ------------------------------
     def _active_table(self) -> Optional[_BaseTableView]:
@@ -740,20 +772,7 @@ class PurchaseReportsTab(QWidget):
         from PySide6.QtGui import QTextDocument
         from PySide6.QtPrintSupport import QPrinter
         m: _SimpleTableModel = tv.model()  # type: ignore
-        cols = m.columnCount()
-        rows = m.rowCount()
-        parts = ['<table border="1" cellspacing="0" cellpadding="4">', "<thead><tr>"]
-        for c in range(cols):
-            parts.append(f"<th>{m.headerData(c, Qt.Horizontal, Qt.DisplayRole)}</th>")
-        parts.append("</tr></thead><tbody>")
-        for r in range(rows):
-            parts.append("<tr>")
-            for c in range(cols):
-                val = m.index(r, c).data(Qt.DisplayRole)
-                parts.append(f"<td>{'' if val is None else val}</td>")
-            parts.append("</tr>")
-        parts.append("</tbody></table>")
-        html = "".join(parts)
+        html = html_table_from_model(m)
 
         fn, _ = QFileDialog.getSaveFileName(self, "Export to PDF", "purchase_report.pdf", "PDF Files (*.pdf)")
         if not fn:
@@ -767,6 +786,8 @@ class PurchaseReportsTab(QWidget):
         doc.print_(printer)
 
     def _export_csv(self) -> None:
+        if not self._validate_date_ranges():
+            return
         tv = self._active_table()
         if not tv:
             QMessageBox.information(self, "Export CSV", "No table to export.")
@@ -784,4 +805,69 @@ class PurchaseReportsTab(QWidget):
             hdr = [m.headerData(c, Qt.Horizontal, Qt.DisplayRole) for c in range(cols)]
             w.writerow(hdr)
             for r in range(rows):
-                w.writerow([m.index(r, c).data(Qt.DisplayRole) for c in range(cols)])
+                w.writerow(safe_csv_row([m.index(r, c).data(Qt.DisplayRole) for c in range(cols)]))
+
+    def _current_table_key(self) -> Optional[str]:
+        keys = [
+            "purch_by_period",
+            "purch_by_vendor",
+            "purch_by_product",
+            "purch_by_category",
+            "top_vendors",
+            "top_products",
+            "returns_summary",
+            "status_breakdown",
+            "open_purchases",
+            "drilldown",
+            "payments_timeline",
+        ]
+        idx = self.tabs.currentIndex()
+        if idx < 0 or idx >= len(keys):
+            return None
+        return keys[idx]
+
+    def _max_page(self, key: str) -> int:
+        rows = self._loaded_rows.get(key, [])
+        if not rows:
+            return 0
+        return max(0, (len(rows) - 1) // self.PAGE_SIZE)
+
+    def _apply_page(self, key: Optional[str]) -> None:
+        if not key:
+            return
+        self._page_index[key] = max(0, min(self._page_index.get(key, 0), self._max_page(key)))
+        tv = self._tables.get(key)
+        if not tv:
+            return
+        rows = self._loaded_rows.get(key, [])
+        start = self._page_index[key] * self.PAGE_SIZE
+        model: _SimpleTableModel = tv.model()  # type: ignore
+        model.set_rows(rows[start:start + self.PAGE_SIZE])
+        maybe_resize_columns(tv)
+        self._sync_page_label()
+
+    def _prev_page(self) -> None:
+        key = self._current_table_key()
+        if not key:
+            return
+        self._page_index[key] = max(0, self._page_index.get(key, 0) - 1)
+        self._apply_page(key)
+
+    def _next_page(self) -> None:
+        key = self._current_table_key()
+        if not key:
+            return
+        self._page_index[key] = min(self._max_page(key), self._page_index.get(key, 0) + 1)
+        self._apply_page(key)
+
+    def _sync_page_label(self) -> None:
+        key = self._current_table_key()
+        if not key or key not in self._loaded_rows:
+            self.lbl_page.setText("Page 1 / 1")
+            return
+        page = self._page_index.get(key, 0) + 1
+        total = self._max_page(key) + 1
+        self.lbl_page.setText(f"Page {page} / {total}")
+
+    def _validate_date_ranges(self) -> bool:
+        return validate_date_range(self, self.dt_from.date(), self.dt_to.date(), "Purchase period")
