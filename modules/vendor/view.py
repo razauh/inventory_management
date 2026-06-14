@@ -14,15 +14,15 @@ class VendorView(QWidget):
 
         # actions + search
         top = QHBoxLayout()
-        self.btn_add = QPushButton("Add")
+        self.btn_add = QPushButton("Add Vendor")
         self.btn_import = QPushButton("Import Vendors")
-        self.btn_edit = QPushButton("Edit")
+        self.btn_edit = QPushButton("Edit Vendor")
         # self.btn_del = QPushButton("Delete")
 
         # New: record advance action (creates vendor credit)
         self.btn_apply_advance = QPushButton("Record Advance…")
         # New: unified history view (similar to customer History)
-        self.btn_history = QPushButton("History")
+        self.btn_history = QPushButton("Vendor History")
 
         top.addWidget(self.btn_add)
         top.addWidget(self.btn_import)
@@ -34,7 +34,8 @@ class VendorView(QWidget):
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search vendors (name, id, contact, address)…")
-        top.addWidget(QLabel("Search:"))
+        self.search.setClearButtonEnabled(True)
+        top.addWidget(QLabel("Search vendors:"))
         top.addWidget(self.search, 2)
         root.addLayout(top)
 
@@ -65,9 +66,9 @@ class VendorView(QWidget):
 
         # Bank account actions
         self.btn_acc_add = QPushButton("Add Account")
-        self.btn_acc_edit = QPushButton("Edit")
-        self.btn_acc_deactivate = QPushButton("Deactivate")
-        self.btn_acc_activate = QPushButton("Activate")
+        self.btn_acc_edit = QPushButton("Edit Account")
+        self.btn_acc_deactivate = QPushButton("Deactivate Account")
+        self.btn_acc_activate = QPushButton("Activate Account")
         self.btn_acc_set_primary = QPushButton("Set Primary")
         accounts_header.addWidget(self.btn_acc_add)
         accounts_header.addWidget(self.btn_acc_edit)
@@ -103,7 +104,10 @@ class VendorView(QWidget):
             return lbl
 
         # Create read-only value labels and keep as attributes for controller updates
-        self.lblAccLabel    = _ro_label("lblAccLabel")
+        self.lblAccLabel    = QLabel("No account selected", self.account_details_box)
+        self.lblAccLabel.setObjectName("lblAccLabel")
+        self.lblAccLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lblAccLabel.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.lblAccBank     = _ro_label("lblAccBank")
         self.lblAccNumber   = _ro_label("lblAccNumber")
         self.lblAccIBAN     = _ro_label("lblAccIBAN")

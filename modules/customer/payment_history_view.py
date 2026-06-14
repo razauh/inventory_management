@@ -1,7 +1,7 @@
 # inventory_management/modules/customer/payment_history_view.py
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 import logging
 import os
@@ -24,6 +24,7 @@ try:
         QDialogButtonBox,
         QHeaderView,
         QLabel,
+        QMessageBox,
         QTableWidget,
         QTableWidgetItem,
         QTabWidget,
@@ -110,7 +111,6 @@ class _CustomerHistoryDialog(QDialog):
 
     def __init__(self, *, customer_id: int, history: Dict[str, Any]) -> None:
         super().__init__(None)
-        self.setWindowTitle(_t(f"Customer History — #{customer_id}"))
         # Enable full window controls (minimize, maximize, close) and allow
         # the dialog to be minimized like other main windows.
         self.setWindowFlags(
@@ -124,12 +124,15 @@ class _CustomerHistoryDialog(QDialog):
 
         self._customer_id = customer_id
         self._history = history or {}
+        summary = self._history.get("summary") or {}
+        customer_name = summary.get("customer_name") or f"Customer #{customer_id}"
+        self.setWindowTitle(_t(f"Customer History - {customer_name}"))
 
         outer = QVBoxLayout(self)
 
         # Header
-        outer.addWidget(QLabel(_t(f"Customer ID: {customer_id}")))
-        self._hint = QLabel(_t("Read-only view. Columns are inferred from data."))
+        outer.addWidget(QLabel(_t(f"Customer: {customer_name} (ID {customer_id})")))
+        self._hint = QLabel(_t("Read-only customer account history."))
         self._hint.setStyleSheet("color:#666;")
         outer.addWidget(self._hint)
 
@@ -140,7 +143,8 @@ class _CustomerHistoryDialog(QDialog):
 
         # Footer buttons
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.Close)
-        self.printButton = self.buttonBox.addButton(_t("Print"), QDialogButtonBox.ActionRole)
+        self.printButton = self.buttonBox.addButton(_t("Print Current View"), QDialogButtonBox.ActionRole)
+        self.printButton.setEnabled(bool((self._history or {}).get("timeline")))
         self.buttonBox.rejected.connect(self.reject)
         self.buttonBox.accepted.connect(self.accept)  # not shown, but keeps symmetry
         outer.addWidget(self.buttonBox)
@@ -226,11 +230,8 @@ class _CustomerHistoryDialog(QDialog):
             ).joinpath("customer_history_table.html").read_text(encoding="utf-8")
         except (FileNotFoundError, OSError, ModuleNotFoundError) as e:
             _log.error("Failed to load customer history template: %s", e, exc_info=True)
-            # Fallback: minimal template that surfaces the error visibly
-            tpl_str = (
-                "<html><body><p>Failed to load customer history template."
-                " See logs for details.</p></body></html>"
-            )
+            QMessageBox.warning(self, _t("Cannot Print"), _t("The customer history print template could not be loaded."))
+            return
 
         template = Template(tpl_str, autoescape=True)
 
@@ -248,6 +249,8 @@ class _CustomerHistoryDialog(QDialog):
             "total_amount",
             "paid_amount",
             "remaining",
+            "remaining_due",
+            "advance_payment_applied",
             "quantity",
             "price",
         }
@@ -321,12 +324,14 @@ class _CustomerHistoryDialog(QDialog):
             common = ""
         if common != real_pdf_dir:
             _log.error("Refusing to open customer history PDF outside temp dir: %s", real_file_path)
+            QMessageBox.warning(self, _t("Cannot Print"), _t("The customer history output path was rejected."))
             return
 
         try:
             HTML(string=html).write_pdf(file_path)
         except Exception as e:
             _log.error("Failed to render customer history PDF to %s: %s", file_path, e, exc_info=True)
+            QMessageBox.warning(self, _t("Cannot Print"), _t("The customer history PDF could not be created."))
             return
 
         try:
@@ -343,10 +348,13 @@ class _CustomerHistoryDialog(QDialog):
                     cp.returncode,
                     real_file_path,
                 )
+                QMessageBox.information(self, _t("PDF Saved"), _t(f"The PDF was saved to:\n{real_file_path}"))
         except subprocess.TimeoutExpired:
             _log.warning("Timed out while trying to open customer history PDF: %s", real_file_path)
+            QMessageBox.information(self, _t("PDF Saved"), _t(f"The PDF was saved to:\n{real_file_path}"))
         except Exception as e:
             _log.warning("Failed to open customer history PDF %s: %s", real_file_path, e)
+            QMessageBox.information(self, _t("PDF Saved"), _t(f"The PDF was saved to:\n{real_file_path}"))
 
     def _build_history_view(self, outer: QVBoxLayout) -> None:
         """
@@ -356,16 +364,18 @@ class _CustomerHistoryDialog(QDialog):
         timeline = (self._history or {}).get("timeline") or []
         page = _TablePage(title=_t("History"), rows=timeline)
         self.tabs.addTab(page, _t("History"))
+        if not timeline:
+            self._hint.setText(_t("No customer account activity is available."))
 
         # Summary label at the bottom with net position
         summary = (self._history or {}).get("summary") or {}
         open_due, credit, net = self._calculate_net_position(summary)
         if net > 0:
-            msg = f"Customer still owes you: {net:.2f} (outstanding {open_due:.2f}, advance balance {credit:.2f})"
+            msg = f"Customer still owes you: {net:,.2f} (outstanding {open_due:,.2f}, customer credit {credit:,.2f})"
         elif net < 0:
-            msg = f"You owe the customer: {abs(net):.2f} (outstanding {open_due:.2f}, advance balance {credit:.2f})"
+            msg = f"You owe the customer: {abs(net):,.2f} (outstanding {open_due:,.2f}, customer credit {credit:,.2f})"
         else:
-            msg = f"No balance (account settled; outstanding {open_due:.2f}, advance balance {credit:.2f})."
+            msg = f"No balance (account settled; outstanding {open_due:,.2f}, customer credit {credit:,.2f})."
         self._summary_label = QLabel(msg)
         self._summary_label.setStyleSheet("color:#444; margin-top:6px;")
         outer.addWidget(self._summary_label)
@@ -389,6 +399,8 @@ class _CustomerHistoryDialog(QDialog):
             "total_amount",
             "paid_amount",
             "remaining",
+            "remaining_due",
+            "advance_payment_applied",
             "quantity",
             "price",
         }
@@ -396,14 +408,17 @@ class _CustomerHistoryDialog(QDialog):
         columns: List[Dict[str, Any]] = []
         for key in headers:
             align = "left"
+            numeric = False
             if key in numeric_keys:
                 align = "right"
+                numeric = True
             elif key in date_keys:
                 align = "center"
             else:
                 sample = next((row.get(key) for row in rows if row.get(key) not in (None, "")), None)
                 if _is_number(sample):
                     align = "right"
+                    numeric = True
                 elif isinstance(sample, str) and _looks_like_date(sample):
                     align = "center"
             columns.append(
@@ -411,65 +426,10 @@ class _CustomerHistoryDialog(QDialog):
                     "key": key,
                     "label": pretty_header(key),
                     "align": align,
+                    "numeric": numeric,
                 }
             )
         return columns
-
-    def _build_summary_widget(
-        self,
-        overview: Optional[Dict[str, Any]],
-        tables: List[Tuple[str, List[Dict[str, Any]]]],
-    ) -> Optional[QWidget]:
-        """
-        Compact, business-focused summary based primarily on the 'overview'
-        payload from CustomerHistoryService.overview(...).
-        """
-        if not overview and not tables:
-            return None
-
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(12, 12, 12, 12)
-
-        if overview:
-            lay.addWidget(QLabel("<b>" + _t("Customer Overview") + "</b>"))
-            try:
-                credit = float(overview.get("credit_balance", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                credit = 0.0
-            try:
-                sales_count = int(overview.get("sales_count", 0) or 0)
-            except (TypeError, ValueError):
-                sales_count = 0
-            try:
-                open_due = float(overview.get("open_due_sum", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                open_due = 0.0
-            last_sale = overview.get("last_sale_date") or "-"
-            last_payment = overview.get("last_payment_date") or "-"
-            last_advance = overview.get("last_advance_date") or "-"
-
-            lay.addWidget(QLabel(f"• Sales count: {sales_count}"))
-            lay.addWidget(QLabel(f"• Open due (all sales): {open_due:.2f}"))
-            lay.addWidget(QLabel(f"• Available advance balance: {credit:.2f}"))
-            lay.addWidget(QLabel(f"• Last sale date: {last_sale}"))
-            lay.addWidget(QLabel(f"• Last payment date: {last_payment}"))
-            lay.addWidget(QLabel(f"• Last advance date: {last_advance}"))
-
-        # Simple row counts for key tables (sales & payments) for quick glance
-        count_map = {key: len(rows) for key, rows in tables}
-        if count_map:
-            lay.addSpacing(8)
-            lay.addWidget(QLabel("<b>" + _t("Activity") + "</b>"))
-            if "sales" in count_map:
-                lay.addWidget(QLabel(f"• Sales rows: {count_map['sales']}"))
-            if "payments" in count_map:
-                lay.addWidget(QLabel(f"• Payment rows: {count_map['payments']}"))
-            if "advances" in count_map:
-                lay.addWidget(QLabel(f"• Advance entries: {count_map['advances']}"))
-
-        lay.addStretch(1)
-        return w
 
     @staticmethod
     def _pretty_title(key: str) -> str:
@@ -492,7 +452,7 @@ class _TablePage(QWidget):
         super().__init__(None)
         self.title = title
         self.rows = rows or []
-        headers = list(_collect_headers(self.rows[:sample_for_headers]))
+        headers = list(_collect_headers(self.rows))
         self.headers = self._filter_headers_for_title(headers)
         self._build()
 
@@ -527,7 +487,12 @@ class _TablePage(QWidget):
         for r, row in enumerate(self.rows):
             for c, key in enumerate(self.headers):
                 val = row.get(key, "")
-                display_value = self._fmt_kind(val) if key == "kind" else self._fmt(val)
+                if key == "kind":
+                    display_value = self._fmt_kind(val)
+                elif key == "clearing_state":
+                    display_value = str(val or "").replace("_", " ").title()
+                else:
+                    display_value = self._fmt(val)
                 item = QTableWidgetItem(display_value)
                 # Alignment: numeric → right, date-ish → center, text → left
                 if _is_number(val):
@@ -569,7 +534,7 @@ class _TablePage(QWidget):
             blacklist.update({"created_by", "notes"})
         elif title in {"timeline", "history"}:
             # Items is an embedded list of sale lines; too verbose for the grid
-            blacklist.update({"items", "notes"})
+            blacklist.update({"items"})
 
         return [h for h in headers if h not in blacklist]
 
@@ -597,8 +562,8 @@ class _TablePage(QWidget):
             "sale_return": "Sale Return",
             "receipt": "Payment",
             "refund": "Refund",
-            "advance": "Advance",
-            "advance_applied": "Advance Applied",
+            "advance": "Customer Credit",
+            "advance_applied": "Credit Applied",
         }
         return labels.get(v, "" if v is None else str(v))
 

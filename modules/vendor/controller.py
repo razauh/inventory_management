@@ -10,7 +10,7 @@ _log = logging.getLogger(__name__)
 from ..base_module import BaseModule
 from .view import VendorView
 from .form import VendorForm
-from .model import VendorsTableModel
+from .model import VendorsTableModel, _mask_value
 from .bank_accounts_dialog import AccountEditDialog
 from ...database.repositories.vendors_repo import DomainError as VendorsDomainError, VendorsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
@@ -100,7 +100,56 @@ class VendorController(BaseModule):
         return self.base_model.at(src.row()).vendor_id
     def _current_vendor_row(self) -> dict | None:
         vid = self._selected_id()
-        return self.repo.get(vid).__dict__ if vid else None
+        if not vid:
+            return None
+        row = self.repo.get(vid)
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row
+        if hasattr(row, "__dict__"):
+            return dict(row.__dict__)
+        if hasattr(row, "keys"):
+            try:
+                return {key: row[key] for key in row.keys()}
+            except Exception:
+                pass
+        return {"vendor_id": vid}
+    def _current_vendor_display_text(self, vendor_id: int | None = None) -> str:
+        row = None
+        if vendor_id is not None:
+            try:
+                row = self.repo.get(int(vendor_id))
+            except Exception:
+                row = None
+        else:
+            try:
+                vid = self._selected_id()
+                row = self.repo.get(vid) if vid else None
+            except Exception:
+                row = None
+        if not row:
+            return f"Vendor #{vendor_id}" if vendor_id else "Selected vendor"
+        payload = row.__dict__ if hasattr(row, "__dict__") else {}
+        name = getattr(row, "name", None) or payload.get("name")
+        vendor_id_val = getattr(row, "vendor_id", None) or payload.get("vendor_id")
+        if not name and hasattr(row, "keys"):
+            try:
+                name = row["name"]
+            except Exception:
+                name = None
+        if vendor_id_val is None and hasattr(row, "keys"):
+            try:
+                vendor_id_val = row["vendor_id"]
+            except Exception:
+                vendor_id_val = None
+        if name and vendor_id_val is not None:
+            return f"{name} (ID {vendor_id_val})"
+        if name:
+            return str(name)
+        if vendor_id_val is not None:
+            return f"Vendor #{vendor_id_val}"
+        return "Selected vendor"
     def _update_details(self, *args, **kwargs):
         vid = self._selected_id()
         self.view.details.set_data(self._current_vendor_row())
@@ -135,7 +184,11 @@ class VendorController(BaseModule):
             return [
                 {
                     "id": int(r["account_id"]),
-                    "name": r["label"] or f"{r['bank_name'] or ''} {r['account_no'] or ''}".strip(),
+                    "name": self._format_bank_account_choice(
+                        label=r["label"],
+                        bank_name=r["bank_name"],
+                        account_no=r["account_no"],
+                    ),
                 }
                 for r in rows
             ]
@@ -148,7 +201,17 @@ class VendorController(BaseModule):
             rows = self.vbank.list(vendor_id, active_only=True)
             out: List[Dict[str, Any]] = []
             for r in rows:
-                out.append({"id": int(r["vendor_bank_account_id"]), "name": r.get("label") or (r.get("bank_name") or "") + " " + (r.get("account_no") or "")})
+                out.append(
+                    {
+                        "id": int(r["vendor_bank_account_id"]),
+                        "name": self._format_bank_account_choice(
+                            label=r.get("label"),
+                            bank_name=r.get("bank_name"),
+                            account_no=r.get("account_no"),
+                            is_primary=bool(r.get("is_primary")),
+                        ),
+                    }
+                )
             return out
         except Exception as e:
             _log.exception("Failed to load vendor bank accounts for vendor_id=%s", vendor_id)
@@ -200,6 +263,28 @@ class VendorController(BaseModule):
             _log.exception("Failed to load vendor credit balance for vendor_id=%s", vendor_id)
             info(self.view, "Data unavailable", f"Vendor credit balance could not be loaded:\n{e}")
             return 0.0
+    def _format_bank_account_choice(
+        self,
+        *,
+        label: Any = None,
+        bank_name: Any = None,
+        account_no: Any = None,
+        is_primary: bool = False,
+    ) -> str:
+        parts: list[str] = []
+        label_text = str(label).strip() if label else ""
+        bank_text = str(bank_name).strip() if bank_name else ""
+        account_text = _mask_value(account_no)
+        if label_text:
+            parts.append(label_text)
+        if bank_text:
+            parts.append(bank_text)
+        if account_text:
+            parts.append(account_text)
+        text = " - ".join(parts) if parts else "Bank account"
+        if is_primary:
+            text = f"{text} (Primary)"
+        return text
     def _build_grant_credit_allocation_preview(self, vendor_id: int, amount: float) -> dict:
         remaining_credit = max(0.0, float(amount or 0.0))
         open_purchases = sorted(
@@ -456,7 +541,7 @@ class VendorController(BaseModule):
     def _clear_account_details(self):
         if not hasattr(self.view, "account_details_box"):
             return
-        self.view.lblAccLabel.setText("-")
+        self.view.lblAccLabel.setText("No account selected")
         self.view.lblAccBank.setText("-")
         self.view.lblAccNumber.setText("-")
         self.view.lblAccIBAN.setText("-")
@@ -469,9 +554,9 @@ class VendorController(BaseModule):
             return
         self.view.lblAccLabel.setText(str(row_dict.get("label", "") or "-"))
         self.view.lblAccBank.setText(str(row_dict.get("bank_name", "") or "-"))
-        self.view.lblAccNumber.setText(str(row_dict.get("account_no", "") or "-"))
-        self.view.lblAccIBAN.setText(str(row_dict.get("iban", "") or "-"))
-        self.view.lblAccRouting.setText(str(row_dict.get("routing_no", "") or "-"))
+        self.view.lblAccNumber.setText(_mask_value(row_dict.get("account_no")) or "-")
+        self.view.lblAccIBAN.setText(_mask_value(row_dict.get("iban"), keep_last=6) or "-")
+        self.view.lblAccRouting.setText(_mask_value(row_dict.get("routing_no")) or "-")
         self.view.lblAccPrimary.setText(self._format_bool(row_dict.get("is_primary")))
         self.view.lblAccActive.setText(self._format_bool(row_dict.get("is_active")))
     def _update_account_details(self, *_):
@@ -566,7 +651,7 @@ class VendorController(BaseModule):
             "list_company_bank_accounts": self._list_company_bank_accounts,
             "list_vendor_bank_accounts": self._list_vendor_bank_accounts,
             "today": today_str,
-            "vendor_display": str(vid),
+            "vendor_display": self._current_vendor_display_text(vid),
             # Don't set default amount to allow null values in the amount field
         }
 
@@ -610,7 +695,7 @@ class VendorController(BaseModule):
             )
             self.conn.execute("RELEASE apply_advance")
 
-            info(self.view, "Recorded", f"Advance payment of {amount:.2f} recorded successfully (Tx #{tx_id}).")
+            info(self.view, "Recorded", f"Advance payment of {amount:,.2f} recorded successfully (Tx #{tx_id}).")
 
         except Exception as e:
             # Rollback to the savepoint in case of any error
@@ -832,7 +917,11 @@ class VendorController(BaseModule):
 
         try:
             payload = self.build_vendor_statement(int(vid))
-            open_vendor_history(vendor_id=int(vid), history=payload)
+            open_vendor_history(
+                vendor_id=int(vid),
+                history=payload,
+                vendor_display=self._current_vendor_display_text(vid),
+            )
         except Exception as e:
             info(self.view, "Error", f"Could not open vendor history:\n{e}")
     def list_bank_accounts(self, active_only: bool = True) -> list[dict]:
@@ -1020,19 +1109,21 @@ class VendorController(BaseModule):
         if not vendor_id:
             uih.info(self.view, "Select", "Please select a vendor first.")
             return
-        from PySide6 import QtWidgets, QtCore
+        from PySide6 import QtWidgets, QtCore, QtGui
         dlg = QtWidgets.QDialog(self.view)
         dlg.setWindowTitle("Grant Credit and Auto-Apply")
         dlg.setModal(True)
         layout = QtWidgets.QVBoxLayout(dlg)
+        vendor_label = QtWidgets.QLabel(f"Selected vendor: {self._current_vendor_display_text(vendor_id)}")
+        vendor_label.setWordWrap(True)
+        layout.addWidget(vendor_label)
         description = QtWidgets.QLabel(
-            "Grant Credit and Auto-Apply will create vendor credit and apply it to open "
-            "purchases before any unused amount remains available."
+            "This will create vendor credit, then apply it to the oldest open purchases first."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
         policy = QtWidgets.QLabel(
-            "FIFO allocation: oldest purchase date first, then purchase ID ascending."
+            "FIFO means oldest purchase date first, then purchase ID ascending."
         )
         policy.setWordWrap(True)
         layout.addWidget(policy)
@@ -1040,6 +1131,9 @@ class VendorController(BaseModule):
         amt_edit = QtWidgets.QLineEdit(dlg)
         amt_edit.setPlaceholderText("Amount (e.g., 1000.00)")
         amt_edit.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        amount_validator = QtGui.QDoubleValidator(0.0, 999999999999.99, 2, dlg)
+        amount_validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+        amt_edit.setValidator(amount_validator)
         memo_edit = QtWidgets.QLineEdit(dlg)
         memo_edit.setPlaceholderText("Optional note/memo")
         date_edit = QtWidgets.QDateEdit(dlg)
@@ -1051,6 +1145,9 @@ class VendorController(BaseModule):
         layout.addLayout(form)
         summary_label = QtWidgets.QLabel("Total credit: 0.00")
         layout.addWidget(summary_label)
+        preview_empty_label = QtWidgets.QLabel("")
+        preview_empty_label.setWordWrap(True)
+        layout.addWidget(preview_empty_label)
         preview_table = QtWidgets.QTableWidget(0, 5, dlg)
         preview_table.setHorizontalHeaderLabels(
             ["Purchase", "Date", "Current due", "Apply credit", "Due after"]
@@ -1067,7 +1164,13 @@ class VendorController(BaseModule):
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
             parent=dlg,
         )
+        btn_box.button(QtWidgets.QDialogButtonBox.Ok).setText("Grant Credit")
         layout.addWidget(btn_box)
+        def _fmt_money(value: float | int | None) -> str:
+            try:
+                return f"{float(value or 0.0):,.2f}"
+            except Exception:
+                return "0.00"
         def _set_preview_item(row: int, col: int, value: str, align_right: bool = False):
             item = QtWidgets.QTableWidgetItem(value)
             if align_right:
@@ -1087,23 +1190,38 @@ class VendorController(BaseModule):
                 }
             else:
                 preview = self._build_grant_credit_allocation_preview(vendor_id, amount)
-            summary_label.setText(f"Total credit being granted: {preview['total_credit']:.2f}")
-            preview_table.setRowCount(len(preview["rows"]))
-            for row_idx, row in enumerate(preview["rows"]):
-                _set_preview_item(row_idx, 0, str(row["purchase_id"]))
-                _set_preview_item(row_idx, 1, str(row["date"] or ""))
-                _set_preview_item(row_idx, 2, f"{row['remaining_due']:.2f}", True)
-                _set_preview_item(row_idx, 3, f"{row['amount_to_apply']:.2f}", True)
-                _set_preview_item(row_idx, 4, f"{row['remaining_due_after']:.2f}", True)
+            summary_label.setText(f"Total credit being granted: {_fmt_money(preview['total_credit'])}")
+            if amount <= 0:
+                preview_empty_label.setText("Enter an amount to preview allocation.")
+                preview_table.setRowCount(0)
+            else:
+                preview_table.setRowCount(max(1, len(preview["rows"])))
+                if preview["rows"]:
+                    preview_empty_label.setText("")
+                    for row_idx, row in enumerate(preview["rows"]):
+                        _set_preview_item(row_idx, 0, str(row["purchase_id"]))
+                        _set_preview_item(row_idx, 1, str(row["date"] or ""))
+                        _set_preview_item(row_idx, 2, _fmt_money(row["remaining_due"]), True)
+                        _set_preview_item(row_idx, 3, _fmt_money(row["amount_to_apply"]), True)
+                        _set_preview_item(row_idx, 4, _fmt_money(row["remaining_due_after"]), True)
+                else:
+                    preview_empty_label.setText("No open purchases will receive credit.")
+                    _set_preview_item(0, 0, "No open purchases")
+                    _set_preview_item(0, 1, "-")
+                    _set_preview_item(0, 2, "-")
+                    _set_preview_item(0, 3, "-")
+                    _set_preview_item(0, 4, "-")
             preview_table.resizeColumnsToContents()
-            if preview["rows"]:
+            if amount > 0 and preview["rows"]:
                 remaining_label.setText(
-                    f"Remaining available vendor credit after allocation: {preview['remaining_credit']:.2f}"
+                    f"Remaining available vendor credit after allocation: {_fmt_money(preview['remaining_credit'])}"
+                )
+            elif amount > 0:
+                remaining_label.setText(
+                    f"Remaining available vendor credit: {_fmt_money(preview['remaining_credit'])}"
                 )
             else:
-                remaining_label.setText(
-                    f"No open purchases will receive credit. Remaining available vendor credit: {preview['remaining_credit']:.2f}"
-                )
+                remaining_label.setText("Remaining available vendor credit: 0.00")
         amt_edit.textChanged.connect(_refresh_preview)
         _refresh_preview()
         def _on_ok():
@@ -1130,10 +1248,20 @@ class VendorController(BaseModule):
                     grant_date=(grant_date or (today_str() if callable(today_str) else today_str)),
                     memo=memo,
                 )
+                if float(result.get("applied_amount", 0.0)) > 0:
+                    message = (
+                        f"Credit granted. {result['applied_amount']:,.2f} applied to open purchase orders. "
+                        f"{float(result.get('remaining_credit', 0.0)):,.2f} remains available."
+                    )
+                else:
+                    message = (
+                        f"Credit granted. No open purchases received credit yet. "
+                        f"{float(result.get('remaining_credit', 0.0)):,.2f} remains available."
+                    )
                 uih.info(
                     self.view,
                     "Success",
-                    f"Credit granted and {result['applied_amount']:.2f} applied to open purchase orders.",
+                    message,
                 )
                 try:
                     if hasattr(self, "_update_details"):

@@ -17,7 +17,7 @@ from .details import CustomerDetails
 class CustomerView(QWidget):
     """
     Customers view:
-      - Toolbar: Add, Edit, Record Advance, Apply Advance, History, Print Statement
+      - Toolbar: Add, Edit, Record Credit, Apply Credit, History, Print Statement
       - Search box
       - Split: table (left) + tabs (right) -> Details
     """
@@ -30,17 +30,17 @@ class CustomerView(QWidget):
         bar = QHBoxLayout()
 
         # CRUD
-        self.btn_add = QPushButton("Add")
-        self.btn_edit = QPushButton("Edit")
+        self.btn_add = QPushButton("Add Customer")
+        self.btn_edit = QPushButton("Edit Customer")
         # self.btn_del = QPushButton("Delete")
         bar.addWidget(self.btn_add)
         bar.addWidget(self.btn_edit)
         # bar.addWidget(self.btn_del)
 
         # Payments / Credits
-        self.btn_record_advance = QPushButton("Record Advance")
-        self.btn_apply_advance = QPushButton("Apply Advance")
-        self.btn_history = QPushButton("History")
+        self.btn_record_advance = QPushButton("Record Customer Credit")
+        self.btn_apply_advance = QPushButton("Apply Customer Credit")
+        self.btn_history = QPushButton("Customer History")
         self.btn_print_history = QPushButton("Print Statement")
 
         bar.addWidget(self.btn_record_advance)
@@ -54,9 +54,14 @@ class CustomerView(QWidget):
         bar.addWidget(QLabel("Search:"))
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search customers (name, id, contact, address)…")
+        self.search.setClearButtonEnabled(True)
         bar.addWidget(self.search, 2)
 
         root.addLayout(bar)
+
+        self.list_status = QLabel("")
+        self.list_status.setStyleSheet("color: #666;")
+        root.addWidget(self.list_status)
 
         # ---- Main split: table (left) + tabs (right) ----------------------
         split = QSplitter(Qt.Horizontal)

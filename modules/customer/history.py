@@ -222,6 +222,9 @@ class CustomerHistoryService:
                     amount,
                     source_type,
                     source_id,
+                    method,
+                    bank_account_id,
+                    reference_no,
                     notes,
                     created_by
                 FROM customer_advances
@@ -272,6 +275,7 @@ class CustomerHistoryService:
                     "amount": float(s["calculated_total_amount"] or 0.0),
                     "remaining_due": float(s["remaining_due"] or 0.0),
                     "payment_status": s["payment_status"],
+                    "description": "Sale issued",
                     "items": s["items"],
                     "notes": s.get("notes"),
                 }
@@ -307,6 +311,11 @@ class CustomerHistoryService:
                     "method": p["method"],
                     "clearing_state": p["clearing_state"],
                     "instrument_no": p["instrument_no"],
+                    "reference": p["instrument_no"],
+                    "description": (
+                        f"{p['method']} {'refund' if amount < 0 else 'payment'}"
+                        + (f" - {p.get('notes')}" if p.get("notes") else "")
+                    ),
                     "notes": p.get("notes"),
                 }
             )
@@ -320,6 +329,13 @@ class CustomerHistoryService:
                     "id": a["tx_id"],
                     "sale_id": a.get("source_id"),
                     "amount": float(a["amount"] or 0.0),  # +ve deposit, -ve application
+                    "method": a.get("method"),
+                    "reference": a.get("reference_no"),
+                    "description": (
+                        f"Applied customer credit to sale {a.get('source_id')}"
+                        if kind == "advance_applied"
+                        else f"Customer credit received by {a.get('method') or 'unspecified method'}"
+                    ),
                     "notes": a.get("notes"),
                 }
             )

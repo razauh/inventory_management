@@ -54,6 +54,37 @@ class _DictTableModel(QAbstractTableModel):
         self._rows = rows
         self._cols = columns
 
+    @staticmethod
+    def _pretty_key(key: str) -> str:
+        labels = {
+            "doc_id": "Doc #",
+            "amount_effect": "Net Effect",
+            "balance_after": "Balance After",
+            "payment_id": "Payment #",
+            "instrument_no": "Instrument #",
+            "instrument_type": "Instrument Type",
+            "instrument_date": "Instrument Date",
+            "clearing_state": "Clearing State",
+            "ref_no": "Reference #",
+            "bank_account_id": "Company Bank Account ID",
+            "vendor_bank_account_id": "Vendor Bank Account ID",
+            "temp_vendor_bank_name": "Temp Bank Name",
+            "temp_vendor_bank_number": "Temp Bank Number",
+            "tx_id": "Tx #",
+        }
+        return labels.get(key, key.replace("_", " ").title())
+
+    @staticmethod
+    def _format_value(key: str, val: Any) -> str:
+        if val is None:
+            return ""
+        if key in {"amount", "amount_effect", "balance_after"}:
+            try:
+                return f"{float(val):,.2f}"
+            except Exception:
+                return str(val)
+        return str(val)
+
     # Qt model API
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # type: ignore[override]
         return 0 if parent.isValid() else len(self._rows)
@@ -65,7 +96,7 @@ class _DictTableModel(QAbstractTableModel):
         if role != Qt.DisplayRole:
             return None
         if orientation == Qt.Horizontal:
-            return self._cols[section]
+            return self._pretty_key(self._cols[section])
         return str(section + 1)
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):  # type: ignore[override]
@@ -76,12 +107,7 @@ class _DictTableModel(QAbstractTableModel):
         row = self._rows[index.row()]
         key = self._cols[index.column()]
         val = row.get(key, "")
-        if val is None:
-            return ""
-        # Format floats a bit nicer for display
-        if isinstance(val, float):
-            return f"{val:.2f}"
-        return str(val)
+        return self._format_value(key, val)
 
     # Helpers
     def at(self, r: int) -> Dict[str, Any]:
@@ -128,9 +154,11 @@ class _VendorHistoryDialog(QDialog):
         Those will be concatenated for display after a best-effort flatten.
     """
 
-    def __init__(self, *, vendor_id: int, history: Dict[str, Any], parent: Optional[QWidget] = None) -> None:
+    def __init__(self, *, vendor_id: int, history: Dict[str, Any], vendor_display: Optional[str] = None, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(_t(f"Vendor History — #{vendor_id}"))
+        self._vendor_display = vendor_display or f"#{vendor_id}"
+        title_vendor = self._vendor_display
+        self.setWindowTitle(_t(f"Vendor History — {title_vendor}"))
         self.resize(960, 560)
 
         self._vendor_id = int(vendor_id)
@@ -162,8 +190,17 @@ class _VendorHistoryDialog(QDialog):
         closing_balance = self._safe_float(self._history.get("closing_balance"))
 
         lbl_period = QLabel(_t(f"Period: {period_txt}"))
-        lbl_open = QLabel(_t(f"Opening Payable: {opening_payable:.2f}    Opening Credit: {opening_credit:.2f}"))
-        lbl_close = QLabel(_t(f"Closing Balance: {closing_balance:.2f}") if closing_balance is not None else "")
+        lbl_open = QLabel(
+            _t(
+                f"Opening Payable (owed): {opening_payable:,.2f}    "
+                f"Opening Credit (prepaid): {opening_credit:,.2f}"
+            )
+        )
+        lbl_close = QLabel(
+            _t(f"Closing Balance (positive = payable): {closing_balance:,.2f}")
+            if closing_balance is not None
+            else ""
+        )
 
         for w in (lbl_period, lbl_open, lbl_close):
             w.setStyleSheet("color: #444;")
@@ -183,11 +220,15 @@ class _VendorHistoryDialog(QDialog):
         tx_model = _DictTableModel(tx_rows, tx_columns, self)
         tx_table.setModel(tx_model)
         tx_table.setAlternatingRowColors(True)
-        tx_table.setSortingEnabled(True)
+        tx_table.setSortingEnabled(False)
         tx_table.resizeColumnsToContents()
 
         tx_page = QWidget(self)
         tx_layout = QVBoxLayout(tx_page)
+        if not tx_rows:
+            tx_empty = QLabel(_t("No transactions found for this vendor and period."))
+            tx_empty.setWordWrap(True)
+            tx_layout.addWidget(tx_empty)
         tx_layout.addWidget(tx_table)
         tabs.addTab(tx_page, _t("Transactions"))
 
@@ -203,17 +244,21 @@ class _VendorHistoryDialog(QDialog):
             totals_model = _DictTableModel(totals_rows, totals_cols, self)
             totals_table.setModel(totals_model)
             totals_table.setAlternatingRowColors(True)
-            totals_table.setSortingEnabled(True)
+            totals_table.setSortingEnabled(False)
             totals_table.resizeColumnsToContents()
 
             totals_page = QWidget(self)
             t_layout = QVBoxLayout(totals_page)
+            if not totals_rows:
+                totals_empty = QLabel(_t("No totals available."))
+                totals_empty.setWordWrap(True)
+                t_layout.addWidget(totals_empty)
             t_layout.addWidget(totals_table)
             tabs.addTab(totals_page, _t("Totals"))
 
         # Close / Print buttons
         btns = QDialogButtonBox(QDialogButtonBox.Close, parent=self)
-        self._print_btn = btns.addButton(_t("Print"), QDialogButtonBox.ActionRole)
+        self._print_btn = btns.addButton(_t("Print Statement"), QDialogButtonBox.ActionRole)
         btns.rejected.connect(self.reject)
         btns.accepted.connect(self.accept)
         self._print_btn.clicked.connect(self._on_print)
@@ -498,13 +543,24 @@ class _VendorHistoryDialog(QDialog):
                         except Exception:
                             cleaned[k] = v
                     norm_rows.append(cleaned)
+                print_rows: List[Dict[str, Any]] = []
+                for row in norm_rows:
+                    print_row: Dict[str, Any] = {}
+                    for key in cols:
+                        value = row.get(key)
+                        if value is None:
+                            print_row[key] = None
+                        else:
+                            print_row[key] = _DictTableModel._format_value(key, value)
+                    print_rows.append(print_row)
 
                 html = template.render(
-                    title=f"Vendor History — #{self._vendor_id}",
+                    title=f"Vendor History — {self._vendor_display}",
                     keys=cols,
-                    labels=cols,
-                    rows=norm_rows,
+                    labels=[_DictTableModel._pretty_key(col) for col in cols],
+                    rows=print_rows,
                     vendor_id=self._vendor_id,
+                    vendor_display=self._vendor_display,
                     total_label=total_label,
                     total_amount=total_amount,
                 )
@@ -601,7 +657,7 @@ class _VendorHistoryDialog(QDialog):
 # -----------------------------
 # Public API
 # -----------------------------
-def open_vendor_history(*, vendor_id: int, history: Dict[str, Any]) -> None:
+def open_vendor_history(*, vendor_id: int, history: Dict[str, Any], vendor_display: Optional[str] = None) -> None:
     """
     Open the vendor history window.
 
@@ -614,7 +670,7 @@ def open_vendor_history(*, vendor_id: int, history: Dict[str, Any]) -> None:
     if owns_app:
         app = QApplication([])
 
-    dlg = _VendorHistoryDialog(vendor_id=int(vendor_id), history=history)
+    dlg = _VendorHistoryDialog(vendor_id=int(vendor_id), history=history, vendor_display=vendor_display)
     dlg.exec()
 
     if owns_app:

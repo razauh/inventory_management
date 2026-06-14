@@ -378,9 +378,13 @@ CREATE TABLE IF NOT EXISTS customer_advances (
     amount      NUMERIC NOT NULL,  -- +ve adds credit, -ve consumes credit
     source_type TEXT    NOT NULL CHECK (source_type IN ('deposit','applied_to_sale','return_credit')),
     source_id   TEXT,              -- e.g. sale_id
+    method      TEXT CHECK (method IS NULL OR method IN ('Cash','Bank Transfer','Card','Cheque','Other')),
+    bank_account_id INTEGER,
+    reference_no TEXT,
     notes       TEXT,
     created_by  INTEGER,
     FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
+    FOREIGN KEY (bank_account_id) REFERENCES company_bank_accounts(account_id),
     FOREIGN KEY (created_by)  REFERENCES users(user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_cadv_cust    ON customer_advances(customer_id);
@@ -3594,6 +3598,19 @@ def _ensure_vendor_advances_payment_metadata(conn: sqlite3.Connection) -> None:
             conn.execute(sql)
 
 
+def _ensure_customer_advances_payment_metadata(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA table_info(customer_advances);")
+    cols = {row[1] for row in cur.fetchall()}
+    migrations = {
+        "method": "ALTER TABLE customer_advances ADD COLUMN method TEXT;",
+        "bank_account_id": "ALTER TABLE customer_advances ADD COLUMN bank_account_id INTEGER;",
+        "reference_no": "ALTER TABLE customer_advances ADD COLUMN reference_no TEXT;",
+    }
+    for col, sql in migrations.items():
+        if col not in cols:
+            conn.execute(sql)
+
+
 def _backfill_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -4403,6 +4420,7 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         _ensure_sale_payments_overpayment_converted(conn)
         _ensure_sale_payments_converted_to_credit(conn)
         _ensure_vendor_advances_payment_metadata(conn)
+        _ensure_customer_advances_payment_metadata(conn)
         migrate_purchase_return_snapshots(conn)
         migrate_sale_return_snapshots(conn)
         conn.commit()

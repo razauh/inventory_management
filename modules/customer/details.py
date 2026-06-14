@@ -28,11 +28,15 @@ class CustomerDetails(QWidget):
         self.lab_last_sale = QLabel("-")          # last sale date
         self.lab_last_payment = QLabel("-")       # last payment date
         self.lab_outstanding = QLabel("-")        # sum of (total - paid - applied advances), provided by caller
+        self.lab_financial_status = QLabel("")
+        self.lab_financial_status.setWordWrap(True)
+        self.lab_financial_status.setStyleSheet("color: #b00020;")
 
-        f_fin.addRow("Advance Paid:", self.lab_credit)
+        f_fin.addRow("Available Customer Credit:", self.lab_credit)
         f_fin.addRow("Last Sale:", self.lab_last_sale)
         f_fin.addRow("Last Payment:", self.lab_last_payment)
         f_fin.addRow("Outstanding Receivables:", self.lab_outstanding)
+        f_fin.addRow("", self.lab_financial_status)
 
         # Root layout
         root = QVBoxLayout(self)
@@ -67,6 +71,7 @@ class CustomerDetails(QWidget):
         self.lab_last_sale.setText("-")
         self.lab_last_payment.setText("-")
         self.lab_outstanding.setText("-")
+        self.lab_financial_status.setText("")
 
     def set_data(self, row: dict | None):
         """
@@ -88,6 +93,15 @@ class CustomerDetails(QWidget):
         self.lab_contact.setText(self._fmt_text(row.get("contact_info")))
         self.lab_address.setText(self._fmt_text(row.get("address")))
 
+        if row.get("financial_error"):
+            self.lab_credit.setText("Unavailable")
+            self.lab_last_sale.setText("Unavailable")
+            self.lab_last_payment.setText("Unavailable")
+            self.lab_outstanding.setText("Unavailable")
+            self.lab_financial_status.setText("Could not load the financial snapshot. Refresh the customer list to retry.")
+            return
+
+        self.lab_financial_status.setText("")
         self.lab_credit.setText(self._fmt_money(row.get("credit_balance")))
         self.lab_last_sale.setText(self._fmt_text(row.get("last_sale_date")))
         self.lab_last_payment.setText(self._fmt_text(row.get("last_payment_date")))

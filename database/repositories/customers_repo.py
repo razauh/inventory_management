@@ -81,6 +81,19 @@ class CustomersRepo:
         ).fetchone()
         return Customer(**dict(r)) if r else None
 
+    def has_duplicate_name(self, name: str, current_id: int | None = None) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT customer_id
+              FROM customers
+             WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+               AND (? IS NULL OR customer_id != ?)
+             LIMIT 1
+            """,
+            (name, current_id, current_id),
+        ).fetchone()
+        return row is not None
+
     # ---- Mutations --------------------------------------------------------
 
     def create(self, name: str, contact_info: str, address: str | None) -> int:

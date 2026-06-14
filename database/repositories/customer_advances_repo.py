@@ -62,6 +62,9 @@ class CustomerAdvancesRepo:
         customer_id: int,
         amount: float,
         date: Optional[str] = None,          # 'YYYY-MM-DD' (defaults to CURRENT_DATE)
+        method: Optional[str] = None,
+        bank_account_id: Optional[int] = None,
+        reference_no: Optional[str] = None,
         notes: Optional[str] = None,
         created_by: Optional[int] = None,
     ) -> int:
@@ -71,19 +74,41 @@ class CustomerAdvancesRepo:
         """
         if amount is None or float(amount) <= 0:
             raise ValueError("Deposit amount must be a positive number.")
+        if method is None:
+            method = "Other"
+            reference_no = reference_no or "Legacy API credit"
+        allowed_methods = {"Cash", "Bank Transfer", "Card", "Cheque", "Other"}
+        if method not in allowed_methods:
+            raise ValueError("Select a valid customer credit method.")
+        if method in {"Bank Transfer", "Card", "Cheque"} and bank_account_id is None:
+            raise ValueError("A company bank account is required for this method.")
+        if method != "Cash" and not (reference_no or "").strip():
+            raise ValueError("A reference is required for non-cash customer credit.")
 
         with self._connect() as con:
+            if bank_account_id is not None:
+                account = con.execute(
+                    "SELECT is_active FROM company_bank_accounts WHERE account_id = ?",
+                    (bank_account_id,),
+                ).fetchone()
+                if account is None or int(account["is_active"] or 0) != 1:
+                    raise ValueError("Select an active company bank account.")
             cur = con.execute(
                 """
                 INSERT INTO customer_advances
-                    (customer_id, tx_date, amount, source_type, source_id, notes, created_by)
+                    (customer_id, tx_date, amount, source_type, source_id,
+                     method, bank_account_id, reference_no, notes, created_by)
                 VALUES
-                    (:customer_id, COALESCE(:tx_date, CURRENT_DATE), :amount, 'deposit', NULL, :notes, :created_by)
+                    (:customer_id, COALESCE(:tx_date, CURRENT_DATE), :amount, 'deposit', NULL,
+                     :method, :bank_account_id, :reference_no, :notes, :created_by)
                 """,
                 {
                     "customer_id": customer_id,
                     "tx_date": date,
                     "amount": float(amount),
+                    "method": method,
+                    "bank_account_id": bank_account_id,
+                    "reference_no": (reference_no or "").strip() or None,
                     "notes": notes,
                     "created_by": created_by,
                 },
@@ -243,6 +268,8 @@ class CustomerAdvancesRepo:
             customer_id=customer_id,
             amount=amount,
             date=date,
+            method="Other",
+            reference_no="Legacy API credit",
             notes=notes,
             created_by=created_by,
         )

@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 try:
     from PySide6.QtCore import Qt, QDate
+    from PySide6.QtGui import QDoubleValidator
     from PySide6.QtWidgets import (
         QApplication,
         QDialog,
@@ -26,6 +27,7 @@ except Exception:
     raise
 
 from ...database.repositories.vendors_repo import VendorsRepo
+from .model import _mask_value
 
 
 def _t(s: str) -> str:
@@ -117,7 +119,9 @@ class _VendorMoneyDialog(QDialog):
         # Vendor information display
         vendor_info_box = QGroupBox("Vendor Information")
         vendor_info_layout = QVBoxLayout(vendor_info_box)
-        self.vendorLabel = QLabel(f"Vendor: {self._vendor_id if self._vendor_display is None else self._vendor_display}")
+        vendor_text = self._vendor_display or f"Vendor #{self._vendor_id}"
+        self.vendorLabel = QLabel(f"Selected vendor: {vendor_text}")
+        self.vendorLabel.setWordWrap(True)
         vendor_info_layout.addWidget(self.vendorLabel)
         main_layout.addWidget(vendor_info_box)
 
@@ -130,6 +134,9 @@ class _VendorMoneyDialog(QDialog):
         self.amount = QLineEdit()
         self.amount.setPlaceholderText("Enter amount")
         self.amount.clear()  # Explicitly clear the text field to ensure it's empty
+        amount_validator = QDoubleValidator(0.0, 999999999999.99, 2, self)
+        amount_validator.setNotation(QDoubleValidator.StandardNotation)
+        self.amount.setValidator(amount_validator)
         self.date = QDateEdit()
         self.date.setCalendarPopup(True)
         from datetime import date
@@ -139,9 +146,11 @@ class _VendorMoneyDialog(QDialog):
         self.method.addItems(list(self.PAYMENT_METHODS.values()))
 
         self.company_acct = QComboBox()
-        self.company_acct.setEditable(True)
+        self.company_acct.setEditable(False)
+        self.company_acct.setPlaceholderText("Choose company account")
         self.vendor_acct = QComboBox()
-        self.vendor_acct.setEditable(True)
+        self.vendor_acct.setEditable(False)
+        self.vendor_acct.setPlaceholderText("Choose vendor account")
         self.instr_no = QLineEdit()
         self.instr_no.setPlaceholderText("Instrument / Cheque / Slip #")
         self.notes = QLineEdit()
@@ -182,9 +191,9 @@ class _VendorMoneyDialog(QDialog):
         self._payment_labels['instr_no'] = add_payment_field(2, 1, "Instrument No", self.instr_no, required=False)
         
         # Add temporary bank fields to the layout (now at row 3)
-        payment_layout.addWidget(QLabel("Temp Bank Name"), 3, 0)
+        payment_layout.addWidget(QLabel("Temporary Bank Name"), 3, 0)
         payment_layout.addWidget(self.temp_bank_name, 3, 1)
-        payment_layout.addWidget(QLabel("Temp Bank Number"), 3, 2)
+        payment_layout.addWidget(QLabel("Temporary Account Number"), 3, 2)
         payment_layout.addWidget(self.temp_bank_number, 3, 3)
         
         # Store temporary bank labels separately
@@ -193,13 +202,16 @@ class _VendorMoneyDialog(QDialog):
         self._payment_labels['temp_bank_name'] = temp_bank_name_item.widget() if temp_bank_name_item else None
         self._payment_labels['temp_bank_number'] = temp_bank_number_item.widget() if temp_bank_number_item else None
         
-        # Keep temporary bank fields visible but disabled by default
-        self.temp_bank_name.setVisible(True)
-        self.temp_bank_number.setVisible(True)
+        # Keep temporary bank fields hidden until the selected method needs them.
+        self.temp_bank_name.setVisible(False)
+        self.temp_bank_number.setVisible(False)
+        if self._payment_labels.get('temp_bank_name'):
+            self._payment_labels['temp_bank_name'].setVisible(False)
+        if self._payment_labels.get('temp_bank_number'):
+            self._payment_labels['temp_bank_number'].setVisible(False)
         self.temp_bank_name.setEnabled(False)
         self.temp_bank_number.setEnabled(False)
-        # Keep the labels visible but not required initially
-        # We will handle their requirement state separately
+        # Requirement state is handled separately when temp fields become relevant.
         
         # Add payment notes
         payment_layout.addWidget(QLabel("Payment Notes"), 5, 0)
@@ -239,6 +251,7 @@ class _VendorMoneyDialog(QDialog):
 
         # Error Label - Add it in the dialog
         self.errorLabel = QLabel("")
+        self.errorLabel.setWordWrap(True)
         self.errorLabel.setStyleSheet("color:#b00020;")
         final_layout.insertWidget(final_layout.count()-1, self.errorLabel)  # Insert before button box
 
@@ -324,10 +337,17 @@ class _VendorMoneyDialog(QDialog):
             
             conn = self.vendors.conn
             rows = conn.execute(
-                "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1 ORDER BY account_id"
+                "SELECT account_id, label, bank_name, account_no FROM company_bank_accounts WHERE is_active=1 ORDER BY account_id"
             ).fetchall()
             for r in rows:
-                self.company_acct.addItem(r["label"], int(r["account_id"]))
+                self.company_acct.addItem(
+                    self._format_account_choice(
+                        label=r["label"],
+                        bank_name=r["bank_name"],
+                        account_no=r["account_no"],
+                    ),
+                    int(r["account_id"]),
+                )
             
             current_method = self.method.currentText()
             if current_method == self.PAYMENT_METHODS['OTHER']:
@@ -361,7 +381,7 @@ class _VendorMoneyDialog(QDialog):
             conn = self.vendors.conn
             rows = conn.execute(
                 """
-                SELECT vendor_bank_account_id AS vba_id, label, is_primary
+                SELECT vendor_bank_account_id AS vba_id, label, bank_name, account_no, is_primary
                 FROM vendor_bank_accounts
                 WHERE vendor_id=? AND is_active=1
                 ORDER BY is_primary DESC, vba_id
@@ -371,8 +391,15 @@ class _VendorMoneyDialog(QDialog):
             
             primary_account_added = False
             for r in rows:
-                label = r["label"] + (" (Primary)" if str(r["is_primary"]) in ("1","True","true") else "")
-                self.vendor_acct.addItem(label, int(r["vba_id"]))
+                self.vendor_acct.addItem(
+                    self._format_account_choice(
+                        label=r["label"],
+                        bank_name=r["bank_name"],
+                        account_no=r["account_no"],
+                        is_primary=str(r["is_primary"]) in ("1", "True", "true"),
+                    ),
+                    int(r["vba_id"]),
+                )
                 if str(r["is_primary"]) in ("1","True","true"):
                     primary_account_added = True
             
@@ -512,15 +539,20 @@ class _VendorMoneyDialog(QDialog):
         
         if is_temp_account and need_vendor:
             temp_name_label = self._payment_labels.get('temp_bank_name')
+            temp_number_label = self._payment_labels.get('temp_bank_number')
             if temp_name_label and not temp_name_label.text().endswith('*'):
                 temp_name_label.setText(temp_name_label.text() + "*")
                 temp_name_label.setStyleSheet("color: red; font-weight: bold;")
-                
-            temp_number_label = self._payment_labels.get('temp_bank_number')
             if temp_number_label and not temp_number_label.text().endswith('*'):
                 temp_number_label.setText(temp_number_label.text() + "*")
                 temp_number_label.setStyleSheet("color: red; font-weight: bold;")
                 
+            self.temp_bank_name.setVisible(True)
+            self.temp_bank_number.setVisible(True)
+            if temp_name_label:
+                temp_name_label.setVisible(True)
+            if temp_number_label:
+                temp_number_label.setVisible(True)
             self.temp_bank_name.setEnabled(True)
             self.temp_bank_number.setEnabled(True)
         else:
@@ -534,7 +566,13 @@ class _VendorMoneyDialog(QDialog):
                 temp_number_label.setText(temp_number_label.text().rstrip('*'))
                 temp_number_label.setStyleSheet("")
                 
-            # Keep temp bank fields visible but disabled when not in temporary account mode
+            # Hide temp bank fields when they are not needed.
+            self.temp_bank_name.setVisible(False)
+            self.temp_bank_number.setVisible(False)
+            if temp_name_label:
+                temp_name_label.setVisible(False)
+            if temp_number_label:
+                temp_number_label.setVisible(False)
             self.temp_bank_name.setEnabled(False)
             self.temp_bank_number.setEnabled(False)
 
@@ -576,6 +614,29 @@ class _VendorMoneyDialog(QDialog):
                 company_id = None
         
         return company_id
+
+    def _format_account_choice(
+        self,
+        *,
+        label: str | None = None,
+        bank_name: str | None = None,
+        account_no: str | None = None,
+        is_primary: bool = False,
+    ) -> str:
+        parts = []
+        if label:
+            parts.append(str(label).strip())
+        if bank_name:
+            parts.append(str(bank_name).strip())
+        masked_account = _mask_value(account_no)
+        if masked_account:
+            parts.append(masked_account)
+        text = " - ".join(part for part in parts if part)
+        if not text:
+            text = "Bank account"
+        if is_primary:
+            text = f"{text} (Primary)"
+        return text
 
     def _resolve_vendor_account_id(self) -> int | None:
         """Resolve vendor bank account ID from editable combobox text"""

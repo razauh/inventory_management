@@ -17,7 +17,7 @@ class VendorForm(QDialog):
 
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Vendor")
+        self.setWindowTitle("Edit Vendor" if initial and initial.get("vendor_id") else "Add Vendor")
         self.setModal(True)
 
         # --- remember vendor_id (only present in edit mode) ---
@@ -25,11 +25,16 @@ class VendorForm(QDialog):
 
         self.name = QLineEdit()
         self.contact = QPlainTextEdit()
+        self.contact.setMinimumHeight(72)
         self.contact.setPlaceholderText("Phone, email, etc.")
         self.addr = QPlainTextEdit()
+        self.addr.setMinimumHeight(72)
         self.addr.setPlaceholderText("Address (optional)")
 
         lay = QVBoxLayout(self)
+        intro = QLabel("Enter vendor identity and contact details. Save first to manage bank accounts or credit.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
         form = QFormLayout()
         form.addRow("Name*", self.name)
         form.addRow("Contact Info*", self.contact)
@@ -48,7 +53,7 @@ class VendorForm(QDialog):
         self.btn_grant_credit.setEnabled(True)
 
         # Set tooltip text on both buttons
-        tooltip_text = "Requires a saved vendor; on first use, we'll save and continue."
+        tooltip_text = "Save the vendor first, then open this workflow."
         self.btn_manage_accounts.setToolTip(tooltip_text)
         self.btn_grant_credit.setToolTip(tooltip_text)
 

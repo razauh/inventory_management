@@ -24,8 +24,26 @@ def _get(obj, key, default=None):
             return default
 
 
+def _mask_value(value, *, keep_last: int = 4) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return ""
+    if len(text) <= keep_last:
+        return text
+    return f"{'•' * max(4, len(text) - keep_last)}{text[-keep_last:]}"
+
+
+def _format_currency(value) -> str:
+    try:
+        if value in (None, ""):
+            return ""
+        return f"{float(value):,.2f}"
+    except Exception:
+        return "" if value is None else str(value)
+
+
 class VendorsTableModel(QAbstractTableModel):
-    HEADERS = ["ID", "Name", "Contact", "Address"]
+    HEADERS = ["Vendor ID", "Name", "Contact", "Address"]
 
     def __init__(self, rows):
         super().__init__()
@@ -69,7 +87,7 @@ class VendorsTableModel(QAbstractTableModel):
 
 class VendorBankAccountsTableModel(QAbstractTableModel):
     HEADERS = [
-        "ID", "Label", "Bank", "Account #", "IBAN", "Routing #", "Primary", "Active"
+        "Account ID", "Label", "Bank", "Account #", "IBAN", "Routing #", "Primary", "Active"
     ]
 
     def __init__(self, rows=None, parent=None):
@@ -104,6 +122,12 @@ class VendorBankAccountsTableModel(QAbstractTableModel):
                 "is_active",
             ]
             val = row.get(key_map[col])
+            if key_map[col] == "account_no":
+                return _mask_value(val)
+            if key_map[col] == "iban":
+                return _mask_value(val, keep_last=6)
+            if key_map[col] == "routing_no":
+                return _mask_value(val, keep_last=4)
             if key_map[col] in ("is_primary", "is_active"):
                 return "Yes" if bool(val) else "No"
             return "" if val is None else str(val)

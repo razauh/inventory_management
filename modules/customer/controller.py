@@ -4,7 +4,7 @@ import sqlite3
 import logging
 from typing import Any, Optional, Dict, List
 
-from PySide6.QtCore import Qt, QSortFilterProxyModel
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QTimer
 from PySide6.QtWidgets import QWidget
 
 from ..base_module import BaseModule
@@ -35,6 +35,10 @@ class CustomerController(BaseModule):
         self.conn = conn
         self.repo = CustomersRepo(conn)
         self.view = CustomerView()
+        self._search_timer = QTimer(self.view)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._pending_search = ""
         self._wire()
         self._reload()
 
@@ -53,7 +57,8 @@ class CustomerController(BaseModule):
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_edit.clicked.connect(self._edit)
         # self.view.btn_del.clicked.connect(self._delete)
-        self.view.search.textChanged.connect(self._apply_filter)
+        self.view.search.textChanged.connect(self._queue_filter)
+        self._search_timer.timeout.connect(lambda: self._apply_filter(self._pending_search))
 
         # Payments/credit/history actions
         self.view.btn_record_advance.clicked.connect(self._on_record_advance)
@@ -62,9 +67,6 @@ class CustomerController(BaseModule):
         if hasattr(self.view, "btn_print_history"):
             self.view.btn_print_history.clicked.connect(self._on_history_print)
 
-        # Optional: Update Clearing button (wire only if present on the view)
-        if hasattr(self.view, "btn_update_clearing"):
-            self.view.btn_update_clearing.clicked.connect(self._on_update_clearing)
 
     def _build_model(self, rows: list | None = None):
         if rows is None:
@@ -83,9 +85,13 @@ class CustomerController(BaseModule):
         sel.selectionChanged.connect(self._update_details)
 
     def _reload(self):
+        selected_id = self._selected_id() if hasattr(self, "proxy") else None
         self._build_model()
         if self.proxy.rowCount() > 0:
-            self.view.table.selectRow(0)
+            self._select_customer_id(selected_id)
+            self.view.list_status.setText(f"{self.proxy.rowCount()} customer(s)")
+        else:
+            self.view.list_status.setText("No customers available.")
         # ensure right pane updates even if no selection event fired yet
         self._update_details()
 
@@ -93,13 +99,30 @@ class CustomerController(BaseModule):
     # Helpers: selection & details
     # ------------------------------------------------------------------ #
 
+    def _queue_filter(self, text: str):
+        self._pending_search = text
+        self._search_timer.start()
+
     def _apply_filter(self, text: str):
+        selected_id = self._selected_id() if hasattr(self, "proxy") else None
         query = text.strip()
         rows = self.repo.search(query) if query else self.repo.list_customers()
         self._build_model(rows)
         if self.proxy.rowCount() > 0:
-            self.view.table.selectRow(0)
+            self._select_customer_id(selected_id)
+            self.view.list_status.setText(f"{self.proxy.rowCount()} customer(s)")
+        else:
+            self.view.list_status.setText("No customers match this search." if query else "No customers available.")
         self._update_details()
+
+    def _select_customer_id(self, customer_id: Optional[int]) -> None:
+        target_row = 0
+        if customer_id is not None:
+            for row in range(self.base.rowCount()):
+                if self.base.at(row).customer_id == customer_id:
+                    target_row = self.proxy.mapFromSource(self.base.index(row, 0)).row()
+                    break
+        self.view.table.selectRow(target_row)
 
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()
@@ -190,8 +213,7 @@ class CustomerController(BaseModule):
         try:
             payload.update(self._details_enrichment(cid))
         except sqlite3.Error:
-            # Non-fatal; keep basic payload
-            pass
+            payload["financial_error"] = True
 
         self.view.details.set_data(payload)
         self._set_actions_enabled(True)
@@ -205,9 +227,6 @@ class CustomerController(BaseModule):
         has_selection = self._selected_id() is not None
         self.view.btn_history.setEnabled(has_selection)
         self.view.btn_print_history.setEnabled(has_selection)
-        # Optional clearing button mirrors enabled state (if present)
-        if hasattr(self.view, "btn_update_clearing"):
-            self.view.btn_update_clearing.setEnabled(enabled)
 
     # ------------------------------------------------------------------ #
     # Small helpers to reduce repetition
@@ -253,7 +272,7 @@ class CustomerController(BaseModule):
     # ------------------------------------------------------------------ #
 
     def _add(self):
-        dlg = CustomerForm(self.view)
+        dlg = CustomerForm(self.view, dup_check=self.repo.has_duplicate_name)
         if not dlg.exec():
             return
         p = dlg.payload()
@@ -269,7 +288,7 @@ class CustomerController(BaseModule):
             info(self.view, "Select", "Please select a customer to edit.")
             return
         current = self.repo.get(cid)
-        dlg = CustomerForm(self.view, initial=current.__dict__)
+        dlg = CustomerForm(self.view, initial=current.__dict__, dup_check=self.repo.has_duplicate_name)
         if not dlg.exec():
             return
         p = dlg.payload()
@@ -299,7 +318,7 @@ class CustomerController(BaseModule):
         rows = self.conn.execute(
             """
             SELECT account_id AS id,
-                   COALESCE(label, bank_name || ' ' || account_no) AS name
+                   COALESCE(label, bank_name || ' ending ' || substr(account_no, -4)) AS name
             FROM company_bank_accounts
             WHERE is_active = 1
             ORDER BY name ASC;
@@ -523,8 +542,9 @@ class CustomerController(BaseModule):
             return
 
         form_defaults = {
-            # Optional: you can pass today() or created_by here if desired
-            "customer_display": str(cid),
+            "customer_display": self._customer_display(cid),
+            "list_company_bank_accounts": self._list_company_bank_accounts,
+            "get_available_advance": lambda customer_id: self._details_enrichment(customer_id).get("credit_balance", 0.0),
         }
         result = record_customer_advance(
             db_path=db_path,
@@ -537,7 +557,13 @@ class CustomerController(BaseModule):
                 info(self.view, "Not saved", result.message)
             return
 
-        info(self.view, "Saved", f"Advance #{result.id} recorded.")
+        payload = result.payload or {}
+        info(
+            self.view,
+            "Saved",
+            f"Recorded {float(payload.get('amount') or 0):,.2f} customer credit "
+            f"for {self._customer_display(cid)} by {payload.get('method') or 'unknown method'}.",
+        )
         self._reload()
 
     # -- Apply Advance to a Sale --
@@ -560,7 +586,11 @@ class CustomerController(BaseModule):
             "sales": self._eligible_sales_for_application(cid),
             "list_sales_for_customer": self._list_sales_for_customer,
             "get_available_advance": lambda customer_id: self._details_enrichment(customer_id).get("credit_balance", 0.0),
-            "customer_display": str(cid),
+            "get_sale_due": lambda sale_id: next(
+                (row["remaining_due"] for row in self._list_sales_for_customer(cid) if str(row["sale_id"]) == str(sale_id)),
+                0.0,
+            ),
+            "customer_display": self._customer_display(cid),
         }
         result = apply_customer_advance(
             db_path=db_path,
@@ -593,59 +623,19 @@ class CustomerController(BaseModule):
         self._reload()  # Reload the UI to reflect changes
 
         # Show success confirmation to user
-        success_msg = f"Advance applied successfully."
+        success_msg = "Customer credit applied successfully."
         if result and hasattr(result, 'payload') and result.payload:
             # If the result has payload with amount info, include it in the message
             amount_applied = result.payload.get('amount') if isinstance(result.payload, dict) else None
             if amount_applied:
-                success_msg = f"Advance of {amount_applied} applied successfully."
+                sale_id = result.payload.get("sale_id")
+                success_msg = f"Applied {float(amount_applied):,.2f} of customer credit to sale {sale_id}."
         info(self.view, "Success", success_msg)
 
-    # -- Update Clearing (optional button) --
-
-    def _on_update_clearing(self):
-        """
-        Optional handler for a 'Update Clearing' toolbar button if your view provides it.
-        Implement a tiny prompt dialog to collect payment_id, state, cleared_date, notes.
-        """
-        cid, db_path = self._preflight(require_file_db=True)
-        if not cid or not db_path:
-            return
-
-        # Small, generic prompt utility could live elsewhere; for now, import lazily if you have one.
-        # Expect a dict like: {"payment_id": int, "clearing_state": str, "cleared_date": str|None, "notes": str|None}
-        prompt_update = self._lazy_attr(
-            "inventory_management.modules.shared.prompts.prompt_update_clearing",  # hypothetical optional prompt
-            toast_title="Unavailable",
-            on_fail="Clearing prompt is not available.",
-        )
-        if not prompt_update:
-            return
-        data = prompt_update(parent=self.view)
-        if not data:
-            return
-
-        update_receipt_clearing = self._lazy_attr(
-            "inventory_management.modules.customer.actions.update_receipt_clearing",
-            toast_title="Error",
-            on_fail="Could not load actions.update_receipt_clearing",
-        )
-        if not update_receipt_clearing:
-            return
-
-        result = update_receipt_clearing(
-            db_path=db_path,
-            payment_id=int(data.get("payment_id")),
-            clearing_state=str(data.get("clearing_state")),
-            cleared_date=data.get("cleared_date"),
-            notes=data.get("notes"),
-        )
-        if not result or not result.success:
-            info(self.view, "Not updated", (result.message if result else "Unknown error"))
-            return
-
-        info(self.view, "Updated", result.message or "Receipt clearing updated.")
-        self._reload()
+    def _customer_display(self, customer_id: int) -> str:
+        customer = self.repo.get(customer_id)
+        name = customer.name if customer else "Customer"
+        return f"{name} (ID {customer_id})"
 
     # -- Payment / Credit History --
 
@@ -667,7 +657,5 @@ class CustomerController(BaseModule):
             customer_id=cid,
             with_ui=True,
         )
-        # Removed message display to prevent popup
-        # if result and result.message:
-        #     # Optionally surface a non-fatal message (e.g., UI fallback not available)
-        #     info(self.view, "Info", result.message)
+        if not result or not result.success:
+            info(self.view, "History unavailable", result.message if result else "Customer history could not be loaded.")

@@ -71,6 +71,8 @@
           <td class="t-{{ column.align or 'left' }}">
             {% if val is none %}
               <span class="muted">—</span>
+            {% elif column.numeric %}
+              {{ '%.2f' % (val|float(0.0)) }}
             {% else %}
               {{ val }}
             {% endif %}

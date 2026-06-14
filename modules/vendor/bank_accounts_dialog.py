@@ -6,17 +6,18 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton,
-    QMessageBox, QDialogButtonBox, QFormLayout, QLineEdit, QCheckBox, QAbstractItemView
+    QMessageBox, QDialogButtonBox, QFormLayout, QLineEdit, QCheckBox, QAbstractItemView, QLabel
 )
 
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
+from .model import _mask_value
 
 
 class AccountEditDialog(QDialog):
     """Add/Edit a single vendor bank account (no 'primary' toggle here)."""
     def __init__(self, parent=None, *, initial: Optional[dict] = None):
         super().__init__(parent)
-        self.setWindowTitle("Bank Account")
+        self.setWindowTitle("Edit Bank Account" if initial else "Add Bank Account")
         self._payload = None
 
         self.txt_label = QLineEdit()
@@ -26,6 +27,11 @@ class AccountEditDialog(QDialog):
         self.txt_rout = QLineEdit()
         self.chk_active = QCheckBox("Active")
         self.chk_active.setChecked(True)
+        self.txt_label.setPlaceholderText("Account label, like Payroll or AP")
+        self.txt_bank.setPlaceholderText("Bank name")
+        self.txt_acc.setPlaceholderText("Account number")
+        self.txt_iban.setPlaceholderText("IBAN, if used")
+        self.txt_rout.setPlaceholderText("Routing number, if used")
 
         form = QFormLayout()
         form.addRow("Label*", self.txt_label)
@@ -82,15 +88,18 @@ class VendorBankAccountsDialog(QDialog):
 
     def __init__(self, parent=None, *, conn: sqlite3.Connection, vendor_id: int):
         super().__init__(parent)
-        self.setWindowTitle("Vendor Bank Accounts")
+        self.setWindowTitle(f"Vendor Bank Accounts — Vendor #{vendor_id}")
         self.conn = conn
         self.vendor_id = int(vendor_id)
         self.repo = VendorBankAccountsRepo(conn)
 
         # Table
+        self.empty_label = QLabel("No bank accounts yet.")
+        self.empty_label.setStyleSheet("color: #666;")
         self.tbl = QTableWidget(0, len(self.COLS))
         self.tbl.setHorizontalHeaderLabels(self.COLS)
         self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -103,10 +112,10 @@ class VendorBankAccountsDialog(QDialog):
 
         # Buttons
         btns = QHBoxLayout()
-        self.btn_add = QPushButton("Add")
-        self.btn_edit = QPushButton("Edit")
+        self.btn_add = QPushButton("Add Account")
+        self.btn_edit = QPushButton("Edit Account")
         self.btn_toggle = QPushButton("Deactivate")
-        self.btn_primary = QPushButton("Make Primary")
+        self.btn_primary = QPushButton("Set Primary")
         btns.addWidget(self.btn_add)
         btns.addWidget(self.btn_edit)
         btns.addWidget(self.btn_toggle)
@@ -119,6 +128,7 @@ class VendorBankAccountsDialog(QDialog):
         bb.accepted.connect(self.accept)  # in case you ever flip to OK|Close
 
         lay = QVBoxLayout(self)
+        lay.addWidget(self.empty_label)
         lay.addWidget(self.tbl, 1)
         lay.addLayout(btns)
         lay.addWidget(bb)
@@ -152,16 +162,22 @@ class VendorBankAccountsDialog(QDialog):
             self.tbl.setItem(row, 1, QTableWidgetItem(r["label"] or ""))
             self.tbl.setItem(row, 2, QTableWidgetItem(r["bank_name"] or ""))
 
-            acc_line = (r["account_no"] or "").strip()
-            if r["iban"]:
-                acc_line = (acc_line + " | " if acc_line else "") + r["iban"]
+            acc_line = _mask_value(r["account_no"])
+            iban = _mask_value(r["iban"], keep_last=6)
+            if iban:
+                acc_line = (acc_line + " | " if acc_line else "") + iban
             self.tbl.setItem(row, 3, QTableWidgetItem(acc_line or ""))
 
             self.tbl.setItem(row, 4, QTableWidgetItem("Yes" if r["is_primary"] else "No"))
             act = bool(r["is_active"])
             self.tbl.setItem(row, 5, QTableWidgetItem("Active" if act else "Inactive"))
 
+        self.empty_label.setVisible(not bool(rows))
+        self.tbl.setVisible(bool(rows))
+        if rows and not self.tbl.selectionModel().selectedRows():
+            self.tbl.selectRow(0)
         self._update_toggle_label()
+        self._update_action_states()
 
     def _selected_id(self) -> Optional[int]:
         idxs = self.tbl.selectionModel().selectedRows()
@@ -178,6 +194,18 @@ class VendorBankAccountsDialog(QDialog):
         row = idxs[0].row()
         active_text = self.tbl.item(row, 5).text()
         self.btn_toggle.setText("Deactivate" if active_text == "Active" else "Activate")
+
+    def _update_action_states(self):
+        selected = self.tbl.selectionModel().selectedRows()
+        has_selection = bool(selected)
+        is_active = False
+        if has_selection:
+            row = selected[0].row()
+            active_item = self.tbl.item(row, 5)
+            is_active = bool(active_item and active_item.text() == "Active")
+        self.btn_edit.setEnabled(has_selection)
+        self.btn_toggle.setEnabled(has_selection)
+        self.btn_primary.setEnabled(has_selection and is_active)
 
     def _with_bank_account_savepoint(self, operation):
         self.conn.execute("SAVEPOINT vendor_bank_account_mutation")
@@ -259,6 +287,16 @@ class VendorBankAccountsDialog(QDialog):
                 "Choose another active primary account before deactivating this account.",
             )
             return
+        if new_flag == 0:
+            answer = QMessageBox.question(
+                self,
+                "Deactivate account?",
+                "Deactivate this bank account?\n\nIt will stop appearing as active for vendor workflows.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         try:
             self._with_bank_account_savepoint(
                 lambda: self.repo.deactivate(acc_id) if new_flag == 0 else self.repo.activate(acc_id)
@@ -294,4 +332,8 @@ class VendorBankAccountsDialog(QDialog):
     # keep the toggle button label in sync with selection
     def showEvent(self, e):
         super().showEvent(e)
-        self.tbl.selectionModel().selectionChanged.connect(lambda *_: self._update_toggle_label())
+        if not getattr(self, "_toggle_label_hooked", False):
+            self.tbl.selectionModel().selectionChanged.connect(lambda *_: (self._update_toggle_label(), self._update_action_states()))
+            self._toggle_label_hooked = True
+        self._update_toggle_label()
+        self._update_action_states()

@@ -1,5 +1,3 @@
-# /home/pc/Desktop/inventory_management/modules/customer/__init__.py
-
 from .actions import (
     ActionResult,
     receive_payment,

@@ -121,6 +121,10 @@ def receive_payment(
         return ActionResult(success=True, id=payment_id, message="Payment recorded.", payload=form_data)
     except (ValueError, sqlite3.IntegrityError) as e:
         return ActionResult(success=False, message=str(e), payload=form_data)
+    except sqlite3.Error:
+        return ActionResult(success=False, message="The payment could not be saved because the database is unavailable.", payload=form_data)
+    except Exception:
+        return ActionResult(success=False, message="The payment could not be saved.", payload=form_data)
 
 
 # ======================= NEW: UI-enabled Advance Helpers =====================
@@ -180,12 +184,19 @@ def record_customer_advance(
             customer_id=customer_id,
             amount=float(form_data["amount"]),
             date=form_data.get("date"),
+            method=form_data.get("method"),
+            bank_account_id=form_data.get("bank_account_id"),
+            reference_no=form_data.get("reference_no"),
             notes=form_data.get("notes"),
             created_by=form_data.get("created_by"),
         )
         return ActionResult(success=True, id=tx_id, message="Advance recorded.", payload=form_data)
     except (ValueError, sqlite3.IntegrityError) as e:
         return ActionResult(success=False, message=str(e), payload=form_data)
+    except sqlite3.Error:
+        return ActionResult(success=False, message="The customer credit could not be saved because the database is unavailable.", payload=form_data)
+    except Exception:
+        return ActionResult(success=False, message="The customer credit could not be saved.", payload=form_data)
 
 
 def apply_customer_advance(
@@ -254,6 +265,10 @@ def apply_customer_advance(
         return ActionResult(success=True, id=tx_id, message="Advance applied to sale.", payload=form_data)
     except (ValueError, sqlite3.IntegrityError) as e:
         return ActionResult(success=False, message=str(e), payload=form_data)
+    except sqlite3.Error:
+        return ActionResult(success=False, message="The customer credit could not be applied because the database is unavailable.", payload=form_data)
+    except Exception:
+        return ActionResult(success=False, message="The customer credit could not be applied.", payload=form_data)
 
 
 # ======================= NEW: Payments Clearing Lifecycle ====================
@@ -301,8 +316,13 @@ def open_payment_history(
 
     After change: if local UI import fails, do NOT fall back to legacy — just return success with payload.
     """
-    history_service = _get_customer_history_service(db_path)
-    history_payload = history_service.full_history(customer_id)
+    try:
+        history_service = _get_customer_history_service(db_path)
+        history_payload = history_service.full_history(customer_id)
+    except sqlite3.Error:
+        return ActionResult(success=False, message="Customer history could not be loaded from the database.")
+    except Exception:
+        return ActionResult(success=False, message="Customer history could not be loaded.")
 
     if not with_ui:
         return ActionResult(success=True, payload=history_payload)

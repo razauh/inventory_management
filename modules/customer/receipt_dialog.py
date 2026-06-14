@@ -202,6 +202,7 @@ class _CustomerMoneyDialog(QDialog):
         # load data and prefills
         self._load_sales()
         self._load_bank_accounts()
+        self._on_advance_method_changed()
         self._apply_prefills_receipt()
         self._lock_sale_if_needed()
         self._on_method_changed()    # sets defaults for instrument/clearing
@@ -217,8 +218,8 @@ class _CustomerMoneyDialog(QDialog):
         # Tab-like bar controlling a stacked widget
         self.tabBar = QTabBar()
         self.tabBar.addTab(_t("Receipt"))
-        self.tabBar.addTab(_t("Record Advance"))
-        self.tabBar.addTab(_t("Apply Advance"))
+        self.tabBar.addTab(_t("Record Customer Credit"))
+        self.tabBar.addTab(_t("Apply Customer Credit"))
         self.tabBar.currentChanged.connect(self._on_tab_changed)
         outer.addWidget(self.tabBar)
 
@@ -420,6 +421,18 @@ class _CustomerMoneyDialog(QDialog):
         self.advDateEdit.setDate(QDate.currentDate())
         form.addRow(QLabel(_t("Date")), self.advDateEdit)
 
+        self.advMethodCombo = QComboBox()
+        for method in ("Cash", "Bank Transfer", "Card", "Cheque", "Other"):
+            self.advMethodCombo.addItem(method)
+        form.addRow(QLabel(_t("Received By *")), self.advMethodCombo)
+
+        self.advBankAccountCombo = QComboBox()
+        form.addRow(QLabel(_t("Company Bank")), self.advBankAccountCombo)
+
+        self.advReferenceEdit = QLineEdit()
+        self.advReferenceEdit.setPlaceholderText(_t("Transaction, cheque, or adjustment reference"))
+        form.addRow(QLabel(_t("Reference")), self.advReferenceEdit)
+
         # Notes / Created by
         self.advNotesEdit = QPlainTextEdit()
         self.advNotesEdit.setPlaceholderText(_t("Optional notes"))
@@ -428,15 +441,26 @@ class _CustomerMoneyDialog(QDialog):
 
         # available advance (if adapter provided)
         self.availableLabel = QLabel("")
-        form.addRow(QLabel(_t("Available Advance")), self.availableLabel)
+        form.addRow(QLabel(_t("Current Customer Credit")), self.availableLabel)
 
         # wire
         self.advAmountEdit.valueChanged.connect(self._validate_live_advance)
+        self.advMethodCombo.currentIndexChanged.connect(self._on_advance_method_changed)
+        self.advBankAccountCombo.currentIndexChanged.connect(self._validate_live_advance)
+        self.advReferenceEdit.textChanged.connect(self._validate_live_advance)
 
     # ---------- Apply Advance Page ----------
     def _build_apply_page(self, page: QWidget) -> None:
         # Main layout
         layout = QVBoxLayout(page)
+
+        self.applyCustomerLabel = QLabel(
+            _t("Customer: ") + str(self._customer_display or self._customer_id)
+        )
+        layout.addWidget(self.applyCustomerLabel)
+
+        self.applyAvailableLabel = QLabel(_t("Available customer credit: Unavailable"))
+        layout.addWidget(self.applyAvailableLabel)
 
         # Search bar
         self.applySaleSearch = QLineEdit()
@@ -452,6 +476,10 @@ class _CustomerMoneyDialog(QDialog):
         self.applySalesTable.setSelectionMode(QAbstractItemView.SingleSelection)
         self.applySalesTable.setSortingEnabled(True)
         layout.addWidget(self.applySalesTable)
+        self.applyEmptyLabel = QLabel(_t("No open sales available for this customer."))
+        self.applyEmptyLabel.setStyleSheet("color: #666;")
+        self.applyEmptyLabel.setVisible(False)
+        layout.addWidget(self.applyEmptyLabel)
 
         # Sale details
         details_layout = QFormLayout()
@@ -497,8 +525,8 @@ class _CustomerMoneyDialog(QDialog):
     def _sync_window_title(self) -> None:
         titles = {
             self.PAGE_RECEIPT: _t("Record Customer Receipt"),
-            self.PAGE_ADVANCE: _t("Record Customer Advance"),
-            self.PAGE_APPLY: _t("Apply Customer Advance to Sale"),
+            self.PAGE_ADVANCE: _t("Record Customer Credit"),
+            self.PAGE_APPLY: _t("Apply Customer Credit to Sale"),
         }
         self.setWindowTitle(titles.get(self.pageStack.currentIndex(), _t("Customer Money")))
 
@@ -551,7 +579,9 @@ class _CustomerMoneyDialog(QDialog):
             try:
                 bal = float(self._get_available_advance(self._customer_id))
                 if hasattr(self, "availableLabel"):
-                    self.availableLabel.setText(f"{bal:.2f}")
+                    self.availableLabel.setText(f"{bal:,.2f}")
+                if hasattr(self, "applyAvailableLabel"):
+                    self.applyAvailableLabel.setText(f"Available customer credit: {bal:,.2f}")
 
                 # For the Apply page, we'll set the amount when a sale is selected instead
             except Exception:
@@ -570,6 +600,12 @@ class _CustomerMoneyDialog(QDialog):
             accounts = []
         for acc in accounts:
             self.bankAccountCombo.addItem(str(acc.get("name", "")), int(acc.get("id")))
+
+        if hasattr(self, "advBankAccountCombo"):
+            self.advBankAccountCombo.clear()
+            self.advBankAccountCombo.addItem("", None)
+            for acc in accounts:
+                self.advBankAccountCombo.addItem(str(acc.get("name", "")), int(acc.get("id")))
 
         # Preselect bank by id if provided
         if self._prefill_bank_id is not None:
@@ -593,17 +629,7 @@ class _CustomerMoneyDialog(QDialog):
             self.salePicker.setCurrentIndex(self.salePicker.count() - 1)
         self.salePicker.setEnabled(False)
 
-        # Apply page (legacy combo-based UX) - keep for backward compatibility
-        if hasattr(self, "applySalePicker"):
-            for i in range(self.applySalePicker.count()):
-                data = self.applySalePicker.itemData(i)
-                if isinstance(data, dict) and str(data.get("sale_id", "")) == self._locked_sale_id:
-                    self.applySalePicker.setCurrentIndex(i)
-                    self.applySalePicker.setEnabled(False)
-                    break
-        # New table-based Apply page: if a locked sale is provided and the
-        # table has been populated, select that sale and disable selection.
-        elif hasattr(self, "applySalesTable") and hasattr(self, "_sales_model_data"):
+        if hasattr(self, "applySalesTable"):
             try:
                 from PySide6.QtCore import QItemSelectionModel
             except Exception:
@@ -614,9 +640,12 @@ class _CustomerMoneyDialog(QDialog):
             except Exception:
                 model = None
                 sm = None
-            if model is not None and sm is not None and self._sales_model_data:
+            if model is not None and sm is not None:
                 target_row = None
-                for idx, row in enumerate(self._sales_model_data):
+                for idx in range(model.rowCount()):
+                    row = model.index(idx, 0).data(Qt.UserRole)
+                    if not isinstance(row, dict):
+                        continue
                     if str(row.get("sale_id", "")) == str(self._locked_sale_id):
                         target_row = idx
                         break
@@ -626,6 +655,12 @@ class _CustomerMoneyDialog(QDialog):
                         sm.select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
                     self.applySalesTable.setCurrentIndex(index)
                     self.applySalesTable.setEnabled(False)
+                    self.applySaleSearch.setEnabled(False)
+                else:
+                    self.applySalesTable.setEnabled(False)
+                    self.applySaleSearch.setEnabled(False)
+                    self.applyEmptyLabel.setText(_t("The selected sale has no amount due."))
+                    self.applyEmptyLabel.setVisible(True)
 
     # ---------- Prefills (receipt page only) ----------
     def _apply_prefills_receipt(self) -> None:
@@ -712,6 +747,20 @@ class _CustomerMoneyDialog(QDialog):
             self._clear_date(self.clearedDateEdit)
         self._validate_live()
 
+    def _on_advance_method_changed(self) -> None:
+        if not hasattr(self, "advMethodCombo"):
+            return
+        method = self.advMethodCombo.currentText()
+        needs_bank = method in {"Bank Transfer", "Card", "Cheque"}
+        needs_reference = method != "Cash"
+        self.advBankAccountCombo.setEnabled(needs_bank)
+        self.advReferenceEdit.setEnabled(needs_reference)
+        if not needs_bank:
+            self.advBankAccountCombo.setCurrentIndex(0)
+        if not needs_reference:
+            self.advReferenceEdit.clear()
+        self._validate_live_advance()
+
     def _update_hint(self) -> None:
         if not hasattr(self, "hintLabel"):
             return
@@ -732,9 +781,9 @@ class _CustomerMoneyDialog(QDialog):
             elif method in ("Card", "Other"):
                 hint = _t("Incoming only (>0). Bank optional. Instrument no optional.")
         elif idx == self.PAGE_ADVANCE:
-            hint = _t("Record a positive customer advance (store credit). No method or bank needed.")
+            hint = _t("Record customer credit received. Non-cash methods require an account and reference.")
         elif idx == self.PAGE_APPLY:
-            hint = _t("Apply available advance to an open sale. Amount must not exceed available credit or remaining due.")
+            hint = _t("Apply available customer credit to an open sale. Amount cannot exceed credit or remaining due.")
         self.hintLabel.setText(hint)
 
     def _update_remaining(self) -> None:
@@ -752,26 +801,9 @@ class _CustomerMoneyDialog(QDialog):
                 total = float(data.get("total", 0.0))
                 paid = float(data.get("paid", 0.0))
                 rem = float(data.get("remaining_due", total - paid - float(data.get("advance_payment_applied", 0.0))))
-            self.saleRemainingLabel.setText(_t(f"Remaining: ${rem:.2f}"))
+            self.saleRemainingLabel.setText(_t(f"Remaining: {rem:,.2f}"))
         else:
             self.saleRemainingLabel.setText("")
-
-    # ---------- Apply page helpers ----------
-    def _update_apply_remaining(self) -> None:
-        data = self.applySalePicker.currentData()
-        if isinstance(data, dict):
-            total = float(data.get("total", 0.0))
-            paid = float(data.get("paid", 0.0))
-            rem = float(data.get("remaining_due", total - paid - float(data.get("advance_payment_applied", 0.0))))
-            # If adapter exists, prefer it for more accurate due
-            if self._get_sale_due and str(data.get("sale_id", "")):
-                try:
-                    rem = float(self._get_sale_due(str(data.get("sale_id"))))
-                except Exception:
-                    pass
-            self.applySaleRemainingLabel.setText(f"{rem:.2f}")
-        else:
-            self.applySaleRemainingLabel.setText("")
 
     # ---------- Validation (receipt) ----------
     def _validate_live(self) -> None:
@@ -862,7 +894,12 @@ class _CustomerMoneyDialog(QDialog):
         amt = float(self.advAmountEdit.value())
         if amt <= 0.0:
             return False, _t("Amount must be greater than zero.")
-        # no upper bound for grant_credit (business rules allow any positive)
+        method = self.advMethodCombo.currentText()
+        if method in {"Bank Transfer", "Card", "Cheque"}:
+            if self.advBankAccountCombo.currentData() is None:
+                return False, _t("Select the company account that received this credit.")
+        if method != "Cash" and not self.advReferenceEdit.text().strip():
+            return False, _t("Enter a reference for this customer credit.")
         return True, None
 
     # ---------- Validation (apply advance) ----------
@@ -878,14 +915,11 @@ class _CustomerMoneyDialog(QDialog):
         # Check if selectionModel exists (it may not exist before table is populated)
         selection_model = self.applySalesTable.selectionModel() if hasattr(self, 'applySalesTable') else None
         if not selection_model or not selection_model.hasSelection():
-            return False, _t("Please select a sale to apply the advance.")
+            return False, _t("Please select a sale to apply customer credit.")
 
-        selected_row = selection_model.selectedRows()[0].row()
-        if not (hasattr(self, '_sales_model_data') and 0 <= selected_row < len(self._sales_model_data)):
-            return False, _t("Please select a sale to apply the advance.")
-
-        # Get the selected sale data
-        selected_sale = self._sales_model_data[selected_row]
+        selected_sale = self._selected_apply_sale()
+        if not selected_sale:
+            return False, _t("Please select a sale to apply customer credit.")
 
         amt = float(self.applyAmountEdit.value())
         if amt <= 0.0:
@@ -897,7 +931,7 @@ class _CustomerMoneyDialog(QDialog):
             try:
                 bal = float(self._get_available_advance(self._customer_id))
                 if amt - bal > 1e-9:
-                    return False, _t("Amount exceeds available customer advance.")
+                return False, _t("Amount exceeds available customer credit.")
             except Exception:
                 pass
         # sale due
@@ -981,14 +1015,16 @@ class _CustomerMoneyDialog(QDialog):
                 QStandardItem(f"{rem:.2f}")
             ]
 
+            items[0].setData(dict(row_data), Qt.UserRole)
+
             for item in items:
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)  # Make items not editable
 
             model.appendRow(items)
 
-        # Store the original data with the model for later reference
         self.applySalesTable.setModel(model)
-        self._sales_model_data = sales_list  # Store the data for reference when selection changes
+        self.applyEmptyLabel.setVisible(not sales_list)
+        self.applySaleRemainingLabel.setText("")
 
         # Connect the selectionChanged signal after model is set
         if hasattr(self, 'applySalesTable') and self.applySalesTable.model():
@@ -999,6 +1035,7 @@ class _CustomerMoneyDialog(QDialog):
                 # Signal was not connected, that's fine
                 pass
             self.applySalesTable.selectionModel().selectionChanged.connect(self._on_sale_selection_changed)
+        self._validate_live_apply()
 
     def _on_sale_selection_changed(self, selected, deselected) -> None:
         """Handle when a sale is selected in the table."""
@@ -1007,11 +1044,8 @@ class _CustomerMoneyDialog(QDialog):
         if not selection_model or not selection_model.hasSelection():
             return
 
-        selected_row = selection_model.selectedRows()[0].row()
-
-        # Get the sale data for the selected row
-        if hasattr(self, '_sales_model_data') and 0 <= selected_row < len(self._sales_model_data):
-            selected_sale = self._sales_model_data[selected_row]
+        selected_sale = self._selected_apply_sale()
+        if selected_sale:
 
             # Calculate remaining due
             total = float(selected_sale.get("total", 0.0))
@@ -1025,7 +1059,7 @@ class _CustomerMoneyDialog(QDialog):
                     pass
 
             # Update the remaining due label
-            self.applySaleRemainingLabel.setText(f"{rem:.2f}")
+            self.applySaleRemainingLabel.setText(f"{rem:,.2f}")
 
             # Update the default amount based on available advance and remaining due
             if hasattr(self, '_customer_id') and self._get_available_advance:
@@ -1035,6 +1069,7 @@ class _CustomerMoneyDialog(QDialog):
                     self.applyAmountEdit.setValue(max(0.0, default_amount))
                 except Exception:
                     pass
+        self._validate_live_apply()
 
 
     # ---------- Save ----------
@@ -1069,6 +1104,18 @@ class _CustomerMoneyDialog(QDialog):
     def _current_bank_id(self) -> Optional[int]:
         data = self.bankAccountCombo.currentData()
         return int(data) if isinstance(data, int) else None
+
+    def _selected_apply_sale(self) -> Optional[dict]:
+        if not hasattr(self, "applySalesTable"):
+            return None
+        selection_model = self.applySalesTable.selectionModel()
+        if not selection_model:
+            return None
+        rows = selection_model.selectedRows(0)
+        if not rows:
+            return None
+        value = rows[0].data(Qt.UserRole)
+        return dict(value) if isinstance(value, dict) else None
 
     def _set_required_label(self, widget: QWidget, required: bool) -> None:
         label = getattr(self, "_label_map", {}).get(widget)
@@ -1122,22 +1169,17 @@ class _CustomerMoneyDialog(QDialog):
             "customer_id": self._customer_id,
             "amount": float(self.advAmountEdit.value()),
             "date": self.advDateEdit.date().toString("yyyy-MM-dd"),
+            "method": self.advMethodCombo.currentText(),
+            "bank_account_id": self.advBankAccountCombo.currentData(),
+            "reference_no": (self.advReferenceEdit.text().strip() or None),
             "notes": (self.advNotesEdit.toPlainText().strip() or None),
             "created_by": None,
         }
         return payload
 
     def _build_payload_apply(self) -> dict:
-        # Get the selected sale from the table
-        if not self.applySalesTable.selectionModel().hasSelection():
-            sale_id = ""
-        else:
-            selected_row = self.applySalesTable.selectionModel().selectedRows()[0].row()
-            if hasattr(self, '_sales_model_data') and 0 <= selected_row < len(self._sales_model_data):
-                selected_sale = self._sales_model_data[selected_row]
-                sale_id = str(selected_sale.get("sale_id", ""))
-            else:
-                sale_id = ""
+        selected_sale = self._selected_apply_sale() or {}
+        sale_id = str(selected_sale.get("sale_id", ""))
 
         payload = {
             "customer_id": self._customer_id,

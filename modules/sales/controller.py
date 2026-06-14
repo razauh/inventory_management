@@ -1321,14 +1321,18 @@ class SalesController(BaseModule):
         try:
             from ..customer.receipt_dialog import open_payment_or_advance_form  # type: ignore
             from ..customer import actions as customer_actions  # type: ignore
+            from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo
 
             payload = open_payment_or_advance_form(
                 mode="apply_advance",
                 customer_id=customer_id,
-                sale_id=None,
+                sale_id=sale_id,
                 defaults={
                     "list_sales_for_customer": self._list_sales_for_customer,
                     "sales": self._eligible_sales_for_application(customer_id),
+                    "customer_display": f"{row.get('customer_name') or 'Customer'} (ID {customer_id})",
+                    "get_available_advance": lambda cid: CustomerAdvancesRepo(self._db_path).get_balance(cid),
+                    "get_sale_due": lambda sid: self._fetch_sale_financials(sid)["remaining_due"],
                 },
             )
             if payload:

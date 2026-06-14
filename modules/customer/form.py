@@ -42,7 +42,7 @@ class CustomerForm(QDialog):
         dup_check: Optional[Callable[[str, Optional[int]], bool]] = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Customer")
+        self.setWindowTitle("Edit Customer" if initial else "Add Customer")
         self.setModal(True)
 
         self._dup_check = dup_check
@@ -106,9 +106,11 @@ class CustomerForm(QDialog):
     def get_payload(self) -> dict | None:
         # Validate required
         if not non_empty(self.name.text()):
+            QMessageBox.warning(self, "Missing name", "Enter a customer name.")
             self.name.setFocus()
             return None
         if not non_empty(self.contact.toPlainText()):
+            QMessageBox.warning(self, "Missing contact", "Enter customer contact information.")
             self.contact.setFocus()
             return None
 
@@ -128,7 +130,7 @@ class CustomerForm(QDialog):
                         "Possible Duplicate",
                         (
                             "A customer with the same name already exists.\n\n"
-                            "You can still proceed — this is just a heads-up."
+                            "You can still proceed. Check the existing customer first."
                         ),
                     )
             except Exception:

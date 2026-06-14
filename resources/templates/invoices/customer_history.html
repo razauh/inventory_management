@@ -67,7 +67,7 @@ Address: {{ customer.address or '' }}
         <td class="t-right">{{ '%.2f' % (summary.open_due_sum or 0.0) }}</td>
       </tr>
       <tr>
-        <td class="muted">Available Advance Balance</td>
+        <td class="muted">Available Customer Credit</td>
         <td class="t-right">{{ '%.2f' % (summary.credit_balance or 0.0) }}</td>
       </tr>
     </table>
@@ -86,13 +86,17 @@ Address: {{ customer.address or '' }}
         </tr>
       </thead>
       <tbody>
-        {% set order = {'sale':'Sale','sale_return':'Sale Return','receipt':'Payment','refund':'Refund','advance':'Advance','advance_applied':'Advance Applied'} %}
+        {% set order = {'sale':'Sale','sale_return':'Sale Return','receipt':'Payment','refund':'Refund','advance':'Customer Credit','advance_applied':'Credit Applied'} %}
         {% for ev in (events or []) %}
         <tr>
           <td>{{ ev.date }}</td>
           <td>{{ order.get(ev.kind, ev.kind) }}</td>
           <td>{{ ev.sale_id or '' }}</td>
-          <td>{{ ev.description or '' }}</td>
+          <td>
+            {{ ev.description or '' }}
+            {% if ev.reference %}<br><span class="muted">Ref: {{ ev.reference }}</span>{% endif %}
+            {% if ev.notes and ev.notes not in (ev.description or '') %}<br><span class="muted">{{ ev.notes }}</span>{% endif %}
+          </td>
           <td class="t-right">{{ '%.2f' % (ev.amount or 0.0) }}</td>
           <td class="t-right">
             {% if ev.kind == 'sale' %}
@@ -106,16 +110,16 @@ Address: {{ customer.address or '' }}
 
     <!-- Net summary at bottom -->
     {% set outstanding = summary.open_due_sum or 0.0 %}
-    {% set advance = summary.credit_balance or 0.0 %}
-    {% set net = outstanding - advance %}
+    {% set credit = summary.credit_balance or 0.0 %}
+    {% set net = outstanding - credit %}
     <table style="margin-top:12px;">
       <tr>
         <td class="muted">Outstanding Receivables</td>
         <td class="t-right">{{ '%.2f' % outstanding }}</td>
       </tr>
       <tr>
-        <td class="muted">Available Advance Balance</td>
-        <td class="t-right">{{ '%.2f' % advance }}</td>
+        <td class="muted">Available Customer Credit</td>
+        <td class="t-right">{{ '%.2f' % credit }}</td>
       </tr>
       <tr class="rule">
         <td class="t-right">
