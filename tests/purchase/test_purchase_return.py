@@ -92,6 +92,13 @@ def test_return_logic_credit(controller, conn, ids):
         PurchaseItem(None, "PO-RET-LOGIC", ids["prod_A"], 10.0, ids["uom_piece"], 10.0, 15.0, 0.0)
     ]
     repo.create_purchase(h, items)
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, clearing_state, cleared_date
+        ) VALUES ('PO-RET-LOGIC', '2023-01-01', 100.0, 'Cash', 'cleared', '2023-01-01')
+        """
+    )
     pid = "PO-RET-LOGIC"
     
     # 2. Perform Return via Controller (mocking form)

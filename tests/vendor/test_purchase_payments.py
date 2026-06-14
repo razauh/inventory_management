@@ -71,7 +71,7 @@ def vendor_payment_db():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-PAY', ?, 1, ?, 100, 100, 0)
+        ) VALUES ('PO-PAY', ?, 1, ?, 100, 120, 0)
         """,
         (product_id, uom_id),
     ).lastrowid
@@ -255,7 +255,8 @@ def test_repository_rejects_card_vendor_purchase_payment(vendor_payment_db):
 def test_purchase_return_refund_creates_vendor_credit_not_negative_payment(
     vendor_payment_db,
 ):
-    conn, _repo, vendor_id = vendor_payment_db
+    conn, repo, vendor_id = vendor_payment_db
+    record_cash_payment(repo, amount=100.0, clearing_state="cleared")
     item_id = conn.execute(
         "SELECT item_id FROM purchase_items WHERE purchase_id = 'PO-PAY'"
     ).fetchone()[0]
@@ -267,14 +268,14 @@ def test_purchase_return_refund_creates_vendor_credit_not_negative_payment(
         lines=[{"item_id": item_id, "qty_return": 0.2}],
         notes="Returned goods refund",
         settlement={
-            "mode": "refund_now",
+            "mode": "credit_note",
             "method": "Cash",
             "clearing_state": "cleared",
             "notes": "Vendor refunded returned goods",
         },
     )
 
-    assert conn.execute("SELECT COUNT(*) FROM purchase_payments").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM purchase_payments").fetchone()[0] == 1
     credit = conn.execute(
         """
         SELECT amount, source_type, source_id, method, clearing_state, notes

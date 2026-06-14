@@ -55,7 +55,7 @@ def test_product_controller_add_rolls_back_partial_write_when_later_step_fails(m
     payload = {
         "product": {"name": "Widget", "description": None, "category": None, "min_stock_level": 1},
         "uoms": {
-            "base_uom_id": base_uom_id,
+            "base_uom": {"uom_id": base_uom_id},
             "enabled_sales": True,
             "sales_alts": [{"uom_id": 9999, "factor_to_base": 10}],
         },
@@ -103,7 +103,7 @@ def test_product_controller_edit_rolls_back_earlier_changes_when_later_step_fail
     payload = {
         "product": {"name": "Widget Changed", "description": "New", "category": "Cat 2", "min_stock_level": 5},
         "uoms": {
-            "base_uom_id": alt_uom_id,
+            "base_uom": {"uom_id": alt_uom_id},
             "enabled_sales": True,
             "sales_alts": [{"uom_id": 9999, "factor_to_base": 12}],
         },

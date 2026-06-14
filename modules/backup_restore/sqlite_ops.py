@@ -153,8 +153,11 @@ def is_wal_mode(path: Optional[str] = None) -> bool:
 def get_journal_mode(path: Optional[str] = None) -> str:
     """Return the current journal_mode string (e.g., 'wal', 'delete', 'off')."""
     db_path = path or get_db_path()
-    with _connect_ro(db_path) as con:
+    con = _connect_ro(db_path)
+    try:
         row = con.execute("PRAGMA journal_mode;").fetchone()
+    finally:
+        con.close()
     return (row[0] if row else "") or ""
 
 
@@ -231,10 +234,13 @@ def _try_backup_api(
     Use sqlite3's Connection.backup if available. Returns True on success, False if
     unsupported or fails before writing (the caller will fall back to VACUUM INTO).
     """
+    src = None
+    dst = None
     try:
         # Open live DB normally (rw), and destination as a new file
-        with sqlite3.connect(src_path, isolation_level=None, check_same_thread=False) as src, \
-             sqlite3.connect(dest_path, isolation_level=None, check_same_thread=False) as dst:
+        src = sqlite3.connect(src_path, isolation_level=None, check_same_thread=False)
+        dst = sqlite3.connect(dest_path, isolation_level=None, check_same_thread=False)
+        try:
             src.row_factory = sqlite3.Row
             dst.row_factory = sqlite3.Row
 
@@ -246,6 +252,11 @@ def _try_backup_api(
                     progress_step(min(95, max(0, pct)))  # reserve a little headroom
             # Copy in chunks to allow UI updates
             src.backup(dst, pages=1024, progress=_progress)
+        finally:
+            if dst is not None:
+                dst.close()
+            if src is not None:
+                src.close()
         return True
     except Exception:
         # Returning False triggers fallback.
@@ -261,7 +272,8 @@ def _vacuum_into(src_path: str, dest_path: str) -> None:
     Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
 
     # VACUUM INTO must run on a connection to the source DB
-    with sqlite3.connect(src_path, isolation_level=None, check_same_thread=False) as con:
+    con = sqlite3.connect(src_path, isolation_level=None, check_same_thread=False)
+    try:
         con.row_factory = sqlite3.Row
         # Ensure no pending transaction
         con.execute("PRAGMA wal_checkpoint(PASSIVE);")
@@ -273,6 +285,8 @@ def _vacuum_into(src_path: str, dest_path: str) -> None:
                 "VACUUM INTO is not supported by the linked SQLite library. "
                 "Consider upgrading Python/SQLite, or ensure the Online Backup API is available."
             ) from exc
+    finally:
+        con.close()
 
 
 # ----------------------------
@@ -286,12 +300,16 @@ def quick_check(db_path: str) -> bool:
     p = Path(db_path)
     if not p.exists() or not p.is_file():
         return False
+    con = None
     try:
-        with _connect_ro(str(p)) as con:
-            row = con.execute("PRAGMA quick_check;").fetchone()
+        con = _connect_ro(str(p))
+        row = con.execute("PRAGMA quick_check;").fetchone()
         return (row and isinstance(row[0], str) and row[0].lower() == "ok")
     except Exception:
         return False
+    finally:
+        if con:
+            con.close()
 
 
 def integrity_check(db_path: str, limit_errors: int = 3) -> Tuple[bool, List[str]]:
@@ -300,21 +318,25 @@ def integrity_check(db_path: str, limit_errors: int = 3) -> Tuple[bool, List[str
     `limit_errors` sample error lines for diagnostics.
     """
     errors: List[str] = []
+    con = None
     try:
-        with _connect_ro(db_path) as con:
-            # integrity_check can return many rows; collect a few
-            for row in con.execute("PRAGMA integrity_check;"):
-                val = row[0] if row else ""
-                if isinstance(val, str) and val.lower() == "ok":
-                    # If it's a single 'ok', we consider DB healthy
-                    return True, []
-                # Otherwise, accumulate errors (avoid duplicates)
-                if isinstance(val, str):
-                    errors.append(val)
-                    if len(errors) >= max(1, limit_errors):
-                        break
+        con = _connect_ro(db_path)
+        # integrity_check can return many rows; collect a few
+        for row in con.execute("PRAGMA integrity_check;"):
+            val = row[0] if row else ""
+            if isinstance(val, str) and val.lower() == "ok":
+                # If it's a single 'ok', we consider DB healthy
+                return True, []
+            # Otherwise, accumulate errors (avoid duplicates)
+            if isinstance(val, str):
+                errors.append(val)
+                if len(errors) >= max(1, limit_errors):
+                    break
     except Exception as exc:
         errors.append(f"exception: {exc!r}")
+    finally:
+        if con:
+            con.close()
 
     return (len(errors) == 0), errors
 
@@ -327,12 +349,16 @@ def foreign_key_check(db_path: str) -> List[sqlite3.Row]:
     p = Path(db_path)
     if not p.exists() or not p.is_file():
         raise FileNotFoundError(f"database file does not exist: {p}")
+    con = None
     try:
-        with _connect_ro(str(p)) as con:
-            cur = con.execute("PRAGMA foreign_key_check;")
-            return cur.fetchall()
+        con = _connect_ro(str(p))
+        cur = con.execute("PRAGMA foreign_key_check;")
+        return cur.fetchall()
     except Exception as exc:
         raise RuntimeError(f"foreign_key_check failed: {exc}") from exc
+    finally:
+        if con:
+            con.close()
 
 
 def verify_database(
@@ -411,7 +437,8 @@ def verify_app_schema_compatibility(db_path: str) -> Tuple[bool, List[str]]:
         from database.schema import REQUIRED_TABLES
 
         required_tables = set(REQUIRED_TABLES) | {TABLE_SCHEMA_VERSION}
-        with _connect_ro(str(p)) as con:
+        con = _connect_ro(str(p))
+        try:
             rows = con.execute(
                 "SELECT name FROM sqlite_master WHERE type='table';"
             ).fetchall()
@@ -430,6 +457,8 @@ def verify_app_schema_compatibility(db_path: str) -> Tuple[bool, List[str]]:
                     details.append(
                         f"unsupported schema version: expected {SCHEMA_VERSION!r}, found {found_version!r}."
                     )
+        finally:
+            con.close()
 
         return len(details) == 0, details
     except Exception as exc:

@@ -96,7 +96,9 @@ def test_enhanced_payment_reports_include_vendor_refunds(
 
     assert [row["type"] for row in tab._rows_all_payments] == ["Disbursement", "Vendor Refund"]
     assert tab._rows_all_payments[1]["amount"] == pytest.approx(15.0)
-    assert tab.lbl_all_total.text().endswith("115.00")
+    assert tab.lbl_inflow_total.text().endswith("15.00")
+    assert tab.lbl_outflow_total.text().endswith("100.00")
+    assert tab.lbl_refund_total.text().endswith("15.00")
 
 
 def test_comprehensive_payment_models_use_field_keys() -> None:

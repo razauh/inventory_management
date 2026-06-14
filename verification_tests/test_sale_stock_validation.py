@@ -38,10 +38,12 @@ def sales_stock_db(tmp_path: Path) -> tuple[sqlite3.Connection, dict[str, int]]:
         """
         INSERT INTO inventory_transactions (
             product_id, quantity, uom_id, transaction_type, date
-        ) VALUES (?, 10.0, ?, 'purchase', '2026-06-11')
+        ) VALUES (?, 10.0, ?, 'adjustment', '2026-06-11')
         """,
         (product_id, uom_id),
     )
+    from inventory_management.database.repositories.inventory_repo import rebuild_dirty_valuations
+    rebuild_dirty_valuations(con)
     con.commit()
 
     ids = {
@@ -139,8 +141,8 @@ def test_convert_quotation_oversell_fails(sales_stock_db):
         """
         INSERT INTO sales (
             sale_id, customer_id, date, total_amount, order_discount,
-            payment_status, paid_amount, advance_payment_applied, doc_type
-        ) VALUES ('QUOTE-1', ?, '2026-06-11', 1200, 0, 'unpaid', 0, 0, 'quotation')
+            payment_status, paid_amount, advance_payment_applied, doc_type, quotation_status
+        ) VALUES ('QUOTE-1', ?, '2026-06-11', 1200, 0, 'unpaid', 0, 0, 'quotation', 'draft')
         """,
         (ids["customer"],),
     )

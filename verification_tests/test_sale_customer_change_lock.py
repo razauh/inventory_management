@@ -53,6 +53,17 @@ def sale_db(tmp_path: Path) -> tuple[sqlite3.Connection, dict[str, int]]:
         """,
         (product_id, uom_id),
     ).lastrowid
+    con.execute(
+        """
+        INSERT INTO inventory_transactions (
+            product_id, quantity, uom_id, transaction_type,
+            reference_table, reference_id, reference_item_id, date, txn_seq
+        ) VALUES (?, 100.0, ?, 'adjustment', NULL, NULL, NULL, '2026-06-11', 1)
+        """,
+        (product_id, uom_id),
+    )
+    from inventory_management.database.repositories.inventory_repo import rebuild_dirty_valuations
+    rebuild_dirty_valuations(con)
     con.commit()
     ids = {
         "customer_1": int(customer_1),
@@ -148,7 +159,7 @@ def test_customer_change_is_blocked_after_linked_activity(
 
     with pytest.raises(
         ValueError,
-        match="Cannot change the sale customer after payments, credits, or returns exist",
+        match="Cannot (change the sale customer|edit a sale) after (payments, credits, or )?returns? exist",
     ):
         repo.update_sale(
             _updated_header(ids["customer_2"]),

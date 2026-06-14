@@ -64,6 +64,17 @@ def sale_db(tmp_path: Path) -> tuple[Path, int]:
             """,
             (product_id, uom_id),
         )
+        con.execute(
+            """
+            INSERT INTO inventory_transactions (
+                product_id, quantity, uom_id, transaction_type,
+                reference_table, reference_id, reference_item_id, date, txn_seq
+            ) VALUES (?, 100.0, ?, 'adjustment', NULL, NULL, NULL, '2026-06-01', 1)
+            """,
+            (product_id, uom_id),
+        )
+        from inventory_management.database.repositories.inventory_repo import rebuild_dirty_valuations
+        rebuild_dirty_valuations(con)
     return db_path, int(customer_id)
 
 
@@ -77,11 +88,11 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 def test_all_read_paths_use_canonical_remaining_due(sale_db: tuple[Path, int]) -> None:
     db_path, customer_id = sale_db
     SalePaymentsRepo(db_path).record_payment(
-        sale_id="SALE-1", amount=20, method="Cash", clearing_state="cleared"
+        sale_id="SALE-1", amount=20, method="Cash", clearing_state="cleared", date="2026-06-05"
     )
     advances = CustomerAdvancesRepo(db_path)
-    advances.grant_credit(customer_id=customer_id, amount=30)
-    advances.apply_credit_to_sale(customer_id=customer_id, sale_id="SALE-1", amount=10)
+    advances.grant_credit(customer_id=customer_id, amount=30, date="2026-06-05")
+    advances.apply_credit_to_sale(customer_id=customer_id, sale_id="SALE-1", amount=10, date="2026-06-05")
 
     with _connect(db_path) as con:
         canonical = con.execute(
@@ -255,7 +266,7 @@ def test_matching_and_negative_line_totals_are_stable(sale_db: tuple[Path, int])
         ).fetchone()
         assert tuple(map(float, matching)) == (50.0, 50.0)
 
-        con.execute("UPDATE sale_items SET item_discount=60 WHERE sale_id='SALE-1'")
+        con.execute("UPDATE sales SET order_discount=60 WHERE sale_id='SALE-1'")
         clamped = con.execute(
             "SELECT canonical_total_amount, remaining_due FROM sale_receivable_totals WHERE sale_id='SALE-1'"
         ).fetchone()

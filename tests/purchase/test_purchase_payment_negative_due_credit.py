@@ -45,7 +45,7 @@ def negative_due_db():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-NEG-DUE', ?, 1, ?, 80, 80, 0)
+        ) VALUES ('PO-NEG-DUE', ?, 1, ?, 80, 90, 0)
         """,
         (product_id, uom_id),
     )

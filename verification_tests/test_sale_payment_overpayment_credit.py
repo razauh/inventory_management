@@ -48,6 +48,14 @@ def _create_sale_db(db_path: Path) -> None:
             VALUES ('Overpayment Customer', 'test', 'test')
             """
         ).lastrowid
+        uom_id = con.execute("INSERT INTO uoms (unit_name) VALUES ('Each')").lastrowid
+        product_id = con.execute(
+            "INSERT INTO products (name, description, category) VALUES ('Item', '', '')"
+        ).lastrowid
+        con.execute(
+            "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+            (product_id, uom_id),
+        )
         con.execute(
             """
             INSERT INTO sales (
@@ -56,6 +64,29 @@ def _create_sale_db(db_path: Path) -> None:
             ) VALUES ('SALE-OVERPAY', ?, '2026-06-11', 100, 'unpaid', 0, 0, 'sale')
             """,
             (customer_id,),
+        )
+        con.execute(
+            """
+            INSERT INTO sale_items (sale_id, product_id, quantity, uom_id, unit_price, item_discount)
+            VALUES ('SALE-OVERPAY', ?, 1, ?, 100, 0)
+            """,
+            (product_id, uom_id),
+        )
+        con.execute(
+            """
+            INSERT INTO sales (
+                sale_id, customer_id, date, total_amount, payment_status,
+                paid_amount, advance_payment_applied, doc_type
+            ) VALUES ('SALE-CONSUME', ?, '2026-06-11', 50, 'unpaid', 0, 0, 'sale')
+            """,
+            (customer_id,),
+        )
+        con.execute(
+            """
+            INSERT INTO sale_items (sale_id, product_id, quantity, uom_id, unit_price, item_discount)
+            VALUES ('SALE-CONSUME', ?, 1, ?, 50, 0)
+            """,
+            (product_id, uom_id),
         )
 
 
@@ -211,7 +242,7 @@ def test_admin_reopening_fails_if_credit_consumed(tmp_path: Path) -> None:
         con.execute(
             """
             INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id)
-            VALUES (?, '2026-06-11', -15.0, 'applied_to_sale', 'SALE-OVERPAY')
+            VALUES (?, '2026-06-11', -15.0, 'applied_to_sale', 'SALE-CONSUME')
             """,
             (cust_id,),
         )

@@ -41,8 +41,11 @@ class _FsOps:
 
 def test_backup_job_rejects_destination_that_is_active_database_path(tmp_path):
     live_db = tmp_path / "live.imsdb"
-    with sqlite3.connect(live_db) as con:
+    con = sqlite3.connect(live_db)
+    try:
         con.execute("CREATE TABLE product(id INTEGER PRIMARY KEY);")
+    finally:
+        con.close()
 
     sqlite_ops = _SqliteOps(live_db)
     fsops = _FsOps()
@@ -64,8 +67,11 @@ def test_backup_job_rejects_destination_that_is_active_database_path(tmp_path):
 
 def test_backup_job_rejects_raw_active_database_path_before_extension_normalization(tmp_path):
     live_db = tmp_path / "live.db"
-    with sqlite3.connect(live_db) as con:
+    con = sqlite3.connect(live_db)
+    try:
         con.execute("CREATE TABLE product(id INTEGER PRIMARY KEY);")
+    finally:
+        con.close()
 
     sqlite_ops = _SqliteOps(live_db)
     fsops = _FsOps()

@@ -136,9 +136,18 @@ def _sqlite_backup(src_db: Path, dst_db: Path, *, verbose: bool = False, logger:
 
     # Use read-only URI for source; allow some time for busy dbs.
     src_uri = f"file:{src_db.as_posix()}?mode=ro"
-    with sqlite3.connect(src_uri, uri=True, timeout=30.0) as src_conn, sqlite3.connect(str(dst_db)) as dst_conn:
+    src_conn = None
+    dst_conn = None
+    try:
+        src_conn = sqlite3.connect(src_uri, uri=True, timeout=30.0)
+        dst_conn = sqlite3.connect(str(dst_db))
         # Perform the backup in one go; sqlite handles WAL consistency.
         src_conn.backup(dst_conn)
+    finally:
+        if dst_conn is not None:
+            dst_conn.close()
+        if src_conn is not None:
+            src_conn.close()
 
     _fsync_file(dst_db)
     _log(

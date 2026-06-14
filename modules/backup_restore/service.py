@@ -549,13 +549,16 @@ class RestoreJob(QObject):
         Run PRAGMA foreign_key_check on the given database path and return any violations.
         Each row is (table, rowid, parent, fkid). Empty list means no violations.
         """
-        with sqlite3.connect(db_path) as con:
+        con = sqlite3.connect(db_path)
+        try:
             try:
                 con.row_factory = sqlite3.Row
             except Exception:
                 pass
             cur = con.execute("PRAGMA foreign_key_check")
             return cur.fetchall()
+        finally:
+            con.close()
 
     @staticmethod
     def _import_sqlite_ops():

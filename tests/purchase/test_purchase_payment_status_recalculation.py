@@ -61,7 +61,7 @@ def purchase_status_db():
                 1.0,
                 int(uom_id),
                 100.0,
-                100.0,
+                120.0,
                 0.0,
             )
         ],
@@ -115,7 +115,7 @@ def test_purchase_edit_resets_paid_status_to_partial_or_unpaid(purchase_status_d
                 2.0,
                 int(item["uom_id"]),
                 100.0,
-                100.0,
+                120.0,
                 0.0,
             )
         ],

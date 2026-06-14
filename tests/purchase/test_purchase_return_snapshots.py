@@ -37,6 +37,14 @@ def _create_purchase(conn, ids, purchase_id="PO-RETURN-SNAPSHOT"):
             )
         ],
     )
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, clearing_state, cleared_date
+        ) VALUES (?, '2026-06-01', 100.0, 'Cash', 'cleared', '2026-06-01')
+        """,
+        (purchase_id,),
+    )
     item_id = int(repo.list_items(purchase_id)[0]["item_id"])
     return repo, header, item_id
 

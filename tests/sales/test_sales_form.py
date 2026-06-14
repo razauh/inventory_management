@@ -137,7 +137,7 @@ def test_sales_payload_with_product_text_editor(qtbot, mock_repos, ids):
     product_edit.setText(f"Widget A (#{ids['prod_A']})")
     form.tbl.item(0, 0).setData(Qt.UserRole, ids["uom_piece"])
     form.tbl.item(0, 4).setText("100")
-    form.tbl.item(0, 5).setText("1")
+    form.tbl.cellWidget(0, 5).setValue(1.0)
     form.tbl.item(0, 6).setText("10")
 
     # Wait for the product debounce timer (300ms) to fire and load the product info
@@ -175,7 +175,7 @@ def test_sales_payload_validation_rejects_any_error(qtbot, mock_repos, ids):
     id_item_1.setData(Qt.UserRole, ids["prod_A"])
     form.tbl.item(0, 0).setData(Qt.UserRole, ids["uom_piece"])
     form.tbl.item(0, 4).setText("100")
-    form.tbl.item(0, 5).setText("1")
+    form.tbl.cellWidget(0, 5).setValue(1.0)
     form.tbl.item(0, 6).setText("10")
 
     # Row 2 is invalid (missing product)

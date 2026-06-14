@@ -77,7 +77,7 @@ def vendor_credit_db():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES (?, ?, 1, ?, 100, 100, 0)
+        ) VALUES (?, ?, 1, ?, 100, 120, 0)
         """,
         (("PO-A", product_id, uom_id), ("PO-B", product_id, uom_id)),
     )

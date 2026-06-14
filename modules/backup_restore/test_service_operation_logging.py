@@ -33,8 +33,15 @@ class _SqliteOps:
             log("snapshot created")
 
     def quick_check(self, db_path: str) -> bool:
-        with sqlite3.connect(db_path) as con:
-            row = con.execute("PRAGMA quick_check;").fetchone()
+        con = sqlite3.connect(db_path)
+        try:
+            cur = con.cursor()
+            try:
+                row = cur.execute("PRAGMA quick_check;").fetchone()
+            finally:
+                cur.close()
+        finally:
+            con.close()
         return bool(row and row[0] == "ok")
 
     def verify_app_schema_compatibility(self, db_path: str) -> tuple[bool, list[str]]:
@@ -79,10 +86,14 @@ class _AppDbManager:
 
 
 def _make_db(path: Path) -> None:
-    with sqlite3.connect(path) as con:
+    con = sqlite3.connect(path)
+    try:
         con.execute("PRAGMA foreign_keys = ON;")
         con.execute("CREATE TABLE product(id INTEGER PRIMARY KEY, name TEXT NOT NULL);")
         con.execute("INSERT INTO product(name) VALUES ('Widget');")
+        con.commit()
+    finally:
+        con.close()
 
 
 def test_backup_job_uses_backup_restore_logger_and_structured_events(monkeypatch, tmp_path):

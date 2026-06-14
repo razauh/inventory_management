@@ -15,7 +15,7 @@ def test_db_integrity_base_uom_only(conn, ids):
     # Seed data: Widget A -> Piece (Base). Box exists but not mapped to Widget A in seed?
     # Let's map Box to Widget A as non-base first
     conn.execute("""
-        INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base)
+        INSERT OR REPLACE INTO product_uoms (product_id, uom_id, is_base, factor_to_base)
         VALUES (?, ?, 0, 10)
     """, (ids["prod_A"], ids["uom_box"]))
     

@@ -9,8 +9,10 @@ def _controller():
     controller = sales_controller.SalesController.__new__(sales_controller.SalesController)
     controller._doc_type = "sale"
     controller._db_path = "unused-test.db"
+    controller.conn = None
     controller.view = object()
     controller._selected_row = lambda: {"sale_id": "SO-1", "customer_id": 7}
+    controller._fetch_sale_financials = lambda sale_id: {"remaining_due": 500.0}
     controller._eligible_sales_for_application = lambda customer_id: []
     controller._list_sales_for_customer = lambda customer_id: []
     controller._reload = lambda: None
@@ -20,6 +22,13 @@ def _controller():
 
 
 def test_apply_credit_passes_amount_and_refreshes_after_success(monkeypatch):
+    from inventory_management.database.repositories.customer_advances_repo import CustomerAdvancesRepo
+    monkeypatch.setattr(
+        CustomerAdvancesRepo,
+        "get_balance",
+        lambda self, cid: 1000.0,
+    )
+
     controller = _controller()
     calls = {"reload": 0, "sync": 0}
     messages = []
@@ -47,6 +56,13 @@ def test_apply_credit_passes_amount_and_refreshes_after_success(monkeypatch):
 
 
 def test_apply_credit_does_not_report_success_or_refresh_on_action_failure(monkeypatch):
+    from inventory_management.database.repositories.customer_advances_repo import CustomerAdvancesRepo
+    monkeypatch.setattr(
+        CustomerAdvancesRepo,
+        "get_balance",
+        lambda self, cid: 1000.0,
+    )
+
     controller = _controller()
     calls = {"reload": 0, "sync": 0}
     messages = []

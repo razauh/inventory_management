@@ -110,7 +110,7 @@ def test_purchase_listing_returns_gross_and_net_totals_after_returns():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-1', ?, 10, ?, 10, 10, 0)
+        ) VALUES ('PO-1', ?, 10, ?, 10, 15, 0)
         """,
         (product_id, uom_id),
     ).lastrowid
@@ -250,7 +250,7 @@ def test_statement_opening_payable_uses_complete_preperiod_equation():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-OPEN', ?, 10, ?, 10, 10, 0)
+        ) VALUES ('PO-OPEN', ?, 10, ?, 10, 15, 0)
         """,
         (product_id, uom_id),
     ).lastrowid
@@ -299,7 +299,7 @@ def test_statement_opening_payable_uses_complete_preperiod_equation():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-IN', ?, 1, ?, 12, 12, 0)
+        ) VALUES ('PO-IN', ?, 1, ?, 12, 18, 0)
         """,
         (product_id, uom_id),
     )

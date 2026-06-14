@@ -79,7 +79,7 @@ def _create_purchase(db, purchase_id, *, quantity=1.0, price=100.0):
                 quantity,
                 db["uom_id"],
                 price,
-                price,
+                price + 10.0,
                 0.0,
             )
         ],
@@ -99,7 +99,7 @@ def _edit_single_line(db, header, item_id, *, quantity=1.0, price=100.0):
                 quantity,
                 db["uom_id"],
                 price,
-                price,
+                price + 10.0,
                 0.0,
             )
         ],

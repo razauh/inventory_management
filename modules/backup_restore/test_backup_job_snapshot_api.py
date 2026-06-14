@@ -33,8 +33,15 @@ class _SqliteOpsWithoutSnapshot:
             log("snapshot created")
 
     def quick_check(self, db_path: str) -> bool:
-        with sqlite3.connect(db_path) as con:
-            row = con.execute("PRAGMA quick_check;").fetchone()
+        con = sqlite3.connect(db_path)
+        try:
+            cur = con.cursor()
+            try:
+                row = cur.execute("PRAGMA quick_check;").fetchone()
+            finally:
+                cur.close()
+        finally:
+            con.close()
         return bool(row and row[0] == "ok")
 
 
@@ -56,9 +63,13 @@ class _FsOps:
 
 def test_backup_job_uses_create_consistent_snapshot_without_snapshot_api(tmp_path):
     source_db = tmp_path / "live.sqlite"
-    with sqlite3.connect(source_db) as con:
+    con = sqlite3.connect(source_db)
+    try:
         con.execute("CREATE TABLE product(id INTEGER PRIMARY KEY, name TEXT NOT NULL);")
         con.execute("INSERT INTO product(name) VALUES ('Widget');")
+        con.commit()
+    finally:
+        con.close()
 
     sqlite_ops = _SqliteOpsWithoutSnapshot(source_db)
     fsops = _FsOps(tmp_path)
@@ -86,6 +97,9 @@ def test_backup_job_uses_create_consistent_snapshot_without_snapshot_api(tmp_pat
     assert 42 in progress_values
     assert "snapshot created" in log_lines
 
-    with sqlite3.connect(dest) as con:
+    con = sqlite3.connect(dest)
+    try:
         row = con.execute("SELECT name FROM product WHERE id = 1;").fetchone()
+    finally:
+        con.close()
     assert row == ("Widget",)

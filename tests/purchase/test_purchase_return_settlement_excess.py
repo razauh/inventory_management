@@ -45,7 +45,7 @@ def return_settlement_db():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-RETURN-SETTLEMENT', ?, 10, ?, 10, 10, 0)
+        ) VALUES ('PO-RETURN-SETTLEMENT', ?, 10, ?, 10, 12, 0)
         """,
         (product_id, uom_id),
     ).lastrowid
@@ -157,19 +157,30 @@ def test_return_settlement_uses_only_post_return_funded_excess(
         WHERE purchase_id = 'PO-RETURN-SETTLEMENT'
         """
     ).fetchone()[0]
-    return_credit = conn.execute(
-        """
-        SELECT COALESCE(SUM(amount), 0)
-        FROM vendor_advances
-        WHERE source_type = 'return_credit'
-          AND source_id = 'PO-RETURN-SETTLEMENT'
-        """
-    ).fetchone()[0]
+    if mode == "refund_now":
+        return_credit = conn.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0)
+            FROM purchase_refunds
+            WHERE purchase_id = 'PO-RETURN-SETTLEMENT'
+            """
+        ).fetchone()[0]
+        expected_balance = 0.0
+    else:
+        return_credit = conn.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0)
+            FROM vendor_advances
+            WHERE source_type = 'return_credit'
+              AND source_id = 'PO-RETURN-SETTLEMENT'
+            """
+        ).fetchone()[0]
+        expected_balance = expected_credit
 
     assert float(net_total) == pytest.approx(expected_net)
     assert float(return_credit) == pytest.approx(expected_credit)
     assert VendorAdvancesRepo(conn).get_balance(vendor_id) == pytest.approx(
-        expected_credit
+        expected_balance
     )
 
 

@@ -61,7 +61,7 @@ def cleared_only_db():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-CLEARED', ?, 3, ?, 100, 100, 0)
+        ) VALUES ('PO-CLEARED', ?, 3, ?, 100, 120, 0)
         """,
         (product_id, uom_id),
     ).lastrowid

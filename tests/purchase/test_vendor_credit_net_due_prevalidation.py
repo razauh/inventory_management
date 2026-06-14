@@ -42,7 +42,7 @@ def returned_purchase_db():
         INSERT INTO purchase_items (
             purchase_id, product_id, quantity, uom_id,
             purchase_price, sale_price, item_discount
-        ) VALUES ('PO-NET-DUE', ?, 10, ?, 10, 10, 0)
+        ) VALUES ('PO-NET-DUE', ?, 10, ?, 10, 12, 0)
         """,
         (product_id, uom_id),
     ).lastrowid

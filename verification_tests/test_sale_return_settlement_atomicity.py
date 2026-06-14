@@ -1,6 +1,13 @@
+import os
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT.parent))
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from inventory_management.database.repositories.sales_repo import SaleHeader, SaleItem, SalesRepo
 from inventory_management.database.schema import SQL
@@ -26,6 +33,18 @@ def sale_db(tmp_path):
         """,
         (product_id, uom_id),
     )
+
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (
+            product_id, quantity, uom_id, transaction_type,
+            reference_table, reference_id, reference_item_id, date, txn_seq
+        ) VALUES (?, 100.0, ?, 'adjustment', NULL, NULL, NULL, '2026-06-11', 1)
+        """,
+        (product_id, uom_id),
+    )
+    from inventory_management.database.repositories.inventory_repo import rebuild_dirty_valuations
+    rebuild_dirty_valuations(conn)
 
     repo = SalesRepo(conn)
     repo.create_sale(
