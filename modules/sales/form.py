@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QComboBox,
     QDateEdit, QLineEdit, QLabel, QGroupBox, QTableWidget, QTableWidgetItem,
     QPushButton, QAbstractItemView, QCompleter, QWidget, QGridLayout, QSplitter,
-    QFrame, QHeaderView
+    QFrame, QHeaderView, QDoubleSpinBox, QCheckBox
 )
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtCore import Qt, QDate, QEvent, QObject, QTimer
@@ -40,7 +40,16 @@ class AddRowShortcutFilter(QObject):
 
 class SaleForm(QDialog):
     # Columns now include Base/Alt UoM and expanded totals logic
-    COLS = ["#", "Product", "Base UoM", "Alt UoM", "Avail", "Qty", "Unit Price", "Discount", "Margin", "Line Total", "", ""]  # Extra hidden column for product ID storage
+    COLS = ["#", "Product", "Base UoM", "Alt UoM", "Available (selected UoM)", "Qty", "Unit Price", "Discount", "Margin", "Line Total", "", ""]  # Extra hidden column for product ID storage
+
+    NUMERIC_INPUT_STYLE = (
+        "QDoubleSpinBox { background: #fffdf2; border: 1px solid #9aa0a6; "
+        "border-radius: 3px; padding: 2px 4px; }"
+    )
+    NUMERIC_ERROR_STYLE = (
+        "QDoubleSpinBox { background: #ffe3e3; border: 2px solid #c62828; "
+        "border-radius: 3px; padding: 1px 3px; }"
+    )
 
     def __init__(
         self,
@@ -52,6 +61,7 @@ class SaleForm(QDialog):
         bank_accounts=None,  # repo instance providing list_company_bank_accounts(); kept optional, no import here
         initial=None,
         mode: str = "sale",   # <-- NEW: 'sale' | 'quotation'
+        can_view_margin: bool = False,
     ):
         super().__init__(parent)
         self.mode = "quotation" if str(mode).lower() == "quotation" else "sale"
@@ -152,9 +162,13 @@ class SaleForm(QDialog):
         ):
             self.quotation_status.addItem(label, value)
         self.quotation_expiry = QDateEdit()
+        self.quotation_expiry.setCalendarPopup(True)
         self.quotation_expiry.setDisplayFormat("yyyy-MM-dd")
-        self.quotation_expiry.setEnabled(False)
-        self.quotation_expiry.setDate(self.date.date())
+        expiry_value = initial.get("expiry_date") if initial else None
+        expiry_date = QDate.fromString(str(expiry_value or ""), "yyyy-MM-dd")
+        self.quotation_expiry.setDate(
+            expiry_date if expiry_date.isValid() else self.date.date()
+        )
         if initial and initial.get("quotation_status"):
             status_index = self.quotation_status.findData(str(initial["quotation_status"]))
             if status_index >= 0:
@@ -180,6 +194,10 @@ class SaleForm(QDialog):
         # --- items box & table ---
         box = QGroupBox("Items"); ib = QVBoxLayout(box)
         self.tbl = QTableWidget(0, len(self.COLS))
+        self.tbl.setAccessibleName("Sale item entry grid")
+        self.tbl.setAccessibleDescription(
+            "Add products, quantities, unit discounts, and units. Use Control plus Enter to add a row."
+        )
         self.tbl.setHorizontalHeaderLabels(self.COLS)
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -207,17 +225,17 @@ class SaleForm(QDialog):
         # Column 3: "Alt UoM" - keep default/narrow
         self.tbl.setColumnWidth(3, 80)
 
-        # Column 4: "Avail" - make narrower (numerical column)
-        self.tbl.setColumnWidth(4, 70)
+        # Column 4: availability includes the selected stock unit
+        self.tbl.setColumnWidth(4, 165)
 
-        # Column 5: "Qty" - make narrower (numerical column)
-        self.tbl.setColumnWidth(5, 70)
+        # Column 5: "Qty" - leave room for the numeric editor controls
+        self.tbl.setColumnWidth(5, 105)
 
         # Column 6: "Unit Price" - make narrower (numerical column)
         self.tbl.setColumnWidth(6, 90)
 
-        # Column 7: "Discount" - make narrower (numerical column)
-        self.tbl.setColumnWidth(7, 70)
+        # Column 7: "Discount" - leave room for the numeric editor controls
+        self.tbl.setColumnWidth(7, 115)
 
         # Column 8: "Margin" - make narrower (numerical column)
         self.tbl.setColumnWidth(8, 90)
@@ -230,8 +248,14 @@ class SaleForm(QDialog):
 
         # Column 11: Hidden column for product ID storage
         self.tbl.setColumnHidden(11, True)
+        self.tbl.setColumnHidden(8, True)
 
         ib.addWidget(self.tbl, 1)
+        self.lbl_stock_warning = QLabel("")
+        self.lbl_stock_warning.setWordWrap(True)
+        self.lbl_stock_warning.setStyleSheet("color: #a22; font-weight: bold;")
+        self.lbl_stock_warning.setVisible(False)
+        ib.addWidget(self.lbl_stock_warning)
         self.add_row_shortcut_filter = AddRowShortcutFilter(self)
         self.tbl.installEventFilter(self.add_row_shortcut_filter)
         self.tbl.viewport().installEventFilter(self.add_row_shortcut_filter)
@@ -241,7 +265,15 @@ class SaleForm(QDialog):
         self.shortcut_add_row_ctrl_enter = QShortcut(QKeySequence("Ctrl+Enter"), self.tbl)
         self.shortcut_add_row_ctrl_enter.setContext(Qt.WidgetWithChildrenShortcut)
         self.shortcut_add_row_ctrl_enter.activated.connect(self._add_row)
-        add = QHBoxLayout(); self.btn_add_row = QPushButton("Add Row"); add.addWidget(self.btn_add_row); add.addStretch(1); ib.addLayout(add)
+        add = QHBoxLayout(); self.btn_add_row = QPushButton("Add Row"); add.addWidget(self.btn_add_row); add.addStretch(1)
+        self.chk_show_margin = QCheckBox("Show Margin")
+        self.chk_show_margin.setAccessibleName("Show sensitive margin values")
+        self.chk_show_margin.setAccessibleDescription("Show or hide per-line profit information.")
+        self.chk_show_margin.setToolTip("Show sensitive per-line profit information.")
+        self.chk_show_margin.setVisible(can_view_margin)
+        self.chk_show_margin.toggled.connect(lambda checked: self.tbl.setColumnHidden(8, not checked))
+        add.addWidget(self.chk_show_margin)
+        ib.addLayout(add)
 
         # bottom totals (richer summary)
         tot = QHBoxLayout()
@@ -278,7 +310,12 @@ class SaleForm(QDialog):
         self.pay_box = QWidget()
         pay = QHBoxLayout(self.pay_box)
         self.pay_amount = QLineEdit(); self.pay_amount.setPlaceholderText("0")
+        self.pay_amount.setAccessibleName("Initial payment amount")
+        self.pay_amount.setAccessibleDescription("Amount received when this sale is saved.")
+        self.pay_limit_label = QLabel("Max: 0.00 | Balance: 0.00")
+        self.pay_limit_label.setStyleSheet("color: #555;")
         self.pay_method = QComboBox(); self.pay_method.addItems(["Cash","Bank Transfer","Cheque","Cross Cheque","Other"])
+        self.pay_method.setAccessibleName("Initial payment method")
         self.pay_method.setCurrentText("Cash")  # Set default to Cash
         pay.addStretch(1); pay.addWidget(self.pay_amount)
         pay.addWidget(self.pay_method)
@@ -288,8 +325,11 @@ class SaleForm(QDialog):
         bank_layout = QHBoxLayout(self.bank_box)
         bank_layout.setContentsMargins(0, 0, 0, 0)
         self.cmb_bank_account = QComboBox()
+        self.cmb_bank_account.setAccessibleName("Company bank account")
+        self.cmb_bank_account.setAccessibleDescription("Required for bank-based initial payments.")
         self.cmb_bank_account.setMinimumWidth(180)
         self.edt_instr_no = QLineEdit(); self.edt_instr_no.setPlaceholderText("Transaction/Instrument No.")
+        self.edt_instr_no.setAccessibleName("Payment instrument number")
         bank_layout.addStretch(1)
         bank_layout.addWidget(QLabel("Bank Account:"))
         bank_layout.addWidget(self.cmb_bank_account)
@@ -344,7 +384,12 @@ class SaleForm(QDialog):
         # Create a form layout for payment section
         payment_layout = QFormLayout()
         payment_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        payment_layout.addRow("Initial Payment:", self.pay_amount)
+        payment_amount_row = QWidget()
+        payment_amount_layout = QHBoxLayout(payment_amount_row)
+        payment_amount_layout.setContentsMargins(0, 0, 0, 0)
+        payment_amount_layout.addWidget(self.pay_amount)
+        payment_amount_layout.addWidget(self.pay_limit_label)
+        payment_layout.addRow("Initial Payment:", payment_amount_row)
         payment_layout.addRow("Method:", self.pay_method)
         payment_layout.addRow("Bank Account:", self.cmb_bank_account)
         payment_layout.addRow("Instrument No.:", self.edt_instr_no)
@@ -403,7 +448,7 @@ class SaleForm(QDialog):
         self.tbl.cellChanged.connect(self._cell_changed)
         self.btn_add_row.clicked.connect(self._add_row)
         self.txt_discount.textChanged.connect(self._refresh_totals)
-        self.date.dateChanged.connect(self.quotation_expiry.setDate)
+        self.pay_amount.textChanged.connect(self._refresh_payment_limit)
         self.pay_method.currentTextChanged.connect(self._toggle_bank_fields)
 
         # Add keyboard shortcut for adding new row (Ctrl+N)
@@ -428,6 +473,7 @@ class SaleForm(QDialog):
                     self._original_qty_base[pid] = self._original_qty_base.get(pid, 0.0) + (qty * factor)
 
         self._rebuild_table()
+        self._refresh_payment_limit()
         if initial:
             # Try to set customer by ID first, then by name if needed
             customer_id = initial.get("customer_id")
@@ -544,6 +590,34 @@ class SaleForm(QDialog):
         u = self.products.list_uoms()
         return int(u[0]["uom_id"]) if u else 1
 
+    def _make_numeric_input(self, value: float = 0.0) -> QDoubleSpinBox:
+        editor = QDoubleSpinBox()
+        editor.setRange(0.0, 999999999.9999)
+        editor.setDecimals(4)
+        editor.setSingleStep(1.0)
+        editor.setAlignment(Qt.AlignRight)
+        editor.setAccelerated(True)
+        editor.setValue(value)
+        editor.setStyleSheet(self.NUMERIC_INPUT_STYLE)
+        editor.installEventFilter(self.add_row_shortcut_filter)
+        return editor
+
+    def _numeric_value(self, row: int, column: int) -> float:
+        editor = self.tbl.cellWidget(row, column)
+        if isinstance(editor, QDoubleSpinBox):
+            return editor.value()
+        item = self.tbl.item(row, column)
+        try:
+            return float(item.text().replace(",", "")) if item and item.text() else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _numeric_changed(self, editor: QDoubleSpinBox):
+        row = self.tbl.indexAt(editor.pos()).row()
+        if row >= 0:
+            self._recalc_row(row)
+            self._refresh_totals()
+
     def _add_row(self, pre: dict | None = None):
         self.tbl.blockSignals(True)
         r = self.tbl.rowCount(); self.tbl.insertRow(r)
@@ -556,6 +630,8 @@ class SaleForm(QDialog):
         # product text field with auto-completion (instead of dropdown)
         product_edit = QLineEdit()
         product_edit.setPlaceholderText("Enter product name...")
+        product_edit.setAccessibleName(f"Row {r + 1} product")
+        product_edit.setAccessibleDescription("Type a product name and choose a matching suggestion.")
 
         # Create completer for product suggestions
         product_names = [f"{p.name} (#{p.product_id})" for p in self._all_products()]
@@ -574,6 +650,7 @@ class SaleForm(QDialog):
 
         # Alt UoM (combo; disabled when no alternates)
         alt = QComboBox(); alt.setEnabled(False)
+        alt.setAccessibleName(f"Row {r + 1} unit of measure")
         self.tbl.setCellWidget(r, 3, alt)
         alt.installEventFilter(self.add_row_shortcut_filter)
 
@@ -583,9 +660,11 @@ class SaleForm(QDialog):
         avail.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.tbl.setItem(r, 4, avail)
 
-        # Qty (editable)
-        qty = QTableWidgetItem("0"); qty.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.tbl.setItem(r, 5, qty)
+        # Qty (numeric editor)
+        qty = self._make_numeric_input()
+        qty.setAccessibleName(f"Row {r + 1} quantity")
+        qty.setToolTip("Enter quantity. Value must be greater than 0.")
+        self.tbl.setCellWidget(r, 5, qty)
 
         # Unit Price (read-only; per selected UoM)
         unit = QTableWidgetItem("0.00")
@@ -593,9 +672,11 @@ class SaleForm(QDialog):
         unit.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.tbl.setItem(r, 6, unit)
 
-        # Discount (per-unit; editable)
-        disc = QTableWidgetItem("0"); disc.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.tbl.setItem(r, 7, disc)
+        # Discount (per-unit numeric editor)
+        disc = self._make_numeric_input()
+        disc.setAccessibleName(f"Row {r + 1} per-unit discount")
+        disc.setToolTip("Enter per-unit discount. It cannot exceed Unit Price.")
+        self.tbl.setCellWidget(r, 7, disc)
 
         # Margin (total for the line; read-only)
         marg = QTableWidgetItem("0.00")
@@ -611,10 +692,14 @@ class SaleForm(QDialog):
 
         # delete button
         btn = QPushButton("✕")
+        btn.setAccessibleName(f"Delete item row {r + 1}")
         def kill():
-            self.tbl.removeRow(r); self._reindex(); self._refresh_totals()
+            self.tbl.removeRow(r); self._reindex(); self._refresh_totals(); self._refresh_stock_warnings()
         btn.clicked.connect(kill); self.tbl.setCellWidget(r, 10, btn)
         btn.installEventFilter(self.add_row_shortcut_filter)
+
+        qty.valueChanged.connect(lambda _value, editor=qty: self._numeric_changed(editor))
+        disc.valueChanged.connect(lambda _value, editor=disc: self._numeric_changed(editor))
 
         # when product changes → base uom name, alt list, prices, avail
         def on_prod():
@@ -629,6 +714,10 @@ class SaleForm(QDialog):
 
             if not pid:
                 base_cell.setText("-"); alt.clear(); alt.setEnabled(False)
+                avail.setData(Qt.UserRole, None)
+                avail.setText("0")
+                avail.setToolTip("Select a product to view stock and UoM.")
+                self._recalc_row(r)
                 return
             # base + alternates (requires ProductsRepo.list_product_uoms)
             uoms = self.products.list_product_uoms(int(pid))
@@ -657,7 +746,10 @@ class SaleForm(QDialog):
             avail_base = self.products.on_hand_base(int(pid))
             if pid in self._original_qty_base:
                 avail_base += self._original_qty_base[pid]
-            avail.setText(f"{avail_base:g}")
+            base_name = str(base["unit_name"] if base else "base units")
+            avail.setData(Qt.UserRole, avail_base)
+            avail.setText(f"{avail_base:g} {base_name}")
+            avail.setToolTip(f"Stock shown in selected UoM: {base_name}.")
 
             self._recalc_row(r); self._refresh_totals()
 
@@ -680,12 +772,23 @@ class SaleForm(QDialog):
             if data is None:
                 # base uom
                 unit.setText(fmt_money(sale_base))
-                avail.setText(f"{avail_base:g}")
+                uom_name = base_cell.text() or "base units"
+                avail_selected = avail_base
+                basis = f"Stock shown in base UoM: {uom_name}."
             else:
                 _, f = data
                 unit.setText(fmt_money(sale_base * f))
                 # availability in selected UoM = base / f
-                avail.setText(f"{(avail_base / f):g}")
+                uom_name = alt.currentText()
+                avail_selected = avail_base / f
+                basis = (
+                    f"Stock basis: {avail_base:g} {base_cell.text()} = "
+                    f"{avail_selected:g} {uom_name}. "
+                    f"1 {uom_name} = {f:g} {base_cell.text()}."
+                )
+            avail.setData(Qt.UserRole, avail_selected)
+            avail.setText(f"{avail_selected:g} {uom_name}")
+            avail.setToolTip(basis)
             self._recalc_row(r); self._refresh_totals()
 
         # Implement debounce mechanism to avoid DB queries on every keystroke
@@ -768,9 +871,13 @@ class SaleForm(QDialog):
                     item_discount = float(pre.get("item_discount", 0))
                     unit_price = float(pre.get("unit_price", 0))
 
-                    self.tbl.item(r, 5).setText(str(qty))
+                    qty_editor = self.tbl.cellWidget(r, 5)
+                    if isinstance(qty_editor, QDoubleSpinBox):
+                        qty_editor.setValue(qty)
                     self.tbl.item(r, 6).setText(fmt_money(unit_price))
-                    self.tbl.item(r, 7).setText(str(item_discount))
+                    disc_editor = self.tbl.cellWidget(r, 7)
+                    if isinstance(disc_editor, QDoubleSpinBox):
+                        disc_editor.setValue(item_discount)
 
                     # Set stored UOM and calculate converted availability
                     uom_id = pre.get("uom_id")
@@ -784,9 +891,20 @@ class SaleForm(QDialog):
                                 selected_factor = data[1]
                                 break
                         alt.blockSignals(False)
-                        avail.setText(f"{(avail_base / selected_factor):g}")
+                        selected_name = alt.currentText()
+                        avail_selected = avail_base / selected_factor
+                        avail.setData(Qt.UserRole, avail_selected)
+                        avail.setText(f"{avail_selected:g} {selected_name}")
+                        avail.setToolTip(
+                            f"Stock basis: {avail_base:g} {base_cell.text()} = "
+                            f"{avail_selected:g} {selected_name}. "
+                            f"1 {selected_name} = {selected_factor:g} {base_cell.text()}."
+                        )
                     else:
-                        avail.setText(f"{avail_base:g}")
+                        base_name = base_cell.text() or "base units"
+                        avail.setData(Qt.UserRole, avail_base)
+                        avail.setText(f"{avail_base:g} {base_name}")
+                        avail.setToolTip(f"Stock shown in base UoM: {base_name}.")
 
         self.tbl.blockSignals(False)
         self._recalc_row(r)
@@ -800,6 +918,43 @@ class SaleForm(QDialog):
         for r in range(self.tbl.rowCount()):
             it = self.tbl.item(r,0)
             if it: it.setText(str(r+1))
+            product = self.tbl.cellWidget(r, 1)
+            unit = self.tbl.cellWidget(r, 3)
+            qty = self.tbl.cellWidget(r, 5)
+            discount = self.tbl.cellWidget(r, 7)
+            delete = self.tbl.cellWidget(r, 10)
+            if product: product.setAccessibleName(f"Row {r + 1} product")
+            if unit: unit.setAccessibleName(f"Row {r + 1} unit of measure")
+            if qty: qty.setAccessibleName(f"Row {r + 1} quantity")
+            if discount: discount.setAccessibleName(f"Row {r + 1} per-unit discount")
+            if delete: delete.setAccessibleName(f"Delete item row {r + 1}")
+
+    def _selected_uom_name(self, row: int) -> str:
+        alt = self.tbl.cellWidget(row, 3)
+        if alt and alt.currentData() is not None:
+            return alt.currentText() or "selected units"
+        base = self.tbl.item(row, 2)
+        return base.text() if base and base.text() != "-" else "base units"
+
+    def _refresh_stock_warnings(self):
+        warnings = []
+        if self.mode == "sale":
+            for row in range(self.tbl.rowCount()):
+                avail_item = self.tbl.item(row, 4)
+                qty_editor = self.tbl.cellWidget(row, 5)
+                try:
+                    avail = float(avail_item.data(Qt.UserRole))
+                    qty = qty_editor.value()
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if qty > avail + 1e-9:
+                    uom_name = self._selected_uom_name(row)
+                    warnings.append(
+                        f"Row {row + 1}: requested {qty:g} {uom_name}; "
+                        f"only {avail:g} {uom_name} available."
+                    )
+        self.lbl_stock_warning.setText(" ".join(warnings))
+        self.lbl_stock_warning.setVisible(bool(warnings))
 
     def _rebuild_table(self):
         self.tbl.blockSignals(True)
@@ -832,17 +987,49 @@ class SaleForm(QDialog):
         data = alt.currentData() if alt else None
         factor = float(data[1]) if data else 1.0
 
-        avail = num(4)             # already shown in selected UoM
-        qty   = num(5)
+        avail_item = self.tbl.item(r, 4)
+        try:
+            avail = float(avail_item.data(Qt.UserRole))
+        except (TypeError, ValueError, AttributeError):
+            avail = num(4)
+        qty   = self._numeric_value(r, 5)
         unit  = num(6)             # per selected UoM
-        disc  = num(7)             # per selected UoM
+        disc  = self._numeric_value(r, 7)  # per selected UoM
         # base cost (per base unit) was stored in UserRole of Unit Price; convert to selected UoM
         cost_base = float(self.tbl.item(r,6).data(Qt.UserRole) or 0.0)
         cost_uom  = cost_base * factor
 
         over = qty > avail and avail >= 0
-        it_qty = self.tbl.item(r,5)
-        if it_qty: it_qty.setBackground(Qt.red if over else Qt.white)
+        qty_editor = self.tbl.cellWidget(r, 5)
+        if isinstance(qty_editor, QDoubleSpinBox):
+            uom_name = self._selected_uom_name(r)
+            if over:
+                qty_editor.setToolTip(
+                    f"Oversell: requested {qty:g} {uom_name}; "
+                    f"only {avail:g} {uom_name} available."
+                )
+            elif qty <= 0:
+                qty_editor.setToolTip("Quantity must be greater than 0.")
+            else:
+                qty_editor.setToolTip(
+                    f"Enter quantity in {uom_name}. Available: {avail:g} {uom_name}."
+                )
+            qty_editor.setStyleSheet(
+                self.NUMERIC_ERROR_STYLE if over or qty <= 0 else self.NUMERIC_INPUT_STYLE
+            )
+
+        disc_editor = self.tbl.cellWidget(r, 7)
+        if isinstance(disc_editor, QDoubleSpinBox):
+            discount_invalid = disc > unit
+            disc_editor.setStyleSheet(
+                self.NUMERIC_ERROR_STYLE if discount_invalid else self.NUMERIC_INPUT_STYLE
+            )
+            disc_editor.setToolTip(
+                f"Discount cannot exceed Unit Price ({fmt_money(unit)})."
+                if discount_invalid
+                else f"Per-unit discount. Maximum: {fmt_money(unit)}."
+            )
+        self._refresh_stock_warnings()
 
         # total margin (qty-aware). Per-unit margin in tooltip.
         m_unit = (unit - disc) - cost_uom
@@ -850,7 +1037,15 @@ class SaleForm(QDialog):
         it_m = self.tbl.item(r,8)
         if it_m:
             it_m.setText(fmt_money(m_tot))
-            it_m.setToolTip(f"Per-unit margin: {fmt_money(m_unit)}")
+            if m_tot < 0:
+                it_m.setToolTip(
+                    f"Negative margin: this line loses {fmt_money(abs(m_tot))}. "
+                    f"Per-unit margin: {fmt_money(m_unit)}."
+                )
+            else:
+                it_m.setToolTip(
+                    f"Line profit: {fmt_money(m_tot)}. Per-unit margin: {fmt_money(m_unit)}."
+                )
             it_m.setBackground(Qt.red if m_tot < 0 else Qt.white)
 
         # line total (before order discount)
@@ -863,7 +1058,7 @@ class SaleForm(QDialog):
         s = 0.0
         for r in range(self.tbl.rowCount()):
             try:
-                qty  = float(self.tbl.item(r,5).text() or 0)
+                qty  = self._numeric_value(r, 5)
                 unit = float(self.tbl.item(r,6).text().replace(",","") or 0)
                 s += qty * unit
             except Exception:
@@ -874,8 +1069,8 @@ class SaleForm(QDialog):
         s = 0.0
         for r in range(self.tbl.rowCount()):
             try:
-                qty  = float(self.tbl.item(r,5).text() or 0)
-                disc = float(self.tbl.item(r,7).text() or 0)
+                qty  = self._numeric_value(r, 5)
+                disc = self._numeric_value(r, 7)
                 s += qty * disc
             except Exception:
                 pass
@@ -893,6 +1088,23 @@ class SaleForm(QDialog):
         self.lab_order_disc.setText(fmt_money(od))
         self.lab_overall.setText(fmt_money(overall))
         self.lab_total.setText(fmt_money(total))
+        self._current_total = total
+        self._refresh_payment_limit()
+
+    def _refresh_payment_limit(self):
+        total = getattr(self, "_current_total", 0.0)
+        try:
+            init = float(self.pay_amount.text() or 0)
+        except Exception:
+            init = 0.0
+
+        if init > total + 1e-9:
+            self.pay_limit_label.setText(f"Max: {fmt_money(total)} | Over by {fmt_money(init - total)}")
+            self.pay_limit_label.setStyleSheet("color: #CC0000; font-weight: bold;")
+            return
+
+        self.pay_limit_label.setText(f"Max: {fmt_money(total)} | Balance: {fmt_money(max(0.0, total - init))}")
+        self.pay_limit_label.setStyleSheet("color: #555;")
 
     # payload with visible validation and row highlighting
     def get_payload(self) -> dict | None:
@@ -946,10 +1158,9 @@ class SaleForm(QDialog):
                     it = self.tbl.item(r, c)
                     return float(it.text().replace(",", "")) if it and it.text() else 0.0
 
-                avail = num(4)
-                qty   = num(5)
+                qty   = self._numeric_value(r, 5)
                 unit  = num(6)
-                disc  = num(7)
+                disc  = self._numeric_value(r, 7)
 
                 row_has_errors = False
                 if not all(math.isfinite(value) for value in (qty, unit, disc)):
@@ -1069,11 +1280,28 @@ class SaleForm(QDialog):
 
         if self.mode == "quotation":
             payload["quotation_status"] = self.quotation_status.currentData()
-            payload["expiry_date"] = payload["date"]
+            payload["expiry_date"] = self.quotation_expiry.date().toString("yyyy-MM-dd")
 
         # --- Initial payment only in SALE mode ---
         if self.mode == "sale":
-            init = float(self.pay_amount.text() or 0)
+            try:
+                init = float(self.pay_amount.text() or 0)
+            except Exception:
+                self._warn("Invalid Initial Payment", "Initial Payment must be a valid number.", self.pay_amount)
+                return None
+            if not math.isfinite(init):
+                self._warn("Invalid Initial Payment", "Initial Payment must be a finite number.", self.pay_amount)
+                return None
+            if init < 0:
+                self._warn("Invalid Initial Payment", "Initial Payment cannot be negative.", self.pay_amount)
+                return None
+            if init > total + 1e-9:
+                self._warn(
+                    "Invalid Initial Payment",
+                    f"Initial Payment cannot exceed the sale total. Maximum allowed: {fmt_money(total)}.",
+                    self.pay_amount,
+                )
+                return None
             method = self.pay_method.currentText()
             payload["initial_payment"] = init
             payload["initial_method"] = method

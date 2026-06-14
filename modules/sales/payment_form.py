@@ -86,23 +86,33 @@ class SalesPaymentForm(QDialog):
 
         self.amount = QLineEdit()
         self.amount.setPlaceholderText(f"{self._remaining:0.2f}")
+        self.amount.setAccessibleName("Payment amount")
+        self.amount.setAccessibleDescription(
+            f"Enter an amount greater than zero and no more than {self._remaining:0.2f}."
+        )
 
         self.date = QDateEdit()
+        self.date.setAccessibleName("Payment date")
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat("yyyy-MM-dd")
         self.date.setDate(QDate.fromString(today_str(), "yyyy-MM-dd"))
 
         self.method = QComboBox()
+        self.method.setAccessibleName("Payment method")
         for key, label in self.PAYMENT_METHODS.items():
             self.method.addItem(label, key)
 
         self.company_acct = QComboBox()
+        self.company_acct.setAccessibleName("Company bank account")
+        self.company_acct.setAccessibleDescription("Required for bank, cheque, and deposit payments.")
 
         self.instr_no = QLineEdit()
         self.instr_no.setPlaceholderText("Instrument / Cheque / Slip #")
+        self.instr_no.setAccessibleName("Payment instrument number")
 
         self.notes = QLineEdit()
         self.notes.setPlaceholderText("Notes (optional)")
+        self.notes.setAccessibleName("Payment notes")
 
         def add_row(row: int, label: str, widget):
             grid.addWidget(QLabel(label), row, 0)
@@ -121,6 +131,8 @@ class SalesPaymentForm(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.btn_ok = bb.button(QDialogButtonBox.Ok)
         self.btn_ok.setText("Record Payment")
+        self.btn_ok.setAccessibleName("Record payment")
+        self.btn_ok.setAccessibleDescription("Validate and add this payment to the selected sale.")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         outer.addWidget(bb)

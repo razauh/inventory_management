@@ -13,10 +13,10 @@ from ...utils.helpers import fmt_money
 class PaymentsTableModel(QAbstractTableModel):
     """
     Read-only, compact payments table:
-    Columns: Date, Method, Amount ±, State, Ref #, Bank
+    Columns: ID, Date, Method, Amount ±, State, Ref #, Bank, Notes
     Accepts rows as sqlite3.Row or dict with keys similar to sale_payments schema.
     """
-    HEADERS = ["Date", "Method", "Amount", "State", "Ref #", "Bank"]
+    HEADERS = ["ID", "Date", "Method", "Amount", "State", "Ref #", "Bank", "Notes"]
 
     def __init__(self, rows: list[dict] | None = None):
         super().__init__()
@@ -70,12 +70,14 @@ class PaymentsTableModel(QAbstractTableModel):
                 bank_display = f"#{bank_id}"
 
         cols = [
+            str(g("payment_id", "") or ""),
             str(date or ""),
             str(method or ""),
             fmt_money(float(amount or 0.0)),
             str(state or ""),
             str(ref_no or ""),
             bank_display,
+            str(g("notes", "") or ""),
         ]
         return cols[index.column()]
 
@@ -120,6 +122,10 @@ class SalesView(QWidget):
         modebar.addWidget(QLabel("Mode:"))
         self.btn_mode_sales = QPushButton("Sales")
         self.btn_mode_quotes = QPushButton("Quotations")
+        self.btn_mode_sales.setAccessibleName("Sales mode")
+        self.btn_mode_sales.setAccessibleDescription("Show sales records and sales actions.")
+        self.btn_mode_quotes.setAccessibleName("Quotations mode")
+        self.btn_mode_quotes.setAccessibleDescription("Show quotation records and quotation actions.")
         for b in (self.btn_mode_sales, self.btn_mode_quotes):
             b.setCheckable(True)
         self._mode_group = QButtonGroup(self)
@@ -134,22 +140,30 @@ class SalesView(QWidget):
 
         # --- Top toolbar ---
         bar = QHBoxLayout()
-        self.btn_add = QPushButton("New")
-        self.btn_edit = QPushButton("Edit")
+        self.btn_add = QPushButton("New…")
+        self.btn_edit = QPushButton("Edit…")
         # self.btn_del = QPushButton("Delete")
-        self.btn_return = QPushButton("Return")
+        self.btn_return = QPushButton("Return…")
+        self.btn_return.setAccessibleDescription("Open return entry for the selected sale.")
+        self.lbl_return_eligibility = QLabel("Select a sale to check return eligibility.")
+        self.lbl_return_eligibility.setStyleSheet("color: #666666;")
 
         # Payment, Apply Credit & Print (Apply Credit is new)
-        self.btn_record_payment = QPushButton("Payment")
+        self.btn_record_payment = QPushButton("Payment…")
         self.btn_apply_credit = QPushButton("Apply Credit…")
-        self.btn_print = QPushButton("Print")
+        self.btn_print = QPushButton("Print…")
+        self.btn_record_payment.setAccessibleDescription("Record a payment for the selected sale.")
+        self.btn_apply_credit.setAccessibleDescription("Apply customer credit to the selected sale.")
+        self.btn_print.setAccessibleDescription("Open printing for the selected document.")
 
         # Shown only in Quotation mode
-        self.btn_convert = QPushButton("Convert to Sale")
+        self.btn_convert = QPushButton("Convert to Sale…")
+        self.btn_convert.setAccessibleDescription("Convert the selected quotation into a sale.")
 
         bar.addWidget(self.btn_add)
         bar.addWidget(self.btn_edit)
         bar.addWidget(self.btn_return)
+        bar.addWidget(self.lbl_return_eligibility)
         bar.addWidget(self.btn_record_payment)
         bar.addWidget(self.btn_apply_credit)  # NEW button in toolbar
         bar.addWidget(self.btn_print)
@@ -159,17 +173,33 @@ class SalesView(QWidget):
         # Search + status filter
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search sales (id, customer, status)…")
+        self.search.setAccessibleName("Search sales and quotations")
+        self.search.setAccessibleDescription("Search by document ID, customer, or status.")
         bar.addWidget(QLabel("Search:"))
         bar.addWidget(self.search, 2)
 
         self.status_filter = QComboBox()
+        self.status_filter.setAccessibleName("Document status filter")
+        self.status_filter.setAccessibleDescription("Filter the current sales or quotations list by status.")
         self.status_filter.addItem("All", "all")
         self.status_filter.addItem("Paid", "paid")
         self.status_filter.addItem("Unpaid", "unpaid")
         self.status_filter.addItem("Partial", "partial")
-        bar.addWidget(QLabel("Status:"))
+        self.lbl_status_filter = QLabel("Payment Status:")
+        bar.addWidget(self.lbl_status_filter)
         bar.addWidget(self.status_filter)
         root.addLayout(bar)
+
+        filter_bar = QHBoxLayout()
+        self.lbl_filter_summary = QLabel("Showing all sales.")
+        self.lbl_filter_summary.setStyleSheet("color: #555555;")
+        self.btn_clear_filters = QPushButton("Clear Search and Filter")
+        self.btn_clear_filters.setAccessibleName("Clear sales search and status filter")
+        self.btn_clear_filters.setEnabled(False)
+        filter_bar.addWidget(self.lbl_filter_summary)
+        filter_bar.addStretch(1)
+        filter_bar.addWidget(self.btn_clear_filters)
+        root.addLayout(filter_bar)
 
         # --- Main split: left (list + items + payments), right (details) ---
         split = QSplitter(Qt.Horizontal)
@@ -177,6 +207,8 @@ class SalesView(QWidget):
         left = W()
         lv = V(left)
         self.tbl = TableView()
+        self.tbl.setAccessibleName("Sales and quotations list")
+        self.tbl.setAccessibleDescription("Select a document to view its items, payments, and details.")
         lv.addWidget(self.tbl, 3)
 
         self.items = SaleItemsView()
@@ -189,6 +221,7 @@ class SalesView(QWidget):
 
         # Store reference to the splitter to adjust initial sizes
         self._splitter = split
+        self._splitter_initialized = False
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
         root.addWidget(split, 1)
@@ -241,6 +274,7 @@ class SalesView(QWidget):
 
         self.btn_return.setVisible(not is_quote)
         self.btn_return.setEnabled(not is_quote)
+        self.lbl_return_eligibility.setVisible(not is_quote)
 
         self.btn_record_payment.setVisible(not is_quote)
         self.btn_record_payment.setEnabled(not is_quote)
@@ -248,29 +282,42 @@ class SalesView(QWidget):
         self.btn_apply_credit.setVisible(not is_quote)   # NEW: only in Sales mode
         self.btn_apply_credit.setEnabled(not is_quote)
 
-
         # Search placeholder
         self.search.setPlaceholderText(
             "Search quotations (id, customer, status)…" if is_quote
             else "Search sales (id, customer, status)…"
         )
 
-    def resizeEvent(self, event):
-        """Adjust splitter sizes when the widget is resized to maintain 30% reduction."""
-        super().resizeEvent(event)
-        # After the layout is done, set the splitter sizes to achieve 30% reduction
-        if hasattr(self, '_splitter'):
-            # Get the current size of the splitter
-            total_width = self._splitter.width()
-            # Calculate sizes that maintain the 3:2 ratio but are 30% smaller than full allocation
-            # Original ratio: 3:2 = 3/5 and 2/5 of total space
-            # With 30% reduction: use 0.7 * 3/5 and 0.7 * 2/5 = 0.42 and 0.28 of total width
-            left_width = int(total_width * 0.42)
-            right_width = int(total_width * 0.28)
+        self.status_filter.blockSignals(True)
+        self.status_filter.clear()
+        self.status_filter.addItem("All", "all")
+        if is_quote:
+            self.lbl_status_filter.setText("Quotation Status:")
+            for label, value in (
+                ("Draft", "draft"),
+                ("Sent", "sent"),
+                ("Accepted", "accepted"),
+                ("Expired", "expired"),
+                ("Cancelled", "cancelled"),
+            ):
+                self.status_filter.addItem(label, value)
+        else:
+            self.lbl_status_filter.setText("Payment Status:")
+            self.status_filter.addItem("Paid", "paid")
+            self.status_filter.addItem("Unpaid", "unpaid")
+            self.status_filter.addItem("Partial", "partial")
+        self.status_filter.setCurrentIndex(0)
+        self.status_filter.blockSignals(False)
 
-            # To ensure the panels are actually reduced by 30% while maintaining proportions:
-            # Instead of using the full available width (100%), use 70% of it
-            # Left: (3/5)*0.7 ≈ 0.42
-            # Right: (2/5)*0.7 ≈ 0.28
-            if left_width > 0 and right_width > 0:
-                self._splitter.setSizes([left_width, right_width])
+    def resizeEvent(self, event):
+        """Set a sensible initial split without overriding later user changes."""
+        super().resizeEvent(event)
+        if self._splitter_initialized:
+            return
+        total_width = self._splitter.width()
+        if total_width > 0:
+            self._splitter.setSizes([
+                int(total_width * 0.6),
+                int(total_width * 0.4),
+            ])
+            self._splitter_initialized = True

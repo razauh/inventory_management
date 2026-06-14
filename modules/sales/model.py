@@ -2,6 +2,14 @@ from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
 from ...utils.helpers import fmt_money
 
 class SalesTableModel(QAbstractTableModel):
+    QUOTATION_STATUS_LABELS = {
+        "draft": "Draft",
+        "sent": "Sent",
+        "accepted": "Accepted",
+        "expired": "Expired",
+        "cancelled": "Cancelled",
+    }
+
     def __init__(self, rows: list, doc_type: str = "sale"):
         super().__init__()
         self._rows = rows
@@ -10,7 +18,7 @@ class SalesTableModel(QAbstractTableModel):
 
     def _update_headers(self):
         if self._doc_type == "quotation":
-            self.HEADERS = ["ID", "Date", "Customer", "Total"]
+            self.HEADERS = ["ID", "Date", "Customer", "Total", "Status"]
         else:  # sale
             self.HEADERS = ["ID", "Date", "Customer", "Total", "Paid", "Status"]
 
@@ -35,11 +43,16 @@ class SalesTableModel(QAbstractTableModel):
             c = index.column()
             # Mapping depends on document type
             if self._doc_type == "quotation":
+                quotation_status = str(r.get("quotation_status") or "").lower()
                 mapping = [
                     r["sale_id"],
                     r["date"],
                     r["customer_name"],
-                    fmt_money(r["total_amount"])
+                    fmt_money(r["total_amount"]),
+                    self.QUOTATION_STATUS_LABELS.get(
+                        quotation_status,
+                        quotation_status.replace("_", " ").title(),
+                    ),
                 ]
             else:  # sale
                 mapping = [

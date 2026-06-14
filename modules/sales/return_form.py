@@ -21,6 +21,15 @@ class SaleReturnForm(QDialog):
     Quick mode:
       If constructed with sale_id, the dialog hides the search UI and preloads that sale.
     """
+    COL_ITEM_ID = 0
+    COL_PRODUCT = 1
+    COL_SOLD = 2
+    COL_RETURNED = 3
+    COL_REMAINING = 4
+    COL_UNIT_PRICE = 5
+    COL_QTY_RETURN = 6
+    COL_LINE_REFUND = 7
+
     def __init__(self, parent=None, repo: SalesRepo | None = None, sale_id: str | None = None):
         super().__init__(parent)
         self.setWindowTitle("Sale Return")
@@ -36,12 +45,17 @@ class SaleReturnForm(QDialog):
         self._search_row = QHBoxLayout()
         self.edt_q = QLineEdit()
         self.edt_q.setPlaceholderText("SO number or customer name…")
+        self.edt_q.setAccessibleName("Search sales for return")
+        self.edt_q.setAccessibleDescription("Search by sales order number or customer name.")
         self.edt_date = QDateEdit()
+        self.edt_date.setAccessibleName("Sale search date")
         self.edt_date.setCalendarPopup(True)
         self.edt_date.setDate(QDate.fromString(today_str(), "yyyy-MM-dd"))
         self.chk_date = QCheckBox("Filter date")
+        self.chk_date.setAccessibleDescription("Limit return search results to the selected date.")
         self.edt_date.setEnabled(False)
         self.btn_find = QPushButton("Find")
+        self.btn_find.setAccessibleName("Find sales for return")
         self._search_row.addWidget(QLabel("Search:"))
         self._search_row.addWidget(self.edt_q, 2)
         self._search_row.addWidget(self.chk_date)
@@ -51,23 +65,46 @@ class SaleReturnForm(QDialog):
 
         # --- sales results ---
         self.tbl_sales = QTableWidget(0, 5)
+        self.tbl_sales.setAccessibleName("Sales eligible for return")
+        self.tbl_sales.setAccessibleDescription("Select one sale to load its returnable items.")
         self.tbl_sales.setHorizontalHeaderLabels(["SO", "Date", "Customer", "Total", "Paid"])
         self.tbl_sales.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_sales.setSelectionMode(QAbstractItemView.SingleSelection)
         lay.addWidget(self.tbl_sales, 1)
 
         # --- items of selected sale ---
-        self.tbl_items = QTableWidget(0, 6)
-        # Column 2 now represents the maximum remaining returnable quantity
-        self.tbl_items.setHorizontalHeaderLabels(["ItemID", "Product", "Max Returnable", "Unit Price", "Qty Return", "Line Refund"])
+        self.tbl_items = QTableWidget(0, 8)
+        self.tbl_items.setAccessibleName("Returnable sale items")
+        self.tbl_items.setAccessibleDescription("Enter return quantities in the quantity return column.")
+        self.tbl_items.setHorizontalHeaderLabels([
+            "ItemID",
+            "Product",
+            "Sold",
+            "Already Returned",
+            "Remaining Returnable",
+            "Unit Price",
+            "Qty Return",
+            "Line Refund",
+        ])
         self.tbl_items.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_items.setSelectionMode(QAbstractItemView.SingleSelection)
         lay.addWidget(self.tbl_items, 2)
 
         # --- options (return-all + refund) ---
         opt = QHBoxLayout()
+        self.return_date = QDateEdit()
+        self.return_date.setAccessibleName("Return date")
+        self.return_date.setCalendarPopup(True)
+        self.return_date.setDisplayFormat("yyyy-MM-dd")
+        self.return_date.setDate(QDate.fromString(today_str(), "yyyy-MM-dd"))
         self.chk_return_all = QCheckBox("Return whole order")
+        self.chk_return_all.setAccessibleDescription("Set every returnable item to its full remaining quantity.")
         self.chk_refund = QCheckBox("Refund now?")
+        self.chk_refund.setAccessibleDescription("Enable an immediate cash refund for this return.")
+        self.chk_refund.setEnabled(False)
+        opt.addWidget(QLabel("Return Date:"))
+        opt.addWidget(self.return_date)
+        opt.addSpacing(16)
         opt.addWidget(self.chk_return_all)
         opt.addWidget(self.chk_refund)
         opt.addStretch(1)
@@ -77,10 +114,12 @@ class SaleReturnForm(QDialog):
 
         # Cash refund (operator editable)
         self.spin_cash = QDoubleSpinBox()
+        self.spin_cash.setAccessibleName("Immediate cash refund amount")
         self.spin_cash.setDecimals(2)
         self.spin_cash.setMinimum(0.0)
         self.spin_cash.setMaximum(0.0)  # set dynamically
         self.spin_cash.setEnabled(False)
+        self.spin_cash.setToolTip("Check 'Refund now?' to enter a cash refund amount.")
         self._cash_user_set = False  # becomes True the first time user edits while enabled
 
         self.lbl_cash_cap = QLabel("(max: 0.00)")
@@ -115,7 +154,7 @@ class SaleReturnForm(QDialog):
         self.spin_cash.valueChanged.connect(self._on_cash_changed)
 
         # window size
-        self.resize(960, 620)
+        self.resize(1120, 620)
 
         # state
         self._selected_sid: str | None = None
@@ -322,21 +361,26 @@ class SaleReturnForm(QDialog):
 
             # Compute remaining returnable quantity for this item
             remaining = float(remaining_map.get(int(it["item_id"]), qty_sold))
+            returned = max(0.0, qty_sold - remaining)
 
-            self.tbl_items.setItem(r, 0, QTableWidgetItem(str(it["item_id"])))
-            self.tbl_items.setItem(r, 1, QTableWidgetItem(it["product_name"]))
-            self.tbl_items.setItem(r, 2, QTableWidgetItem(f'{remaining:g}'))
-            self.tbl_items.setItem(r, 3, QTableWidgetItem(fmt_money(unit_net)))
+            self.tbl_items.setItem(r, self.COL_ITEM_ID, QTableWidgetItem(str(it["item_id"])))
+            self.tbl_items.setItem(r, self.COL_PRODUCT, QTableWidgetItem(it["product_name"]))
+            self.tbl_items.setItem(r, self.COL_SOLD, QTableWidgetItem(f"{qty_sold:g}"))
+            self.tbl_items.setItem(r, self.COL_RETURNED, QTableWidgetItem(f"{returned:g}"))
+            self.tbl_items.setItem(r, self.COL_REMAINING, QTableWidgetItem(f"{remaining:g}"))
+            self.tbl_items.setItem(r, self.COL_UNIT_PRICE, QTableWidgetItem(fmt_money(unit_net)))
             qret = QTableWidgetItem("0")
             qret.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.tbl_items.setItem(r, 4, qret)
-            self.tbl_items.setItem(r, 5, QTableWidgetItem("0.00"))
+            self.tbl_items.setItem(r, self.COL_QTY_RETURN, qret)
+            self.tbl_items.setItem(r, self.COL_LINE_REFUND, QTableWidgetItem("0.00"))
+            for column in range(self.tbl_items.columnCount()):
+                if column == self.COL_QTY_RETURN:
+                    continue
+                cell = self.tbl_items.item(r, column)
+                if cell:
+                    cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
         self.tbl_items.blockSignals(False)
 
-        # Enable refund-now checkbox when something was paid
-        self.chk_refund.setEnabled(self._sale_paid > 0.0)
-        # Spinner enabled whenever there is paid>0 (no need to tick first)
-        self.spin_cash.setEnabled(self._sale_paid > 0.0)
         if self._sale_paid <= 0.0:
             self.chk_refund.setChecked(False)
             self._cash_user_set = False
@@ -354,23 +398,24 @@ class SaleReturnForm(QDialog):
             return
         self.tbl_items.blockSignals(True)
         for r in range(self.tbl_items.rowCount()):
-            sold = self.tbl_items.item(r, 2)
-            target = self.tbl_items.item(r, 4)
-            if sold and target:
-                target.setText(sold.text() if checked else "0")
+            remaining = self.tbl_items.item(r, self.COL_REMAINING)
+            target = self.tbl_items.item(r, self.COL_QTY_RETURN)
+            if remaining and target:
+                target.setText(remaining.text() if checked else "0")
         self.tbl_items.blockSignals(False)
         self._recalc()
 
     def _on_refund_toggle(self, checked: bool):
-        # Spinner stays enabled based on paid>0; just refresh defaults/notes.
         if not checked:
-            pass
+            self._cash_user_set = False
+            self.spin_cash.blockSignals(True)
+            self.spin_cash.setValue(0.0)
+            self.spin_cash.blockSignals(False)
+        else:
+            self._cash_user_set = False
         self._recalc()
 
     def _on_cash_changed(self, _=None):
-        # If user types a positive value, auto-check "Refund now?"
-        if self.spin_cash.isEnabled() and self.spin_cash.value() > 0 and not self.chk_refund.isChecked():
-            self.chk_refund.setChecked(True)
         self._cash_user_set = True
         self._update_note()
 
@@ -386,25 +431,27 @@ class SaleReturnForm(QDialog):
         of = self._order_factor()
         for r in range(self.tbl_items.rowCount()):
             try:
-                sold = float(self.tbl_items.item(r, 2).text() or 0)
-                unit_net = float((self.tbl_items.item(r, 3).text() or "0").replace(",", ""))
-                qty = float(self.tbl_items.item(r, 4).text() or 0)
+                remaining = float(self.tbl_items.item(r, self.COL_REMAINING).text() or 0)
+                unit_net = float(
+                    (self.tbl_items.item(r, self.COL_UNIT_PRICE).text() or "0").replace(",", "")
+                )
+                qty = float(self.tbl_items.item(r, self.COL_QTY_RETURN).text() or 0)
             except Exception:
                 continue
 
-            over = qty > sold
-            it = self.tbl_items.item(r, 4)
+            over = qty > remaining
+            it = self.tbl_items.item(r, self.COL_QTY_RETURN)
             if it:
                 it.setBackground(Qt.red if over else Qt.white)
             if over:
-                lt = self.tbl_items.item(r, 5)
+                lt = self.tbl_items.item(r, self.COL_LINE_REFUND)
                 if lt:
                     lt.setText(fmt_money(0.0))
                 continue
 
             line_refund = qty * unit_net * of
             total += line_refund
-            lt = self.tbl_items.item(r, 5)
+            lt = self.tbl_items.item(r, self.COL_LINE_REFUND)
             if lt:
                 lt.setText(fmt_money(line_refund))
 
@@ -415,10 +462,18 @@ class SaleReturnForm(QDialog):
         settlement_due = max(0.0, self._refund_amount - self._remaining_due)
         cap = min(settlement_due, self._sale_paid)
         self.lbl_cash_cap.setText(f"(max: {fmt_money(cap)})")
+        self.spin_cash.blockSignals(True)
         self.spin_cash.setMaximum(max(0.0, cap))
+        can_refund_now = cap > 1e-9
+        self.chk_refund.setEnabled(can_refund_now)
+        if not can_refund_now and self.chk_refund.isChecked():
+            self.chk_refund.blockSignals(True)
+            self.chk_refund.setChecked(False)
+            self.chk_refund.blockSignals(False)
+            self._cash_user_set = False
+        self.spin_cash.setEnabled(can_refund_now and self.chk_refund.isChecked())
 
         # Default the spinner if user hasn't edited yet
-        self.spin_cash.blockSignals(True)
         if self.spin_cash.isEnabled():
             if not self._cash_user_set:
                 self.spin_cash.setValue(cap)
@@ -441,6 +496,12 @@ class SaleReturnForm(QDialog):
             )
             return
 
+        if not self.chk_refund.isChecked():
+            self.lbl_note.setText(
+                f"No cash refund now. {fmt_money(settlement_due)} will become customer credit."
+            )
+            return
+
         if cash_now < cap:
             credited = settlement_due - cash_now
             self.lbl_note.setText(
@@ -449,13 +510,13 @@ class SaleReturnForm(QDialog):
             )
         elif settlement_due > self._sale_paid:
             self.lbl_note.setText(
-                f"Note: Paid is {fmt_money(self._sale_paid)}. "
-                f"Cash refund is capped at that amount; the remainder becomes customer credit."
+                f"Cash refund now is {fmt_money(cash_now)}. "
+                f"{fmt_money(settlement_due - cash_now)} will become customer credit."
             )
         else:
             self.lbl_note.setText(
-                f"{fmt_money(self._remaining_due)} reduces the balance first. "
-                f"Settlement due is {fmt_money(settlement_due)}."
+                f"Sale balance reduces by {fmt_money(min(self._refund_amount, self._remaining_due))}. "
+                f"Cash refund now is {fmt_money(cash_now)}. No customer credit remains."
             )
 
     # ---- payload ----
@@ -464,23 +525,25 @@ class SaleReturnForm(QDialog):
             return None
         lines = []
         for r in range(self.tbl_items.rowCount()):
-            qty = float(self.tbl_items.item(r, 4).text() or 0)
-            sold = float(self.tbl_items.item(r, 2).text() or 0)
-            if qty <= 0 or qty > sold:
+            qty = float(self.tbl_items.item(r, self.COL_QTY_RETURN).text() or 0)
+            remaining = float(self.tbl_items.item(r, self.COL_REMAINING).text() or 0)
+            if qty <= 0 or qty > remaining:
                 continue
             lines.append({
-                "item_id": int(self.tbl_items.item(r, 0).text()),
+                "item_id": int(self.tbl_items.item(r, self.COL_ITEM_ID).text()),
                 "qty_return": qty
             })
         if not lines:
             return None
         return {
             "sale_id": self._selected_sid,
+            "return_date": self.return_date.date().toString("yyyy-MM-dd"),
             "lines": lines,
-            # Consider it a "refund now" if either box is checked or a positive cash value is set
-            "refund_now": self.chk_refund.isChecked() or (self.spin_cash.isEnabled() and self.spin_cash.value() > 0),
+            "refund_now": self.chk_refund.isChecked(),
             "refund_amount": self._refund_amount,                 # returned value (after OD proration)
-            "cash_refund_now": float(self.spin_cash.value()) if self.spin_cash.isEnabled() else 0.0,
+            "cash_refund_now": (
+                float(self.spin_cash.value()) if self.chk_refund.isChecked() else 0.0
+            ),
         }
 
     def accept(self):

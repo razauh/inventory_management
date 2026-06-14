@@ -585,7 +585,7 @@ class SalesRepo:
         allowed_statuses = {"draft", "sent", "accepted", "expired", "cancelled"}
         if quotation_status not in allowed_statuses:
             raise ValueError(f"Invalid quotation status: {quotation_status}")
-        expiry_date = header.date
+        expiry_date = expiry_date or header.date
         with self.conn:
             if not header.sale_id:
                 header.sale_id = self._allocate_document_id("quotation", header.date)
@@ -637,7 +637,6 @@ class SalesRepo:
         allowed_statuses = {"draft", "sent", "accepted", "expired", "cancelled"}
         if quotation_status is not None and quotation_status not in allowed_statuses:
             raise ValueError(f"Invalid quotation status: {quotation_status}")
-        expiry_date = header.date
         with self.conn:
             row = self.conn.execute("SELECT doc_type FROM sales WHERE sale_id=?", (header.sale_id,)).fetchone()
             if not row or row["doc_type"] != "quotation":

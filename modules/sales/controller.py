@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtWidgets import QWidget, QApplication, QMessageBox
 from PySide6.QtCore import Qt, QSortFilterProxyModel
 import sqlite3
 import re
@@ -11,6 +11,7 @@ from .model import SalesTableModel
 from .form import SaleForm
 from .return_form import SaleReturnForm
 from ...database.repositories.sales_repo import SalesRepo, SaleHeader, SaleItem
+from ...database.repositories.sales_returns_helpers import get_returnable_quantities
 from ...database.repositories.customers_repo import CustomersRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.ui_helpers import info
@@ -26,9 +27,7 @@ _log = logging.getLogger(__name__)
 
 class SalesStatusProxy(QSortFilterProxyModel):
     """
-    Proxy model that can filter SALE rows by payment_status while leaving
-    quotations untouched. The controller controls the active filter via
-    set_status_filter(...).
+    Filter sales by payment status and quotations by quotation status.
     """
 
     def __init__(self, parent=None):
@@ -47,8 +46,7 @@ class SalesStatusProxy(QSortFilterProxyModel):
         self.invalidateFilter()
 
     def filterAcceptsRow(self, source_row, source_parent):
-        # Only filter SALES; quotations are unaffected.
-        if self._doc_type != "sale" or self._status_filter == "all":
+        if self._status_filter == "all":
             return True
         src_model = self.sourceModel()
         if not hasattr(src_model, "at"):
@@ -59,11 +57,8 @@ class SalesStatusProxy(QSortFilterProxyModel):
             return True
 
         try:
-            status = (
-                row.get("payment_status", "")
-                if isinstance(row, dict)
-                else row["payment_status"]
-            )
+            key = "quotation_status" if self._doc_type == "quotation" else "payment_status"
+            status = row.get(key, "") if isinstance(row, dict) else row[key]
         except Exception:
             status = ""
         status = str(status or "").lower()
@@ -74,7 +69,7 @@ class SalesStatusProxy(QSortFilterProxyModel):
             return status == "unpaid"
         if self._status_filter == "partial":
             return status in ("partial", "partial_paid")
-        return True
+        return status == self._status_filter
 
 
 class SalesController(BaseModule):
@@ -181,6 +176,8 @@ class SalesController(BaseModule):
         # Status filter (paid/unpaid/partial/all)
         if hasattr(self.view, "status_filter"):
             self.view.status_filter.currentIndexChanged.connect(self._on_status_filter_changed)
+        if hasattr(self.view, "btn_clear_filters"):
+            self.view.btn_clear_filters.clicked.connect(self._clear_filters)
 
         if hasattr(self.view, "btn_record_payment"):
             self.view.btn_record_payment.clicked.connect(self._record_payment)
@@ -202,6 +199,7 @@ class SalesController(BaseModule):
     def _on_mode_changed(self, mode: str):
         mode = (mode or "sale").lower()
         self._doc_type = "quotation" if mode == "quotation" else "sale"
+        self._status_filter = "all"
 
         # Show a busy cursor while we rebuild potentially large models
         app = QApplication.instance()
@@ -252,6 +250,61 @@ class SalesController(BaseModule):
                 self.proxy.set_status_filter(self._status_filter)
         except Exception:
             pass
+        self._update_filter_summary()
+
+    def _clear_filters(self):
+        self.view.search.blockSignals(True)
+        self.view.search.clear()
+        self.view.search.blockSignals(False)
+        self.view.status_filter.blockSignals(True)
+        all_index = self.view.status_filter.findData("all")
+        self.view.status_filter.setCurrentIndex(max(0, all_index))
+        self.view.status_filter.blockSignals(False)
+        self._search_text = ""
+        self._status_filter = "all"
+        self._reload()
+
+    def _update_filter_summary(self):
+        if not hasattr(self.view, "lbl_filter_summary"):
+            return
+
+        visible_count = self.proxy.rowCount() if hasattr(self, "proxy") else 0
+        mode_label = "quotations" if self._doc_type == "quotation" else "sales"
+        search_text = self._search_text.strip()
+        status_text = ""
+        try:
+            if self._status_filter != "all":
+                status_text = self.view.status_filter.currentText()
+        except Exception:
+            status_text = self._status_filter.title()
+
+        filters = []
+        if search_text:
+            filters.append(f'Search: "{search_text}"')
+        if status_text:
+            filters.append(f"Status: {status_text}")
+
+        if visible_count == 0:
+            if filters:
+                message = f"No {mode_label} match. Active filters: " + " | ".join(filters)
+                style = "color: #a22; font-weight: bold;"
+            else:
+                message = f"No {mode_label} available."
+                style = "color: #555555;"
+        elif filters:
+            message = (
+                f"Showing {visible_count} {mode_label}. "
+                "Active filters: " + " | ".join(filters)
+            )
+            style = "color: #555555;"
+        else:
+            message = f"Showing all {visible_count} {mode_label}."
+            style = "color: #555555;"
+
+        self.view.lbl_filter_summary.setText(message)
+        self.view.lbl_filter_summary.setStyleSheet(style)
+        if hasattr(self.view, "btn_clear_filters"):
+            self.view.btn_clear_filters.setEnabled(bool(filters))
 
     def _on_selection_changed(self, *_):
         # Enable/disable buttons then refresh details
@@ -260,7 +313,8 @@ class SalesController(BaseModule):
 
     def _update_action_states(self):
         """Guard toolbar buttons by selection and mode."""
-        selected = self._selected_row() is not None
+        row = self._selected_row()
+        selected = row is not None
 
         # Always available
         if hasattr(self.view, "btn_edit"):
@@ -270,22 +324,168 @@ class SalesController(BaseModule):
 
         # Sales-only actions
         allow_sales = (self._doc_type == "sale") and selected
+        return_allowed = False
+        return_message = "Select a sale to check return eligibility."
+        if allow_sales:
+            return_allowed, return_message = self._return_eligibility(row)
         if hasattr(self.view, "btn_return"):
-            self.view.btn_return.setEnabled(allow_sales)
+            self.view.btn_return.setEnabled(return_allowed)
+            self.view.btn_return.setToolTip(return_message)
+        if hasattr(self.view, "lbl_return_eligibility"):
+            self.view.lbl_return_eligibility.setText(return_message)
+        payment_allowed = False
+        payment_message = "Select a sale to record payment."
+        credit_allowed = False
+        credit_message = "Select a sale to apply credit."
+        if allow_sales:
+            (
+                payment_allowed,
+                payment_message,
+                credit_allowed,
+                credit_message,
+            ) = self._financial_action_eligibility(row)
         if hasattr(self.view, "btn_record_payment"):
-            self.view.btn_record_payment.setEnabled(allow_sales)
+            self.view.btn_record_payment.setEnabled(payment_allowed)
+            self.view.btn_record_payment.setToolTip(payment_message)
         if hasattr(self.view, "btn_apply_credit"):
-            self.view.btn_apply_credit.setEnabled(allow_sales)
+            self.view.btn_apply_credit.setEnabled(credit_allowed)
+            self.view.btn_apply_credit.setToolTip(credit_message)
 
         # Quotation-only action
         allow_convert = False
         if (self._doc_type == "quotation") and selected:
-            row = self._selected_row()
             if row and row.get("quotation_status") in ("draft", "sent"):
                 allow_convert = True
 
         if hasattr(self.view, "btn_convert"):
             self.view.btn_convert.setEnabled(allow_convert)
+
+    def _return_eligibility(self, row: dict | None) -> tuple[bool, str]:
+        if self._doc_type != "sale":
+            return False, "Returns apply to sales only."
+        if not row:
+            return False, "Select a sale to check return eligibility."
+
+        try:
+            remaining = get_returnable_quantities(self.conn, row["sale_id"])
+            returnable_lines = sum(
+                1 for qty in remaining.values() if float(qty) > 1e-9
+            )
+        except (sqlite3.Error, KeyError, TypeError, ValueError):
+            _log.exception(
+                "Could not check return eligibility for sale_id=%s",
+                row.get("sale_id"),
+            )
+            return False, "Return unavailable: eligibility could not be checked."
+        except Exception:
+            _log.exception(
+                "Unexpected error checking return eligibility for sale_id=%s",
+                row.get("sale_id"),
+            )
+            return False, "Return unavailable: eligibility could not be checked."
+
+        if returnable_lines == 0:
+            return False, "Return unavailable: sale is fully returned."
+        noun = "item" if returnable_lines == 1 else "items"
+        return True, f"Return available: {returnable_lines} {noun} remaining."
+
+    def _financial_action_eligibility(
+        self, row: dict | None
+    ) -> tuple[bool, str, bool, str]:
+        if self._doc_type != "sale":
+            return (
+                False,
+                "Payments apply to sales only.",
+                False,
+                "Customer credit applies to sales only.",
+            )
+        if not row:
+            return (
+                False,
+                "Select a sale to record payment.",
+                False,
+                "Select a sale to apply credit.",
+            )
+
+        try:
+            remaining = float(
+                self._fetch_sale_financials(str(row["sale_id"]))["remaining_due"]
+            )
+        except (sqlite3.Error, KeyError, TypeError, ValueError):
+            _log.exception(
+                "Could not check financial actions for sale_id=%s",
+                row.get("sale_id"),
+            )
+            message = "Unavailable: sale balance could not be checked."
+            return False, message, False, message
+        except Exception:
+            _log.exception(
+                "Unexpected error checking financial actions for sale_id=%s",
+                row.get("sale_id"),
+            )
+            message = "Unavailable: sale balance could not be checked."
+            return False, message, False, message
+
+        if remaining <= 1e-9:
+            return (
+                False,
+                "Payment unavailable: sale is fully settled.",
+                False,
+                "Apply Credit unavailable: sale is fully settled.",
+            )
+
+        payment_message = f"Payment available: {fmt_money(remaining)} due."
+        customer_id = int(row.get("customer_id") or 0)
+        if not customer_id:
+            return (
+                True,
+                payment_message,
+                False,
+                "Apply Credit unavailable: customer information is missing.",
+            )
+
+        try:
+            from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo
+
+            credit = float(CustomerAdvancesRepo(self.conn).get_balance(customer_id) or 0.0)
+        except (ImportError, sqlite3.Error, TypeError, ValueError):
+            _log.exception(
+                "Could not check customer credit for customer_id=%s",
+                customer_id,
+            )
+            return (
+                True,
+                payment_message,
+                False,
+                "Apply Credit unavailable: customer credit could not be checked.",
+            )
+        except Exception:
+            _log.exception(
+                "Unexpected error checking customer credit for customer_id=%s",
+                customer_id,
+            )
+            return (
+                True,
+                payment_message,
+                False,
+                "Apply Credit unavailable: customer credit could not be checked.",
+            )
+
+        if credit <= 1e-9:
+            return (
+                True,
+                payment_message,
+                False,
+                "Apply Credit unavailable: customer has no available credit.",
+            )
+
+        applicable = min(remaining, credit)
+        return (
+            True,
+            payment_message,
+            True,
+            f"Apply Credit available: up to {fmt_money(applicable)}.",
+        )
 
     def _build_model(self):
         """
@@ -372,6 +572,7 @@ class SalesController(BaseModule):
         # Ensure buttons are correctly enabled/disabled and details are fresh
         self._update_action_states()
         self._sync_details()
+        self._update_filter_summary()
 
     def _selected_row(self) -> dict | None:
         try:
@@ -569,6 +770,9 @@ class SalesController(BaseModule):
             "sales_repo": self.repo,
             "db_path": self._db_path,
             "bank_accounts": self.bank_accounts,
+            "can_view_margin": bool(
+                self.user and str(self.user.get("role") or "").lower() == "admin"
+            ),
         }
         if initial is not None:
             kwargs["initial"] = initial
@@ -916,6 +1120,8 @@ class SalesController(BaseModule):
             return
 
         doc_type = self._doc_type
+        if doc_type == "sale" and not self._confirm_sale_edit_if_posted(r):
+            return
 
         # Store doc_type and selected row so the handler method knows the context
         self._pending_doc_type = doc_type
@@ -962,6 +1168,53 @@ class SalesController(BaseModule):
         self.active_dialog = dlg
         self.active_dialog.accepted.connect(self._handle_edit_dialog_accept)
         self.active_dialog.show()
+
+    def _confirm_sale_edit_if_posted(self, row: dict) -> bool:
+        sid = row["sale_id"]
+        payment_count = 0
+        returned_qty = 0.0
+        returned_value = 0.0
+
+        try:
+            from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
+            pay_repo = SalePaymentsRepo(self._db_path)
+            payment_count = len(list(pay_repo.list_by_sale(sid)) or [])
+        except Exception:
+            payment_count = 0
+
+        try:
+            rt = self.repo.sale_return_totals(sid)
+            returned_qty = float(rt.get("qty", 0.0))
+            returned_value = float(rt.get("value", 0.0))
+        except Exception:
+            returned_qty = 0.0
+            returned_value = 0.0
+
+        has_payments = payment_count > 0
+        has_returns = returned_qty > 1e-9 or returned_value > 1e-9
+        if not has_payments and not has_returns:
+            return True
+
+        risk_lines = []
+        if has_payments:
+            risk_lines.append(f"- Payments found: {payment_count}")
+        if has_returns:
+            risk_lines.append(f"- Returns found: {fmt_money(returned_value)}")
+
+        message = (
+            f"Sale {sid} already has downstream records.\n\n"
+            + "\n".join(risk_lines)
+            + "\n\nEditing the sale header or items can change totals, stock history, balances, and reports.\n"
+              "Continue editing?"
+        )
+        answer = QMessageBox.question(
+            self.view,
+            "Edit Posted Sale?",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
 
     def _handle_edit_dialog_accept(self):
         """Handle the accepted signal from the non-modal SaleForm during edit"""
@@ -1198,6 +1451,26 @@ class SalesController(BaseModule):
                 info(self.view, "Update failed", "Select a pending payment from the current sale.")
                 self._sync_details()
                 return
+            target_label = "Cleared" if new == "cleared" else "Bounced"
+            amount = fmt_money(float(payment["amount"] or 0.0))
+            method = str(payment["method"] or "Unknown")
+            answer = QMessageBox.question(
+                self.view,
+                "Confirm Payment State Change",
+                (
+                    f"Sale: {payment['sale_id']}\n"
+                    f"Payment: #{payment_id}\n"
+                    f"Method: {method}\n"
+                    f"Amount: {amount}\n"
+                    f"Current state: Pending\n"
+                    f"New state: {target_label}\n\n"
+                    "This changes the sale's financial history. Continue?"
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
             cleared_date = today_str() if new == "cleared" else None
             pay_repo.update_clearing_state(
                 payment_id=payment_id,
@@ -1317,6 +1590,12 @@ class SalesController(BaseModule):
             info(self.view, "Missing data", "Selected sale is missing customer information.")
             return
 
+        _, _, credit_allowed, credit_message = self._financial_action_eligibility(row)
+        if not credit_allowed:
+            info(self.view, "Apply Credit unavailable", credit_message)
+            self._update_action_states()
+            return
+
         # Local dialog + actions (lazy import)
         try:
             from ..customer.receipt_dialog import open_payment_or_advance_form  # type: ignore
@@ -1388,10 +1667,17 @@ class SalesController(BaseModule):
             return
 
         selected = self._selected_row()
-        if selected:
-            dlg = SaleReturnForm(self.view, repo=self.repo, sale_id=selected["sale_id"])
-        else:
-            dlg = SaleReturnForm(self.view, repo=self.repo)
+        if not selected:
+            info(self.view, "Select", "Select a sale first.")
+            return
+
+        return_allowed, return_message = self._return_eligibility(selected)
+        if not return_allowed:
+            info(self.view, "Return unavailable", return_message)
+            self._update_action_states()
+            return
+
+        dlg = SaleReturnForm(self.view, repo=self.repo, sale_id=selected["sale_id"])
 
         # Store doc_type so the handler method knows the context
         self._pending_doc_type = doc_type
@@ -1433,9 +1719,10 @@ class SalesController(BaseModule):
             )
 
         requested_cash = float(p.get("cash_refund_now") or 0.0)
+        return_date = p.get("return_date") or today_str()
         result = self.repo.record_return(
             sid=sid,
-            date=today_str(),
+            date=return_date,
             created_by=(self.user["user_id"] if self.user else None),
             lines=lines,
             notes="[Return]",

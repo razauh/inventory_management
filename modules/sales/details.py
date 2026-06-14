@@ -96,29 +96,49 @@ class SaleDetails(QWidget):
         self.pay_box = QGroupBox("Payments")
         pay_layout = QVBoxLayout(self.pay_box)
 
-        self.tbl_payments = QTableWidget(0, 6)
-        self.tbl_payments.setHorizontalHeaderLabels(["Date", "Method", "Amount", "State", "Ref #", "Bank"])
+        self.tbl_payments = QTableWidget(0, 7)
+        self.tbl_payments.setAccessibleName("Payments for selected sale")
+        self.tbl_payments.setAccessibleDescription(
+            "Select a payment to hear audit details or change a pending payment state."
+        )
+        self.tbl_payments.setHorizontalHeaderLabels([
+            "ID", "Date", "Method", "Amount", "State", "Ref #", "Bank"
+        ])
         self.tbl_payments.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_payments.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_payments.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_payments.verticalHeader().setVisible(False)
         self.tbl_payments.setAlternatingRowColors(True)
         pay_layout.addWidget(self.tbl_payments)
+        self.lbl_payment_audit_detail = QLabel("Select a payment to view audit details.")
+        self.lbl_payment_audit_detail.setWordWrap(True)
+        self.lbl_payment_audit_detail.setStyleSheet("color: #555555;")
+        pay_layout.addWidget(self.lbl_payment_audit_detail)
 
         # Payment status update controls (only visible when there is a pending payment)
         self._pending_payment_id: int | None = None
+        self._current_sale_id: str | None = None
         self._payment_rows: list[dict] = []
         self._payments_are_for_sale: bool = False
         self._apply_state_wired: bool = False
         self.update_box = QWidget()
         upd_layout = QHBoxLayout(self.update_box)
         upd_layout.setContentsMargins(0, 0, 0, 0)
-        upd_layout.addWidget(QLabel("Update payment state:"))
+        self.lbl_payment_state_preview = QLabel("")
+        self.lbl_payment_state_preview.setWordWrap(True)
+        upd_layout.addWidget(self.lbl_payment_state_preview, 2)
+        upd_layout.addWidget(QLabel("Change to:"))
         self.rb_cleared = QRadioButton("Cleared")
         self.rb_bounced = QRadioButton("Bounced")
+        self.rb_cleared.setAccessibleName("Mark selected payment cleared")
+        self.rb_bounced.setAccessibleName("Mark selected payment bounced")
         upd_layout.addWidget(self.rb_cleared)
         upd_layout.addWidget(self.rb_bounced)
         self.btn_apply_state = QPushButton("Apply")
+        self.btn_apply_state.setAccessibleName("Apply payment state change")
+        self.btn_apply_state.setAccessibleDescription(
+            "Apply the selected cleared or bounced state to the pending payment."
+        )
         upd_layout.addWidget(self.btn_apply_state)
         upd_layout.addStretch(1)
         pay_layout.addWidget(self.update_box)
@@ -147,12 +167,15 @@ class SaleDetails(QWidget):
         # Default to 'sale' visibility when nothing is selected
         self._apply_doc_type_visibility("sale")
         self._pending_payment_id = None
+        self._current_sale_id = None
         self._payment_rows = []
         self._payments_are_for_sale = False
         self.update_box.setVisible(False)
         self.rb_cleared.setChecked(False)
         self.rb_bounced.setChecked(False)
         self.btn_apply_state.setEnabled(False)
+        self.lbl_payment_state_preview.clear()
+        self.lbl_payment_audit_detail.setText("Select a payment to view audit details.")
 
     def _load_payments(self, rows: list[dict]):
         """Populate the compact payments table from a list of dict-like rows."""
@@ -170,13 +193,15 @@ class SaleDetails(QWidget):
         for r, row in enumerate(rows):
             self.tbl_payments.insertRow(r)
 
+            self.tbl_payments.setItem(r, 0, self._cell(_text(row.get("payment_id"))))
+
             # Date
             date = row.get("date") or row.get("tx_date") or ""
-            self.tbl_payments.setItem(r, 0, self._cell(_text(date)))
+            self.tbl_payments.setItem(r, 1, self._cell(_text(date)))
 
             # Method
             method = row.get("method", "")
-            self.tbl_payments.setItem(r, 1, self._cell(_text(method)))
+            self.tbl_payments.setItem(r, 2, self._cell(_text(method)))
 
             # Amount (±)
             try:
@@ -186,15 +211,15 @@ class SaleDetails(QWidget):
             amt_cell = self._cell(fmt_money(amt_val))
             if amt_val < 0:
                 amt_cell.setForeground(Qt.red)  # subtle hint for refunds
-            self.tbl_payments.setItem(r, 2, amt_cell)
+            self.tbl_payments.setItem(r, 3, amt_cell)
 
             # State
             state = row.get("clearing_state", "")
-            self.tbl_payments.setItem(r, 3, self._cell(_text(state)))
+            self.tbl_payments.setItem(r, 4, self._cell(_text(state)))
 
             # Ref #
             ref = row.get("ref_no") or row.get("instrument_no") or ""
-            self.tbl_payments.setItem(r, 4, self._cell(_text(ref)))
+            self.tbl_payments.setItem(r, 5, self._cell(_text(ref)))
 
             # Bank (best-effort label)
             bank_label = ""
@@ -207,13 +232,15 @@ class SaleDetails(QWidget):
                 bank_label = f"{row['bank_name']} " + " ".join(acct_bits) if acct_bits else row["bank_name"]
             elif row.get("bank_account_id"):
                 bank_label = f"#{row['bank_account_id']}"
-            self.tbl_payments.setItem(r, 5, self._cell(bank_label))
+            self.tbl_payments.setItem(r, 6, self._cell(bank_label))
 
         self.tbl_payments.resizeColumnsToContents()
         self.tbl_payments.blockSignals(False)
 
     def _on_payment_selected(self):
         self._pending_payment_id = None
+        preview = ""
+        audit_detail = "Select a payment to view audit details."
         selected = self.tbl_payments.selectionModel().selectedRows()
         if selected and self._payments_are_for_sale:
             row_index = selected[0].row()
@@ -221,9 +248,22 @@ class SaleDetails(QWidget):
                 row = self._payment_rows[row_index]
                 state = str(row.get("clearing_state") or "").lower()
                 method = str(row.get("method") or "").lower()
+                payment_id = row.get("payment_id") or "-"
+                ref = row.get("ref_no") or row.get("instrument_no") or "-"
+                notes = str(row.get("notes") or "No notes")
+                audit_detail = (
+                    f"Payment #{payment_id} | Ref: {ref} | Notes: {notes}"
+                )
                 if state == "pending" and method in self.PENDING_METHODS:
                     try:
                         self._pending_payment_id = int(row.get("payment_id"))
+                        amount = fmt_money(float(row.get("amount", 0.0) or 0.0))
+                        method_label = str(row.get("method") or "Unknown")
+                        preview = (
+                            f"Sale {self._current_sale_id or '-'} | "
+                            f"Payment #{self._pending_payment_id} | "
+                            f"{method_label} | {amount} | Current state: Pending"
+                        )
                     except (TypeError, ValueError):
                         self._pending_payment_id = None
 
@@ -234,6 +274,8 @@ class SaleDetails(QWidget):
         self.rb_cleared.setEnabled(can_update)
         self.rb_bounced.setEnabled(can_update)
         self.btn_apply_state.setEnabled(False)
+        self.lbl_payment_state_preview.setText(preview)
+        self.lbl_payment_audit_detail.setText(audit_detail)
 
     @staticmethod
     def _cell(text: str) -> QTableWidgetItem:
@@ -277,6 +319,7 @@ class SaleDetails(QWidget):
         self._apply_doc_type_visibility(r.get("doc_type", "sale"))
 
         # Header
+        self._current_sale_id = str(r.get("sale_id") or "") or None
         self.lab_id.setText(r.get("sale_id", "-"))
         self.lab_date.setText(r.get("date", "-"))
         self.lab_customer.setText(r.get("customer_name", "-"))
@@ -335,6 +378,8 @@ class SaleDetails(QWidget):
         self._payments_are_for_sale = str(r.get("doc_type", "sale")).lower() == "sale"
         self._load_payments(norm_rows)
         self._pending_payment_id = None
+        self.lbl_payment_state_preview.clear()
+        self.lbl_payment_audit_detail.setText("Select a payment to view audit details.")
         self.update_box.setVisible(False)
         self.rb_cleared.setChecked(False)
         self.rb_bounced.setChecked(False)
