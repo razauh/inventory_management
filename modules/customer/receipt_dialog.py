@@ -931,7 +931,7 @@ class _CustomerMoneyDialog(QDialog):
             try:
                 bal = float(self._get_available_advance(self._customer_id))
                 if amt - bal > 1e-9:
-                return False, _t("Amount exceeds available customer credit.")
+                    return False, _t("Amount exceeds available customer credit.")
             except Exception:
                 pass
         # sale due

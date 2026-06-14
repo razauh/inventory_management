@@ -12,7 +12,6 @@ import time
 import threading
 
 from jinja2 import Template
-from weasyprint import HTML
 
 try:
     # Project-standard UI stack
@@ -586,6 +585,8 @@ class _VendorHistoryDialog(QDialog):
 
                 file_path = os.path.join(pdf_dir, f"vendor_{self._vendor_id}.pdf")
                 try:
+                    from weasyprint import HTML
+
                     HTML(string=html).write_pdf(file_path)
                 except Exception as e:
                     _log.error(
