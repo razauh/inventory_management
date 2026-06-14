@@ -137,22 +137,20 @@ def _apply_common_seed():
     # Ensure data directory exists
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     
-    # Import the targeted migration for this existing shared test database.
+    # Build the full schema first. CI starts without the local shared test DB.
     try:
         sys.path.insert(0, str(PROJECT_ROOT.parent))
-        from inventory_management.database.schema import migrate_purchase_return_snapshots
+        from inventory_management.database.schema import init_schema
     except ImportError as e:
-        migrate_purchase_return_snapshots = None
-        print(f"Warning: Could not import schema migration: {e}")
+        raise RuntimeError(f"Could not import test database schema: {e}") from e
+
+    init_schema(DB_PATH)
 
     con = sqlite3.connect(DB_PATH)
     try:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON;")
         
-        if migrate_purchase_return_snapshots:
-            migrate_purchase_return_snapshots(con)
-            
         # Apply seed
         if SEED_SQL.exists():
             sql = SEED_SQL.read_text(encoding="utf-8")

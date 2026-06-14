@@ -30,7 +30,8 @@ def _human_size(num: int) -> str:
 
 def _is_writable_dir(p: Path) -> bool:
     try:
-        return p.exists() and p.is_dir() and os.access(str(p), os.W_OK | os.X_OK)
+        access_mode = os.W_OK if sys.platform.startswith("win") else os.W_OK | os.X_OK
+        return p.exists() and p.is_dir() and os.access(str(p), access_mode)
     except Exception:
         return False
 
