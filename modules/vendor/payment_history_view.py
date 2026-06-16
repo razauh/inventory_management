@@ -123,6 +123,10 @@ class _DictTableModel(QAbstractTableModel):
 # Window
 # -----------------------------
 class _VendorHistoryDialog(QDialog):
+    MAX_VISIBLE_ROWS = 500
+    SMALL_TABLE_ROW_LIMIT = 250
+    SMALL_TABLE_COL_LIMIT = 16
+
     """
     Thin, read-only viewer for vendor payments/advances/statement rows.
 
@@ -211,8 +215,9 @@ class _VendorHistoryDialog(QDialog):
         tabs = QTabWidget(self)
         outer.addWidget(tabs, 1)
 
-        # Transactions tab (statement rows if available, else merged fallback)
-        tx_rows = self._build_tx_rows(self._history)
+        # Transactions tab. Keep the first page only.
+        tx_rows = self._build_tx_rows(self._history, limit=self.MAX_VISIBLE_ROWS)
+        tx_source_count = self._count_tx_rows(self._history)
         tx_columns = self._choose_tx_columns(tx_rows)
 
         tx_table = QTableView(self)
@@ -220,7 +225,10 @@ class _VendorHistoryDialog(QDialog):
         tx_table.setModel(tx_model)
         tx_table.setAlternatingRowColors(True)
         tx_table.setSortingEnabled(False)
-        tx_table.resizeColumnsToContents()
+        tx_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        tx_table.horizontalHeader().setStretchLastSection(True)
+        if len(tx_rows) <= self.SMALL_TABLE_ROW_LIMIT and len(tx_columns) <= self.SMALL_TABLE_COL_LIMIT:
+            tx_table.resizeColumnsToContents()
 
         tx_page = QWidget(self)
         tx_layout = QVBoxLayout(tx_page)
@@ -228,12 +236,18 @@ class _VendorHistoryDialog(QDialog):
             tx_empty = QLabel(_t("No transactions found for this vendor and period."))
             tx_empty.setWordWrap(True)
             tx_layout.addWidget(tx_empty)
+        elif tx_source_count > len(tx_rows):
+            tx_note = QLabel(_t(f"Showing first {len(tx_rows)} rows. Print has full statement."))
+            tx_note.setWordWrap(True)
+            tx_note.setStyleSheet("color: #666;")
+            tx_layout.addWidget(tx_note)
         tx_layout.addWidget(tx_table)
         tabs.addTab(tx_page, _t("Transactions"))
 
         # Store for printing
         self._tx_rows = tx_rows
         self._tx_columns = tx_columns
+        self._tx_source_count = tx_source_count
 
         # Totals tab if available
         totals = self._history.get("totals") or {}
@@ -244,7 +258,10 @@ class _VendorHistoryDialog(QDialog):
             totals_table.setModel(totals_model)
             totals_table.setAlternatingRowColors(True)
             totals_table.setSortingEnabled(False)
-            totals_table.resizeColumnsToContents()
+            totals_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            totals_table.horizontalHeader().setStretchLastSection(True)
+            if len(totals_rows) <= self.SMALL_TABLE_ROW_LIMIT and len(totals_cols) <= self.SMALL_TABLE_COL_LIMIT:
+                totals_table.resizeColumnsToContents()
 
             totals_page = QWidget(self)
             t_layout = QVBoxLayout(totals_page)
@@ -266,7 +283,7 @@ class _VendorHistoryDialog(QDialog):
     # -----------------------------
     # Row building / flattening
     # -----------------------------
-    def _build_tx_rows(self, history: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _build_tx_rows(self, history: Dict[str, Any], limit: Optional[int] = None) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         if isinstance(history.get("rows"), list):
             # Statement-style rows: flatten reference object
@@ -282,6 +299,8 @@ class _VendorHistoryDialog(QDialog):
                 ref = r.get("reference") or {}
                 flat = {**base, **self._flatten_reference(ref)}
                 rows.append(flat)
+                if limit is not None and len(rows) >= limit:
+                    return rows
             return rows
 
         # Fallback: merge payments & advances if present
@@ -310,6 +329,8 @@ class _VendorHistoryDialog(QDialog):
                     "temp_vendor_bank_number": p.get("temp_vendor_bank_number"),
                 }),
             })
+            if limit is not None and len(rows) >= limit:
+                return rows
         for a in advs:
             amt = self._safe_float(a.get("amount"), 0.0)
             src_type = (a.get("source_type") or "").lower()
@@ -354,7 +375,16 @@ class _VendorHistoryDialog(QDialog):
                     "temp_vendor_bank_name": a.get("temp_vendor_bank_name"),
                     "temp_vendor_bank_number": a.get("temp_vendor_bank_number"),
                 })
+            if limit is not None and len(rows) >= limit:
+                return rows
         return rows
+
+    def _count_tx_rows(self, history: Dict[str, Any]) -> int:
+        if isinstance(history.get("rows"), list):
+            return len(history.get("rows") or [])
+        pays = history.get("payments") or []
+        advs = history.get("advances") or []
+        return len(pays) + len(advs)
 
     def _choose_tx_columns(self, rows: List[Dict[str, Any]]) -> List[str]:
         # Preferred column order; any extra keys appended at the end (stable)
@@ -458,8 +488,8 @@ class _VendorHistoryDialog(QDialog):
             except Exception:
                 app = None
 
-        rows = getattr(self, "_tx_rows", []) or []
-        cols = getattr(self, "_tx_columns", []) or []
+        rows = self._build_tx_rows(self._history)
+        cols = self._choose_tx_columns(rows)
         if not rows or not cols:
             with self._print_lock:
                 self._print_in_progress = False

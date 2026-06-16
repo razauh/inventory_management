@@ -16,18 +16,18 @@ from importlib import resources as importlib_resources
 
 try:
     # Per project standard: PySide6
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
     from PySide6.QtGui import QAction
     from PySide6.QtWidgets import (
         QApplication,
+        QAbstractItemView,
         QDialog,
         QDialogButtonBox,
         QHeaderView,
         QLabel,
         QMessageBox,
-        QTableWidget,
-        QTableWidgetItem,
         QTabWidget,
+        QTableView,
         QVBoxLayout,
         QWidget,
     )
@@ -444,7 +444,7 @@ class _CustomerHistoryDialog(QDialog):
 # -----------------------------
 class _TablePage(QWidget):
     """
-    Displays a list[dict] in a QTableWidget (read-only).
+    Displays a list[dict] in a QTableView (read-only).
     Columns are inferred from union of keys in the first N rows.
     """
 
@@ -454,26 +454,28 @@ class _TablePage(QWidget):
         self.rows = rows or []
         headers = list(_collect_headers(self.rows))
         self.headers = self._filter_headers_for_title(headers)
+        self.header_labels = [self._pretty_header(h) for h in self.headers]
         self._build()
 
     def _build(self) -> None:
         lay = QVBoxLayout(self)
-        self.table = QTableWidget()
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table = QTableView()
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.setSortingEnabled(False)
+        self.table.setWordWrap(False)
 
-        # Setup columns
-        self.table.setColumnCount(len(self.headers))
-        self.table.setHorizontalHeaderLabels([self._pretty_header(h) for h in self.headers])
-        self._populate()
+        self.model = _DictTableModel(self.rows, self.headers, self.header_labels, self)
+        self.table.setModel(self.model)
 
-        # Sizing
         hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(QHeaderView.Interactive)
         hh.setStretchLastSection(True)
+        if len(self.rows) <= 250 and len(self.headers) <= 16:
+            self.table.resizeColumnsToContents()
 
         lay.addWidget(self.table, 1)
 
@@ -482,29 +484,9 @@ class _TablePage(QWidget):
         hint.setStyleSheet("color:#666;")
         lay.addWidget(hint)
 
-    def _populate(self) -> None:
-        self.table.setRowCount(len(self.rows))
-        for r, row in enumerate(self.rows):
-            for c, key in enumerate(self.headers):
-                val = row.get(key, "")
-                if key == "kind":
-                    display_value = self._fmt_kind(val)
-                elif key == "clearing_state":
-                    display_value = str(val or "").replace("_", " ").title()
-                else:
-                    display_value = self._fmt(val)
-                item = QTableWidgetItem(display_value)
-                # Alignment: numeric → right, date-ish → center, text → left
-                if _is_number(val):
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                elif _looks_like_date(str(val)):
-                    item.setTextAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-                else:
-                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                self.table.setItem(r, c, item)
-
     def resize_columns(self) -> None:
         self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setStretchLastSection(True)
 
     def _filter_headers_for_title(self, headers: List[str]) -> List[str]:
         """
@@ -566,6 +548,76 @@ class _TablePage(QWidget):
             "advance_applied": "Credit Applied",
         }
         return labels.get(v, "" if v is None else str(v))
+
+
+class _DictTableModel(QAbstractTableModel):
+    def __init__(
+        self,
+        rows: List[Dict[str, Any]],
+        headers: List[str],
+        header_labels: List[str],
+        parent=None,
+        *,
+        chunk_size: int = 200,
+    ) -> None:
+        super().__init__(parent)
+        self._rows = rows or []
+        self._headers = headers or []
+        self._header_labels = header_labels or []
+        self._chunk_size = max(1, int(chunk_size))
+        self._loaded_rows = min(len(self._rows), self._chunk_size)
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()):  # type: ignore[override]
+        return 0 if parent.isValid() else self._loaded_rows
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()):  # type: ignore[override]
+        return 0 if parent.isValid() else len(self._headers)
+
+    def canFetchMore(self, parent: QModelIndex = QModelIndex()):  # type: ignore[override]
+        return not parent.isValid() and self._loaded_rows < len(self._rows)
+
+    def fetchMore(self, parent: QModelIndex = QModelIndex()):  # type: ignore[override]
+        if parent.isValid() or self._loaded_rows >= len(self._rows):
+            return
+        remaining = len(self._rows) - self._loaded_rows
+        take = min(self._chunk_size, remaining)
+        first = self._loaded_rows
+        last = first + take - 1
+        self.beginInsertRows(QModelIndex(), first, last)
+        self._loaded_rows += take
+        self.endInsertRows()
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):  # type: ignore[override]
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            if 0 <= section < len(self._header_labels):
+                return self._header_labels[section]
+            return ""
+        return str(section + 1)
+
+    def data(self, index, role=Qt.DisplayRole):  # type: ignore[override]
+        if not index.isValid():
+            return None
+        row = self._rows[index.row()]
+        key = self._headers[index.column()]
+        val = row.get(key, "")
+
+        if role == Qt.DisplayRole:
+            if key == "kind":
+                return _TablePage._fmt_kind(val)
+            if key == "clearing_state":
+                return str(val or "").replace("_", " ").title()
+            return _TablePage._fmt(val)
+
+        if role == Qt.TextAlignmentRole:
+            if _is_number(val):
+                return Qt.AlignRight | Qt.AlignVCenter
+            if _looks_like_date(str(val)):
+                return Qt.AlignHCenter | Qt.AlignVCenter
+            return Qt.AlignLeft | Qt.AlignVCenter
+
+        return None
 
 
 # -----------------------------
