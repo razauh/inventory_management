@@ -307,7 +307,7 @@ class FinancialReportsTab(QWidget):
           2) Cash View (date_from/date_to)
     """
 
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
+    def __init__(self, conn: sqlite3.Connection, parent=None, auto_refresh: bool = True) -> None:
         super().__init__(parent)
         self.conn = conn
         self.logic = FinancialReports(conn)
@@ -320,7 +320,8 @@ class FinancialReportsTab(QWidget):
 
         self._build_ui()
         self._wire_signals()
-        self.refresh()  # initial load
+        if auto_refresh:
+            self.refresh()
 
     # ---- UI construction ----
     def _build_ui(self) -> None:

@@ -4,7 +4,7 @@ import sqlite3
 import logging
 from typing import Any, Optional, Dict, List
 
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QTimer
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QTimer, QRegularExpression
 from PySide6.QtWidgets import QWidget
 
 from ..base_module import BaseModule
@@ -39,6 +39,8 @@ class CustomerController(BaseModule):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)
         self._pending_search = ""
+        self._columns_sized = False
+        self._last_detail_customer_id: int | None = None
         self._wire()
         self._reload()
 
@@ -68,32 +70,26 @@ class CustomerController(BaseModule):
             self.view.btn_print_history.clicked.connect(self._on_history_print)
 
 
-    def _build_model(self, rows: list | None = None):
-        if rows is None:
-            rows = self.repo.list_customers()
-        self.base = CustomersTableModel(rows)
-
+    def _build_model(self):
+        self.base = CustomersTableModel([])
         self.proxy = QSortFilterProxyModel(self.view)
         self.proxy.setSourceModel(self.base)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy.setFilterKeyColumn(-1)
         self.view.table.setModel(self.proxy)
-        self.view.table.resizeColumnsToContents()
-
-        # selection model is NEW after setModel → connect every time (no disconnects)
         sel = self.view.table.selectionModel()
         sel.selectionChanged.connect(self._update_details)
 
     def _reload(self):
         selected_id = self._selected_id() if hasattr(self, "proxy") else None
-        self._build_model()
-        if self.proxy.rowCount() > 0:
-            self._select_customer_id(selected_id)
-            self.view.list_status.setText(f"{self.proxy.rowCount()} customer(s)")
-        else:
-            self.view.list_status.setText("No customers available.")
-        # ensure right pane updates even if no selection event fired yet
-        self._update_details()
+        if not hasattr(self, "proxy"):
+            self._build_model()
+        self.base.replace(self.repo.list_customers())
+        if not self._columns_sized:
+            self.view.table.resizeColumnsToContents()
+            self._columns_sized = True
+        self._last_detail_customer_id = None
+        self._sync_table_state(selected_id)
 
     # ------------------------------------------------------------------ #
     # Helpers: selection & details
@@ -106,35 +102,59 @@ class CustomerController(BaseModule):
     def _apply_filter(self, text: str):
         selected_id = self._selected_id() if hasattr(self, "proxy") else None
         query = text.strip()
-        rows = self.repo.search(query) if query else self.repo.list_customers()
-        self._build_model(rows)
+        regex = QRegularExpression(QRegularExpression.escape(query))
+        regex.setPatternOptions(QRegularExpression.CaseInsensitiveOption)
+        self.proxy.setFilterRegularExpression(regex)
+        self._last_detail_customer_id = None
+        self._sync_table_state(selected_id)
+
+    def _sync_table_state(self, selected_id: Optional[int]) -> None:
         if self.proxy.rowCount() > 0:
             self._select_customer_id(selected_id)
             self.view.list_status.setText(f"{self.proxy.rowCount()} customer(s)")
         else:
+            query = self.view.search.text().strip()
+            self.view.table.clearSelection()
             self.view.list_status.setText("No customers match this search." if query else "No customers available.")
         self._update_details()
 
     def _select_customer_id(self, customer_id: Optional[int]) -> None:
-        target_row = 0
+        target_row = None
         if customer_id is not None:
             for row in range(self.base.rowCount()):
-                if self.base.at(row).customer_id == customer_id:
-                    target_row = self.proxy.mapFromSource(self.base.index(row, 0)).row()
+                source_index = self.base.index(row, 0)
+                if self.base.at(row).customer_id != customer_id:
+                    continue
+                proxy_index = self.proxy.mapFromSource(source_index)
+                if proxy_index.isValid():
+                    target_row = proxy_index.row()
                     break
+        if target_row is None and self.proxy.rowCount() > 0:
+            target_row = 0
+        if target_row is None:
+            self.view.table.clearSelection()
+            return
         self.view.table.selectRow(target_row)
 
     def _selected_id(self) -> int | None:
-        idxs = self.view.table.selectionModel().selectedRows()
+        selection_model = self.view.table.selectionModel()
+        if selection_model is None:
+            return None
+        idxs = selection_model.selectedRows()
         if not idxs:
             return None
         src = self.proxy.mapToSource(idxs[0])
         return self.base.at(src.row()).customer_id
 
-    def _current_row(self) -> dict | None:
-        cid = self._selected_id()
-        cust = self.repo.get(cid) if cid else None
-        return cust.__dict__ if cust else None
+    def _selected_customer(self):
+        selection_model = self.view.table.selectionModel()
+        if selection_model is None:
+            return None
+        idxs = selection_model.selectedRows()
+        if not idxs:
+            return None
+        src = self.proxy.mapToSource(idxs[0])
+        return self.base.at(src.row())
 
     def _db_path_from_conn(self) -> Optional[str]:
         """
@@ -148,73 +168,48 @@ class CustomerController(BaseModule):
         return path if name == "main" and path else None
 
     def _details_enrichment(self, customer_id: int) -> Dict[str, Any]:
-        """
-        Compute credit balance & activity snapshot directly via SQL.
-        """
-        # credit balance
-        bal_row = self.conn.execute(
-            "SELECT balance FROM v_customer_advance_balance WHERE customer_id=?",
-            (customer_id,),
-        ).fetchone()
-        credit_balance = float(bal_row["balance"]) if bal_row else 0.0
-
-        # sales count + canonical open due sum
-        summary_row = self.conn.execute(
-            """
-            SELECT
-              COUNT(*) AS sales_count,
-              COALESCE(SUM(srt.remaining_due), 0.0) AS open_due_sum
-            FROM sales s
-            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-            WHERE s.customer_id = ? AND s.doc_type = 'sale';
-            """,
-            (customer_id,),
-        ).fetchone()
-        sales_count = int(summary_row["sales_count"] if summary_row else 0)
-        open_due_sum = float(summary_row["open_due_sum"] if summary_row else 0.0)
-
-        # recent activity dates
-        last_sale_date = self.conn.execute(
-            "SELECT MAX(date) AS d FROM sales WHERE customer_id=? AND doc_type='sale';",
-            (customer_id,),
-        ).fetchone()
-        last_payment_date = self.conn.execute(
-            """
-            SELECT MAX(sp.date) AS d
-            FROM sale_payments sp
-            JOIN sales s ON s.sale_id = sp.sale_id
-            WHERE s.customer_id = ?;
-            """,
-            (customer_id,),
-        ).fetchone()
-        last_advance_date = self.conn.execute(
-            "SELECT MAX(tx_date) AS d FROM customer_advances WHERE customer_id=?;",
-            (customer_id,),
-        ).fetchone()
-
+        snapshot = self.repo.get_detail_snapshot(customer_id) or {}
         return {
-            "credit_balance": credit_balance,
-            "sales_count": sales_count,
-            "open_due_sum": open_due_sum,
-            "last_sale_date": last_sale_date["d"] if last_sale_date and last_sale_date["d"] else None,
-            "last_payment_date": last_payment_date["d"] if last_payment_date and last_payment_date["d"] else None,
-            "last_advance_date": last_advance_date["d"] if last_advance_date and last_advance_date["d"] else None,
+            "credit_balance": float(snapshot.get("credit_balance") or 0.0),
+            "sales_count": int(snapshot.get("sales_count") or 0),
+            "open_due_sum": float(snapshot.get("open_due_sum") or 0.0),
+            "last_sale_date": snapshot.get("last_sale_date"),
+            "last_payment_date": snapshot.get("last_payment_date"),
+            "last_advance_date": snapshot.get("last_advance_date"),
         }
 
     def _update_details(self, *args):
-        payload = self._current_row()
-        if not payload:
+        customer = self._selected_customer()
+        if not customer:
+            self._last_detail_customer_id = None
             self.view.details.set_data(None)
-            # disable actions if nothing selected
             self._set_actions_enabled(False)
             return
 
-        cid = int(payload["customer_id"])
+        cid = int(customer.customer_id)
+        if cid == self._last_detail_customer_id:
+            self._set_actions_enabled(True)
+            return
+
+        payload = {
+            "customer_id": customer.customer_id,
+            "name": customer.name,
+            "contact_info": customer.contact_info,
+            "address": customer.address,
+        }
         try:
-            payload.update(self._details_enrichment(cid))
+            snapshot = self.repo.get_detail_snapshot(cid)
+            if snapshot:
+                payload.update(snapshot)
+            else:
+                self._last_detail_customer_id = None
+                self.view.details.set_data(None)
+                self._set_actions_enabled(False)
+                return
         except sqlite3.Error:
             payload["financial_error"] = True
 
+        self._last_detail_customer_id = cid
         self.view.details.set_data(payload)
         self._set_actions_enabled(True)
 

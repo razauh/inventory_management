@@ -144,7 +144,7 @@ class PaymentReportsTab(QWidget):
       - purchase_disbursements_by_day(date_from, date_to)
     """
 
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
+    def __init__(self, conn: sqlite3.Connection, parent=None, auto_refresh: bool = True) -> None:
         super().__init__(parent)
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
@@ -156,7 +156,8 @@ class PaymentReportsTab(QWidget):
 
         self._build_ui()
         self._wire_signals()
-        self.refresh()  # initial load
+        if auto_refresh:
+            self.refresh()
 
     # ---- UI ----
     def _build_ui(self) -> None:

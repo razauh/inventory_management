@@ -95,6 +95,19 @@ class _SimpleTableModel(QAbstractTableModel):
 class PurchaseReportsTab(QWidget):
     MAX_ROWS_PER_TABLE = 1000
     PAGE_SIZE = 100
+    _TAB_KEYS = [
+        "purch_by_period",
+        "purch_by_vendor",
+        "purch_by_product",
+        "purch_by_category",
+        "top_vendors",
+        "top_products",
+        "returns_summary",
+        "status_breakdown",
+        "open_purchases",
+        "drilldown",
+        "payments_timeline",
+    ]
 
     """
     Rich purchase analytics:
@@ -112,18 +125,26 @@ class PurchaseReportsTab(QWidget):
      11) Payments Timeline (cleared cash outflow by date)
     """
 
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        parent=None,
+        auto_refresh: bool = True,
+        use_background_refresh: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
         self.repo = ReportingRepo(conn)
         self._loaded_rows: Dict[str, List[Dict[str, Any]]] = {}
         self._page_index: Dict[str, int] = {}
+        self._use_background_refresh = use_background_refresh
 
         self._build_ui()
         self._wire()
         self._load_categories()
-        self.refresh()
+        if auto_refresh:
+            self.refresh()
 
     # ---------- UI ----------
     def _fix_width(self, w, max_w: int) -> None:
@@ -325,7 +346,7 @@ class PurchaseReportsTab(QWidget):
         self.btn_next_page.clicked.connect(self._next_page)
         self.btn_pdf.clicked.connect(self._export_pdf)
         self.btn_csv.clicked.connect(self._export_csv)
-        self.tabs.currentChanged.connect(lambda *_: self._sync_page_label())
+        self.tabs.currentChanged.connect(self._on_current_tab_changed)
 
     # ---------- Helpers: current filters ----------
     def _vendor_id(self) -> Optional[int]:
@@ -352,22 +373,29 @@ class PurchaseReportsTab(QWidget):
         self.cmb_category.blockSignals(False)
 
     # ------------------------------ Refresh ------------------------------
-    @Slot()
-    def refresh(self) -> None:
-        if not self._validate_date_ranges():
-            return
+    def _filters(self) -> Dict[str, Any]:
         df = self.dt_from.date().toString("yyyy-MM-dd")
         dt = self.dt_to.date().toString("yyyy-MM-dd")
-        gran = self.cmb_gran.currentText()
-        topn = int(self.spn_topn.value())
-        vendor_id = self._vendor_id()
-        product_id = self._product_id()
-        category = self._category_value()
+        return {
+            "df": df,
+            "dt": dt,
+            "gran": self.cmb_gran.currentText(),
+            "topn": int(self.spn_topn.value()),
+            "vendor_id": self._vendor_id(),
+            "product_id": self._product_id(),
+            "category": self._category_value(),
+        }
 
-        loaded: Dict[str, List[Dict[str, Any]]] = {}
+    def _load_key(self, key: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        df = filters["df"]
+        dt = filters["dt"]
+        gran = filters["gran"]
+        topn = filters["topn"]
+        vendor_id = filters["vendor_id"]
+        product_id = filters["product_id"]
+        category = filters["category"]
 
-        with self.repo.read_snapshot():
-            # 1) Purchases by Period
+        if key == "purch_by_period":
             fmt = {"daily": "%Y-%m-%d", "monthly": "%Y-%m", "yearly": "%Y"}[gran]
             sql = f"""
                 SELECT strftime('{fmt}', p.date) AS period,
@@ -390,12 +418,12 @@ class PurchaseReportsTab(QWidget):
                 params.append(product_id)
             if category:
                 params.append(category)
-            loaded["purch_by_period"] = [
+            return [
                 {"period": r["period"], "order_count": int(r["order_count"] or 0), "spend": float(r["spend"] or 0.0)}
                 for r in self.conn.execute(sql, params)
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 2) Purchases by Vendor
+        if key == "purch_by_vendor":
             sql = """
                 SELECT v.name AS vendor_name,
                        COUNT(*) AS order_count,
@@ -421,16 +449,16 @@ class PurchaseReportsTab(QWidget):
                 params.append(product_id)
             if category:
                 params.append(category)
-            loaded["purch_by_vendor"] = [
+            return [
                 {
                     "vendor_name": r["vendor_name"],
                     "order_count": int(r["order_count"] or 0),
                     "spend": float(r["spend"] or 0.0),
                 }
                 for r in self.conn.execute(sql, params)
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 3) Purchases by Product
+        if key == "purch_by_product":
             sql = """
                 WITH qty_by_product AS (
                     SELECT pi.product_id,
@@ -485,16 +513,16 @@ class PurchaseReportsTab(QWidget):
                 params.append(product_id)
             if category:
                 params.append(category)
-            loaded["purch_by_product"] = [
+            return [
                 {
                     "product_name": r["product_name"],
                     "qty_base": float(r["qty_base"] or 0.0),
                     "spend": float(r["spend"] or 0.0),
                 }
                 for r in self.conn.execute(sql, params)
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 4) Purchases by Category
+        if key == "purch_by_category":
             sql = """
                 WITH qty_by_category AS (
                     SELECT CASE WHEN pr.category IS NULL OR pr.category = '' THEN '(Uncategorized)' ELSE pr.category END AS category,
@@ -549,16 +577,16 @@ class PurchaseReportsTab(QWidget):
                 params.append(product_id)
             if category:
                 params.append(category)
-            loaded["purch_by_category"] = [
+            return [
                 {
                     "category": r["category"] if r["category"] is not None else "",
                     "qty_base": float(r["qty_base"] or 0.0),
                     "spend": float(r["spend"] or 0.0),
                 }
                 for r in self.conn.execute(sql, params)
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 5) Top Vendors
+        if key == "top_vendors":
             sql = """
                 SELECT v.name AS vendor_name,
                        COUNT(*) AS order_count,
@@ -571,16 +599,16 @@ class PurchaseReportsTab(QWidget):
                 ORDER BY spend DESC
                 LIMIT ?
             """
-            loaded["top_vendors"] = [
+            return [
                 {
                     "vendor_name": r["vendor_name"],
                     "order_count": int(r["order_count"] or 0),
                     "spend": float(r["spend"] or 0.0),
                 }
                 for r in self.conn.execute(sql, (df, dt, topn))
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 6) Top Products
+        if key == "top_products":
             sql = """
                 WITH qty_by_product AS (
                     SELECT pi.product_id,
@@ -609,16 +637,16 @@ class PurchaseReportsTab(QWidget):
                 ORDER BY spend DESC
                 LIMIT ?
             """
-            loaded["top_products"] = [
+            return [
                 {
                     "product_name": r["product_name"],
                     "qty_base": float(r["qty_base"] or 0.0),
                     "spend": float(r["spend"] or 0.0),
                 }
                 for r in self.conn.execute(sql, (df, dt, df, dt, topn))
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 7) Returns Summary
+        if key == "returns_summary":
             try:
                 sql = """
                     SELECT
@@ -633,15 +661,15 @@ class PurchaseReportsTab(QWidget):
                 qty = float(r["qty_returned"] or 0.0) if r else 0.0
                 val = float(r["return_value"] or 0.0) if r else 0.0
                 unresolved = int(r["unresolved_count"] or 0) if r else 0
-                loaded["returns_summary"] = [
+                return [
                     {"metric": "Returned Qty (base)", "value": qty},
                     {"metric": "Return Value", "value": val},
                     {"metric": "Unresolved Legacy Returns", "value": unresolved},
-                ]
+                ][: self.MAX_ROWS_PER_TABLE]
             except Exception:
-                loaded["returns_summary"] = [{"metric": "Info", "value": "purchase_return_valuations view not found"}]
+                return [{"metric": "Info", "value": "purchase_return_valuations view not found"}]
 
-            # 8) Status Breakdown
+        if key == "status_breakdown":
             sql = """
                 SELECT p.payment_status,
                        COUNT(*) AS order_count,
@@ -652,16 +680,16 @@ class PurchaseReportsTab(QWidget):
                 GROUP BY p.payment_status
                 ORDER BY spend DESC
             """
-            loaded["status_breakdown"] = [
+            return [
                 {
                     "payment_status": r["payment_status"],
                     "order_count": int(r["order_count"] or 0),
                     "spend": float(r["spend"] or 0.0),
                 }
                 for r in self.conn.execute(sql, (df, dt))
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 9) Open Purchases
+        if key == "open_purchases":
             sql = """
                 SELECT p.purchase_id, p.date, v.name AS vendor_name,
                        COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
@@ -675,12 +703,12 @@ class PurchaseReportsTab(QWidget):
                   AND (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
                 ORDER BY DATE(p.date) DESC, p.purchase_id DESC
             """
-            loaded["open_purchases"] = [
+            return [
                 {k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k]) for k in r.keys()}
                 for r in self.conn.execute(sql, (df, dt))
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 10) Drill-down Purchases
+        if key == "drilldown":
             sql = """
                 SELECT p.purchase_id, p.date, v.name AS vendor_name, p.payment_status,
                        COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS total_amount,
@@ -707,51 +735,52 @@ class PurchaseReportsTab(QWidget):
                 params.append(product_id)
             if category:
                 params.append(category)
-            loaded["drilldown"] = [
+            return [
                 {k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k]) for k in r.keys()}
                 for r in self.conn.execute(sql, params)
-            ]
+            ][: self.MAX_ROWS_PER_TABLE]
 
-            # 11) Payments Timeline
-            sql = """
-                SELECT date AS date,
-                       SUM(CASE WHEN CAST(amount AS REAL) > 0 THEN CAST(amount AS REAL) ELSE 0.0 END) AS amount_out
-                FROM purchase_payments
-                WHERE DATE(date) BETWEEN DATE(?) AND DATE(?)
-                  AND clearing_state = 'cleared'
-                GROUP BY date
-                ORDER BY DATE(date)
-            """
-            loaded["payments_timeline"] = [
-                {"date": r["date"], "amount_out": float(r["amount_out"] or 0.0)}
-                for r in self.conn.execute(sql, (df, dt))
-            ]
+        sql = """
+            SELECT date AS date,
+                   SUM(CASE WHEN CAST(amount AS REAL) > 0 THEN CAST(amount AS REAL) ELSE 0.0 END) AS amount_out
+            FROM purchase_payments
+            WHERE DATE(date) BETWEEN DATE(?) AND DATE(?)
+              AND clearing_state = 'cleared'
+            GROUP BY date
+            ORDER BY DATE(date)
+        """
+        return [
+            {"date": r["date"], "amount_out": float(r["amount_out"] or 0.0)}
+            for r in self.conn.execute(sql, (df, dt))
+        ][: self.MAX_ROWS_PER_TABLE]
 
-        self._loaded_rows = {k: v[: self.MAX_ROWS_PER_TABLE] for k, v in loaded.items()}
+    def _ensure_loaded(self, key: str, force: bool = False) -> None:
+        if not force and key in self._loaded_rows:
+            return
+        filters = self._filters()
+        with self.repo.read_snapshot():
+            self._loaded_rows[key] = self._load_key(key, filters)
+        self._apply_page(key)
 
-        def set_rows(key: str) -> None:
-            tv = self._tables[key]
-            model: _SimpleTableModel = tv.model()  # type: ignore
-            rows = self._loaded_rows.get(key, [])
-            page = max(0, self._page_index.get(key, 0))
-            start = page * self.PAGE_SIZE
-            model.set_rows(rows[start:start + self.PAGE_SIZE])
-            maybe_resize_columns(tv)
+    def refresh_active_page(self) -> None:
+        if not self._validate_date_ranges():
+            return
+        key = self._current_table_key()
+        if key:
+            self._ensure_loaded(key, force=True)
+        self._sync_page_label()
 
-        for key in (
-            "purch_by_period",
-            "purch_by_vendor",
-            "purch_by_product",
-            "purch_by_category",
-            "top_vendors",
-            "top_products",
-            "returns_summary",
-            "status_breakdown",
-            "open_purchases",
-            "drilldown",
-            "payments_timeline",
-        ):
-            set_rows(key)
+    @Slot()
+    def refresh(self) -> None:
+        if not self._validate_date_ranges():
+            return
+        self._loaded_rows.clear()
+        filters = self._filters()
+        with self.repo.read_snapshot():
+            for key in self._TAB_KEYS:
+                self._loaded_rows[key] = self._load_key(key, filters)
+        for key in self._TAB_KEYS:
+            self._apply_page(key)
         self._sync_page_label()
 
     # ------------------------------ Export ------------------------------
@@ -808,23 +837,10 @@ class PurchaseReportsTab(QWidget):
                 w.writerow(safe_csv_row([m.index(r, c).data(Qt.DisplayRole) for c in range(cols)]))
 
     def _current_table_key(self) -> Optional[str]:
-        keys = [
-            "purch_by_period",
-            "purch_by_vendor",
-            "purch_by_product",
-            "purch_by_category",
-            "top_vendors",
-            "top_products",
-            "returns_summary",
-            "status_breakdown",
-            "open_purchases",
-            "drilldown",
-            "payments_timeline",
-        ]
         idx = self.tabs.currentIndex()
-        if idx < 0 or idx >= len(keys):
+        if idx < 0 or idx >= len(self._TAB_KEYS):
             return None
-        return keys[idx]
+        return self._TAB_KEYS[idx]
 
     def _max_page(self, key: str) -> int:
         rows = self._loaded_rows.get(key, [])
@@ -871,3 +887,10 @@ class PurchaseReportsTab(QWidget):
 
     def _validate_date_ranges(self) -> bool:
         return validate_date_range(self, self.dt_from.date(), self.dt_to.date(), "Purchase period")
+
+    @Slot(int)
+    def _on_current_tab_changed(self, *_args) -> None:
+        key = self._current_table_key()
+        if key and self._validate_date_ranges():
+            self._ensure_loaded(key)
+        self._sync_page_label()

@@ -372,10 +372,17 @@ class ComprehensivePaymentReports:
 # ------------------------------ UI Tab ----------------------------------------
 class ComprehensivePaymentReportsTab(QWidget):
     MAX_ROWS = 1000
+    _PAGE_KEYS = ["summary", "unprocessed", "all"]
 
     """Comprehensive Payment Reports UI"""
     
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        parent=None,
+        auto_refresh: bool = True,
+        use_background_refresh: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.conn = conn
         self.logic = ComprehensivePaymentReports(conn)
@@ -384,10 +391,12 @@ class ComprehensivePaymentReportsTab(QWidget):
         self._rows_summary: List[Dict] = []
         self._rows_unprocessed: List[Dict] = []
         self._rows_detailed: List[Dict] = []
-        
+        self._use_background_refresh = use_background_refresh
+
         self._build_ui()
         self._wire_signals()
-        self.refresh()
+        if auto_refresh:
+            self.refresh()
     
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -503,33 +512,38 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.dt_from.dateChanged.connect(self.refresh)
         self.dt_to.dateChanged.connect(self.refresh)
         self.cmb_date_basis.currentIndexChanged.connect(lambda *_: self.refresh())
-    
-    @Slot()
-    def refresh(self) -> None:
-        if not self._validate_date_ranges():
-            return
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _current_page_key(self) -> str:
+        idx = self.tabs.currentIndex()
+        if idx < 0 or idx >= len(self._PAGE_KEYS):
+            return self._PAGE_KEYS[0]
+        return self._PAGE_KEYS[idx]
+
+    def _load_page(self, page_key: str) -> tuple[List[Dict], str, str, str]:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         date_basis = str(self.cmb_date_basis.currentData() or "posting")
         basis_label = ComprehensivePaymentReports._date_basis_label(date_basis)
 
         with self.logic.repo.read_snapshot():
-            rows_summary = self.logic.payments_summary_by_status(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
+            if page_key == "summary":
+                rows = self.logic.payments_summary_by_status(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
+            elif page_key == "unprocessed":
+                rows = self.logic.unprocessed_payments(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
+            else:
+                rows = self.logic.all_payments_detailed(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
+        return rows, basis_label, date_from, date_to
 
-            rows_unprocessed = self.logic.unprocessed_payments(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
-
-            rows_detailed = self.logic.all_payments_detailed(date_from, date_to, date_basis=date_basis)[: self.MAX_ROWS]
-
-        self._rows_summary = rows_summary
-        self._rows_unprocessed = rows_unprocessed
-        self._rows_detailed = rows_detailed
-
-        self.model_summary.set_rows(rows_summary)
-        self.model_unprocessed.set_rows(rows_unprocessed)
-        self.model_detailed.set_rows(rows_detailed)
-
+    def _apply_common_labels(
+        self,
+        basis_label: str,
+        date_from: str,
+        date_to: str,
+        rows_for_totals: List[Dict],
+    ) -> None:
         self.lbl_basis.setText(f"Date basis: {basis_label}")
-        inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(rows_detailed)
+        inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(rows_for_totals)
         self.lbl_inflow_total.setText(f"Inflows: {fmt_money(inflow_total)}")
         self.lbl_outflow_total.setText(f"Outflows: {fmt_money(outflow_total)}")
         self.lbl_refund_total.setText(f"Refunds: {fmt_money(refund_total)}")
@@ -538,10 +552,50 @@ class ComprehensivePaymentReportsTab(QWidget):
         self.lbl_unprocessed_title.setText(f"<b>Unprocessed Payments (Posted/Pending)</b> — {date_from} to {date_to} ({basis_label})")
         self.lbl_detailed_title.setText(f"<b>All Payments</b> — {date_from} to {date_to} ({basis_label})")
 
-        # Resize columns
+    def refresh_page(self, index: int) -> None:
+        if not self._validate_date_ranges():
+            return
+        page_key = self._PAGE_KEYS[index] if 0 <= index < len(self._PAGE_KEYS) else self._PAGE_KEYS[0]
+        rows, basis_label, date_from, date_to = self._load_page(page_key)
+
+        if page_key == "summary":
+            self._rows_summary = rows
+            self.model_summary.set_rows(rows)
+            self._resize_table(self.tbl_summary)
+        elif page_key == "unprocessed":
+            self._rows_unprocessed = rows
+            self.model_unprocessed.set_rows(rows)
+            self._resize_table(self.tbl_unprocessed)
+        else:
+            self._rows_detailed = rows
+            self.model_detailed.set_rows(rows)
+            self._resize_table(self.tbl_detailed)
+        self._apply_common_labels(basis_label, date_from, date_to, rows)
+
+    def refresh_active_page(self) -> None:
+        self.refresh_page(self.tabs.currentIndex())
+
+    @Slot()
+    def refresh(self) -> None:
+        if not self._validate_date_ranges():
+            return
+        rows_summary, basis_label, date_from, date_to = self._load_page("summary")
+        rows_unprocessed, _, _, _ = self._load_page("unprocessed")
+        rows_detailed, _, _, _ = self._load_page("all")
+        self._rows_summary = rows_summary
+        self._rows_unprocessed = rows_unprocessed
+        self._rows_detailed = rows_detailed
+        self.model_summary.set_rows(rows_summary)
+        self.model_unprocessed.set_rows(rows_unprocessed)
+        self.model_detailed.set_rows(rows_detailed)
         self._resize_table(self.tbl_summary)
         self._resize_table(self.tbl_unprocessed)
         self._resize_table(self.tbl_detailed)
+        self._apply_common_labels(basis_label, date_from, date_to, rows_detailed)
+
+    @Slot(int)
+    def _on_tab_changed(self, index: int) -> None:
+        self.refresh_page(index)
     
     def _resize_table(self, table: QTableView) -> None:
         maybe_resize_columns(table)

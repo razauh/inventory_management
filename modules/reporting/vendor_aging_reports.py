@@ -72,7 +72,7 @@ class VendorAgingTab(QWidget):
       - We clamp tiny negatives to zero using _EPS to avoid stray micro-overages.
     """
 
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
+    def __init__(self, conn: sqlite3.Connection, parent=None, auto_refresh: bool = True) -> None:
         super().__init__(parent)
         self.conn = conn
         self.repo = ReportingRepo(conn)
@@ -83,7 +83,8 @@ class VendorAgingTab(QWidget):
 
         self._build_ui()
         self._wire()
-        self.refresh()
+        if auto_refresh:
+            self.refresh()
 
     # ---------------------------- UI ---------------------------------
 

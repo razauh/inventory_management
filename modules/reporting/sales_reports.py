@@ -102,18 +102,42 @@ class SalesReportsTab(QWidget):
     MAX_ROWS_PER_TABLE = 1000
     PAGE_SIZE = 100
 
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
+    _TAB_KEYS = [
+        "sales_by_day",
+        "sales_by_customer",
+        "sales_by_product",
+        "sales_by_category",
+        "margin_by_day",
+        "margin_by_customer",
+        "margin_by_product",
+        "margin_by_category",
+        "top_customers",
+        "top_products",
+        "returns_summary",
+        "status_breakdown",
+        "drilldown",
+    ]
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        parent=None,
+        auto_refresh: bool = True,
+        use_background_refresh: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
         self.repo = ReportingRepo(conn)
         self._loaded_rows: Dict[str, List[Dict[str, Any]]] = {}
         self._page_index: Dict[str, int] = {}
+        self._use_background_refresh = use_background_refresh
 
         self._build_ui()
         self._wire()
         self._load_categories()
-        self.refresh()
+        if auto_refresh:
+            self.refresh()
 
     # ---------------- UI ----------------
     def _fix_width(self, w, max_w: int) -> None:
@@ -352,7 +376,7 @@ class SalesReportsTab(QWidget):
         self.btn_next_page.clicked.connect(self._next_page)
         self.btn_export_pdf.clicked.connect(self._export_pdf)
         self.btn_export_csv.clicked.connect(self._export_csv)
-        self.tabs.currentChanged.connect(lambda *_: self._sync_page_label())
+        self.tabs.currentChanged.connect(self._on_current_tab_changed)
 
     # -------------- Filters helpers --------------
     def _statuses(self) -> List[str]:
@@ -399,112 +423,96 @@ class SalesReportsTab(QWidget):
         self.cmb_category.blockSignals(False)
 
     # -------------- Refresh dispatcher --------------
+    def _filters(self) -> Dict[str, Any]:
+        date_from = self.dt_from.date().toString("yyyy-MM-dd")
+        date_to = self.dt_to.date().toString("yyyy-MM-dd")
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "gran": self.cmb_gran.currentText(),
+            "statuses": self._statuses() or ["paid", "unpaid", "partial"],
+            "customer_id": self._customer_id(),
+            "product_id": self._product_id(),
+            "category": self._category_value(),
+            "top_n": int(self.spn_topn.value()),
+        }
+
+    def _load_key(self, key: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        args_map = {
+            "sales_by_day": ("sales_by_period", filters["date_from"], filters["date_to"], filters["gran"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "sales_by_customer": ("sales_by_customer", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "sales_by_product": ("sales_by_product", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "sales_by_category": ("sales_by_category", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "margin_by_day": ("margin_by_period", filters["date_from"], filters["date_to"], filters["gran"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "margin_by_customer": ("margin_by_customer", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "margin_by_product": ("margin_by_product", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "margin_by_category": ("margin_by_category", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "top_customers": ("top_customers", filters["date_from"], filters["date_to"], filters["statuses"], filters["top_n"]),
+            "top_products": ("top_products", filters["date_from"], filters["date_to"], filters["statuses"], filters["top_n"]),
+            "returns_summary": ("returns_summary", filters["date_from"], filters["date_to"]),
+            "status_breakdown": ("status_breakdown", filters["date_from"], filters["date_to"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "drilldown": ("drilldown_sales", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+        }
+        repo_method, *args = args_map[key]
+        try:
+            fn = getattr(self.repo, repo_method)
+            rows = fn(*args)
+        except AttributeError:
+            if key == "returns_summary":
+                return [{"metric": "Info", "value": f"Repo method '{repo_method}' not implemented."}]
+            return []
+        except Exception as exc:
+            if key == "returns_summary":
+                return [{"metric": "Error", "value": str(exc)}]
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for row in rows or []:
+            if hasattr(row, "keys"):
+                out.append({k: row[k] for k in row.keys()})
+            else:
+                out.append(dict(row))
+        if key.startswith("margin_"):
+            for row in out:
+                revenue = float(row.get("revenue") or 0.0)
+                cogs = float(row.get("cogs") or 0.0)
+                row["gross"] = row.get("gross", revenue - cogs)
+                row["margin_pct"] = (row["gross"] / revenue) if revenue else 0.0
+        if key == "drilldown":
+            for row in out:
+                total = float(row.get("total_amount") or 0.0)
+                paid = float(row.get("paid_amount") or 0.0)
+                adv = float(row.get("advance_payment_applied") or 0.0)
+                row["remaining"] = total - paid - adv
+        return out[: self.MAX_ROWS_PER_TABLE]
+
+    def _ensure_loaded(self, key: str, force: bool = False) -> None:
+        if not force and key in self._loaded_rows:
+            return
+        filters = self._filters()
+        with self.repo.read_snapshot():
+            self._loaded_rows[key] = self._load_key(key, filters)
+        self._apply_page(key)
+
+    def refresh_active_page(self) -> None:
+        if not self._validate_date_ranges():
+            return
+        key = self._current_table_key()
+        if key:
+            self._ensure_loaded(key, force=True)
+        self._sync_page_label()
+
     @Slot()
     def refresh(self) -> None:
         if not self._validate_date_ranges():
             return
-        date_from = self.dt_from.date().toString("yyyy-MM-dd")
-        date_to = self.dt_to.date().toString("yyyy-MM-dd")
-        gran = self.cmb_gran.currentText()
-        statuses = self._statuses() or ["paid", "unpaid", "partial"]
-        customer_id = self._customer_id()
-        product_id = self._product_id()
-        category = self._category_value()
-        top_n = int(self.spn_topn.value())
-
-        loaded: Dict[str, List[Dict[str, Any]]] = {}
-
+        self._loaded_rows.clear()
+        filters = self._filters()
         with self.repo.read_snapshot():
-            def load_rows(key: str, repo_method: str, *args) -> None:
-                try:
-                    fn = getattr(self.repo, repo_method)
-                    rows = fn(*args)
-                except AttributeError:
-                    if key == "returns_summary":
-                        loaded[key] = [{"metric": "Info", "value": f"Repo method '{repo_method}' not implemented."}]
-                    else:
-                        loaded[key] = []
-                    return
-                except Exception as e:
-                    if key == "returns_summary":
-                        loaded[key] = [{"metric": "Error", "value": str(e)}]
-                    else:
-                        loaded[key] = []
-                    return
-
-                out: List[Dict[str, Any]] = []
-                for r in rows or []:
-                    if hasattr(r, "keys"):
-                        out.append({k: r[k] for k in r.keys()})
-                    else:
-                        out.append(dict(r))
-                if key.startswith("margin_") and out:
-                    for row in out:
-                        rev = float(row.get("revenue") or 0.0)
-                        cogs = float(row.get("cogs") or 0.0)
-                        row["gross"] = row.get("gross", rev - cogs)
-                        row["margin_pct"] = (row["gross"] / rev) if rev else 0.0
-                if key == "drilldown" and out:
-                    for row in out:
-                        total = float(row.get("total_amount") or 0.0)
-                        paid = float(row.get("paid_amount") or 0.0)
-                        adv = float(row.get("advance_payment_applied") or 0.0)
-                        row["remaining"] = total - paid - adv
-
-                loaded[key] = out[: self.MAX_ROWS_PER_TABLE]
-
-            load_rows("sales_by_day", "sales_by_period",
-                      date_from, date_to, gran, statuses, customer_id, product_id, category)
-            load_rows("sales_by_customer", "sales_by_customer",
-                      date_from, date_to, statuses, customer_id, product_id, category)
-            load_rows("sales_by_product", "sales_by_product",
-                      date_from, date_to, statuses, customer_id, product_id, category)
-            load_rows("sales_by_category", "sales_by_category",
-                      date_from, date_to, statuses, customer_id, product_id, category)
-            load_rows("margin_by_day", "margin_by_period",
-                      date_from, date_to, gran, statuses, customer_id, product_id, category)
-            load_rows("margin_by_customer", "margin_by_customer",
-                      date_from, date_to, statuses, customer_id, product_id, category)
-            load_rows("margin_by_product", "margin_by_product",
-                      date_from, date_to, statuses, customer_id, product_id, category)
-            load_rows("margin_by_category", "margin_by_category",
-                      date_from, date_to, statuses, customer_id, product_id, category)
-            load_rows("top_customers", "top_customers",
-                      date_from, date_to, statuses, int(top_n))
-            load_rows("top_products", "top_products",
-                      date_from, date_to, statuses, int(top_n))
-            load_rows("returns_summary", "returns_summary", date_from, date_to)
-            load_rows("status_breakdown", "status_breakdown",
-                      date_from, date_to, customer_id, product_id, category)
-            load_rows("drilldown", "drilldown_sales",
-                      date_from, date_to, statuses, customer_id, product_id, category)
-
-        def apply_rows(key: str) -> None:
-            tv = self._tables[key]
-            model: _SimpleTableModel = tv.model()  # type: ignore
-            rows = loaded.get(key, [])
-            page = max(0, self._page_index.get(key, 0))
-            start = page * self.PAGE_SIZE
-            model.set_rows(rows[start:start + self.PAGE_SIZE])
-            maybe_resize_columns(tv)
-
-        for key in (
-            "sales_by_day",
-            "sales_by_customer",
-            "sales_by_product",
-            "sales_by_category",
-            "margin_by_day",
-            "margin_by_customer",
-            "margin_by_product",
-            "margin_by_category",
-            "top_customers",
-            "top_products",
-            "returns_summary",
-            "status_breakdown",
-            "drilldown",
-        ):
-            apply_rows(key)
-        self._loaded_rows = loaded
+            for key in self._TAB_KEYS:
+                self._loaded_rows[key] = self._load_key(key, filters)
+        for key in self._TAB_KEYS:
+            self._apply_page(key)
         self._sync_page_label()
 
     # -------------- Export helpers --------------
@@ -576,25 +584,10 @@ class SalesReportsTab(QWidget):
                 w.writerow(safe_csv_row([m.index(r, c).data(Qt.DisplayRole) for c in range(cols)]))
 
     def _current_table_key(self) -> Optional[str]:
-        keys = [
-            "sales_by_day",
-            "sales_by_customer",
-            "sales_by_product",
-            "sales_by_category",
-            "margin_by_day",
-            "margin_by_customer",
-            "margin_by_product",
-            "margin_by_category",
-            "top_customers",
-            "top_products",
-            "returns_summary",
-            "status_breakdown",
-            "drilldown",
-        ]
         idx = self.tabs.currentIndex()
-        if idx < 0 or idx >= len(keys):
+        if idx < 0 or idx >= len(self._TAB_KEYS):
             return None
-        return keys[idx]
+        return self._TAB_KEYS[idx]
 
     def _max_page(self, key: str) -> int:
         rows = self._loaded_rows.get(key, [])
@@ -641,3 +634,10 @@ class SalesReportsTab(QWidget):
 
     def _validate_date_ranges(self) -> bool:
         return validate_date_range(self, self.dt_from.date(), self.dt_to.date(), "Sales period")
+
+    @Slot(int)
+    def _on_current_tab_changed(self, *_args) -> None:
+        key = self._current_table_key()
+        if key and self._validate_date_ranges():
+            self._ensure_loaded(key)
+        self._sync_page_label()

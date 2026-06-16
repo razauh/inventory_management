@@ -73,6 +73,56 @@ class CustomersRepo:
         ).fetchall()
         return [Customer(**dict(r)) for r in rows]
 
+    def get_detail_snapshot(self, customer_id: int) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT
+                c.customer_id,
+                c.name,
+                c.contact_info,
+                c.address,
+                COALESCE((
+                    SELECT balance
+                    FROM v_customer_advance_balance vab
+                    WHERE vab.customer_id = c.customer_id
+                ), 0.0) AS credit_balance,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM sales s
+                    WHERE s.customer_id = c.customer_id
+                      AND s.doc_type = 'sale'
+                ), 0) AS sales_count,
+                COALESCE((
+                    SELECT SUM(srt.remaining_due)
+                    FROM sales s
+                    JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+                    WHERE s.customer_id = c.customer_id
+                      AND s.doc_type = 'sale'
+                ), 0.0) AS open_due_sum,
+                (
+                    SELECT MAX(s.date)
+                    FROM sales s
+                    WHERE s.customer_id = c.customer_id
+                      AND s.doc_type = 'sale'
+                ) AS last_sale_date,
+                (
+                    SELECT MAX(sp.date)
+                    FROM sale_payments sp
+                    JOIN sales s ON s.sale_id = sp.sale_id
+                    WHERE s.customer_id = c.customer_id
+                ) AS last_payment_date,
+                (
+                    SELECT MAX(ca.tx_date)
+                    FROM customer_advances ca
+                    WHERE ca.customer_id = c.customer_id
+                ) AS last_advance_date
+            FROM customers c
+            WHERE c.customer_id = ?
+            """,
+            (customer_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def get(self, customer_id: int) -> Customer | None:
         r = self.conn.execute(
             "SELECT customer_id, name, contact_info, address "

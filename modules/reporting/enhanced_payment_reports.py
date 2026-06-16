@@ -108,6 +108,7 @@ class _DateAmountStatusTableModel(QAbstractTableModel):
 # ------------------------------ All-Payments Reports Tab ------------------------
 class EnhancedPaymentReportsTab(QWidget):
     MAX_ROWS = 1000
+    _PAGE_KEYS = ["all", "status", "uncleared"]
 
     """
     Enhanced Payments reports showing complete payment picture:
@@ -117,7 +118,13 @@ class EnhancedPaymentReportsTab(QWidget):
       • Payment status timeline
     """
 
-    def __init__(self, conn: sqlite3.Connection, parent=None) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        parent=None,
+        auto_refresh: bool = True,
+        use_background_refresh: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
@@ -127,10 +134,12 @@ class EnhancedPaymentReportsTab(QWidget):
         self._rows_all_payments: List[dict] = []
         self._rows_by_status: List[dict] = []
         self._rows_uncleared: List[dict] = []
+        self._use_background_refresh = use_background_refresh
 
         self._build_ui()
         self._wire_signals()
-        self.refresh()  # initial load
+        if auto_refresh:
+            self.refresh()
 
     # ---- UI ----
     def _build_ui(self) -> None:
@@ -255,6 +264,7 @@ class EnhancedPaymentReportsTab(QWidget):
         self.dt_from.dateChanged.connect(lambda *_: self.refresh())
         self.dt_to.dateChanged.connect(lambda *_: self.refresh())
         self.cmb_date_basis.currentIndexChanged.connect(lambda *_: self.refresh())
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _date_basis_key(self) -> str:
         return str(self.cmb_date_basis.currentData() or "posting")
@@ -290,10 +300,7 @@ class EnhancedPaymentReportsTab(QWidget):
         return f"{alias}.date"
 
     # ---- Data refresh ----
-    @Slot()
-    def refresh(self) -> None:
-        if not self._validate_date_ranges():
-            return
+    def _load_rows(self) -> tuple[List[dict], List[dict], float, float, float, float, float, str, str, str]:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         basis_label = self._date_basis_label()
@@ -351,13 +358,36 @@ class EnhancedPaymentReportsTab(QWidget):
             inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(all_rows)
             uncleared_rows = [r for r in all_rows if r.get("status") not in ["cleared"]][: self.MAX_ROWS]
             uncleared_total = sum(float(r.get("amount", 0.0)) for r in uncleared_rows)
+        return (
+            all_rows,
+            uncleared_rows,
+            inflow_total,
+            outflow_total,
+            refund_total,
+            net_total,
+            uncleared_total,
+            basis_label,
+            date_from,
+            date_to,
+        )
 
-        self._rows_all_payments = all_rows
-        self.model_all.set_rows(all_rows)
-        self.model_status.set_rows(all_rows)
-        self._rows_uncleared = uncleared_rows
-        self.model_uncleared.set_rows(uncleared_rows)
+    def _current_page_key(self) -> str:
+        idx = self.tabs.currentIndex()
+        if idx < 0 or idx >= len(self._PAGE_KEYS):
+            return self._PAGE_KEYS[0]
+        return self._PAGE_KEYS[idx]
 
+    def _apply_titles(
+        self,
+        basis_label: str,
+        date_from: str,
+        date_to: str,
+        inflow_total: float,
+        outflow_total: float,
+        refund_total: float,
+        net_total: float,
+        uncleared_total: float,
+    ) -> None:
         self.lbl_inflow_total.setText(f"Inflows: {fmt_money(inflow_total)}")
         self.lbl_outflow_total.setText(f"Outflows: {fmt_money(outflow_total)}")
         self.lbl_refund_total.setText(f"Refunds: {fmt_money(refund_total)}")
@@ -368,10 +398,89 @@ class EnhancedPaymentReportsTab(QWidget):
         self.lbl_status_title.setText(f"<b>Payments by Status</b> — {date_from} to {date_to} ({basis_label})")
         self.lbl_uncleared_title.setText(f"<b>Uncleared Payments</b> — {date_from} to {date_to} ({basis_label})")
 
-        # Auto-size tables
+    def refresh_page(self, index: int) -> None:
+        if not self._validate_date_ranges():
+            return
+        page_key = self._PAGE_KEYS[index] if 0 <= index < len(self._PAGE_KEYS) else self._PAGE_KEYS[0]
+        (
+            all_rows,
+            uncleared_rows,
+            inflow_total,
+            outflow_total,
+            refund_total,
+            net_total,
+            uncleared_total,
+            basis_label,
+            date_from,
+            date_to,
+        ) = self._load_rows()
+
+        self._rows_all_payments = all_rows
+        self._rows_by_status = all_rows
+        self._rows_uncleared = uncleared_rows
+        self._apply_titles(
+            basis_label,
+            date_from,
+            date_to,
+            inflow_total,
+            outflow_total,
+            refund_total,
+            net_total,
+            uncleared_total,
+        )
+
+        if page_key == "all":
+            self.model_all.set_rows(all_rows)
+            self._autosize(self.tbl_all)
+        elif page_key == "status":
+            self.model_status.set_rows(all_rows)
+            self._autosize(self.tbl_status)
+        else:
+            self.model_uncleared.set_rows(uncleared_rows)
+            self._autosize(self.tbl_uncleared)
+
+    def refresh_active_page(self) -> None:
+        self.refresh_page(self.tabs.currentIndex())
+
+    @Slot()
+    def refresh(self) -> None:
+        if not self._validate_date_ranges():
+            return
+        (
+            all_rows,
+            uncleared_rows,
+            inflow_total,
+            outflow_total,
+            refund_total,
+            net_total,
+            uncleared_total,
+            basis_label,
+            date_from,
+            date_to,
+        ) = self._load_rows()
+        self._rows_all_payments = all_rows
+        self._rows_by_status = all_rows
+        self._rows_uncleared = uncleared_rows
+        self._apply_titles(
+            basis_label,
+            date_from,
+            date_to,
+            inflow_total,
+            outflow_total,
+            refund_total,
+            net_total,
+            uncleared_total,
+        )
+        self.model_all.set_rows(all_rows)
+        self.model_status.set_rows(all_rows)
+        self.model_uncleared.set_rows(uncleared_rows)
         self._autosize(self.tbl_all)
         self._autosize(self.tbl_status)
         self._autosize(self.tbl_uncleared)
+
+    @Slot(int)
+    def _on_tab_changed(self, index: int) -> None:
+        self.refresh_page(index)
 
     # ---- Export helpers ----
     def _on_export_pdf(self) -> None:
