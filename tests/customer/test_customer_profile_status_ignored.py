@@ -80,3 +80,19 @@ def test_customer_table_and_details_have_no_status_ui(qtbot):
     assert CustomersTableModel.HEADERS == ["ID", "Name", "Contact", "Address"]
     assert not hasattr(CustomersTableModel, "IS_ACTIVE_ROLE")
     assert not hasattr(details, "lab_status")
+
+
+def test_customer_table_model_indexes_rows_by_id():
+    rows = [
+        Customer(customer_id=10, name="A", contact_info="1", address=None),
+        Customer(customer_id=20, name="B", contact_info="2", address=None),
+    ]
+    model = CustomersTableModel(rows)
+
+    assert model.row_for_id(20) == 1
+    assert model.row_for_id(99) is None
+
+    model.replace([Customer(customer_id=30, name="C", contact_info="3", address=None)])
+
+    assert model.row_for_id(20) is None
+    assert model.row_for_id(30) == 0

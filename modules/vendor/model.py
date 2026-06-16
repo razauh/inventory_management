@@ -63,6 +63,15 @@ class VendorsTableModel(QAbstractTableModel):
     def __init__(self, rows):
         super().__init__()
         self._rows = list(rows or [])
+        self._row_by_id = self._build_row_index()
+
+    def _build_row_index(self):
+        out = {}
+        for idx, row in enumerate(self._rows):
+            vendor_id = _get(row, "vendor_id")
+            if vendor_id is not None:
+                out[int(vendor_id)] = idx
+        return out
 
     def rowCount(self, parent=QModelIndex()):  # noqa: N802
         return len(self._rows)
@@ -97,9 +106,49 @@ class VendorsTableModel(QAbstractTableModel):
     def row_at(self, row: int):
         return _to_mapping(self._rows[row]) if 0 <= row < len(self._rows) else None
 
+    def row_for_id(self, vendor_id: int | None):
+        if vendor_id is None:
+            return None
+        return self._row_by_id.get(int(vendor_id))
+
+    def vendor_ids(self):
+        ids = []
+        for row in self._rows:
+            vendor_id = _get(row, "vendor_id")
+            if vendor_id is not None:
+                ids.append(int(vendor_id))
+        return ids
+
+    def apply_balances(self, balances_by_id):
+        if not balances_by_id:
+            return
+        changed = False
+        for row in self._rows:
+            vendor_id = _get(row, "vendor_id")
+            if vendor_id is None:
+                continue
+            balance = balances_by_id.get(int(vendor_id))
+            if balance is None:
+                continue
+            if isinstance(row, dict):
+                row["balance"] = balance
+            else:
+                try:
+                    row.balance = balance
+                except Exception:
+                    continue
+            changed = True
+        if changed and self._rows:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._rows) - 1, self.columnCount() - 1),
+                [Qt.DisplayRole, Qt.EditRole],
+            )
+
     def replace(self, rows):
         self.beginResetModel()
         self._rows = list(rows or [])
+        self._row_by_id = self._build_row_index()
         self.endResetModel()
 
 

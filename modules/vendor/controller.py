@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtWidgets import QFileDialog, QWidget, QHeaderView
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QItemSelectionModel, QTimer
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QItemSelectionModel, QTimer
 import sqlite3
 import logging
 from typing import Optional, Any, Dict, List
@@ -27,6 +27,8 @@ _EPS = 1e-9
 def info(parent, title: str, text: str):
     return uih.info(parent, title, text)
 class VendorController(BaseModule):
+    PAGE_SIZE = 100
+
     def __init__(self, conn: sqlite3.Connection):
         super().__init__()
         self.conn = conn
@@ -46,6 +48,14 @@ class VendorController(BaseModule):
         if sel:
             sel.selectionChanged.connect(self._update_details)
         self._selected_vendor_id: int | None = None
+        self._page_offset = 0
+        self._total_vendors = 0
+        self._pending_search = ""
+        self._search_timer = QTimer(self.view)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self._run_search_reload)
+        self._balance_token = 0
 
         self._accounts_model = VendorBankAccountsTableModel([])
         self.view.accounts_table.setModel(self._accounts_model)
@@ -56,6 +66,7 @@ class VendorController(BaseModule):
         self._pending_accounts_vendor_id: int | None = None
         self._pending_accounts_keep_id: int | None = None
         self._accounts_loaded_vendor_id: int | None = None
+        self._accounts_cache: dict[int, list[dict]] = {}
         self._accounts_columns_resized = False
 
         sm = self.view.accounts_table.selectionModel()
@@ -72,6 +83,8 @@ class VendorController(BaseModule):
         self.view.btn_import.clicked.connect(self._import_vendors)
         self.view.btn_edit.clicked.connect(self._edit)
         self.view.search.textChanged.connect(self._apply_filter)
+        self.view.btn_prev_page.clicked.connect(self._prev_page)
+        self.view.btn_next_page.clicked.connect(self._next_page)
 
         if hasattr(self.view, "btn_apply_advance"):
             self.view.btn_apply_advance.clicked.connect(self._on_apply_advance_dialog)
@@ -83,8 +96,16 @@ class VendorController(BaseModule):
         self.view.btn_acc_set_primary.clicked.connect(self._acc_set_primary)
         self.view.btn_acc_activate.clicked.connect(self._acc_activate)
     def _build_model(self):
-        rows = self.repo.list_vendors()
+        self._total_vendors = self.repo.count_vendors(self._pending_search)
+        if self._page_offset >= self._total_vendors:
+            self._page_offset = max(0, ((self._total_vendors - 1) // self.PAGE_SIZE) * self.PAGE_SIZE)
+        rows = self.repo.list_vendors(
+            search=self._pending_search,
+            limit=self.PAGE_SIZE,
+            offset=self._page_offset,
+        )
         self.base_model.replace(rows)
+        self._sync_page_controls()
         if self.proxy.rowCount() <= 20:
             self.view.table.resizeColumnsToContents()
         else:
@@ -94,21 +115,78 @@ class VendorController(BaseModule):
                 header.setSectionResizeMode(col, QHeaderView.Interactive)
                 self.view.table.setColumnWidth(col, width)
             header.setStretchLastSection(True)
+        self._schedule_visible_balances()
     def _reload(self):
+        selected_id = self._selected_id()
         self._build_model()
         if self.proxy.rowCount() > 0:
-            self.view.table.selectRow(0)
+            self._select_vendor_id(selected_id)
         else:
             self.view.details.clear()
             self._reload_accounts(None)
     def _apply_filter(self, text: str):
-        self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
-        if self.proxy.rowCount() > 0:
-            if not self.view.table.selectionModel().selectedRows():
-                self.view.table.selectRow(0)
+        self._pending_search = text.strip()
+        self._search_timer.start()
+
+    def _run_search_reload(self):
+        self._page_offset = 0
+        self._reload()
+
+    def _prev_page(self):
+        if self._page_offset <= 0:
+            return
+        self._page_offset = max(0, self._page_offset - self.PAGE_SIZE)
+        self._reload()
+
+    def _next_page(self):
+        next_offset = self._page_offset + self.PAGE_SIZE
+        if next_offset >= self._total_vendors:
+            return
+        self._page_offset = next_offset
+        self._reload()
+
+    def _sync_page_controls(self):
+        total_pages = max(1, (self._total_vendors + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        current_page = min(total_pages, (self._page_offset // self.PAGE_SIZE) + 1)
+        self.view.lbl_page.setText(f"Page {current_page} / {total_pages}")
+        self.view.btn_prev_page.setEnabled(self._page_offset > 0)
+        self.view.btn_next_page.setEnabled(self._page_offset + self.PAGE_SIZE < self._total_vendors)
+        loaded = self.base_model.rowCount()
+        query = self._pending_search.strip()
+        if self._total_vendors <= 0:
+            self.view.list_status.setText("No vendors match this search." if query else "No vendors available.")
         else:
-            self.view.details.clear()
-            self._reload_accounts(None)
+            label = "match(es)" if query else "vendor(s)"
+            self.view.list_status.setText(f"Showing {loaded} of {self._total_vendors} {label}")
+
+    def _select_vendor_id(self, vendor_id: int | None) -> None:
+        target_row = None
+        source_row = self.base_model.row_for_id(vendor_id)
+        if source_row is not None:
+            proxy_index = self.proxy.mapFromSource(self.base_model.index(source_row, 0))
+            if proxy_index.isValid():
+                target_row = proxy_index.row()
+        if target_row is None and self.proxy.rowCount() > 0:
+            target_row = 0
+        if target_row is None:
+            self.view.table.clearSelection()
+            return
+        self.view.table.selectRow(target_row)
+
+    def _schedule_visible_balances(self):
+        self._balance_token += 1
+        token = self._balance_token
+        QTimer.singleShot(0, lambda: self._hydrate_visible_balances(token))
+
+    def _hydrate_visible_balances(self, token: int):
+        if token != self._balance_token:
+            return
+        balances = self.repo.vendor_balances(self.base_model.vendor_ids())
+        if token != self._balance_token:
+            return
+        self.base_model.apply_balances(balances)
+        self._update_details()
+
     def _selected_id(self) -> int | None:
         idxs = self.view.table.selectionModel().selectedRows()
         if not idxs:
@@ -121,11 +199,8 @@ class VendorController(BaseModule):
     def _vendor_row_for_id(self, vendor_id: int | None) -> dict | None:
         if vendor_id is None:
             return None
-        for idx in range(self.base_model.rowCount()):
-            row = self.base_model.row_at(idx)
-            if row and int(row.get("vendor_id") or -1) == int(vendor_id):
-                return row
-        return None
+        row = self.base_model.row_for_id(vendor_id)
+        return self.base_model.row_at(row) if row is not None else None
     def _current_vendor_row(self) -> dict | None:
         return self._vendor_row_for_id(self._selected_id())
     def _current_vendor_display_text(self, vendor_id: int | None = None) -> str:
@@ -402,6 +477,7 @@ class VendorController(BaseModule):
                     lambda: self.vbank.create(int(vendor_id), data)
                 )
                 uih.info(self.view, "Added", "Bank account added.")
+                self._clear_accounts_cache(vendor_id)
                 self._reload_accounts(vendor_id, force=True)
             except Exception as e:
                 uih.info(self.view, "Error", f"Unable to add account: {e}")
@@ -420,6 +496,7 @@ class VendorController(BaseModule):
                     lambda: self.vbank.update(account_id, data)
                 )
                 uih.info(self.view, "Updated", "Bank account updated.")
+                self._clear_accounts_cache(vendor_id)
                 self._reload_accounts(vendor_id, keep_account_id=account_id, force=True)
             except Exception as e:
                 uih.info(self.view, "Error", f"Unable to update account: {e}")
@@ -433,6 +510,7 @@ class VendorController(BaseModule):
         try:
             self._with_bank_account_savepoint(lambda: self.vbank.deactivate(account_id))
             uih.info(self.view, "Deactivated", "Bank account deactivated.")
+            self._clear_accounts_cache(vendor_id)
             self._reload_accounts(vendor_id, force=True)
         except Exception as e:
             uih.info(self.view, "Error", f"Unable to deactivate account: {e}")
@@ -447,6 +525,7 @@ class VendorController(BaseModule):
         try:
             self._with_bank_account_savepoint(lambda: self.vbank.activate(account_id))
             uih.info(self.view, "Activated", "Bank account activated.")
+            self._clear_accounts_cache(vendor_id)
             self._reload_accounts(vendor_id, force=True)
         except Exception as e:
             uih.info(self.view, "Error", f"Unable to activate account: {e}")
@@ -469,6 +548,7 @@ class VendorController(BaseModule):
                 lambda: self.vbank.force_set_primary(int(vendor_id), account_id)
             )
             uih.info(self.view, "Updated", "Primary bank account updated.")
+            self._clear_accounts_cache(vendor_id)
             self._reload_accounts(vendor_id, keep_account_id=account_id, force=True)
         except Exception as e:
             uih.info(self.view, "Error", f"Unable to set primary: {e}")
@@ -592,6 +672,18 @@ class VendorController(BaseModule):
     def _run_pending_account_reload(self) -> None:
         self._reload_accounts(self._pending_accounts_vendor_id, self._pending_accounts_keep_id)
 
+    def _clear_accounts_cache(self, vendor_id: int | None = None) -> None:
+        if not hasattr(self, "_accounts_cache"):
+            self._accounts_cache = {}
+        if vendor_id is None:
+            self._accounts_cache.clear()
+            self._accounts_loaded_vendor_id = None
+            return
+        vendor_id_int = int(vendor_id)
+        self._accounts_cache.pop(vendor_id_int, None)
+        if self._accounts_loaded_vendor_id == vendor_id_int:
+            self._accounts_loaded_vendor_id = None
+
     def _resize_accounts_table(self, row_count: int) -> None:
         table = self.view.accounts_table
         if row_count <= 20:
@@ -607,9 +699,10 @@ class VendorController(BaseModule):
         self._accounts_columns_resized = True
 
     def _reload_accounts(self, vendor_id: int | None, keep_account_id: int | None = None, *, force: bool = False):
-        if not force and vendor_id == self._accounts_loaded_vendor_id and keep_account_id is None:
+        vendor_id_int = int(vendor_id) if vendor_id else None
+        if not force and vendor_id_int == self._accounts_loaded_vendor_id and keep_account_id is None:
             return
-        self._accounts_loaded_vendor_id = vendor_id
+        self._accounts_loaded_vendor_id = vendor_id_int
         if not vendor_id:
             if self._accounts_model:
                 self._accounts_model.set_rows([])
@@ -620,7 +713,13 @@ class VendorController(BaseModule):
             self._hook_acc_selection_enablement()
             self._update_acc_buttons_enabled()
             return
-        rows = self.vbank.list(int(vendor_id), active_only=False)
+        if not hasattr(self, "_accounts_cache"):
+            self._accounts_cache = {}
+        if force or vendor_id_int not in self._accounts_cache:
+            rows = self.vbank.list(vendor_id_int, active_only=False)
+            self._accounts_cache[vendor_id_int] = [dict(row) for row in rows]
+        else:
+            rows = [dict(row) for row in self._accounts_cache[vendor_id_int]]
         self._accounts_model.set_rows(rows)
         self._resize_accounts_table(len(rows))
         self._after_accounts_model_bound()
@@ -637,6 +736,8 @@ class VendorController(BaseModule):
                         sm.select(idx, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
                     self.view.accounts_table.setCurrentIndex(idx)
                     self._update_account_details()
+                    self._pending_accounts_vendor_id = None
+                    self._pending_accounts_keep_id = None
                     self._hook_acc_selection_enablement()
                     self._update_acc_buttons_enabled()
                     return
@@ -732,6 +833,7 @@ class VendorController(BaseModule):
             info(self.view, "Not recorded", f"Advance recording failed: {e}")
             return
 
+        self._clear_accounts_cache()
         self._reload()
     def build_vendor_statement(self, vendor_id: int, *, date_from: Optional[str] = None, date_to: Optional[str] = None, include_opening: bool = True, show_return_origins: bool = False) -> dict:
         opening_credit = 0.0
@@ -958,23 +1060,32 @@ class VendorController(BaseModule):
             info(self.view, "Select", "Please select a vendor first.")
             return None
         try:
-            return self._with_bank_account_savepoint(lambda: self.vbank.create(vid, data))
+            account_id = self._with_bank_account_savepoint(lambda: self.vbank.create(vid, data))
+            if account_id:
+                self._clear_accounts_cache(vid)
+            return account_id
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not create bank account:\n{e}")
             return None
     def update_bank_account(self, account_id: int, data: dict) -> bool:
         try:
-            return self._with_bank_account_savepoint(
+            updated = self._with_bank_account_savepoint(
                 lambda: self.vbank.update(account_id, data)
             ) > 0
+            if updated:
+                self._clear_accounts_cache(self._selected_id())
+            return updated
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not update bank account:\n{e}")
             return False
     def deactivate_bank_account(self, account_id: int) -> bool:
         try:
-            return self._with_bank_account_savepoint(
+            deactivated = self._with_bank_account_savepoint(
                 lambda: self.vbank.deactivate(account_id)
             ) > 0
+            if deactivated:
+                self._clear_accounts_cache(self._selected_id())
+            return deactivated
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not deactivate bank account:\n{e}")
             return False
@@ -987,6 +1098,7 @@ class VendorController(BaseModule):
             self._with_bank_account_savepoint(
                 lambda: self.vbank.force_set_primary(vid, account_id)
             )
+            self._clear_accounts_cache(vid)
             return True
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             info(self.view, "Not saved", f"Could not set primary account:\n{e}")
@@ -1074,6 +1186,7 @@ class VendorController(BaseModule):
                 f"Skipped/failed rows: {result.failed_count}"
             ),
         )
+        self._clear_accounts_cache()
         self._reload()
     def _ensure_vendor_exists_for_form(self, form, payload: dict):
         try:
@@ -1120,6 +1233,7 @@ class VendorController(BaseModule):
                 info(self.view, "Error", f"Cannot open Bank Accounts dialog:\n{e}")
                 return
         dlg.exec()
+        self._clear_accounts_cache(vendor_id)
         self._reload()
     def _open_grant_credit_dialog(self, vendor_id: Optional[int] = None):
         if not vendor_id:

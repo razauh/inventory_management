@@ -177,14 +177,12 @@ class CustomerController(BaseModule):
     def _select_customer_id(self, customer_id: Optional[int]) -> None:
         target_row = None
         if customer_id is not None:
-            for row in range(self.base.rowCount()):
+            row = self.base.row_for_id(customer_id)
+            if row is not None:
                 source_index = self.base.index(row, 0)
-                if self.base.at(row).customer_id != customer_id:
-                    continue
                 proxy_index = self.proxy.mapFromSource(source_index)
                 if proxy_index.isValid():
                     target_row = proxy_index.row()
-                    break
         if target_row is None and self.proxy.rowCount() > 0:
             target_row = 0
         if target_row is None:

@@ -56,6 +56,36 @@ def test_customer_controller_reuses_models_and_searches_in_repo(qtbot):
     conn.close()
 
 
+def test_customer_selection_restore_uses_row_index(qtbot):
+    conn = make_db()
+    _, alpha_id, _, _ = seed_customers(conn)
+    controller = CustomerController(conn)
+    qtbot.addWidget(controller.get_widget())
+
+    def fail_at(_row):
+        raise AssertionError("selection restore should not scan model rows")
+
+    row = controller.base.row_for_id(alpha_id)
+    original_at = controller.base.at
+    controller.base.at = fail_at
+    controller._detail_timer.stop()
+
+    selection_model = controller.view.table.selectionModel()
+    selection_model.blockSignals(True)
+    try:
+        controller._select_customer_id(alpha_id)
+    finally:
+        selection_model.blockSignals(False)
+        controller.base.at = original_at
+        controller._detail_timer.stop()
+
+    selected = controller.view.table.selectionModel().selectedRows()
+    assert selected
+    assert selected[0].row() == controller.proxy.mapFromSource(controller.base.index(row, 0)).row()
+
+    conn.close()
+
+
 def test_customer_controller_does_not_stack_detail_refreshes(qtbot):
     conn = make_db()
     _, alpha_id, _, _ = seed_customers(conn)

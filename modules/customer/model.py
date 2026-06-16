@@ -13,6 +13,15 @@ class CustomersTableModel(QAbstractTableModel):
     def __init__(self, rows: list[Customer]):
         super().__init__()
         self._rows = rows
+        self._row_by_id = self._build_row_index(rows)
+
+    @staticmethod
+    def _build_row_index(rows: list[Customer]) -> dict[int, int]:
+        return {
+            int(row.customer_id): idx
+            for idx, row in enumerate(rows)
+            if row.customer_id is not None
+        }
 
     # --- Qt model basics ----------------------------------------------------
 
@@ -50,7 +59,13 @@ class CustomersTableModel(QAbstractTableModel):
     def at(self, row: int) -> Customer:
         return self._rows[row]
 
+    def row_for_id(self, customer_id: int | None) -> int | None:
+        if customer_id is None:
+            return None
+        return self._row_by_id.get(int(customer_id))
+
     def replace(self, rows: list[Customer]):
         self.beginResetModel()
         self._rows = rows
+        self._row_by_id = self._build_row_index(rows)
         self.endResetModel()

@@ -30,21 +30,72 @@ class VendorsRepo:
         if value is None or value.strip() == "":
             raise DomainError(f"{field_label} cannot be empty.")
 
-    def list_vendors(self) -> list[Vendor]:
-        rows = self.conn.execute(
+    def _vendor_search_clause(self, search: str | None) -> tuple[str, list[object]]:
+        text = (search or "").strip()
+        if not text:
+            return "", []
+        escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        return (
             """
+            WHERE CAST(v.vendor_id AS TEXT) LIKE ? ESCAPE '\\'
+               OR v.name LIKE ? ESCAPE '\\'
+               OR v.contact_info LIKE ? ESCAPE '\\'
+               OR COALESCE(v.address, '') LIKE ? ESCAPE '\\'
+            """,
+            [pattern, pattern, pattern, pattern],
+        )
+
+    def count_vendors(self, search: str | None = None) -> int:
+        where_sql, params = self._vendor_search_clause(search)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS c FROM vendors v {where_sql}",
+            params,
+        ).fetchone()
+        return int(row["c"] if row else 0)
+
+    def list_vendors(
+        self,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Vendor]:
+        where_sql, params = self._vendor_search_clause(search)
+        limit_sql = ""
+        if limit is not None and int(limit) > 0:
+            limit_sql = "LIMIT ? OFFSET ?"
+            params.extend([int(limit), max(0, int(offset))])
+        rows = self.conn.execute(
+            f"""
             SELECT
               v.vendor_id,
               v.name,
               v.contact_info,
-              v.address,
-              COALESCE(b.balance, 0.0) AS balance
+              v.address
             FROM vendors v
-            LEFT JOIN v_vendor_advance_balance b ON b.vendor_id = v.vendor_id
+            {where_sql}
             ORDER BY v.vendor_id DESC
-            """
+            {limit_sql}
+            """,
+            params,
         ).fetchall()
         return [Vendor(**dict(r)) for r in rows]
+
+    def vendor_balances(self, vendor_ids: list[int]) -> dict[int, float]:
+        ids = [int(vendor_id) for vendor_id in vendor_ids if vendor_id is not None]
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT v.vendor_id, COALESCE(b.balance, 0.0) AS balance
+            FROM vendors v
+            LEFT JOIN v_vendor_advance_balance b ON b.vendor_id = v.vendor_id
+            WHERE v.vendor_id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+        return {int(row["vendor_id"]): float(row["balance"] or 0.0) for row in rows}
 
     def get(self, vendor_id: int) -> Vendor | None:
         r = self.conn.execute(

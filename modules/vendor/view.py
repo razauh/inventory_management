@@ -39,6 +39,20 @@ class VendorView(QWidget):
         top.addWidget(self.search, 2)
         root.addLayout(top)
 
+        status_row = QHBoxLayout()
+        self.list_status = QLabel("")
+        self.list_status.setStyleSheet("color: #666;")
+        status_row.addWidget(self.list_status, 1)
+        self.btn_prev_page = QPushButton("Prev Page")
+        self.lbl_page = QLabel("Page 1 / 1")
+        self.lbl_page.setMinimumWidth(120)
+        self.lbl_page.setAlignment(Qt.AlignCenter)
+        self.btn_next_page = QPushButton("Next Page")
+        status_row.addWidget(self.btn_prev_page)
+        status_row.addWidget(self.lbl_page)
+        status_row.addWidget(self.btn_next_page)
+        root.addLayout(status_row)
+
         # table + right side split (details + bank accounts)
         split = QSplitter(Qt.Horizontal)
 
