@@ -49,11 +49,39 @@ class ProductsTableModel(QAbstractTableModel):
         
     def at(self, row: int) -> Product:
         return self._rows[row]
+
+    def rows(self) -> list[Product]:
+        return list(self._rows)
         
     def replace(self, rows: list[Product]):
         self.beginResetModel()
         self._rows = rows
         self.endResetModel()
+
+    def product_ids(self) -> list[int]:
+        return [int(p.product_id) for p in self._rows if p.product_id is not None]
+
+    def apply_metrics(self, metrics_by_id: dict[int, dict]):
+        if not metrics_by_id:
+            return
+        changed = False
+        for p in self._rows:
+            if p.product_id is None:
+                continue
+            metrics = metrics_by_id.get(int(p.product_id))
+            if not metrics:
+                continue
+            p.base_uom_name = metrics.get("base_uom_name")
+            p.alt_uom_names = metrics.get("alt_uom_names")
+            p.on_hand_base = metrics.get("on_hand_base")
+            p.cost_price_base = metrics.get("cost_price_base")
+            p.sale_price_base = metrics.get("sale_price_base")
+            p.latest_price_date = metrics.get("latest_price_date")
+            changed = True
+        if changed and self._rows:
+            top_left = self.index(0, 0)
+            bottom_right = self.index(len(self._rows) - 1, self.columnCount() - 1)
+            self.dataChanged.emit(top_left, bottom_right, [Qt.DisplayRole, Qt.UserRole])
         
     # helper for proxy filtering
     def row_as_text(self, row: int) -> str:

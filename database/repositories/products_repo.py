@@ -59,17 +59,97 @@ class ProductsRepo:
 
     # ---------------------------- Products ----------------------------
 
-    def list_products(self) -> list[Product]:
-        rows = self.conn.execute(
+    def _product_search_clause(self, search: str | None) -> tuple[str, list[object]]:
+        text = (search or "").strip()
+        if not text:
+            return "", []
+        pattern = f"%{text.lower()}%"
+        return (
             """
-            WITH uom_labels AS (
+            WHERE CAST(p.product_id AS TEXT) LIKE ?
+               OR LOWER(p.name) LIKE ?
+               OR LOWER(COALESCE(p.category, '')) LIKE ?
+               OR LOWER(COALESCE(p.description, '')) LIKE ?
+               OR EXISTS (
+                    SELECT 1
+                    FROM product_uoms pu
+                    JOIN uoms u ON u.uom_id = pu.uom_id
+                    WHERE pu.product_id = p.product_id
+                      AND LOWER(u.unit_name) LIKE ?
+               )
+            """,
+            [pattern, pattern, pattern, pattern, pattern],
+        )
+
+    def count_products(self, search: str | None = None) -> int:
+        where_sql, params = self._product_search_clause(search)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS c FROM products p {where_sql}",
+            params,
+        ).fetchone()
+        return int(row["c"] if row else 0)
+
+    def list_products(
+        self,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Product]:
+        where_sql, params = self._product_search_clause(search)
+        limit_sql = ""
+        if limit is not None and int(limit) > 0:
+            limit_sql = "LIMIT ? OFFSET ?"
+            params.extend([int(limit), max(0, int(offset))])
+        rows = self.conn.execute(
+            f"""
+            SELECT
+              p.product_id,
+              p.name,
+              p.description,
+              p.category,
+              p.min_stock_level
+            FROM products p
+            {where_sql}
+            ORDER BY p.product_id DESC
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+        return [Product(**dict(r)) for r in rows]
+
+    def product_page_metrics(self, product_ids: list[int]) -> dict[int, dict]:
+        ids = [int(pid) for pid in product_ids if pid is not None]
+        if not ids:
+            return {}
+        values_sql = ", ".join(["(?)"] * len(ids))
+        rows = self.conn.execute(
+            f"""
+            WITH ids(product_id) AS (
+              VALUES {values_sql}
+            ),
+            uom_labels AS (
               SELECT
                 pu.product_id,
                 MAX(CASE WHEN pu.is_base = 1 THEN u.unit_name END) AS base_uom_name,
                 GROUP_CONCAT(CASE WHEN pu.is_base = 0 THEN u.unit_name END, ', ') AS alt_uom_names
               FROM product_uoms pu
+              JOIN ids i ON i.product_id = pu.product_id
               JOIN uoms u ON u.uom_id = pu.uom_id
               GROUP BY pu.product_id
+            ),
+            latest_stock AS (
+              SELECT svh.product_id, MAX(svh.valuation_id) AS last_vid
+              FROM stock_valuation_history svh
+              JOIN ids i ON i.product_id = svh.product_id
+              GROUP BY svh.product_id
+            ),
+            stock AS (
+              SELECT
+                ls.product_id,
+                CAST(svh.quantity AS REAL) AS on_hand_base,
+                CAST(svh.unit_value AS REAL) AS cost_price_base
+              FROM latest_stock ls
+              JOIN stock_valuation_history svh ON svh.valuation_id = ls.last_vid
             ),
             latest_purchase AS (
               SELECT
@@ -82,6 +162,7 @@ class ProductsRepo:
                   ORDER BY p.date DESC, pi.item_id DESC
                 ) AS rn
               FROM purchase_items pi
+              JOIN ids i ON i.product_id = pi.product_id
               JOIN purchases p ON p.purchase_id = pi.purchase_id
               LEFT JOIN product_uoms pu
                 ON pu.product_id = pi.product_id
@@ -97,32 +178,29 @@ class ProductsRepo:
                   ORDER BY (psp.date IS NULL), psp.date DESC, psp.price_id DESC
                 ) AS rn
               FROM product_sale_prices psp
+              JOIN ids i ON i.product_id = psp.product_id
             )
             SELECT
-              p.product_id,
-              p.name,
-              p.description,
-              p.category,
-              p.min_stock_level,
+              i.product_id,
               ul.base_uom_name,
               ul.alt_uom_names,
-              COALESCE(CAST(v.qty_in_base AS REAL), 0.0) AS on_hand_base,
-              COALESCE(CAST(v.unit_value AS REAL), 0.0) AS cost_price_base,
+              COALESCE(s.on_hand_base, 0.0) AS on_hand_base,
+              COALESCE(s.cost_price_base, 0.0) AS cost_price_base,
               COALESCE(ms.sale_price_base_override, lp.sale_price_base_default, 0.0) AS sale_price_base,
               COALESCE(ms.date, lp.date) AS latest_price_date
-            FROM products p
-            LEFT JOIN uom_labels ul ON ul.product_id = p.product_id
-            LEFT JOIN v_stock_on_hand v ON v.product_id = p.product_id
+            FROM ids i
+            LEFT JOIN uom_labels ul ON ul.product_id = i.product_id
+            LEFT JOIN stock s ON s.product_id = i.product_id
             LEFT JOIN latest_purchase lp
-              ON lp.product_id = p.product_id
+              ON lp.product_id = i.product_id
              AND lp.rn = 1
             LEFT JOIN latest_manual_sale ms
-              ON ms.product_id = p.product_id
+              ON ms.product_id = i.product_id
              AND ms.rn = 1
-            ORDER BY p.product_id DESC
-            """
+            """,
+            ids,
         ).fetchall()
-        return [Product(**dict(r)) for r in rows]
+        return {int(r["product_id"]): dict(r) for r in rows}
 
     def get(self, product_id: int) -> Product | None:
         r = self.conn.execute(

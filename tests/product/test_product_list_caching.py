@@ -50,13 +50,15 @@ def test_list_products_returns_cached_metrics_and_uom_labels(conn, ids):
     )
 
     row = next(product for product in repo.list_products() if product.product_id == product_id)
+    metrics = repo.product_page_metrics([product_id])[product_id]
 
-    assert row.base_uom_name == "Perf Cache Unit"
-    assert row.alt_uom_names == "Perf Cache Box"
-    assert row.on_hand_base == pytest.approx(7.0)
-    assert row.cost_price_base == pytest.approx(10.0)
-    assert row.sale_price_base == pytest.approx(17.0)
-    assert row.latest_price_date == "2026-06-15"
+    assert row.base_uom_name is None
+    assert metrics["base_uom_name"] == "Perf Cache Unit"
+    assert metrics["alt_uom_names"] == "Perf Cache Box"
+    assert metrics["on_hand_base"] == pytest.approx(7.0)
+    assert metrics["cost_price_base"] == pytest.approx(10.0)
+    assert metrics["sale_price_base"] == pytest.approx(17.0)
+    assert metrics["latest_price_date"] == "2026-06-15"
 
 
 def test_list_products_defaults_cached_metrics_without_history(conn):
@@ -67,13 +69,28 @@ def test_list_products_defaults_cached_metrics_without_history(conn):
     ).lastrowid
     repo.set_base_uom(product_id, int(base_uom_id))
 
-    row = next(product for product in repo.list_products() if product.product_id == product_id)
+    metrics = repo.product_page_metrics([product_id])[product_id]
 
-    assert row.base_uom_name == "No Cache Unit"
-    assert row.on_hand_base == pytest.approx(0.0)
-    assert row.cost_price_base == pytest.approx(0.0)
-    assert row.sale_price_base == pytest.approx(0.0)
-    assert row.latest_price_date is None
+    assert metrics["base_uom_name"] == "No Cache Unit"
+    assert metrics["on_hand_base"] == pytest.approx(0.0)
+    assert metrics["cost_price_base"] == pytest.approx(0.0)
+    assert metrics["sale_price_base"] == pytest.approx(0.0)
+    assert metrics["latest_price_date"] is None
+
+
+def test_list_products_searches_uoms_and_paginates(conn):
+    repo = ProductsRepo(conn)
+    first_id = repo.create("Paged A", None, "One", 0)
+    second_id = repo.create("Paged B", None, "Two", 0)
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Searchable Crate')").lastrowid
+    repo.set_base_uom(first_id, int(uom_id))
+
+    searched = repo.list_products(search="crate", limit=10, offset=0)
+    page = repo.list_products(search="Paged", limit=1, offset=0)
+
+    assert repo.count_products("crate") == 1
+    assert [p.product_id for p in searched] == [first_id]
+    assert [p.product_id for p in page] == [second_id]
 
 
 def test_update_summary_uses_cached_row_metrics_only():
@@ -175,3 +192,70 @@ def test_update_selected_details_uses_cached_selected_product_only():
             "description": "From list cache",
         }
     ]
+
+
+def test_build_model_reuses_model_and_fetches_one_page():
+    replaced_rows: list[list[Product]] = []
+    rows = [
+        Product(product_id=3, name="C", description=None, category=None, min_stock_level=0),
+        Product(product_id=2, name="B", description=None, category=None, min_stock_level=0),
+    ]
+
+    controller = ProductController.__new__(ProductController)
+    controller.PAGE_SIZE = 100
+    controller._page_offset = 0
+    controller._total_products = 0
+    controller.repo = SimpleNamespace(
+        count_products=lambda search: 125,
+        list_products=lambda search, limit, offset: rows,
+    )
+    controller.view = SimpleNamespace(
+        search=SimpleNamespace(text=lambda: "needle"),
+        lbl_page=SimpleNamespace(setText=lambda text: None),
+        btn_prev_page=SimpleNamespace(setEnabled=lambda enabled: None),
+        btn_next_page=SimpleNamespace(setEnabled=lambda enabled: None),
+    )
+    controller.base_model = SimpleNamespace(replace=lambda new_rows: replaced_rows.append(new_rows))
+    controller.proxy = object()
+    controller._resize_table_columns = lambda row_count: None
+    controller._restore_selection = lambda selected_pid: None
+    controller._update_summary = lambda rows, total_count=None: None
+    controller._update_selected_details = lambda: None
+    controller._schedule_page_metrics = lambda: None
+
+    model_before = controller.base_model
+    proxy_before = controller.proxy
+
+    controller._build_model()
+
+    assert controller.base_model is model_before
+    assert controller.proxy is proxy_before
+    assert replaced_rows == [rows]
+    assert controller._total_products == 125
+
+
+def test_search_reload_resets_to_first_page():
+    reload_offsets: list[int] = []
+
+    controller = ProductController.__new__(ProductController)
+    controller._page_offset = 200
+    controller._reload = lambda: reload_offsets.append(controller._page_offset)
+
+    controller._run_search_reload()
+
+    assert reload_offsets == [0]
+
+
+def test_next_and_prev_page_move_by_page_size():
+    reload_offsets: list[int] = []
+
+    controller = ProductController.__new__(ProductController)
+    controller.PAGE_SIZE = 100
+    controller._page_offset = 0
+    controller._total_products = 250
+    controller._reload = lambda: reload_offsets.append(controller._page_offset)
+
+    controller._next_page()
+    controller._prev_page()
+
+    assert reload_offsets == [100, 0]

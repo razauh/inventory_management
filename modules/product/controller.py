@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 import logging
 from pathlib import Path
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QItemSelectionModel
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QItemSelectionModel, QTimer
 from PySide6.QtWidgets import (
     QWidget,
     QLineEdit,
@@ -226,6 +226,7 @@ class PriceDialog(QDialog):
 
 
 class ProductController(BaseModule):
+    PAGE_SIZE = 100
     _AUTO_SIZE_ROW_LIMIT = 100
     _LARGE_TABLE_WIDTHS = {
         0: 90,
@@ -243,6 +244,24 @@ class ProductController(BaseModule):
         self.repo = ProductsRepo(conn)
         self.view = ProductView()
         self._wired = False  # ensure signals are connected only once
+        self._page_offset = 0
+        self._total_products = 0
+        self._metrics_token = 0
+        self.base_model = ProductsTableModel([])
+        self.proxy = QSortFilterProxyModel(self.view)
+        self.proxy.setSourceModel(self.base_model)
+        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.proxy.setSortRole(Qt.UserRole)
+        self.proxy.setFilterKeyColumn(-1)
+        self.view.table.setModel(self.proxy)
+        self._search_timer = QTimer(self.view)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self._run_search_reload)
+        try:
+            self.view.table.selectionModel().selectionChanged.connect(self._update_selected_details)
+        except Exception:
+            pass
         self._connect_signals()
         self._reload()
 
@@ -259,32 +278,75 @@ class ProductController(BaseModule):
         self.view.btn_delete.clicked.connect(self._delete)
         self.view.btn_price.clicked.connect(self._set_price)
         self.view.search.textChanged.connect(self._apply_filter)
+        self.view.btn_prev_page.clicked.connect(self._prev_page)
+        self.view.btn_next_page.clicked.connect(self._next_page)
         self._wired = True
 
     def _build_model(self, selected_pid: int | None = None):
-        rows = self.repo.list_products()
-        self.base_model = ProductsTableModel(rows)
-        self.proxy = QSortFilterProxyModel(self.view)
-        self.proxy.setSourceModel(self.base_model)
-        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.proxy.setSortRole(Qt.UserRole)
-        self.proxy.setFilterKeyColumn(-1)
-        self.view.table.setModel(self.proxy)
+        search = self.view.search.text()
+        self._total_products = self.repo.count_products(search)
+        if self._page_offset >= self._total_products:
+            self._page_offset = max(0, ((self._total_products - 1) // self.PAGE_SIZE) * self.PAGE_SIZE)
+        rows = self.repo.list_products(
+            search=search,
+            limit=self.PAGE_SIZE,
+            offset=self._page_offset,
+        )
+        self.base_model.replace(rows)
         self._resize_table_columns(len(rows))
-        try:
-            self.view.table.selectionModel().selectionChanged.connect(self._update_selected_details)
-        except Exception:
-            pass
-        self._apply_filter(self.view.search.text())
+        self._sync_page_controls()
         self._restore_selection(selected_pid)
-        self._update_summary(rows)
+        self._update_summary(rows, total_count=self._total_products)
         self._update_selected_details()
+        self._schedule_page_metrics()
 
     def _reload(self):
         self._build_model(self._selected_id())
 
     def _apply_filter(self, text: str):
-        self.proxy.setFilterRegularExpression(QRegularExpression(QRegularExpression.escape(text)))
+        self._search_timer.start()
+
+    def _run_search_reload(self):
+        self._page_offset = 0
+        self._reload()
+
+    def _prev_page(self):
+        if self._page_offset <= 0:
+            return
+        self._page_offset = max(0, self._page_offset - self.PAGE_SIZE)
+        self._reload()
+
+    def _next_page(self):
+        next_offset = self._page_offset + self.PAGE_SIZE
+        if next_offset >= self._total_products:
+            return
+        self._page_offset = next_offset
+        self._reload()
+
+    def _sync_page_controls(self):
+        total_pages = max(1, (self._total_products + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        current_page = min(total_pages, (self._page_offset // self.PAGE_SIZE) + 1)
+        self.view.lbl_page.setText(f"Page {current_page} / {total_pages}")
+        self.view.btn_prev_page.setEnabled(self._page_offset > 0)
+        self.view.btn_next_page.setEnabled(self._page_offset + self.PAGE_SIZE < self._total_products)
+
+    def _schedule_page_metrics(self):
+        self._metrics_token += 1
+        token = self._metrics_token
+        QTimer.singleShot(0, lambda: self._hydrate_page_metrics(token))
+
+    def _hydrate_page_metrics(self, token: int):
+        if token != self._metrics_token:
+            return
+        ids = self.base_model.product_ids()
+        if not ids:
+            return
+        metrics = self.repo.product_page_metrics(ids)
+        if token != self._metrics_token:
+            return
+        self.base_model.apply_metrics(metrics)
+        rows = self.base_model.rows()
+        self._update_summary(rows, total_count=self._total_products)
         self._update_selected_details()
 
     def _resolve_uom_ref(self, ref: dict) -> int:
@@ -322,7 +384,7 @@ class ProductController(BaseModule):
         self.view.table.clearSelection()
         self._set_action_state(False)
 
-    def _update_summary(self, rows):
+    def _update_summary(self, rows, total_count: int | None = None):
         low_stock = 0
         priced = 0
         with_uoms = 0
@@ -338,7 +400,7 @@ class ProductController(BaseModule):
                 with_uoms += 1
         self.view.summary.set_summary(
             ProductSummary(
-                total=len(rows),
+                total=len(rows) if total_count is None else int(total_count),
                 low_stock=low_stock,
                 priced=priced,
                 with_uoms=with_uoms,
