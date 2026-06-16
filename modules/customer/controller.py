@@ -4,7 +4,7 @@ import sqlite3
 import logging
 from typing import Any, Optional, Dict, List
 
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QTimer, QRegularExpression
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QTimer
 from PySide6.QtWidgets import QWidget
 
 from ..base_module import BaseModule
@@ -29,6 +29,7 @@ class CustomerController(BaseModule):
         across payment/credit/history action handlers.
       - Adds local adapters for bank accounts and customer sales to support dialogs.
     """
+    PAGE_SIZE = 100
 
     def __init__(self, conn: sqlite3.Connection):
         super().__init__()
@@ -39,8 +40,11 @@ class CustomerController(BaseModule):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)
         self._pending_search = ""
+        self._page_offset = 0
+        self._total_customers = 0
         self._columns_sized = False
         self._last_detail_customer_id: int | None = None
+        self._build_model()
         self._wire()
         self._reload()
 
@@ -61,6 +65,8 @@ class CustomerController(BaseModule):
         # self.view.btn_del.clicked.connect(self._delete)
         self.view.search.textChanged.connect(self._queue_filter)
         self._search_timer.timeout.connect(lambda: self._apply_filter(self._pending_search))
+        self.view.btn_prev_page.clicked.connect(self._prev_page)
+        self.view.btn_next_page.clicked.connect(self._next_page)
 
         # Payments/credit/history actions
         self.view.btn_record_advance.clicked.connect(self._on_record_advance)
@@ -81,10 +87,17 @@ class CustomerController(BaseModule):
         sel.selectionChanged.connect(self._update_details)
 
     def _reload(self):
-        selected_id = self._selected_id() if hasattr(self, "proxy") else None
-        if not hasattr(self, "proxy"):
-            self._build_model()
-        self.base.replace(self.repo.list_customers())
+        selected_id = self._selected_id()
+        query = self._pending_search.strip()
+        self._total_customers = self.repo.count_customers(query)
+        if self._page_offset >= self._total_customers:
+            self._page_offset = max(0, ((self._total_customers - 1) // self.PAGE_SIZE) * self.PAGE_SIZE)
+        rows = self.repo.list_customers(
+            search=query,
+            limit=self.PAGE_SIZE,
+            offset=self._page_offset,
+        )
+        self.base.replace(rows)
         if not self._columns_sized:
             self.view.table.resizeColumnsToContents()
             self._columns_sized = True
@@ -100,22 +113,58 @@ class CustomerController(BaseModule):
         self._search_timer.start()
 
     def _apply_filter(self, text: str):
-        selected_id = self._selected_id() if hasattr(self, "proxy") else None
-        query = text.strip()
-        regex = QRegularExpression(QRegularExpression.escape(query))
-        regex.setPatternOptions(QRegularExpression.CaseInsensitiveOption)
-        self.proxy.setFilterRegularExpression(regex)
-        self._last_detail_customer_id = None
-        self._sync_table_state(selected_id)
+        self._pending_search = text
+        self._page_offset = 0
+        self._reload()
+
+    def _prev_page(self):
+        if self._page_offset <= 0:
+            return
+        self._page_offset = max(0, self._page_offset - self.PAGE_SIZE)
+        self._reload()
+
+    def _next_page(self):
+        next_offset = self._page_offset + self.PAGE_SIZE
+        if next_offset >= self._total_customers:
+            return
+        self._page_offset = next_offset
+        self._reload()
+
+    def _sync_page_controls(self) -> None:
+        total_pages = max(1, (self._total_customers + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        current_page = min(total_pages, (self._page_offset // self.PAGE_SIZE) + 1)
+        self.view.lbl_page.setText(f"Page {current_page} / {total_pages}")
+        self.view.btn_prev_page.setEnabled(self._page_offset > 0)
+        self.view.btn_next_page.setEnabled(self._page_offset + self.PAGE_SIZE < self._total_customers)
+
+    def _loaded_count(self) -> int:
+        return self.base.rowCount()
+
+    def _status_text(self, query: str) -> str:
+        loaded = self._loaded_count()
+        total = int(self._total_customers or 0)
+        if total <= 0:
+            return "No customers match this search." if query else "No customers available."
+        label = "match(es)" if query else "customer(s)"
+        return f"Showing {loaded} of {total} {label}"
 
     def _sync_table_state(self, selected_id: Optional[int]) -> None:
-        if self.proxy.rowCount() > 0:
-            self._select_customer_id(selected_id)
-            self.view.list_status.setText(f"{self.proxy.rowCount()} customer(s)")
-        else:
-            query = self.view.search.text().strip()
-            self.view.table.clearSelection()
-            self.view.list_status.setText("No customers match this search." if query else "No customers available.")
+        query = self._pending_search.strip()
+        self._sync_page_controls()
+        selection_model = self.view.table.selectionModel()
+        if selection_model is not None:
+            selection_model.blockSignals(True)
+        try:
+            if self.base.rowCount() > 0:
+                self._select_customer_id(selected_id)
+                self.view.list_status.setText(self._status_text(query))
+            else:
+                self.view.table.clearSelection()
+                self.view.list_status.setText(self._status_text(query))
+        finally:
+            if selection_model is not None:
+                selection_model.blockSignals(False)
+        self._last_detail_customer_id = None
         self._update_details()
 
     def _select_customer_id(self, customer_id: Optional[int]) -> None:

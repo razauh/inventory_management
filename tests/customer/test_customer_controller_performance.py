@@ -21,7 +21,7 @@ def seed_customers(conn):
     return repo, alpha_id, alpine_id, beta_id
 
 
-def test_customer_controller_reuses_models_and_filters_in_proxy(qtbot):
+def test_customer_controller_reuses_models_and_searches_in_repo(qtbot):
     conn = make_db()
     repo, alpha_id, _, _ = seed_customers(conn)
     controller = CustomerController(conn)
@@ -31,24 +31,24 @@ def test_customer_controller_reuses_models_and_filters_in_proxy(qtbot):
     proxy = controller.proxy
     controller._select_customer_id(alpha_id)
 
-    def fail_search(_term):
-        raise AssertionError("repo.search should not be used for table filtering")
+    def fail_proxy_filter(*_args, **_kwargs):
+        raise AssertionError("customer search should not filter the proxy")
 
-    repo.search = fail_search
-    controller.repo.search = fail_search
+    controller.proxy.setFilterRegularExpression = fail_proxy_filter
 
     controller._apply_filter("Alpha")
 
     assert controller.base is base
     assert controller.proxy is proxy
-    assert controller.proxy.rowCount() == 1
+    assert controller.base.rowCount() == 1
     assert controller._selected_id() == alpha_id
+    assert controller.view.list_status.text() == "Showing 1 of 1 match(es)"
 
     controller._apply_filter("missing")
 
     assert controller.base is base
     assert controller.proxy is proxy
-    assert controller.proxy.rowCount() == 0
+    assert controller.base.rowCount() == 0
     assert controller._selected_id() is None
     assert controller.view.details.lab_id.text() == "-"
     assert controller.view.list_status.text() == "No customers match this search."
@@ -79,6 +79,29 @@ def test_customer_controller_does_not_stack_detail_refreshes(qtbot):
     controller._apply_filter("Alpha")
 
     assert calls == [alpha_id, alpha_id, alpha_id]
+
+    conn.close()
+
+
+def test_customer_controller_pages_with_query_metadata(qtbot):
+    conn = make_db()
+    repo = CustomersRepo(conn)
+    for idx in range(105):
+        repo.create(f"Paged Customer {idx:03d}", f"555-{idx:04d}", "Paged Street")
+    controller = CustomerController(conn)
+    qtbot.addWidget(controller.get_widget())
+
+    assert controller.base.rowCount() == controller.PAGE_SIZE
+    assert controller.view.list_status.text() == "Showing 100 of 105 customer(s)"
+    assert controller.view.lbl_page.text() == "Page 1 / 2"
+    assert controller.view.btn_next_page.isEnabled()
+
+    controller._next_page()
+
+    assert controller.base.rowCount() == 5
+    assert controller.view.list_status.text() == "Showing 5 of 105 customer(s)"
+    assert controller.view.lbl_page.text() == "Page 2 / 2"
+    assert not controller.view.btn_next_page.isEnabled()
 
     conn.close()
 

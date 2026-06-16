@@ -55,6 +55,24 @@ def test_customer_repo_reads_ignore_legacy_status_column():
     conn.close()
 
 
+def test_customer_repo_list_search_count_and_paging():
+    conn = make_db()
+    repo = CustomersRepo(conn)
+    first_id = repo.create("Alpha Customer", "555-0100", "North Road")
+    second_id = repo.create("Beta Customer", "555-0200", "South Road")
+    third_id = repo.create("Gamma Customer", "555-0300", "West Road")
+
+    assert [row.customer_id for row in repo.list_customers(limit=2, offset=0)] == [third_id, second_id]
+    assert [row.customer_id for row in repo.list_customers(limit=2, offset=2)] == [first_id]
+    assert [row.customer_id for row in repo.list_customers(search="0200")] == [second_id]
+    assert [row.customer_id for row in repo.list_customers(search="West")] == [third_id]
+    assert [row.customer_id for row in repo.list_customers(search=str(first_id))] == [first_id]
+    assert repo.count_customers("Customer") == 3
+    assert repo.count_customers("missing") == 0
+
+    conn.close()
+
+
 def test_customer_table_and_details_have_no_status_ui(qtbot):
     details = CustomerDetails()
     qtbot.addWidget(details)

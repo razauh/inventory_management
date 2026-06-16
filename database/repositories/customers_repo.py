@@ -38,14 +38,52 @@ class CustomersRepo:
 
     # ---- Queries ----------------------------------------------------------
 
-    def list_customers(self) -> list[Customer]:
+    def _customer_search_clause(self, search: str | None) -> tuple[str, list[object]]:
+        term = (search or "").strip()
+        if not term:
+            return "", []
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        return (
+            "WHERE "
+            "  CAST(customer_id AS TEXT) LIKE ? ESCAPE '\\' OR "
+            "  name LIKE ? ESCAPE '\\' OR "
+            "  contact_info LIKE ? ESCAPE '\\' OR "
+            "  address LIKE ? ESCAPE '\\' ",
+            [pattern, pattern, pattern, pattern],
+        )
+
+    def count_customers(self, search: str | None = None) -> int:
+        where_sql, params = self._customer_search_clause(search)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS c FROM customers {where_sql}",
+            params,
+        ).fetchone()
+        return int(row["c"] if row else 0)
+
+    def list_customers(
+        self,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Customer]:
         """
         Returns customers ordered newest first.
         """
+        where_sql, params = self._customer_search_clause(search)
+        limit_sql = ""
+        if limit is not None and int(limit) > 0:
+            limit_sql = "LIMIT ? OFFSET ?"
+            params.extend([int(limit), max(0, int(offset))])
         rows = self.conn.execute(
-            "SELECT customer_id, name, contact_info, address "
-            "FROM customers "
-            "ORDER BY customer_id DESC"
+            f"""
+            SELECT customer_id, name, contact_info, address
+            FROM customers
+            {where_sql}
+            ORDER BY customer_id DESC
+            {limit_sql}
+            """,
+            params,
         ).fetchall()
         return [Customer(**dict(r)) for r in rows]
 
@@ -58,20 +96,7 @@ class CustomersRepo:
           - contact_info
           - address
         """
-        escaped = term.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{escaped}%"
-        rows = self.conn.execute(
-            "SELECT customer_id, name, contact_info, address "
-            "FROM customers "
-            "WHERE "
-            "  CAST(customer_id AS TEXT) LIKE ? ESCAPE '\\' OR "
-            "  name LIKE ? ESCAPE '\\' OR "
-            "  contact_info LIKE ? ESCAPE '\\' OR "
-            "  address LIKE ? ESCAPE '\\' "
-            "ORDER BY customer_id DESC",
-            (pattern, pattern, pattern, pattern),
-        ).fetchall()
-        return [Customer(**dict(r)) for r in rows]
+        return self.list_customers(search=term)
 
     def get_detail_snapshot(self, customer_id: int) -> dict | None:
         row = self.conn.execute(
@@ -93,9 +118,21 @@ class CustomersRepo:
                       AND s.doc_type = 'sale'
                 ), 0) AS sales_count,
                 COALESCE((
-                    SELECT SUM(srt.remaining_due)
+                    SELECT SUM(
+                        MAX(
+                            0.0,
+                            CAST(sdt.net_total_amount AS REAL)
+                              - COALESCE((
+                                  SELECT SUM(CAST(sp.amount AS REAL))
+                                  FROM sale_payments sp
+                                  WHERE sp.sale_id = s.sale_id
+                                    AND sp.clearing_state IN ('posted', 'cleared')
+                                ), 0.0)
+                              - COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
+                        )
+                    )
                     FROM sales s
-                    JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+                    JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
                     WHERE s.customer_id = c.customer_id
                       AND s.doc_type = 'sale'
                 ), 0.0) AS open_due_sum,

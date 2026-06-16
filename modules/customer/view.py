@@ -61,7 +61,17 @@ class CustomerView(QWidget):
 
         self.list_status = QLabel("")
         self.list_status.setStyleSheet("color: #666;")
-        root.addWidget(self.list_status)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.list_status, 1)
+        self.btn_prev_page = QPushButton("Prev Page")
+        self.lbl_page = QLabel("Page 1 / 1")
+        self.lbl_page.setMinimumWidth(120)
+        self.lbl_page.setAlignment(Qt.AlignCenter)
+        self.btn_next_page = QPushButton("Next Page")
+        status_row.addWidget(self.btn_prev_page)
+        status_row.addWidget(self.lbl_page)
+        status_row.addWidget(self.btn_next_page)
+        root.addLayout(status_row)
 
         # ---- Main split: table (left) + tabs (right) ----------------------
         split = QSplitter(Qt.Horizontal)
