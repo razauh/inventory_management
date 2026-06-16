@@ -40,6 +40,129 @@ class DashboardRepo:
         # Ensure we can access columns by name in a safe, schema-friendly way.
         self.conn.row_factory = sqlite3.Row
 
+    def summary_metrics(self, date_from: str, date_to: str) -> Dict[str, Any]:
+        """
+        Fetch the dashboard's core KPI values in one round trip.
+
+        These numbers are independent aggregates, so we cross join aggregate
+        CTEs instead of issuing separate queries from the UI thread.
+        """
+        sql = """
+            WITH
+            sales AS (
+              SELECT
+                COALESCE(SUM(CAST(revenue AS REAL)), 0.0) AS total_sales,
+                COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS total_cogs
+              FROM sale_financial_events
+              WHERE event_date >= ? AND event_date <= ?
+            ),
+            expenses AS (
+              SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_expenses
+              FROM expenses e
+              WHERE e.date >= ? AND e.date <= ?
+            ),
+            receipts AS (
+              SELECT COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0) AS receipts_cleared
+              FROM sale_payments sp
+              WHERE sp.clearing_state = 'cleared'
+                AND sp.cleared_date >= ? AND sp.cleared_date <= ?
+            ),
+            vendor_payments AS (
+              SELECT
+                COALESCE((
+                  SELECT SUM(CAST(pp.amount AS REAL))
+                  FROM purchase_payments pp
+                  WHERE pp.clearing_state = 'cleared'
+                    AND pp.cleared_date >= ? AND pp.cleared_date <= ?
+                ), 0.0)
+                - COALESCE((
+                  SELECT SUM(CAST(pr.amount AS REAL))
+                  FROM purchase_refunds pr
+                  WHERE pr.clearing_state = 'cleared'
+                    AND pr.cleared_date >= ? AND pr.cleared_date <= ?
+                ), 0.0) AS vendor_payments_cleared
+            ),
+            receivables AS (
+              SELECT COALESCE(SUM(srt.remaining_due), 0.0) AS open_receivables
+              FROM sales s
+              JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+              WHERE s.doc_type = 'sale'
+                AND srt.remaining_due > 0.0000001
+            ),
+            payables AS (
+              SELECT COALESCE(SUM(remaining), 0.0) AS open_payables
+              FROM (
+                SELECT
+                  CAST(p.total_amount AS REAL)
+                  - (
+                      COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                      + COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+                    )
+                  AS remaining
+                FROM purchases p
+              )
+              WHERE remaining > 0.0000001
+            ),
+            stock AS (
+              SELECT COUNT(*) AS low_stock_count
+              FROM products p
+              LEFT JOIN v_stock_on_hand v ON v.product_id = p.product_id
+              WHERE COALESCE(CAST(v.qty_in_base AS REAL), 0.0) < CAST(p.min_stock_level AS REAL)
+            )
+            SELECT
+              sales.total_sales,
+              sales.total_cogs,
+              expenses.total_expenses,
+              receipts.receipts_cleared,
+              vendor_payments.vendor_payments_cleared,
+              receivables.open_receivables,
+              payables.open_payables,
+              stock.low_stock_count
+            FROM sales
+            CROSS JOIN expenses
+            CROSS JOIN receipts
+            CROSS JOIN vendor_payments
+            CROSS JOIN receivables
+            CROSS JOIN payables
+            CROSS JOIN stock
+        """
+        row = self.conn.execute(
+            sql,
+            (
+                date_from,
+                date_to,
+                date_from,
+                date_to,
+                date_from,
+                date_to,
+                date_from,
+                date_to,
+                date_from,
+                date_to,
+            ),
+        ).fetchone()
+        if not row:
+            return {
+                "total_sales": 0.0,
+                "total_cogs": 0.0,
+                "total_expenses": 0.0,
+                "receipts_cleared": 0.0,
+                "vendor_payments_cleared": 0.0,
+                "open_receivables": 0.0,
+                "open_payables": 0.0,
+                "low_stock_count": 0,
+            }
+        return {
+            "total_sales": _to_float(row["total_sales"]),
+            "total_cogs": _to_float(row["total_cogs"]),
+            "total_expenses": _to_float(row["total_expenses"]),
+            "receipts_cleared": _to_float(row["receipts_cleared"]),
+            "vendor_payments_cleared": _to_float(row["vendor_payments_cleared"]),
+            "open_receivables": _to_float(row["open_receivables"]),
+            "open_payables": _to_float(row["open_payables"]),
+            "low_stock_count": int(row["low_stock_count"] or 0),
+        }
+
     # ----------------------------- Sales & P&L -----------------------------
 
     def total_sales(self, date_from: str, date_to: str) -> float:

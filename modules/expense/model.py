@@ -36,6 +36,11 @@ class ExpensesTableModel(QAbstractTableModel):
         super().__init__()
         self._rows = rows or []
 
+    def set_rows(self, rows: List[Dict[str, Any]]) -> None:
+        self.beginResetModel()
+        self._rows = rows or []
+        self.endResetModel()
+
     # Required overrides ---------------------------------------------------
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # type: ignore[override]

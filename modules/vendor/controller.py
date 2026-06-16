@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtWidgets import QFileDialog, QWidget
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QItemSelectionModel
+from PySide6.QtWidgets import QFileDialog, QWidget, QHeaderView
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QItemSelectionModel, QTimer
 import sqlite3
 import logging
 from typing import Optional, Any, Dict, List
@@ -36,8 +36,28 @@ class VendorController(BaseModule):
         self.ppay = PurchasePaymentsRepo(conn)
         self.view = VendorView()
         from .model import VendorBankAccountsTableModel
-        acc_model = VendorBankAccountsTableModel([])
-        self.view.accounts_table.setModel(acc_model)
+        self.base_model = VendorsTableModel([])
+        self.proxy = QSortFilterProxyModel(self.view)
+        self.proxy.setSourceModel(self.base_model)
+        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.proxy.setFilterKeyColumn(-1)
+        self.view.table.setModel(self.proxy)
+        sel = self.view.table.selectionModel()
+        if sel:
+            sel.selectionChanged.connect(self._update_details)
+        self._selected_vendor_id: int | None = None
+
+        self._accounts_model = VendorBankAccountsTableModel([])
+        self.view.accounts_table.setModel(self._accounts_model)
+        self._accounts_reload_timer = QTimer(self.view)
+        self._accounts_reload_timer.setSingleShot(True)
+        self._accounts_reload_timer.setInterval(120)
+        self._accounts_reload_timer.timeout.connect(self._run_pending_account_reload)
+        self._pending_accounts_vendor_id: int | None = None
+        self._pending_accounts_keep_id: int | None = None
+        self._accounts_loaded_vendor_id: int | None = None
+        self._accounts_columns_resized = False
+
         sm = self.view.accounts_table.selectionModel()
         if sm:
             sm.selectionChanged.connect(self._update_acc_buttons_enabled)
@@ -64,19 +84,16 @@ class VendorController(BaseModule):
         self.view.btn_acc_activate.clicked.connect(self._acc_activate)
     def _build_model(self):
         rows = self.repo.list_vendors()
-        self.base_model = VendorsTableModel(rows)
-        self.proxy = QSortFilterProxyModel(self.view)
-        self.proxy.setSourceModel(self.base_model)
-        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.proxy.setFilterKeyColumn(-1)
-        self.view.table.setModel(self.proxy)
-        self.view.table.resizeColumnsToContents()
-        sel = self.view.table.selectionModel()
-        try:
-            sel.selectionChanged.disconnect(self._update_details)
-        except (TypeError, RuntimeError, RuntimeWarning):
-            pass
-        sel.selectionChanged.connect(self._update_details)
+        self.base_model.replace(rows)
+        if self.proxy.rowCount() <= 20:
+            self.view.table.resizeColumnsToContents()
+        else:
+            header = self.view.table.horizontalHeader()
+            widths = {0: 80, 1: 190, 2: 200, 3: 220}
+            for col, width in widths.items():
+                header.setSectionResizeMode(col, QHeaderView.Interactive)
+                self.view.table.setColumnWidth(col, width)
+            header.setStretchLastSection(True)
     def _reload(self):
         self._build_model()
         if self.proxy.rowCount() > 0:
@@ -97,52 +114,26 @@ class VendorController(BaseModule):
         if not idxs:
             return None
         src = self.proxy.mapToSource(idxs[0])
-        return self.base_model.at(src.row()).vendor_id
+        row = self.base_model.row_at(src.row())
+        if not row:
+            return None
+        return int(row.get("vendor_id")) if row.get("vendor_id") is not None else None
+    def _vendor_row_for_id(self, vendor_id: int | None) -> dict | None:
+        if vendor_id is None:
+            return None
+        for idx in range(self.base_model.rowCount()):
+            row = self.base_model.row_at(idx)
+            if row and int(row.get("vendor_id") or -1) == int(vendor_id):
+                return row
+        return None
     def _current_vendor_row(self) -> dict | None:
-        vid = self._selected_id()
-        if not vid:
-            return None
-        row = self.repo.get(vid)
-        if row is None:
-            return None
-        if isinstance(row, dict):
-            return row
-        if hasattr(row, "__dict__"):
-            return dict(row.__dict__)
-        if hasattr(row, "keys"):
-            try:
-                return {key: row[key] for key in row.keys()}
-            except Exception:
-                pass
-        return {"vendor_id": vid}
+        return self._vendor_row_for_id(self._selected_id())
     def _current_vendor_display_text(self, vendor_id: int | None = None) -> str:
-        row = None
-        if vendor_id is not None:
-            try:
-                row = self.repo.get(int(vendor_id))
-            except Exception:
-                row = None
-        else:
-            try:
-                vid = self._selected_id()
-                row = self.repo.get(vid) if vid else None
-            except Exception:
-                row = None
+        row = self._vendor_row_for_id(vendor_id if vendor_id is not None else self._selected_id())
         if not row:
             return f"Vendor #{vendor_id}" if vendor_id else "Selected vendor"
-        payload = row.__dict__ if hasattr(row, "__dict__") else {}
-        name = getattr(row, "name", None) or payload.get("name")
-        vendor_id_val = getattr(row, "vendor_id", None) or payload.get("vendor_id")
-        if not name and hasattr(row, "keys"):
-            try:
-                name = row["name"]
-            except Exception:
-                name = None
-        if vendor_id_val is None and hasattr(row, "keys"):
-            try:
-                vendor_id_val = row["vendor_id"]
-            except Exception:
-                vendor_id_val = None
+        name = row.get("name")
+        vendor_id_val = row.get("vendor_id")
         if name and vendor_id_val is not None:
             return f"{name} (ID {vendor_id_val})"
         if name:
@@ -152,11 +143,14 @@ class VendorController(BaseModule):
         return "Selected vendor"
     def _update_details(self, *args, **kwargs):
         vid = self._selected_id()
-        self.view.details.set_data(self._current_vendor_row())
+        row = self._current_vendor_row()
+        self.view.details.set_data(row)
         credit = 0.0
         credit_error = None
         try:
-            if vid:
+            if row and row.get("balance") is not None:
+                credit = float(row.get("balance") or 0.0)
+            elif vid:
                 raw = self.vadv.get_balance(int(vid))
                 credit = float(raw) if raw is not None else 0.0
         except Exception as e:
@@ -168,7 +162,7 @@ class VendorController(BaseModule):
                 self.view.details.set_credit_error(credit_error)
             else:
                 self.view.details.set_credit(credit)
-        self._reload_accounts(vid)
+        self._schedule_accounts_reload(vid)
         self._hook_acc_selection_enablement()
         self._update_acc_buttons_enabled()
     def _list_company_bank_accounts(self) -> List[Dict[str, Any]]:
@@ -408,7 +402,7 @@ class VendorController(BaseModule):
                     lambda: self.vbank.create(int(vendor_id), data)
                 )
                 uih.info(self.view, "Added", "Bank account added.")
-                self._reload_accounts(vendor_id)
+                self._reload_accounts(vendor_id, force=True)
             except Exception as e:
                 uih.info(self.view, "Error", f"Unable to add account: {e}")
     def _acc_edit(self):
@@ -426,7 +420,7 @@ class VendorController(BaseModule):
                     lambda: self.vbank.update(account_id, data)
                 )
                 uih.info(self.view, "Updated", "Bank account updated.")
-                self._reload_accounts(vendor_id, keep_account_id=account_id)
+                self._reload_accounts(vendor_id, keep_account_id=account_id, force=True)
             except Exception as e:
                 uih.info(self.view, "Error", f"Unable to update account: {e}")
     def _acc_deactivate(self):
@@ -439,7 +433,7 @@ class VendorController(BaseModule):
         try:
             self._with_bank_account_savepoint(lambda: self.vbank.deactivate(account_id))
             uih.info(self.view, "Deactivated", "Bank account deactivated.")
-            self._reload_accounts(vendor_id)
+            self._reload_accounts(vendor_id, force=True)
         except Exception as e:
             uih.info(self.view, "Error", f"Unable to deactivate account: {e}")
     
@@ -453,7 +447,7 @@ class VendorController(BaseModule):
         try:
             self._with_bank_account_savepoint(lambda: self.vbank.activate(account_id))
             uih.info(self.view, "Activated", "Bank account activated.")
-            self._reload_accounts(vendor_id)
+            self._reload_accounts(vendor_id, force=True)
         except Exception as e:
             uih.info(self.view, "Error", f"Unable to activate account: {e}")
 
@@ -475,7 +469,7 @@ class VendorController(BaseModule):
                 lambda: self.vbank.force_set_primary(int(vendor_id), account_id)
             )
             uih.info(self.view, "Updated", "Primary bank account updated.")
-            self._reload_accounts(vendor_id, keep_account_id=account_id)
+            self._reload_accounts(vendor_id, keep_account_id=account_id, force=True)
         except Exception as e:
             uih.info(self.view, "Error", f"Unable to set primary: {e}")
     def _accounts_table_widget(self):
@@ -590,24 +584,50 @@ class VendorController(BaseModule):
         if sm and not getattr(self, "_acc_details_hooked", False):
             sm.selectionChanged.connect(self._update_account_details)
             self._acc_details_hooked = True
-    def _reload_accounts(self, vendor_id: int | None, keep_account_id: int | None = None):
+    def _schedule_accounts_reload(self, vendor_id: int | None, keep_account_id: int | None = None) -> None:
+        self._pending_accounts_vendor_id = vendor_id
+        self._pending_accounts_keep_id = keep_account_id
+        self._accounts_reload_timer.start()
+
+    def _run_pending_account_reload(self) -> None:
+        self._reload_accounts(self._pending_accounts_vendor_id, self._pending_accounts_keep_id)
+
+    def _resize_accounts_table(self, row_count: int) -> None:
+        table = self.view.accounts_table
+        if row_count <= 20:
+            table.resizeColumnsToContents()
+            self._accounts_columns_resized = True
+            return
+        header = table.horizontalHeader()
+        widths = {0: 80, 1: 180, 2: 150, 3: 140, 4: 150, 5: 120, 6: 70, 7: 70}
+        for col, width in widths.items():
+            header.setSectionResizeMode(col, QHeaderView.Interactive)
+            table.setColumnWidth(col, width)
+        header.setStretchLastSection(True)
+        self._accounts_columns_resized = True
+
+    def _reload_accounts(self, vendor_id: int | None, keep_account_id: int | None = None, *, force: bool = False):
+        if not force and vendor_id == self._accounts_loaded_vendor_id and keep_account_id is None:
+            return
+        self._accounts_loaded_vendor_id = vendor_id
         if not vendor_id:
-            if self.view.accounts_table.model():
-                self.view.accounts_table.model().set_rows([])
+            if self._accounts_model:
+                self._accounts_model.set_rows([])
             self._clear_account_details()
+            self._accounts_reload_timer.stop()
+            self._pending_accounts_vendor_id = None
+            self._pending_accounts_keep_id = None
             self._hook_acc_selection_enablement()
             self._update_acc_buttons_enabled()
             return
         rows = self.vbank.list(int(vendor_id), active_only=False)
-        model = self.view.accounts_table.model()
-        if hasattr(model, "set_rows"):
-            model.set_rows(rows)
-        self.view.accounts_table.resizeColumnsToContents()
+        self._accounts_model.set_rows(rows)
+        self._resize_accounts_table(len(rows))
         self._after_accounts_model_bound()
         accounts_table = getattr(self.view, "tblAccounts", None) or getattr(self.view, "accounts_table", None)
         model = accounts_table.model() if accounts_table else None
         if keep_account_id:
-            m = self.view.accounts_table.model()
+            m = self._accounts_model
             if hasattr(m, "find_row_by_id"):
                 r = m.find_row_by_id(int(keep_account_id))
                 if r is not None:
@@ -620,8 +640,8 @@ class VendorController(BaseModule):
                     self._hook_acc_selection_enablement()
                     self._update_acc_buttons_enabled()
                     return
-        elif self.view.accounts_table.model().rowCount() > 0:
-            idx0 = self.view.accounts_table.model().index(0, 0)
+        elif self._accounts_model.rowCount() > 0:
+            idx0 = self._accounts_model.index(0, 0)
             sm = self.view.accounts_table.selectionModel()
             if sm is not None:
                 sm.select(idx0, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
@@ -629,6 +649,8 @@ class VendorController(BaseModule):
             self._update_account_details()
         else:
             self._clear_account_details()
+        self._pending_accounts_vendor_id = None
+        self._pending_accounts_keep_id = None
         self._hook_acc_selection_enablement()
         self._update_acc_buttons_enabled()
 

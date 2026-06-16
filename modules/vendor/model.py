@@ -42,6 +42,21 @@ def _format_currency(value) -> str:
         return "" if value is None else str(value)
 
 
+def _to_mapping(obj):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "__dict__"):
+        return dict(obj.__dict__)
+    if hasattr(obj, "keys"):
+        try:
+            return {key: obj[key] for key in obj.keys()}
+        except Exception:
+            return None
+    return None
+
+
 class VendorsTableModel(QAbstractTableModel):
     HEADERS = ["Vendor ID", "Name", "Contact", "Address"]
 
@@ -78,6 +93,9 @@ class VendorsTableModel(QAbstractTableModel):
     def at(self, row: int):
         """Return the underlying row object (Vendor dataclass or dict)."""
         return self._rows[row]
+
+    def row_at(self, row: int):
+        return _to_mapping(self._rows[row]) if 0 <= row < len(self._rows) else None
 
     def replace(self, rows):
         self.beginResetModel()

@@ -2,6 +2,20 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGroupBox, QFormLayout
 from PySide6.QtCore import Qt
 
+
+def _get(obj, key, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    try:
+        return getattr(obj, key)
+    except Exception:
+        try:
+            return obj[key]
+        except Exception:
+            return default
+
 class VendorDetails(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,10 +52,11 @@ class VendorDetails(QWidget):
     def set_data(self, vendor: dict | None):
         if not vendor:
             self.clear(); return
-        self.lab_id.setText(f"Vendor #{vendor.get('vendor_id')}" if vendor.get("vendor_id") is not None else "-")
-        self.lab_name.setText(vendor.get("name") or "-")
-        self.lab_contact.setText(vendor.get("contact_info") or "-")
-        self.lab_address.setText(vendor.get("address") or "-")
+        vendor_id = _get(vendor, "vendor_id")
+        self.lab_id.setText(f"Vendor #{vendor_id}" if vendor_id is not None else "-")
+        self.lab_name.setText(_get(vendor, "name") or "-")
+        self.lab_contact.setText(_get(vendor, "contact_info") or "-")
+        self.lab_address.setText(_get(vendor, "address") or "-")
 
     def set_credit(self, amount: float) -> None:
         try:

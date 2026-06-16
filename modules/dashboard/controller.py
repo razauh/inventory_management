@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, QTimer
 from PySide6.QtWidgets import QWidget
 
 from ..base_module import BaseModule
@@ -47,14 +47,19 @@ class DashboardController(BaseModule):
         super().__init__()
         self.conn = conn
         self.repo = DashboardRepo(conn)
+        self._refresh_gen = 0
 
         # View is a QWidget; the app should embed it where appropriate.
         self.view = DashboardView()
         self._wire_view()
 
+        self._refresh_timer = QTimer(self.view)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self.refresh)
+
         # default period is "Today"
         self._current_range = self._calc_period("today")
-        self.refresh()
+        self._schedule_refresh()
 
     # ---------------------------- Wiring ----------------------------
 
@@ -89,7 +94,7 @@ class DashboardController(BaseModule):
         If "custom", date_from/date_to are provided (or None).
         """
         self._current_range = self._calc_period(period_key, date_from, date_to)
-        self.refresh()
+        self._schedule_refresh()
 
     def _calc_period(self, key: str, df: Optional[str] = None, dt: Optional[str] = None) -> DateRange:
         today = date.today()
@@ -117,39 +122,73 @@ class DashboardController(BaseModule):
         """
         Pull fresh data from repo for the current date range and push it to the view/widgets.
         """
+        self._refresh_timer.stop()
         df, dt = self._current_range.date_from, self._current_range.date_to
+        self._refresh_gen += 1
+        gen = self._refresh_gen
 
-        # 1) KPIs (sales, cogs, expenses, gross, net)
-        total_sales = self.repo.total_sales(df, dt) or 0.0
-        total_cogs = self.repo.cogs_for_sales(df, dt) or 0.0
-        total_exp = self.repo.expenses_total(df, dt) or 0.0
-        gross = (total_sales - total_cogs)
-        net = (gross - total_exp)
+        summary = self.safe_repo_call(lambda: self.repo.summary_metrics(df, dt), None)
+        if not summary:
+            summary = {
+                "total_sales": 0.0,
+                "total_cogs": 0.0,
+                "total_expenses": 0.0,
+                "receipts_cleared": 0.0,
+                "vendor_payments_cleared": 0.0,
+                "open_receivables": 0.0,
+                "open_payables": 0.0,
+                "low_stock_count": 0,
+            }
 
-        # 2) Cash/bank (cleared today/period)
-        receipts_cleared = self.repo.receipts_cleared(df, dt) or 0.0
-        vendor_pmt_cleared = self.repo.vendor_payments_cleared(df, dt) or 0.0
+        total_sales = float(summary.get("total_sales") or 0.0)
+        total_cogs = float(summary.get("total_cogs") or 0.0)
+        total_exp = float(summary.get("total_expenses") or 0.0)
+        gross = total_sales - total_cogs
+        net = gross - total_exp
+        receipts_cleared = float(summary.get("receipts_cleared") or 0.0)
+        vendor_pmt_cleared = float(summary.get("vendor_payments_cleared") or 0.0)
+        ar_open = float(summary.get("open_receivables") or 0.0)
+        ap_open = float(summary.get("open_payables") or 0.0)
+        low_stock_count = int(summary.get("low_stock_count") or 0)
 
-        # 3) AR / AP & stock health
-        ar_open = self.repo.open_receivables() or 0.0
-        ap_open = self.repo.open_payables() or 0.0
-        low_stock_count = self.repo.low_stock_count() or 0
+        self._apply_core_summary(
+            total_sales=total_sales,
+            total_cogs=total_cogs,
+            total_exp=total_exp,
+            gross=gross,
+            net=net,
+            receipts_cleared=receipts_cleared,
+            vendor_pmt_cleared=vendor_pmt_cleared,
+            ar_open=ar_open,
+            ap_open=ap_open,
+            low_stock_count=low_stock_count,
+            df=df,
+            dt=dt,
+        )
 
-        # 4) Payment breakdown tables
-        incoming_rows = self.repo.sales_payments_breakdown(df, dt) or []
-        outgoing_rows = self.repo.purchase_payments_breakdown(df, dt) or []
+        self._clear_secondary_widgets()
+        QTimer.singleShot(0, lambda gen=gen, df=df, dt=dt: self._refresh_secondary(gen, df, dt))
 
-        # 5) Optional small tables
-        top_products = self.safe_repo_call(lambda: self.repo.top_products(df, dt, limit_n=5), [])
+    def _schedule_refresh(self) -> None:
+        """Queue a dashboard refresh so the UI can paint first."""
+        self._refresh_timer.start(0)
 
-        # Expiring quotations: anchor to app-local 'today'
-        today = date.today()
-        df_q = today.isoformat()
-        dt_q = (today + timedelta(days=7)).isoformat()
-        quotes_exp = self.safe_repo_call(lambda: self.repo.quotations_expiring(df_q, dt_q), [])
-
-        # -------- Push to view --------
-        # KPI Cards – update each card value
+    def _apply_core_summary(
+        self,
+        *,
+        total_sales: float,
+        total_cogs: float,
+        total_exp: float,
+        gross: float,
+        net: float,
+        receipts_cleared: float,
+        vendor_pmt_cleared: float,
+        ar_open: float,
+        ap_open: float,
+        low_stock_count: int,
+        df: str,
+        dt: str,
+    ) -> None:
         self.view.set_kpi_value("sales_total", total_sales)
         self.view.set_kpi_value("gross_profit", gross)
         self.view.set_kpi_value("net_profit", net)
@@ -157,25 +196,44 @@ class DashboardController(BaseModule):
         self.view.set_kpi_value("vendor_payments_cleared", vendor_pmt_cleared)
         self.view.set_kpi_value("open_receivables", ar_open)
         self.view.set_kpi_value("open_payables", ap_open)
-        self.view.set_kpi_value("low_stock", int(low_stock_count))
+        self.view.set_kpi_value("low_stock", low_stock_count)
 
-        # Financial overview widget (P&L, AR/AP, Low stock)
         self.view.financial_overview.set_pl(total_sales, total_cogs, total_exp, net)
         self.view.financial_overview.set_ar_ap(ar_open, ap_open)
-        self.view.financial_overview.set_low_stock_count(int(low_stock_count))
+        self.view.financial_overview.set_low_stock_count(low_stock_count)
 
-        # Payment summary tables (if widget is implemented)
+        if hasattr(self.view, "setPeriodText"):
+            self.view.setPeriodText(self._human_period(df, dt))  # type: ignore
+
+    def _clear_secondary_widgets(self) -> None:
+        if hasattr(self.view.payment_summary, "set_sales_breakdown"):
+            self.view.payment_summary.set_sales_breakdown([])
+            self.view.payment_summary.set_purchase_breakdown([])
+        self.view.set_top_products([])
+        self.view.set_quotations([])
+
+    def _refresh_secondary(self, gen: int, df: str, dt: str) -> None:
+        if gen != self._refresh_gen:
+            return
+
+        incoming_rows = self.safe_repo_call(lambda: self.repo.sales_payments_breakdown(df, dt), [])
+        outgoing_rows = self.safe_repo_call(lambda: self.repo.purchase_payments_breakdown(df, dt), [])
+        top_products = self.safe_repo_call(lambda: self.repo.top_products(df, dt, limit_n=5), [])
+
+        today = date.today()
+        df_q = today.isoformat()
+        dt_q = (today + timedelta(days=7)).isoformat()
+        quotes_exp = self.safe_repo_call(lambda: self.repo.quotations_expiring(df_q, dt_q), [])
+
+        if gen != self._refresh_gen:
+            return
+
         if hasattr(self.view.payment_summary, "set_sales_breakdown"):
             self.view.payment_summary.set_sales_breakdown(incoming_rows)
             self.view.payment_summary.set_purchase_breakdown(outgoing_rows)
 
-        # Update small tables
         self.view.set_top_products(top_products)
         self.view.set_quotations(quotes_exp)
-
-        # Let the view update its header subtitle / breadcrumbs if it wants
-        if hasattr(self.view, "setPeriodText"):
-            self.view.setPeriodText(self._human_period(df, dt))  # type: ignore
 
     # ---------------------------- Button handlers ----------------------------
 

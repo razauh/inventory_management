@@ -11,6 +11,7 @@ class Vendor:
     name: str
     contact_info: str
     address: str | None
+    balance: float | None = None
 
 class VendorsRepo:
     def __init__(self, conn: sqlite3.Connection):
@@ -31,7 +32,17 @@ class VendorsRepo:
 
     def list_vendors(self) -> list[Vendor]:
         rows = self.conn.execute(
-            "SELECT vendor_id, name, contact_info, address FROM vendors ORDER BY vendor_id DESC"
+            """
+            SELECT
+              v.vendor_id,
+              v.name,
+              v.contact_info,
+              v.address,
+              COALESCE(b.balance, 0.0) AS balance
+            FROM vendors v
+            LEFT JOIN v_vendor_advance_balance b ON b.vendor_id = v.vendor_id
+            ORDER BY v.vendor_id DESC
+            """
         ).fetchall()
         return [Vendor(**dict(r)) for r in rows]
 

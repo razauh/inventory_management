@@ -21,7 +21,7 @@ import sqlite3  # for error mapping of DB exceptions
 import html
 import logging
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QWidget, QMessageBox, QDialog
 from PySide6.QtGui import (
     QKeySequence,
@@ -53,16 +53,29 @@ class ExpenseController(BaseModule):
         self.view = ExpenseView()
         self.view.setWindowTitle("Expenses")
 
+        self._reload_timer = QTimer(self.view)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(250)
+        self._reload_timer.timeout.connect(self._reload)
+
+        self._expense_model = ExpensesTableModel([])
+        self._totals_model = QStandardItemModel(self.view)
+        self._totals_model.setHorizontalHeaderLabels(["Category", "Total"])
+        self._expense_columns_resized = False
+
+        self.view.tbl_expenses.setModel(self._expense_model)
+        self.view.tbl_totals.setModel(self._totals_model)
+
         # Wire signals (list/reload)
-        self.view.txt_search.textChanged.connect(lambda _=None: self._reload())
-        self.view.date_filter.dateChanged.connect(lambda _=None: self._reload())
-        self.view.cmb_category.currentIndexChanged.connect(lambda _=None: self._reload())
+        self.view.txt_search.textChanged.connect(self._schedule_reload)
+        self.view.date_filter.dateChanged.connect(self._schedule_reload)
+        self.view.cmb_category.currentIndexChanged.connect(self._schedule_reload)
 
         # Advanced filters
-        self.view.date_from.dateChanged.connect(lambda _=None: self._reload())
-        self.view.date_to.dateChanged.connect(lambda _=None: self._reload())
-        self.view.amount_min.valueChanged.connect(lambda _=None: self._reload())
-        self.view.amount_max.valueChanged.connect(lambda _=None: self._reload())
+        self.view.date_from.dateChanged.connect(self._schedule_reload)
+        self.view.date_to.dateChanged.connect(self._schedule_reload)
+        self.view.amount_min.valueChanged.connect(self._schedule_reload)
+        self.view.amount_max.valueChanged.connect(self._schedule_reload)
 
         # Buttons
         self.view.btn_add.clicked.connect(self._on_add)
@@ -100,22 +113,62 @@ class ExpenseController(BaseModule):
 
     def _reload(self) -> None:
         """Reload the expenses table based on current filters and refresh totals."""
+        self._reload_timer.stop()
+        filters = self._current_filters()
+        if not self._apply_filter_feedback(filters):
+            return
+
+        rows = self.repo.search_expenses_adv(
+            query=filters["query"],
+            date=filters["effective_date"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+            category_id=filters["category_id"],
+            amount_min=filters["amount_min"],
+            amount_max=filters["amount_max"],
+        )
+
+        self._expense_model.set_rows(rows)
+        if not self._expense_columns_resized:
+            self.view.tbl_expenses.resizeColumnsToContents()
+            self._expense_columns_resized = True
+
+        # Refresh totals summary (currently overall totals by category)
+        self._refresh_totals(**filters)
+
+    def _schedule_reload(self, *_args) -> None:
+        """Delay reload a bit so fast filter edits do not hammer the DB."""
+        filters = self._current_filters()
+        if not self._apply_filter_feedback(filters):
+            self._reload_timer.stop()
+            return
+        self._reload_timer.start()
+
+    def _current_filters(self) -> dict[str, object]:
         query = self.view.search_text
         date = self.view.selected_date
-        cat_id = self.view.selected_category_id
-
         date_from = self.view.date_from_str
         date_to = self.view.date_to_str
         amount_min = self.view.amount_min_val
         amount_max = self.view.amount_max_val
+        return {
+            "query": query,
+            "date": date,
+            "effective_date": None if (date_from or date_to) else date,
+            "date_range_active": bool(date_from or date_to),
+            "date_from": date_from,
+            "date_to": date_to,
+            "category_id": self.view.selected_category_id,
+            "amount_min": amount_min,
+            "amount_max": amount_max,
+        }
 
-        # If date range is active, bypass/ignore the single date filter
-        if date_from or date_to:
-            effective_date = None
-        else:
-            effective_date = date
+    def _apply_filter_feedback(self, filters: dict[str, object]) -> bool:
+        date_from = filters["date_from"]
+        date_to = filters["date_to"]
+        amount_min = filters["amount_min"]
+        amount_max = filters["amount_max"]
 
-        # Check invalid filter ranges
         date_range_invalid = bool(date_from and date_to and date_from > date_to)
         amount_range_invalid = bool(amount_min is not None and amount_max is not None and amount_min > amount_max)
 
@@ -142,40 +195,18 @@ class ExpenseController(BaseModule):
         if errors:
             self.view.lbl_filter_error.setText(" | ".join(errors))
             self.view.lbl_filter_error.setVisible(True)
-            return
-        else:
-            self.view.lbl_filter_error.setVisible(False)
-            self.view.lbl_filter_error.setText("")
+            return False
 
-        rows = self.repo.search_expenses_adv(
-            query=query,
-            date=effective_date,
-            date_from=date_from,
-            date_to=date_to,
-            category_id=cat_id,
-            amount_min=amount_min,
-            amount_max=amount_max,
-        )
-
-        model = ExpensesTableModel(rows)
-        self.view.tbl_expenses.setModel(model)
-        self.view.tbl_expenses.resizeColumnsToContents()
-
-        # Refresh totals summary (currently overall totals by category)
-        self._refresh_totals(
-            query=query,
-            date=effective_date,
-            date_from=date_from,
-            date_to=date_to,
-            category_id=cat_id,
-            amount_min=amount_min,
-            amount_max=amount_max,
-        )
+        self.view.lbl_filter_error.setVisible(False)
+        self.view.lbl_filter_error.setText("")
+        return True
 
     def _refresh_totals(
         self,
         query: str = "",
         date: Optional[str] = None,
+        effective_date: Optional[str] = None,
+        date_range_active: bool = False,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         category_id: Optional[int] = None,
@@ -186,7 +217,7 @@ class ExpenseController(BaseModule):
         try:
             totals: List[Dict] = self.repo.total_by_category(
                 query=query,
-                date=date,
+                date=None if date_range_active else (effective_date if effective_date is not None else date),
                 date_from=date_from,
                 date_to=date_to,
                 category_id=category_id,
@@ -201,7 +232,7 @@ class ExpenseController(BaseModule):
         # Check if any filter is active to label the scope clearly
         has_filters = any([
             query,
-            date,
+            effective_date if effective_date is not None else (None if date_range_active else date),
             date_from,
             date_to,
             category_id is not None,
@@ -210,8 +241,8 @@ class ExpenseController(BaseModule):
         ])
         header_total = "Filtered Total" if has_filters else "Total"
 
-        m = QStandardItemModel()
-        m.setHorizontalHeaderLabels(["Category", header_total])
+        self._totals_model.clear()
+        self._totals_model.setHorizontalHeaderLabels(["Category", header_total])
 
         for r in totals:
             # Expected keys: category_name, total_amount (fallback to name/amount variants)
@@ -223,9 +254,8 @@ class ExpenseController(BaseModule):
             ]
             for it in row_items:
                 it.setEditable(False)
-            m.appendRow(row_items)
+            self._totals_model.appendRow(row_items)
 
-        self.view.tbl_totals.setModel(m)
         self.view.tbl_totals.resizeColumnsToContents()
 
     # ------------------------------------------------------------------
