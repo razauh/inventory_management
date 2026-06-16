@@ -40,6 +40,11 @@ class CustomerController(BaseModule):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)
         self._pending_search = ""
+        self._detail_timer = QTimer(self.view)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(75)
+        self._detail_timer.timeout.connect(self._update_details_now)
+        self._detail_cache: dict[int, dict] = {}
         self._page_offset = 0
         self._total_customers = 0
         self._columns_sized = False
@@ -84,9 +89,11 @@ class CustomerController(BaseModule):
         self.proxy.setFilterKeyColumn(-1)
         self.view.table.setModel(self.proxy)
         sel = self.view.table.selectionModel()
-        sel.selectionChanged.connect(self._update_details)
+        sel.selectionChanged.connect(self._schedule_details_update)
 
-    def _reload(self):
+    def _reload(self, *, clear_detail_cache: bool = False):
+        if clear_detail_cache:
+            self._clear_detail_cache()
         selected_id = self._selected_id()
         query = self._pending_search.strip()
         self._total_customers = self.repo.count_customers(query)
@@ -165,7 +172,7 @@ class CustomerController(BaseModule):
             if selection_model is not None:
                 selection_model.blockSignals(False)
         self._last_detail_customer_id = None
-        self._update_details()
+        self._schedule_details_update()
 
     def _select_customer_id(self, customer_id: Optional[int]) -> None:
         target_row = None
@@ -217,7 +224,11 @@ class CustomerController(BaseModule):
         return path if name == "main" and path else None
 
     def _details_enrichment(self, customer_id: int) -> Dict[str, Any]:
-        snapshot = self.repo.get_detail_snapshot(customer_id) or {}
+        snapshot = self._detail_cache.get(int(customer_id))
+        if snapshot is None:
+            snapshot = self.repo.get_detail_snapshot(customer_id) or {}
+            if snapshot:
+                self._detail_cache[int(customer_id)] = dict(snapshot)
         return {
             "credit_balance": float(snapshot.get("credit_balance") or 0.0),
             "sales_count": int(snapshot.get("sales_count") or 0),
@@ -227,7 +238,16 @@ class CustomerController(BaseModule):
             "last_advance_date": snapshot.get("last_advance_date"),
         }
 
-    def _update_details(self, *args):
+    def _schedule_details_update(self, *args):
+        if self._selected_customer() is None:
+            self._detail_timer.stop()
+            self._last_detail_customer_id = None
+            self.view.details.set_data(None)
+            self._set_actions_enabled(False)
+            return
+        self._detail_timer.start()
+
+    def _update_details_now(self, *args):
         customer = self._selected_customer()
         if not customer:
             self._last_detail_customer_id = None
@@ -247,7 +267,11 @@ class CustomerController(BaseModule):
             "address": customer.address,
         }
         try:
-            snapshot = self.repo.get_detail_snapshot(cid)
+            snapshot = self._detail_cache.get(cid)
+            if snapshot is None:
+                snapshot = self.repo.get_detail_snapshot(cid)
+                if snapshot:
+                    self._detail_cache[cid] = dict(snapshot)
             if snapshot:
                 payload.update(snapshot)
             else:
@@ -261,6 +285,10 @@ class CustomerController(BaseModule):
         self._last_detail_customer_id = cid
         self.view.details.set_data(payload)
         self._set_actions_enabled(True)
+
+    def _clear_detail_cache(self) -> None:
+        self._detail_cache.clear()
+        self._last_detail_customer_id = None
 
     def _set_actions_enabled(self, enabled: bool):
         self.view.btn_edit.setEnabled(enabled)
@@ -324,7 +352,7 @@ class CustomerController(BaseModule):
             return
         cid = self.repo.create(**p)
         info(self.view, "Saved", f"Customer #{cid} created.")
-        self._reload()
+        self._reload(clear_detail_cache=True)
 
     def _edit(self):
         cid = self._selected_id()
@@ -340,7 +368,7 @@ class CustomerController(BaseModule):
             return
         self.repo.update(cid, **p)
         info(self.view, "Saved", f"Customer #{cid} updated.")
-        self._reload()
+        self._reload(clear_detail_cache=True)
 
     def _delete(self):
         cid = self._selected_id()
@@ -349,7 +377,7 @@ class CustomerController(BaseModule):
             return
         self.repo.delete(cid)
         info(self.view, "Deleted", f"Customer #{cid} removed.")
-        self._reload()
+        self._reload(clear_detail_cache=True)
 
     # ------------------------------------------------------------------ #
     # Adapters required by dialogs
@@ -608,7 +636,7 @@ class CustomerController(BaseModule):
             f"Recorded {float(payload.get('amount') or 0):,.2f} customer credit "
             f"for {self._customer_display(cid)} by {payload.get('method') or 'unknown method'}.",
         )
-        self._reload()
+        self._reload(clear_detail_cache=True)
 
     # -- Apply Advance to a Sale --
 
@@ -664,7 +692,7 @@ class CustomerController(BaseModule):
             info(self.view, "Error", result.message)
             return
 
-        self._reload()  # Reload the UI to reflect changes
+        self._reload(clear_detail_cache=True)  # Reload the UI to reflect changes
 
         # Show success confirmation to user
         success_msg = "Customer credit applied successfully."

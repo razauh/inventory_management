@@ -77,8 +77,14 @@ def test_customer_controller_does_not_stack_detail_refreshes(qtbot):
     controller._apply_filter("Al")
     controller._apply_filter("Alp")
     controller._apply_filter("Alpha")
+    controller._update_details_now()
 
-    assert calls == [alpha_id, alpha_id, alpha_id]
+    assert calls == [alpha_id]
+
+    controller._schedule_details_update()
+    controller._update_details_now()
+
+    assert calls == [alpha_id]
 
     conn.close()
 
