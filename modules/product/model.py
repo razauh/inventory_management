@@ -1,4 +1,4 @@
-from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
+from PySide6.QtCore import QAbstractTableModel, QSortFilterProxyModel, Qt, QModelIndex
 from ...database.repositories.products_repo import Product
 
 class ProductsTableModel(QAbstractTableModel):
@@ -82,22 +82,7 @@ class ProductsTableModel(QAbstractTableModel):
             top_left = self.index(0, 0)
             bottom_right = self.index(len(self._rows) - 1, self.columnCount() - 1)
             self.dataChanged.emit(top_left, bottom_right, [Qt.DisplayRole, Qt.UserRole])
-        
-    # helper for proxy filtering
-    def row_as_text(self, row: int) -> str:
-        p = self._rows[row]
-        return f"{p.product_id} {p.name or ''} {p.category or ''} {p.description or ''} {p.base_uom_name or ''} {p.alt_uom_names or ''}"
 
-# --- Add a custom proxy that searches across columns ---
-from PySide6.QtCore import QSortFilterProxyModel
 
 class ProductFilterProxy(QSortFilterProxyModel):
-    def filterAcceptsRow(self, source_row, source_parent):
-        if not self.filterRegularExpression().pattern():
-            return True
-        model = self.sourceModel()
-        try:
-            text = model.row_as_text(source_row)
-        except AttributeError:
-            return True
-        return self.filterRegularExpression().match(text).hasMatch()
+    pass

@@ -246,6 +246,22 @@ def test_search_reload_resets_to_first_page():
     assert reload_offsets == [0]
 
 
+def test_apply_filter_only_starts_debounce_timer():
+    starts: list[bool] = []
+
+    class ProxyStub:
+        def setFilterRegularExpression(self, *_args, **_kwargs):
+            raise AssertionError("product search should not filter the proxy")
+
+    controller = ProductController.__new__(ProductController)
+    controller.proxy = ProxyStub()
+    controller._search_timer = SimpleNamespace(start=lambda: starts.append(True))
+
+    controller._apply_filter("needle")
+
+    assert starts == [True]
+
+
 def test_next_and_prev_page_move_by_page_size():
     reload_offsets: list[int] = []
 
