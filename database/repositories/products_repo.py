@@ -20,6 +20,10 @@ class Product:
     # New optional fields populated by list_products(); kept defaulted for other getters
     base_uom_name: str | None = None
     alt_uom_names: str | None = None
+    on_hand_base: float | None = None
+    cost_price_base: float | None = None
+    sale_price_base: float | None = None
+    latest_price_date: str | None = None
 
 
 class ProductsRepo:
@@ -57,17 +61,66 @@ class ProductsRepo:
 
     def list_products(self) -> list[Product]:
         rows = self.conn.execute(
-            "SELECT "
-            "  p.product_id, p.name, p.description, p.category, p.min_stock_level, "
-            "  (SELECT u.unit_name "
-            "     FROM product_uoms pu JOIN uoms u ON u.uom_id = pu.uom_id "
-            "    WHERE pu.product_id = p.product_id AND pu.is_base = 1 "
-            "    LIMIT 1) AS base_uom_name, "
-            "  (SELECT GROUP_CONCAT(u.unit_name, ', ') "
-            "     FROM product_uoms pu JOIN uoms u ON u.uom_id = pu.uom_id "
-            "    WHERE pu.product_id = p.product_id AND pu.is_base = 0) AS alt_uom_names "
-            "FROM products p "
-            "ORDER BY p.product_id DESC"
+            """
+            WITH uom_labels AS (
+              SELECT
+                pu.product_id,
+                MAX(CASE WHEN pu.is_base = 1 THEN u.unit_name END) AS base_uom_name,
+                GROUP_CONCAT(CASE WHEN pu.is_base = 0 THEN u.unit_name END, ', ') AS alt_uom_names
+              FROM product_uoms pu
+              JOIN uoms u ON u.uom_id = pu.uom_id
+              GROUP BY pu.product_id
+            ),
+            latest_purchase AS (
+              SELECT
+                pi.product_id,
+                p.date,
+                CAST(pi.sale_price AS REAL) /
+                  COALESCE(NULLIF(CAST(pu.factor_to_base AS REAL), 0.0), 1.0) AS sale_price_base_default,
+                ROW_NUMBER() OVER (
+                  PARTITION BY pi.product_id
+                  ORDER BY p.date DESC, pi.item_id DESC
+                ) AS rn
+              FROM purchase_items pi
+              JOIN purchases p ON p.purchase_id = pi.purchase_id
+              LEFT JOIN product_uoms pu
+                ON pu.product_id = pi.product_id
+               AND pu.uom_id = pi.uom_id
+            ),
+            latest_manual_sale AS (
+              SELECT
+                psp.product_id,
+                CAST(psp.price AS REAL) AS sale_price_base_override,
+                psp.date,
+                ROW_NUMBER() OVER (
+                  PARTITION BY psp.product_id
+                  ORDER BY (psp.date IS NULL), psp.date DESC, psp.price_id DESC
+                ) AS rn
+              FROM product_sale_prices psp
+            )
+            SELECT
+              p.product_id,
+              p.name,
+              p.description,
+              p.category,
+              p.min_stock_level,
+              ul.base_uom_name,
+              ul.alt_uom_names,
+              COALESCE(CAST(v.qty_in_base AS REAL), 0.0) AS on_hand_base,
+              COALESCE(CAST(v.unit_value AS REAL), 0.0) AS cost_price_base,
+              COALESCE(ms.sale_price_base_override, lp.sale_price_base_default, 0.0) AS sale_price_base,
+              COALESCE(ms.date, lp.date) AS latest_price_date
+            FROM products p
+            LEFT JOIN uom_labels ul ON ul.product_id = p.product_id
+            LEFT JOIN v_stock_on_hand v ON v.product_id = p.product_id
+            LEFT JOIN latest_purchase lp
+              ON lp.product_id = p.product_id
+             AND lp.rn = 1
+            LEFT JOIN latest_manual_sale ms
+              ON ms.product_id = p.product_id
+             AND ms.rn = 1
+            ORDER BY p.product_id DESC
+            """
         ).fetchall()
         return [Product(**dict(r)) for r in rows]
 

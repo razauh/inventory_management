@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QComboBox,
     QDialogButtonBox,
+    QHeaderView,
 )
 import sqlite3
 from ..base_module import BaseModule
@@ -225,6 +226,17 @@ class PriceDialog(QDialog):
 
 
 class ProductController(BaseModule):
+    _AUTO_SIZE_ROW_LIMIT = 100
+    _LARGE_TABLE_WIDTHS = {
+        0: 90,
+        1: 220,
+        2: 160,
+        3: 110,
+        4: 300,
+        5: 120,
+        6: 180,
+    }
+
     def __init__(self, conn: sqlite3.Connection):
         super().__init__()
         self.conn = conn
@@ -258,7 +270,7 @@ class ProductController(BaseModule):
         self.proxy.setSortRole(Qt.UserRole)
         self.proxy.setFilterKeyColumn(-1)
         self.view.table.setModel(self.proxy)
-        self.view.table.resizeColumnsToContents()
+        self._resize_table_columns(len(rows))
         try:
             self.view.table.selectionModel().selectionChanged.connect(self._update_selected_details)
         except Exception:
@@ -315,14 +327,11 @@ class ProductController(BaseModule):
         priced = 0
         with_uoms = 0
         for p in rows:
-            pid = getattr(p, "product_id", None)
-            if pid is None:
-                continue
             min_stock = float(getattr(p, "min_stock_level", 0.0) or 0.0)
-            on_hand = float(self.repo.on_hand_base(int(pid)) or 0.0)
+            on_hand = float(getattr(p, "on_hand_base", 0.0) or 0.0)
             if min_stock > 0 and on_hand < min_stock:
                 low_stock += 1
-            sale_price = float(self.repo.latest_prices_base(int(pid)).get("sale") or 0.0)
+            sale_price = float(getattr(p, "sale_price_base", 0.0) or 0.0)
             if sale_price > 0:
                 priced += 1
             if getattr(p, "base_uom_name", None):
@@ -337,8 +346,8 @@ class ProductController(BaseModule):
         )
 
     def _update_selected_details(self, *_):
-        pid = self._selected_id()
-        if not pid:
+        product = self._selected_product()
+        if not product or product.product_id is None:
             self._set_action_state(False)
             if self.view.search.text().strip() and self.proxy.rowCount() == 0:
                 self.view.details.set_empty(
@@ -348,32 +357,25 @@ class ProductController(BaseModule):
             else:
                 self.view.details.clear()
             return
+        pid = int(product.product_id)
         self._set_action_state(True)
         try:
             self.view.selection_changed.emit(int(pid))
         except Exception:
             pass
-        product = self.repo.get(pid)
-        if not product:
-            self.view.details.clear()
-            return
-        uoms = self.repo.product_uoms(pid)
-        base = next((u for u in uoms if u.get("is_base")), None)
-        alts = [u for u in uoms if not u.get("is_base")]
-        prices = self.repo.latest_prices_base(pid)
         self.view.details.set_product(
-            product_id=product.product_id or pid,
+            product_id=pid,
             name=product.name,
             category=product.category,
             min_stock_level=product.min_stock_level,
-            base_uom_name=(base.get("unit_name") if base else product.base_uom_name),
-            alt_uom_names=", ".join(u.get("unit_name", "") for u in alts) or product.alt_uom_names,
-            sale_price=float(prices.get("sale") or 0.0),
-            cost_price=float(prices.get("cost") or 0.0),
+            base_uom_name=product.base_uom_name,
+            alt_uom_names=product.alt_uom_names,
+            sale_price=float(product.sale_price_base or 0.0),
+            cost_price=float(product.cost_price_base or 0.0),
             description=product.description,
         )
 
-    def _selected_id(self) -> int | None:
+    def _selected_product(self):
         selection_model = self.view.table.selectionModel()
         if selection_model is None:
             return None
@@ -381,7 +383,23 @@ class ProductController(BaseModule):
         if not idxs:
             return None
         src_index = self.proxy.mapToSource(idxs[0])
-        return self.base_model.at(src_index.row()).product_id
+        if not src_index.isValid():
+            return None
+        return self.base_model.at(src_index.row())
+
+    def _resize_table_columns(self, row_count: int) -> None:
+        header = self.view.table.horizontalHeader()
+        if row_count <= self._AUTO_SIZE_ROW_LIMIT:
+            self.view.table.resizeColumnsToContents()
+            return
+        for column, width in self._LARGE_TABLE_WIDTHS.items():
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+            self.view.table.setColumnWidth(column, width)
+        header.setStretchLastSection(True)
+
+    def _selected_id(self) -> int | None:
+        product = self._selected_product()
+        return None if product is None else product.product_id
 
     def _with_product_savepoint(self, fn):
         self.conn.execute("SAVEPOINT product_mutation")
