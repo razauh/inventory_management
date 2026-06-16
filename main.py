@@ -10,8 +10,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QSizePolicy,
     QMenu,
+    QLabel,
+    QFrame,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent, QSize
 from PySide6.QtGui import QAction
 from pathlib import Path
 import sys
@@ -28,6 +30,7 @@ sys.path.insert(0, str(project_root))
 from constants import APP_NAME, STYLE_FILE
 from database import get_connection, get_unresolved_purchase_return_count
 from modules.base_module import BaseModule
+from version import APP_VERSION
 
 
 def load_qss() -> str:
@@ -70,6 +73,74 @@ def _lazy_get(name: str, attr: str):
 
 
 class MainWindow(QMainWindow):
+    class _SidebarNavItem(QWidget):
+        def __init__(self, title: str, *, section: str, show_separator: bool, parent=None):
+            super().__init__(parent)
+            self._selected = False
+            self._hovered = False
+            self.setAttribute(Qt.WA_StyledBackground, True)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+            root = QVBoxLayout(self)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
+
+            self.separator = QFrame()
+            self.separator.setObjectName("sidebarSectionSeparator")
+            self.separator.setFixedHeight(1)
+            self.separator.setVisible(show_separator)
+            root.addWidget(self.separator)
+
+            self.surface = QFrame()
+            self.surface.setObjectName("sidebarItemSurface")
+            self.surface.setProperty("section", section)
+            surface_layout = QHBoxLayout(self.surface)
+            surface_layout.setContentsMargins(0, 0, 0, 0)
+            surface_layout.setSpacing(0)
+
+            self.accent = QFrame()
+            self.accent.setObjectName("sidebarItemAccent")
+            self.accent.setFixedWidth(3)
+            surface_layout.addWidget(self.accent)
+
+            label_wrap = QWidget()
+            label_wrap.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            label_layout = QHBoxLayout(label_wrap)
+            label_layout.setContentsMargins(10, 0, 10, 0)
+            label_layout.setSpacing(0)
+            self.label = QLabel(title)
+            self.label.setObjectName("sidebarItemLabel")
+            self.label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            self.label.setWordWrap(False)
+            label_layout.addWidget(self.label, 1)
+            surface_layout.addWidget(label_wrap, 1)
+
+            root.addWidget(self.surface)
+            self._apply_state()
+
+        def sizeHint(self) -> QSize:
+            extra = 1 if self.separator.isVisible() else 0
+            return QSize(120, 30 + extra)
+
+        def set_selected(self, selected: bool) -> None:
+            self._selected = selected
+            self._apply_state()
+
+        def set_hovered(self, hovered: bool) -> None:
+            self._hovered = hovered
+            self._apply_state()
+
+        def _apply_state(self) -> None:
+            self.surface.setProperty("selected", self._selected)
+            self.surface.setProperty("hovered", self._hovered and not self._selected)
+            self.label.setProperty("selected", self._selected)
+            self.accent.setProperty("selected", self._selected)
+            for widget in (self.surface, self.label, self.accent):
+                style = widget.style()
+                style.unpolish(widget)
+                style.polish(widget)
+                widget.update()
+
     # -----------------------------
     # Lightweight DB manager shim
     # -----------------------------
@@ -129,15 +200,33 @@ class MainWindow(QMainWindow):
 
         # Left nav + content
         self.nav = QListWidget()
-        # Cap the nav width so center content has room (reduced)
-        self.nav.setFixedWidth(100)
-        self.nav.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.nav.setObjectName("sidebarNav")
+        self.nav.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.nav.setMouseTracking(True)
+        self.nav.setSpacing(0)
+        self.nav.viewport().installEventFilter(self)
+        self.nav.itemEntered.connect(self._on_nav_item_hovered)
+
+        self.sidebar = QWidget()
+        self.sidebar.setObjectName("sidebarRail")
+        self.sidebar.setFixedWidth(132)
+        self.sidebar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+        sidebar_layout.addWidget(self.nav, 1)
+        self.sidebar_version = QLabel(f"v{APP_VERSION}")
+        self.sidebar_version.setObjectName("sidebarVersionLabel")
+        self.sidebar_version.setAlignment(Qt.AlignCenter)
+        sidebar_layout.addWidget(self.sidebar_version, 0)
 
         self.stack = QStackedWidget()
 
         row = QWidget()
         row_lay = QHBoxLayout(row)
-        row_lay.addWidget(self.nav)
+        row_lay.setContentsMargins(0, 0, 0, 0)
+        row_lay.setSpacing(0)
+        row_lay.addWidget(self.sidebar)
         row_lay.addWidget(self.stack, 1)
         layout.addWidget(row, 1)
 
@@ -149,6 +238,7 @@ class MainWindow(QMainWindow):
 
         # nav wiring - connect to our lazy loading function
         self.nav.currentRowChanged.connect(self._on_nav_item_changed)
+        self.nav.currentRowChanged.connect(self._refresh_nav_item_states)
 
         # Dashboard
         self._add_module_deferred(
@@ -232,6 +322,14 @@ class MainWindow(QMainWindow):
             "ReportingController",
             self.conn,
             current_user=self.user,
+            fallback_placeholder=True,
+        )
+
+        self._add_module_deferred(
+            "Updates",
+            "inventory_management.modules.updater",
+            "create_module",
+            self,
             fallback_placeholder=True,
         )
 
@@ -352,8 +450,9 @@ class MainWindow(QMainWindow):
 
     def add_module(self, title: str, module: BaseModule):
         page = module.get_widget()
-        item = QListWidgetItem(title)
+        item = self._create_nav_item(title)
         self.nav.addItem(item)
+        self._set_nav_item_widget(item, title)
         self.stack.addWidget(page)
         self.modules.append((title, module))
 
@@ -361,8 +460,9 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QLabel
         from utils.ui_helpers import wrap_center
         placeholder = wrap_center(QLabel(f"{title}\n\nComing soon..."))
-        item = QListWidgetItem(title)
+        item = self._create_nav_item(title)
         self.nav.addItem(item)
+        self._set_nav_item_widget(item, title)
         self.stack.addWidget(placeholder)
 
     def _add_module_deferred(
@@ -385,8 +485,9 @@ class MainWindow(QMainWindow):
         }
 
         # Add placeholder item to navigation
-        item = QListWidgetItem(title)
+        item = self._create_nav_item(title)
         self.nav.addItem(item)
+        self._set_nav_item_widget(item, title)
 
         # Add a placeholder widget to the stack - will be replaced when loaded
         from PySide6.QtWidgets import QLabel
@@ -411,8 +512,9 @@ class MainWindow(QMainWindow):
         }
 
         # Add placeholder item to navigation
-        item = QListWidgetItem('Backup & Restore')
+        item = self._create_nav_item('Backup & Restore')
         self.nav.addItem(item)
+        self._set_nav_item_widget(item, 'Backup & Restore')
 
         # Add a placeholder widget to the stack
         from PySide6.QtWidgets import QLabel
@@ -519,7 +621,89 @@ class MainWindow(QMainWindow):
         return controller
 
     def _check_for_updates(self) -> None:
+        self.open_module("Updates")
         self._get_updater_controller().check_now(manual=True)
+
+    def open_module(self, title: str) -> bool:
+        idx = self._find_module_info_index(title)
+        if idx is None:
+            return False
+        if self.nav.currentRow() != idx:
+            self.nav.setCurrentRow(idx)
+        else:
+            self._load_module_at_index(idx)
+        return True
+
+    def _create_nav_item(self, title: str) -> QListWidgetItem:
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, title)
+        item.setToolTip(title)
+        item.setSizeHint(QSize(120, 30))
+        return item
+
+    def _set_nav_item_widget(self, item: QListWidgetItem, title: str) -> None:
+        section = self._sidebar_section_name(title)
+        show_separator = title == "Updates"
+        widget = MainWindow._SidebarNavItem(title, section=section, show_separator=show_separator, parent=self.nav)
+        item.setSizeHint(widget.sizeHint())
+        self.nav.setItemWidget(item, widget)
+        self._refresh_nav_item_states()
+
+    def _sidebar_section_name(self, title: str) -> str:
+        if title in {"Updates", "Backup & Restore"}:
+            return "system"
+        return "management"
+
+    def _refresh_nav_item_states(self, *_args) -> None:
+        current_row = self.nav.currentRow()
+        hovered_row = getattr(self, "_hovered_nav_row", -1)
+        for row in range(self.nav.count()):
+            item = self.nav.item(row)
+            widget = self.nav.itemWidget(item)
+            if isinstance(widget, MainWindow._SidebarNavItem):
+                widget.set_selected(row == current_row)
+                widget.set_hovered(row == hovered_row)
+
+    def _on_nav_item_hovered(self, item: QListWidgetItem) -> None:
+        self._hovered_nav_row = self.nav.row(item)
+        self._refresh_nav_item_states()
+
+    def show_update_toast(
+        self,
+        *,
+        title: str,
+        message: str,
+        primary_text: str,
+        primary_callback,
+        secondary_text: str,
+        secondary_callback,
+    ) -> None:
+        from inventory_management.modules.updater.views import UpdateToast
+
+        toast = getattr(self, "_update_toast", None)
+        if toast is None:
+            toast = UpdateToast(self)
+            self._update_toast = toast
+        toast.configure(
+            title=title,
+            message=message,
+            primary_text=primary_text,
+            primary_callback=primary_callback,
+            secondary_text=secondary_text,
+            secondary_callback=secondary_callback,
+        )
+        self._position_update_toast()
+        toast.show()
+        toast.raise_()
+
+    def _position_update_toast(self) -> None:
+        toast = getattr(self, "_update_toast", None)
+        if toast is None:
+            return
+        margin = 18
+        x = self.width() - toast.width() - margin
+        y = self.height() - toast.height() - margin
+        toast.move(max(margin, x), max(margin, y))
 
     def _on_nav_item_changed(self, index: int):
         """Load module when navigating to it."""
@@ -719,6 +903,20 @@ class MainWindow(QMainWindow):
 
     def _open_new_quotation(self):
         self._invoke_sales_action("new_quotation", "Could not open New Quotation form.")
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_update_toast()
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._position_update_toast()
+
+    def eventFilter(self, watched, event):
+        if watched is self.nav.viewport() and event.type() == QEvent.Type.Leave:
+            self._hovered_nav_row = -1
+            self._refresh_nav_item_states()
+        return super().eventFilter(watched, event)
 
 
 def main():

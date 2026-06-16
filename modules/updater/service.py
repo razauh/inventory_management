@@ -43,19 +43,28 @@ class UpdaterService:
             if not is_newer(release.tag_name, self.local_version, include_prerelease=include_prerelease):
                 continue
             installer = select_installer_asset(release)
-            if installer is None:
-                log_event(self._log, "asset", "No supported Windows installer asset found.", tag=release.tag_name)
-                continue
             checksum = select_checksum_asset(release)
-            if checksum is None:
+            availability_message = ""
+
+            if installer is None:
+                availability_message = "This release does not include a supported Windows installer asset."
+                log_event(self._log, "asset", "No supported Windows installer asset found.", tag=release.tag_name)
+            elif checksum is None:
+                availability_message = "This release does not include a checksum file for installer verification."
                 log_event(self._log, "asset", "No checksum asset found.", tag=release.tag_name)
-                continue
-            log_event(self._log, "available", "Update available.", tag=release.tag_name, asset=installer.name)
+
+            extra = {"tag": release.tag_name}
+            if installer is not None:
+                extra["asset"] = installer.name
+            if availability_message:
+                extra["availability_message"] = availability_message
+            log_event(self._log, "available", "Update available.", **extra)
             return UpdateInfo(
                 local_version=self.local_version,
                 release=release,
                 installer_asset=installer,
                 checksum_asset=checksum,
+                availability_message=availability_message,
             )
         log_event(self._log, "result", "No update available.")
         return None

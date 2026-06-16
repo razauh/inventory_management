@@ -1,5 +1,8 @@
 from __future__ import annotations
 
-from .controller import UpdaterController
+MODULE_TITLE = "Updates"
 
-__all__ = ["UpdaterController"]
+from .controller import UpdaterController
+from .module import create_module
+
+__all__ = ["MODULE_TITLE", "UpdaterController", "create_module"]

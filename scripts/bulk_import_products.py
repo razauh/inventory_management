@@ -82,17 +82,25 @@ def _load_product_rows(
     seen_names: dict[str, int] = {}
     seen_uoms: dict[str, str] = {}
 
-    if headers != list(REQUIRED_HEADERS):
+    expected_headers = list(REQUIRED_HEADERS)
+    normalized_headers = [(_cell_text(header).strip().casefold()) for header in (headers or [])]
+    normalized_expected = [header.casefold() for header in expected_headers]
+    if normalized_headers != normalized_expected:
         raise ImportValidationError(
-            f"{source_name} headers must be {list(REQUIRED_HEADERS)}, got {headers}."
+            f"{source_name} headers must be {expected_headers}, got {headers}."
         )
 
     for line_number, row in enumerate(rows, start=2):
-        name = _cell_text(row.get("name")).strip()
-        base_unit = _cell_text(row.get("base_unit")).strip()
-        alt_unit = _cell_text(row.get("alt_unit")).strip()
-        category = _cell_text(row.get("Category")).strip()
-        factor_text = _cell_text(row.get("Factor")).strip()
+        row_by_header = {
+            _cell_text(key).strip().casefold(): value
+            for key, value in row.items()
+        }
+
+        name = _cell_text(row_by_header.get("name")).strip()
+        base_unit = _cell_text(row_by_header.get("base_unit")).strip()
+        alt_unit = _cell_text(row_by_header.get("alt_unit")).strip()
+        category = _cell_text(row_by_header.get("category")).strip()
+        factor_text = _cell_text(row_by_header.get("factor")).strip()
 
         if not name and not base_unit and not alt_unit and not category and not factor_text:
             continue
@@ -128,9 +136,9 @@ def _load_product_rows(
                 seen_uoms[unit_key] = unit
 
         factor_to_base = None
-        if bool(alt_unit) != bool(factor_text):
+        if alt_unit and not factor_text:
             errors.append(
-                f"line {line_number}: alt_unit and Factor must either both be set or both be empty"
+                f"line {line_number}: Factor is required when alt_unit is set"
             )
             failed_lines.add(line_number)
         elif alt_unit and factor_text:

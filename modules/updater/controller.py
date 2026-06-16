@@ -5,15 +5,14 @@ import tempfile
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, QTimer, QThread, Signal, Slot
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal, Slot
+from PySide6.QtWidgets import QApplication
 
 from .downloader import download_asset, download_text
 from .logging_utils import get_logger, log_event
-from .models import UpdateInfo
+from .models import UpdateInfo, UpdateState
 from .service import UpdaterService
 from .verifier import parse_expected_sha256, verify_sha256
-from .views import UpdateAvailableDialog, UpdateProgressDialog
 
 
 def _cleanup_dir(dir_path: Path) -> None:
@@ -41,6 +40,8 @@ class UpdateDownloadWorker(QThread):
         download_dir = None
         succeeded = False
         try:
+            if self.update.installer_asset is None:
+                raise RuntimeError("Release installer asset is missing.")
             download_dir = Path(tempfile.mkdtemp(prefix="alhusnain-update-"))
             self.status.emit("Downloading update installer...")
 
@@ -79,11 +80,24 @@ class UpdateDownloadWorker(QThread):
 
 
 class UpdaterController(QObject):
+    state_changed = Signal(object)
     _check_finished = Signal(object, bool, str)
 
     SETTINGS_SCOPE = ("Al Husnain", "Al Husnain")
     SETTINGS_KEY_AUTO_CHECK = "updater/auto_check"
     SETTINGS_KEY_INCLUDE_PRERELEASE = "updater/include_prerelease"
+    SETTINGS_KEY_DEFERRED_TAG = "updater/deferred_tag"
+
+    STATUS_LABELS = {
+        "idle": "Idle",
+        "checking": "Checking for Updates",
+        "up_to_date": "Up to Date",
+        "update_available": "Update Available",
+        "downloading": "Downloading",
+        "install_ready": "Ready to Install",
+        "deferred": "Reminder Snoozed",
+        "error": "Update Error",
+    }
 
     def __init__(self, main_window, service: UpdaterService | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -92,7 +106,25 @@ class UpdaterController(QObject):
         self._settings = QSettings(*self.SETTINGS_SCOPE)
         self._log = get_logger()
         self._active = False
+        self._download_worker: UpdateDownloadWorker | None = None
+        self._current_update: UpdateInfo | None = None
+        self._download_status = ""
+        self._progress = 0
+        self._downloaded_installer: Path | None = None
+        self._install_after_download = False
         self._check_finished.connect(self._on_check_finished)
+        self._state = UpdateState(
+            status="idle",
+            status_label=self.STATUS_LABELS["idle"],
+            detail="Use the Updates page to check for newer releases.",
+            local_version=self._service.local_version,
+        )
+
+    def state(self) -> UpdateState:
+        return self._state
+
+    def emit_state(self) -> None:
+        self.state_changed.emit(self._state)
 
     def check_on_startup(self) -> None:
         enabled = self._settings.value(self.SETTINGS_KEY_AUTO_CHECK, True, bool)
@@ -100,10 +132,24 @@ class UpdaterController(QObject):
             return
         QTimer.singleShot(1500, lambda: self.check_now(manual=False))
 
+    def open_updates_center(self) -> None:
+        if hasattr(self._main_window, "open_module"):
+            self._main_window.open_module("Updates")
+
     def check_now(self, *, manual: bool = True) -> None:
         if self._active:
+            if manual:
+                self.open_updates_center()
+                self.emit_state()
             return
         self._active = True
+        if manual:
+            self.open_updates_center()
+        self._set_state(
+            "checking",
+            "Checking GitHub for a newer release...",
+            update=self._current_update,
+        )
         include_prerelease = self._settings.value(self.SETTINGS_KEY_INCLUDE_PRERELEASE, False, bool)
         worker = threading.Thread(
             target=self._run_check,
@@ -111,6 +157,118 @@ class UpdaterController(QObject):
             daemon=True,
         )
         worker.start()
+
+    def download_update(self, install_after_download: bool) -> None:
+        update = self._current_update
+        if update is None:
+            self.check_now(manual=True)
+            return
+        if not update.can_download:
+            self._set_state(
+                "update_available",
+                update.availability_message or f"Release {update.release.tag_name} is visible but cannot be downloaded here.",
+                update=update,
+                error_text=update.availability_message,
+            )
+            return
+        if self._download_worker is not None:
+            self.emit_state()
+            return
+        if self._downloaded_installer is not None and self._downloaded_installer.exists():
+            self._install_after_download = install_after_download
+            self._set_state(
+                "install_ready",
+                "Update package is ready to install.",
+                progress=100,
+                update=update,
+                download_path=str(self._downloaded_installer),
+                install_after_download=install_after_download,
+            )
+            if install_after_download:
+                self._show_ready_toast()
+            return
+
+        self._install_after_download = install_after_download
+        self._download_status = "Preparing download..."
+        self._progress = 0
+        self._set_state(
+            "downloading",
+            self._download_status,
+            progress=0,
+            update=update,
+            install_after_download=install_after_download,
+        )
+
+        worker = UpdateDownloadWorker(update, self)
+        worker.status.connect(self._on_download_status)
+        worker.progress.connect(self._on_download_progress)
+        worker.finished_successfully.connect(self._on_download_success)
+        worker.failed.connect(self._on_download_failure)
+        worker.finished.connect(self._on_download_finished)
+        self._download_worker = worker
+        worker.start()
+
+    def defer_current_update(self) -> None:
+        if self._current_update is None:
+            return
+        self._settings.setValue(self.SETTINGS_KEY_DEFERRED_TAG, self._current_update.release.tag_name)
+        log_event(self._log, "deferred", "User deferred update reminder.", tag=self._current_update.release.tag_name)
+        self._set_state(
+            "deferred",
+            f"{self._current_update.release.tag_name} will stay available in this page.",
+            update=self._current_update,
+        )
+
+    def install_downloaded_update(self) -> None:
+        installer = self._downloaded_installer
+        if installer is None or not installer.exists():
+            self.clear_download()
+            self._set_state(
+                "error",
+                "Downloaded installer is no longer available.",
+                update=self._current_update,
+                error_text="The downloaded installer could not be found. Download the update again.",
+            )
+            return
+
+        self._close_database_before_install()
+        try:
+            subprocess.Popen([str(installer)], close_fds=True)
+        except OSError as exc:
+            error = f"Could not start installer: {exc}"
+            log_event(self._log, "launch_failed", "Update installer could not be started.", error=error)
+            self._set_state(
+                "error",
+                "Could not start the installer.",
+                update=self._current_update,
+                error_text=error,
+                download_path=str(installer),
+            )
+            return
+        log_event(self._log, "installer_started", "Installer launched.", path=str(installer))
+        QApplication.quit()
+
+    def clear_download(self) -> None:
+        installer = self._downloaded_installer
+        if installer is not None:
+            _cleanup_dir(installer.parent)
+        self._downloaded_installer = None
+        self._progress = 0
+        self._download_status = ""
+        if self._current_update is not None:
+            self._set_state(
+                "update_available",
+                f"Release {self._current_update.release.tag_name} is ready when you want it.",
+                update=self._current_update,
+            )
+        else:
+            self._set_state("idle", "Use the Updates page to check for newer releases.")
+
+    def open_backup_tool(self) -> None:
+        if hasattr(self._main_window, "_get_backup_restore_controller"):
+            controller = self._main_window._get_backup_restore_controller()
+            if controller is not None and hasattr(controller, "open_backup_dialog"):
+                controller.open_backup_dialog()
 
     def _run_check(self, manual: bool, include_prerelease: bool) -> None:
         try:
@@ -126,162 +284,141 @@ class UpdaterController(QObject):
     def _on_check_finished(self, update: UpdateInfo | None, manual: bool, error: str) -> None:
         self._active = False
         if error:
-            if manual:
-                QMessageBox.warning(self._main_window, "Update Check Failed", error)
+            self._set_state(
+                "error",
+                "Could not check for updates.",
+                update=self._current_update,
+                error_text=error,
+            )
             return
+
         if update is None:
-            if manual:
-                QMessageBox.information(self._main_window, "No Update Available", "You are using the latest version.")
-            return
-        self.open_update_dialog(update)
-
-    def open_update_dialog(self, update: UpdateInfo) -> None:
-        dialog = UpdateAvailableDialog(update, self._main_window)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            log_event(self._log, "postponed", "User postponed update.", tag=update.release.tag_name)
-            return
-        if dialog.choice == "backup":
-            backup_controller = None
-            if hasattr(self._main_window, "_get_backup_restore_controller"):
-                backup_controller = self._main_window._get_backup_restore_controller()
-
-            dlg = self._open_backup_screen()
-            if backup_controller is not None and dlg is not None:
-                started = False
-
-                def on_start_backup() -> None:
-                    nonlocal started
-                    started = True
-
-                def on_finished(result: int = 0) -> None:
-                    if not started:
-                        self.open_update_dialog(update)
-
-                def on_backup_completed(path: str) -> None:
-                    try:
-                        backup_controller.backup_completed.disconnect(on_backup_completed)
-                    except Exception:
-                        pass
-                    self.open_update_dialog(update)
-
-                dlg.start_backup.connect(on_start_backup)
-                dlg.finished.connect(on_finished)
-                backup_controller.backup_completed.connect(on_backup_completed)
-            return
-        if dialog.choice == "install":
-            self._confirm_and_install(update)
+            self._current_update = None
+            self._downloaded_installer = None
+            self._set_state(
+                "up_to_date",
+                f"Version {self._service.local_version} is the latest available release.",
+            )
             return
 
-    def _open_backup_screen(self) -> QDialog | None:
-        if hasattr(self._main_window, "_get_backup_restore_controller"):
-            controller = self._main_window._get_backup_restore_controller()
-            if controller is not None and hasattr(controller, "open_backup_dialog"):
-                return controller.open_backup_dialog()
-        QMessageBox.warning(
-            self._main_window,
-            "Backup Required",
-            "Open Backup & Restore and create a backup before installing the update.",
+        self._current_update = update
+        detail = update.availability_message or f"Release {update.release.tag_name} is available to download."
+        self._set_state(
+            "update_available",
+            detail,
+            update=update,
+            error_text=update.availability_message,
         )
-        return None
+        if not manual and self._settings.value(self.SETTINGS_KEY_DEFERRED_TAG, "", str) != update.release.tag_name:
+            self._show_available_toast(update)
 
-    def _confirm_and_install(self, update: UpdateInfo) -> None:
-        backup_ok = self._offer_programmatic_backup()
-        if not backup_ok:
-            if not self._confirm_skip_backup():
-                return
+    @Slot(str)
+    def _on_download_status(self, text: str) -> None:
+        self._download_status = text
+        self._set_state(
+            "downloading",
+            text,
+            progress=self._progress,
+            update=self._current_update,
+            install_after_download=self._install_after_download,
+        )
 
-        progress_dialog = UpdateProgressDialog(self._main_window)
-        self._download_worker = UpdateDownloadWorker(update, self)
+    @Slot(int)
+    def _on_download_progress(self, progress: int) -> None:
+        self._progress = progress
+        self._set_state(
+            "downloading",
+            self._download_status or "Downloading update installer...",
+            progress=progress,
+            update=self._current_update,
+            install_after_download=self._install_after_download,
+        )
 
-        self._download_worker.status.connect(progress_dialog.set_status)
-        self._download_worker.progress.connect(progress_dialog.set_progress)
+    @Slot(str)
+    def _on_download_success(self, path_str: str) -> None:
+        installer = Path(path_str)
+        self._downloaded_installer = installer
+        self._progress = 100
+        log_event(self._log, "verified", "Installer checksum verified.", path=str(installer))
+        self._set_state(
+            "install_ready",
+            "Download finished. The installer is ready.",
+            progress=100,
+            update=self._current_update,
+            download_path=str(installer),
+            install_after_download=self._install_after_download,
+        )
+        self._show_ready_toast()
 
-        installer_path: Path | None = None
-        error_message: str | None = None
+    @Slot(str)
+    def _on_download_failure(self, error_message: str) -> None:
+        self._downloaded_installer = None
+        log_event(self._log, "download_failed", "Update download failed.", error=error_message)
+        self._set_state(
+            "error",
+            "Download failed.",
+            progress=self._progress,
+            update=self._current_update,
+            error_text=error_message,
+            install_after_download=self._install_after_download,
+        )
 
-        def on_success(path_str: str) -> None:
-            nonlocal installer_path
-            installer_path = Path(path_str)
-            progress_dialog.allow_close()
-            progress_dialog.accept()
-
-        def on_failure(msg: str) -> None:
-            nonlocal error_message
-            error_message = msg
-            progress_dialog.allow_close()
-            progress_dialog.reject()
-
-        self._download_worker.finished_successfully.connect(on_success)
-        self._download_worker.failed.connect(on_failure)
-
-        self._download_worker.start()
-        progress_dialog.exec()
-
+    @Slot()
+    def _on_download_finished(self) -> None:
         self._download_worker = None
 
-        if error_message:
-            log_event(self._log, "download_failed", "Update download failed.", error=error_message)
-            QMessageBox.critical(self._main_window, "Update Failed", error_message)
-            return
-
-        if installer_path is None:
-            return
-
-        log_event(self._log, "verified", "Installer checksum verified.", path=str(installer_path))
-
-        if QMessageBox.question(
-            self._main_window,
-            "Install Update",
-            "The installer is ready. The application will close before the installer starts.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
-            _cleanup_dir(installer_path.parent)
-            return
-        self._launch_installer(installer_path)
-
-    def _offer_programmatic_backup(self) -> bool:
-        controller = None
-        if hasattr(self._main_window, "_get_backup_restore_controller"):
-            controller = self._main_window._get_backup_restore_controller()
-        if controller is None or not hasattr(controller, "create_backup_for_update"):
-            QMessageBox.information(
-                self._main_window,
-                "Create Backup",
-                "Automatic update backup is not available yet. Please create a backup from Backup & Restore.",
-            )
-            self._open_backup_screen()
-            return False
-        reply = QMessageBox.question(
-            self._main_window,
-            "Create Backup",
-            "Create a backup before installing this update?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+    def _set_state(
+        self,
+        status: str,
+        detail: str,
+        *,
+        progress: int | None = None,
+        update: UpdateInfo | None = None,
+        error_text: str = "",
+        download_path: str = "",
+        install_after_download: bool | None = None,
+    ) -> None:
+        if progress is None:
+            progress = self._progress
+        if install_after_download is None:
+            install_after_download = self._install_after_download
+        self._state = UpdateState(
+            status=status,
+            status_label=self.STATUS_LABELS.get(status, status.replace("_", " ").title()),
+            detail=detail,
+            local_version=self._service.local_version,
+            progress=progress,
+            update=update,
+            error_text=error_text,
+            download_path=download_path,
+            install_after_download=install_after_download,
         )
-        if reply != QMessageBox.StandardButton.Yes:
-            return False
-        return bool(controller.create_backup_for_update(parent=self._main_window))
+        self.emit_state()
 
-    def _confirm_skip_backup(self) -> bool:
-        return QMessageBox.warning(
-            self._main_window,
-            "Continue Without Backup?",
-            "If the update fails, your current data may be harder to recover. Continue without a new backup?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        ) == QMessageBox.StandardButton.Yes
+    def _show_available_toast(self, update: UpdateInfo) -> None:
+        if hasattr(self._main_window, "show_update_toast"):
+            self._main_window.show_update_toast(
+                title="Update Available",
+                message=f"Release {update.release.tag_name} is ready.",
+                primary_text="Update Now",
+                primary_callback=lambda: self.download_update(True),
+                secondary_text="View Details",
+                secondary_callback=self.open_updates_center,
+            )
 
-
-
-    def _launch_installer(self, installer: Path) -> None:
-        self._close_database_before_install()
-        try:
-            subprocess.Popen([str(installer)], close_fds=True)
-        except OSError as exc:
-            QMessageBox.critical(self._main_window, "Update Failed", f"Could not start installer.\n\n{exc}")
+    def _show_ready_toast(self) -> None:
+        update = self._current_update
+        if update is None:
             return
-        QApplication.quit()
+        if hasattr(self._main_window, "show_update_toast"):
+            self._main_window.show_update_toast(
+                title="Update Ready",
+                message=f"Release {update.release.tag_name} finished downloading.",
+                primary_text="Install Now",
+                primary_callback=self.install_downloaded_update,
+                secondary_text="View Details",
+                secondary_callback=self.open_updates_center,
+            )
 
     def _close_database_before_install(self) -> None:
         conn = getattr(self._main_window, "conn", None)

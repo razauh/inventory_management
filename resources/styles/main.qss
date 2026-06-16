@@ -2,6 +2,95 @@ QListWidget {
     border-right: 1px solid #ddd;
     padding: 6px;
 }
+QListWidget#sidebarNav {
+    border: none;
+    background: transparent;
+    outline: none;
+    padding: 8px 6px 6px 6px;
+}
+QListWidget#sidebarNav::item {
+    border: none;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+}
+QListWidget#sidebarNav::item:selected {
+    background: transparent;
+}
+QWidget#sidebarRail {
+    background: #f4f6f8;
+    border-right: 1px solid #ddd;
+}
+QFrame#sidebarSectionSeparator {
+    background: #d8dde4;
+    margin: 0 10px 0 10px;
+}
+QFrame#sidebarItemSurface {
+    background: transparent;
+    border-radius: 8px;
+}
+QFrame#sidebarItemSurface[section="system"] {
+    background: rgba(15, 23, 42, 0.035);
+}
+QFrame#sidebarItemSurface[hovered="true"] {
+    background: rgba(31, 79, 147, 0.08);
+}
+QFrame#sidebarItemSurface[selected="true"] {
+    background: rgba(31, 79, 147, 0.13);
+}
+QFrame#sidebarItemAccent {
+    background: transparent;
+    border-radius: 2px;
+}
+QFrame#sidebarItemAccent[selected="true"] {
+    background: #1f4f93;
+}
+QLabel#sidebarItemLabel {
+    color: #4b5563;
+    font-weight: 500;
+    padding: 0;
+}
+QLabel#sidebarItemLabel[selected="true"] {
+    color: #173b72;
+    font-weight: 600;
+}
+QLabel#sidebarVersionLabel {
+    color: #6b7280;
+    font-weight: 500;
+    padding: 10px 8px 12px 8px;
+    border-top: 1px solid #ddd;
+}
+QFrame#updateStatusCard,
+QFrame#updateReleaseCard,
+QFrame#updateProgressCard,
+QFrame#updateInstallCard {
+    background: #ffffff;
+    border: 1px solid #d9dee7;
+    border-radius: 6px;
+}
+QLabel#updateStatusBadge {
+    background: #e8eef9;
+    color: #1f4f93;
+    border: 1px solid #c8d7f0;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-weight: 600;
+}
+QLabel#updateErrorLabel {
+    color: #b42318;
+    background: #fef3f2;
+    border: 1px solid #fecdca;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+QWidget#updateToast {
+    background: #ffffff;
+    border: 1px solid #d9dee7;
+    border-radius: 6px;
+}
+QLabel#updateToastTitle {
+    font-weight: 600;
+}
 QTableView {
     gridline-color: #ccc;
     selection-background-color: #cde8ff;
