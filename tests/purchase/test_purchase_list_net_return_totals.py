@@ -149,3 +149,61 @@ def test_purchase_table_model_displays_net_and_due_columns(purchase_list_db):
     assert displayed[6] == "40.00"
     assert displayed[7] == "0.00"
     assert displayed[8] == "paid"
+
+
+def test_list_purchases_defaults_to_recent_slice_limit(purchase_list_db):
+    conn, ids = purchase_list_db
+    repo = PurchasesRepo(conn)
+
+    for idx in range(PurchasesRepo.DEFAULT_LIST_LIMIT + 5):
+        conn.execute(
+            """
+            INSERT INTO purchases (
+                purchase_id, vendor_id, date, total_amount, order_discount,
+                payment_status, paid_amount, advance_payment_applied, notes, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"PO-LIMIT-{idx:04d}",
+                ids["vendor_id"],
+                f"2026-06-{(idx % 28) + 1:02d}",
+                10.0,
+                0.0,
+                "unpaid",
+                0.0,
+                0.0,
+                None,
+                None,
+            ),
+        )
+
+    rows = repo.list_purchases()
+
+    assert len(rows) == PurchasesRepo.DEFAULT_LIST_LIMIT
+
+
+def test_search_purchases_and_detail_snapshot_return_sql_backed_results(purchase_list_db):
+    conn, ids = purchase_list_db
+    repo = _create_purchase(conn, ids)
+    _record_cash_payment(conn, "PO-LIST-NET", 40.0)
+
+    item = repo.list_items("PO-LIST-NET")[0]
+    repo.record_return(
+        pid="PO-LIST-NET",
+        date="2026-06-10",
+        created_by=None,
+        lines=[{"item_id": int(item["item_id"]), "qty_return": 0.2}],
+        notes=None,
+    )
+
+    vendor_rows = repo.search_purchases("Purchase List Vendor", search_field="vendor")
+    status_rows = repo.search_purchases("paid", search_field="status")
+    snapshot = repo.get_purchase_detail_snapshot("PO-LIST-NET")
+
+    assert [row["purchase_id"] for row in vendor_rows] == ["PO-LIST-NET"]
+    assert [row["purchase_id"] for row in status_rows] == ["PO-LIST-NET"]
+    assert snapshot["row"]["purchase_id"] == "PO-LIST-NET"
+    assert snapshot["row"]["returned_value"] == pytest.approx(20.0)
+    assert snapshot["row"]["remaining_due"] == pytest.approx(40.0)
+    assert len(snapshot["items"]) == 1
+    assert snapshot["payment_summary"]["method"] == "Cash"

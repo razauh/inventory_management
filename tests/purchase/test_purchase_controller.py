@@ -122,3 +122,76 @@ def test_auto_apply_vendor_credit(controller, ids, conn):
     # 4. Verify vendor credit reduced
     remaining_credit = controller.vadv.get_balance(ids["vendor_id"])
     assert remaining_credit == 50.0  # 100 - 50
+
+
+def _purchase_row(purchase_id="PO-SEARCH-1", vendor_name="Vendor Search"):
+    return {
+        "purchase_id": purchase_id,
+        "date": "2026-06-16",
+        "vendor_id": 1,
+        "vendor_name": vendor_name,
+        "total_amount": 100.0,
+        "returned_value": 0.0,
+        "calculated_total_amount": 100.0,
+        "order_discount": 0.0,
+        "payment_status": "unpaid",
+        "paid_amount": 0.0,
+        "advance_payment_applied": 0.0,
+        "remaining_due": 100.0,
+        "notes": None,
+    }
+
+
+def test_perform_search_uses_repo_query_path(controller):
+    controller.repo.search_purchases = MagicMock(return_value=[_purchase_row()])
+    controller.view.search.setText("vendor")
+
+    controller._perform_search()
+
+    controller.repo.search_purchases.assert_called_once_with(
+        "vendor",
+        search_field="all",
+    )
+    assert controller.base.rowCount() == 1
+
+
+def test_sync_details_uses_snapshot_once_per_selected_purchase(controller):
+    row = _purchase_row(purchase_id="PO-SNAPSHOT-1")
+    detail_row = dict(row)
+    detail_row["returned_value"] = 5.0
+    detail_row["calculated_total_amount"] = 95.0
+    detail_row["remaining_due"] = 95.0
+
+    controller.repo.list_purchases = MagicMock(return_value=[row])
+    controller.repo.get_purchase_detail_snapshot = MagicMock(
+        return_value={
+            "row": detail_row,
+            "items": [
+                {
+                    "item_id": 1,
+                    "purchase_id": "PO-SNAPSHOT-1",
+                    "product_id": 2,
+                    "product_name": "Widget",
+                    "quantity": 1.0,
+                    "unit_name": "Piece",
+                    "uom_id": 1,
+                    "purchase_price": 95.0,
+                    "sale_price": 120.0,
+                    "item_discount": 0.0,
+                }
+            ],
+            "payment_summary": {
+                "method": "Cash",
+                "amount": 0.0,
+                "status": "posted",
+                "overpayment": 0.0,
+                "counterparty_label": "Vendor",
+            },
+        }
+    )
+
+    controller._reload()
+    controller._sync_details()
+
+    controller.repo.get_purchase_detail_snapshot.assert_called_once_with("PO-SNAPSHOT-1")
+    assert controller.view.details.lab_id.text() == "PO-SNAPSHOT-1"

@@ -145,6 +145,7 @@ class SalesRepo:
         Search within SALES by default.
         Pass doc_type='quotation' to search quotations.
         """
+        query = (query or "").strip()
         where = ["s.doc_type = ?"]
         params: list = [doc_type]
 
@@ -1040,6 +1041,50 @@ class SalesRepo:
             "qty": float(row["qty_returned"]),
             "value": float(row["value_returned"]),
             "cogs_reversed": float(row["cogs_reversed"]),
+        }
+
+    def get_sale_detail_summary(self, sale_id: str) -> dict:
+        row = self.conn.execute(
+            """
+            SELECT
+              CAST(s.total_amount AS REAL) AS total_amount,
+              CAST(COALESCE(rt.qty_returned, 0.0) AS REAL) AS returned_qty,
+              CAST(COALESCE(sdt.returned_value, 0.0) AS REAL) AS returned_value,
+              CAST(COALESCE(sdt.calculated_total_amount, s.total_amount) AS REAL) AS gross_total_amount,
+              CAST(COALESCE(sdt.net_total_amount, s.total_amount) AS REAL) AS net_total_amount,
+              CAST(COALESCE(srt.paid_amount, 0.0) AS REAL) AS paid_amount,
+              CAST(COALESCE(srt.advance_payment_applied, 0.0) AS REAL) AS advance_payment_applied,
+              CAST(COALESCE(srt.canonical_total_amount, s.total_amount) AS REAL) AS calculated_total_amount,
+              CAST(COALESCE(srt.remaining_due, 0.0) AS REAL) AS remaining_due
+            FROM sales s
+            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+            LEFT JOIN (
+                SELECT
+                  it.reference_id AS sale_id,
+                  COALESCE(SUM(CAST(srs.returned_quantity AS REAL)), 0.0) AS qty_returned
+                FROM inventory_transactions it
+                JOIN sale_return_snapshots srs ON srs.transaction_id = it.transaction_id
+                WHERE it.reference_table = 'sales'
+                  AND it.transaction_type = 'sale_return'
+                GROUP BY it.reference_id
+            ) rt ON rt.sale_id = s.sale_id
+            WHERE s.sale_id = ?
+            """,
+            (sale_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Unknown sale_id: {sale_id}")
+        return {
+            "total_amount": float(row["total_amount"] or 0.0),
+            "returned_qty": float(row["returned_qty"] or 0.0),
+            "returned_value": float(row["returned_value"] or 0.0),
+            "gross_total_amount": float(row["gross_total_amount"] or 0.0),
+            "net_total_amount": float(row["net_total_amount"] or 0.0),
+            "paid_amount": float(row["paid_amount"] or 0.0),
+            "advance_payment_applied": float(row["advance_payment_applied"] or 0.0),
+            "calculated_total_amount": float(row["calculated_total_amount"] or 0.0),
+            "remaining_due": float(row["remaining_due"] or 0.0),
         }
 
     def get_receivable_position(self, sale_id: str, return_value: float = 0.0) -> dict:

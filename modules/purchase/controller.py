@@ -84,6 +84,17 @@ class PurchaseController(BaseModule):
         self.vbank = VendorBankAccountsRepo(conn)
         self.vendors = VendorsRepo(conn)
         self.products = ProductsRepo(conn)
+        self._table_initialized = False
+        self._last_detail_purchase_id: str | None = None
+        self.base = PurchasesTableModel([])
+        self.proxy = QSortFilterProxyModel(self.view)
+        self.proxy.setSourceModel(self.base)
+        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.proxy.setFilterKeyColumn(-1)
+        self.view.tbl.setModel(self.proxy)
+        sel = self.view.tbl.selectionModel()
+        if sel is not None:
+            sel.selectionChanged.connect(self._sync_details)
         self._wire()
         self._reload()
 
@@ -111,59 +122,18 @@ class PurchaseController(BaseModule):
         self.view.rb_status.toggled.connect(self._apply_filter)
 
     def _build_model(self):
-        rows = self.repo.list_purchases()
-        self.base = PurchasesTableModel(rows)
-        self._original_rows = rows  # Cache the original data for fast searching
-        self.proxy = QSortFilterProxyModel(self.view)
-        self.proxy.setSourceModel(self.base)
-        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.proxy.setFilterKeyColumn(-1)
-        self.view.tbl.setModel(self.proxy)
-        self.view.tbl.resizeColumnsToContents()
-        sel = self.view.tbl.selectionModel()
-        try:
-            sel.selectionChanged.disconnect(self._sync_details)
-        except (TypeError, RuntimeError, RuntimeWarning):
-            pass
-        sel.selectionChanged.connect(self._sync_details)
+        self.base.replace(self._load_purchase_rows())
+        if not self._table_initialized:
+            self.view.tbl.resizeColumnsToContents()
+            self._table_initialized = True
 
     def _reload(self):
-        # Preserve the current search state
-        current_search = self.view.search.text()
-        current_radio_button = None
-        if self.view.rb_all.isChecked():
-            current_radio_button = "all"
-        elif self.view.rb_id.isChecked():
-            current_radio_button = "id"
-        elif self.view.rb_vendor.isChecked():
-            current_radio_button = "vendor"
-        elif self.view.rb_status.isChecked():
-            current_radio_button = "status"
-        
+        self._last_detail_purchase_id = None
         self._build_model()
-        
-        # Restore the search after reloading the data
-        if current_search:
-            # Set flag to prevent double search execution
-            self._programmatically_setting_search = True
-            self.view.search.setText(current_search)
-            # Restore the radio button state
-            if current_radio_button == "all":
-                self.view.rb_all.setChecked(True)
-            elif current_radio_button == "id":
-                self.view.rb_id.setChecked(True)
-            elif current_radio_button == "vendor":
-                self.view.rb_vendor.setChecked(True)
-            elif current_radio_button == "status":
-                self.view.rb_status.setChecked(True)
-            
-            # Re-apply the search filter
-            self._perform_search()
-            # Reset the flag
-            self._programmatically_setting_search = False
-        
+
         if self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
+            self._sync_details()
         else:
             self.view.details.set_data(None)
             self.view.items.set_rows([])
@@ -187,60 +157,18 @@ class PurchaseController(BaseModule):
 
     def _perform_search(self):
         """Actually perform the search after debounce delay."""
-        search_text = self.view.search.text()
-        
-        if not search_text.strip():
-            # If search is empty, show all rows
-            self.base.replace(self._original_rows)
-            return
-            
-        # Determine which column to search based on radio button selection
-        def safe_lower(value):
-            """Convert value to lowercase string, handling None values"""
-            if value is None:
-                return ""
-            return str(value).lower()
-
-        def row_value(row, key):
+        self._last_detail_purchase_id = None
+        self.base.replace(self._load_purchase_rows())
+        if self.proxy.rowCount() > 0:
+            self.view.tbl.selectRow(0)
+            self._sync_details()
+        else:
+            self.view.details.set_data(None)
+            self.view.items.set_rows([])
             try:
-                return row[key]
-            except (KeyError, IndexError):
-                return None
-        
-        if self.view.rb_all.isChecked():
-            # Search across all columns - filter in memory for better performance
-            filtered_rows = []
-            search_lower = search_text.lower()
-            for row in self._original_rows:
-                # Check each relevant field in the row
-                if (search_lower in safe_lower(row["purchase_id"]) or
-                    search_lower in safe_lower(row["date"]) or
-                    search_lower in safe_lower(row["vendor_name"]) or
-                    search_lower in safe_lower(row["total_amount"]) or
-                    search_lower in safe_lower(row_value(row, "returned_value")) or
-                    search_lower in safe_lower(row_value(row, "calculated_total_amount")) or
-                    search_lower in safe_lower(row["paid_amount"]) or
-                    search_lower in safe_lower(row_value(row, "remaining_due")) or
-                    search_lower in safe_lower(row["payment_status"])):
-                    filtered_rows.append(row)
-        elif self.view.rb_id.isChecked():
-            # Search only in PO ID column
-            search_lower = search_text.lower()
-            filtered_rows = [row for row in self._original_rows 
-                            if search_lower in safe_lower(row["purchase_id"])]
-        elif self.view.rb_vendor.isChecked():
-            # Search only in Vendor column
-            search_lower = search_text.lower()
-            filtered_rows = [row for row in self._original_rows 
-                            if search_lower in safe_lower(row["vendor_name"])]
-        elif self.view.rb_status.isChecked():
-            # Search only in Status column
-            search_lower = search_text.lower()
-            filtered_rows = [row for row in self._original_rows 
-                            if search_lower in safe_lower(row["payment_status"])]
-        
-        # Update the model with filtered results
-        self.base.replace(filtered_rows)
+                self.view.details.clear_payment_summary()
+            except Exception:
+                pass
 
     def _apply_filter(self, _=None):  # parameter can be text or checked state
         """Apply filter when radio button selection changes."""
@@ -261,35 +189,49 @@ class PurchaseController(BaseModule):
     def _sync_details(self, *args):
         row = self._selected_row_dict()
         if row:
-            r = dict(row)
-            # Returns summary
-            try:
-                rt = self.repo.purchase_return_totals(r["purchase_id"])
-                r["returned_qty"] = float(rt.get("qty", 0.0) or 0.0)
-                r["returned_value"] = float(rt.get("value", 0.0) or 0.0)
-            except Exception:
-                r["returned_qty"] = 0.0
-                r["returned_value"] = 0.0
-
-            # Financials including net total after returns and remaining due
-            try:
-                fin = self._fetch_purchase_financials(r["purchase_id"])
-                r["calculated_total_amount"] = fin["calculated_total_amount"]
-                r["advance_payment_applied"] = fin["advance_payment_applied"]
-                r["remaining_due"] = fin["remaining_due"]
-            except Exception:
-                r.setdefault("calculated_total_amount", float(r.get("total_amount", 0.0) or 0.0))
-                r.setdefault("advance_payment_applied", float(r.get("advance_payment_applied", 0.0) or 0.0))
-
-            self.view.details.set_data(r)
-            self.view.items.set_rows(self.repo.list_items(r["purchase_id"]))
+            purchase_id = row["purchase_id"]
+            if purchase_id == self._last_detail_purchase_id:
+                return
+            self._last_detail_purchase_id = purchase_id
+            snapshot = self.repo.get_purchase_detail_snapshot(purchase_id)
+            detail_row = snapshot.get("row") or dict(row)
+            self.view.details.set_data(detail_row)
+            self.view.items.set_rows(snapshot.get("items") or [])
+            payment_summary = snapshot.get("payment_summary")
+            if payment_summary:
+                try:
+                    self.view.details.set_payment_summary(payment_summary)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.view.details.clear_payment_summary()
+                except Exception:
+                    pass
         else:
+            self._last_detail_purchase_id = None
             self.view.details.set_data(None)
             self.view.items.set_rows([])
-        try:
-            self._refresh_payment_summary(row["purchase_id"] if row else None)
-        except Exception:
-            pass
+            try:
+                self.view.details.clear_payment_summary()
+            except Exception:
+                pass
+
+    def _current_search_field(self) -> str:
+        if self.view.rb_id.isChecked():
+            return "id"
+        if self.view.rb_vendor.isChecked():
+            return "vendor"
+        if self.view.rb_status.isChecked():
+            return "status"
+        return "all"
+
+    def _load_purchase_rows(self) -> list[dict]:
+        search_text = self.view.search.text().strip()
+        search_field = self._current_search_field()
+        if search_text:
+            return list(self.repo.search_purchases(search_text, search_field=search_field))
+        return list(self.repo.list_purchases())
 
     def _returnable_map(self, purchase_id: str) -> dict[int, float]:
         return self.repo.get_returnable_map(purchase_id)

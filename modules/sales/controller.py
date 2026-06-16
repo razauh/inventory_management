@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QWidget, QApplication, QMessageBox
-from PySide6.QtCore import Qt, QSortFilterProxyModel
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QTimer
 import sqlite3
 import re
 import uuid
@@ -114,6 +114,9 @@ class SalesController(BaseModule):
         self._search_text: str = ""    # current server-side search string
         self._status_filter: str = "all"
         self.active_dialog = None      # Track active dialog for non-modal operation
+        self._detail_summary_cache: dict[str, dict] = {}
+        self._last_detail_key: tuple[str, str] | None = None
+        self._table_initialized = False
 
         # Repos using the shared connection
         self.repo = SalesRepo(conn)
@@ -134,6 +137,23 @@ class SalesController(BaseModule):
 
         # Path for path-based repos (payments/advances)
         self._db_path = self._get_db_path_from_conn(conn)
+
+        self._search_timer = QTimer(self.view)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self._reload)
+
+        self.base = SalesTableModel([], doc_type=self._doc_type)
+        self.proxy = SalesStatusProxy(self.view)
+        self.proxy.setSourceModel(self.base)
+        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.proxy.setFilterKeyColumn(-1)
+        self.proxy.set_doc_type(self._doc_type)
+        self.proxy.set_status_filter(self._status_filter)
+        self.view.tbl.setModel(self.proxy)
+        sel = self.view.tbl.selectionModel()
+        if sel is not None:
+            sel.selectionChanged.connect(self._on_selection_changed)
 
         self._wire()
         self._reload()
@@ -232,7 +252,7 @@ class SalesController(BaseModule):
 
     def _on_search_changed(self, text: str):
         self._search_text = text or ""
-        self._reload()
+        self._search_timer.start()
 
     def _on_status_filter_changed(self, _idx: int):
         # Read the current data value; fall back to label if needed.
@@ -262,6 +282,7 @@ class SalesController(BaseModule):
         self.view.status_filter.blockSignals(False)
         self._search_text = ""
         self._status_filter = "all"
+        self._search_timer.stop()
         self._reload()
 
     def _update_filter_summary(self):
@@ -549,30 +570,49 @@ class SalesController(BaseModule):
                 norm.append(d)
             rows_to_use = norm
 
-        # Build model & wire to view
-        self.base = SalesTableModel(rows_to_use, doc_type=self._doc_type)
-        self.proxy = SalesStatusProxy(self.view)
-        self.proxy.setSourceModel(self.base)
-        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        # We filter via filterAcceptsRow, not by a specific text column
-        self.proxy.setFilterKeyColumn(-1)
+        self.base.set_doc_type(self._doc_type)
+        self.base.replace(rows_to_use)
         self.proxy.set_doc_type(self._doc_type)
         self.proxy.set_status_filter(self._status_filter)
-        self.view.tbl.setModel(self.proxy)
-        self.view.tbl.resizeColumnsToContents()
-
-        # Selection model is recreated with each setModel; connect handlers every time
-        sel = self.view.tbl.selectionModel()
-        sel.selectionChanged.connect(self._on_selection_changed)
+        if not self._table_initialized:
+            self.view.tbl.resizeColumnsToContents()
+            self._table_initialized = True
 
     def _reload(self):
+        self._search_timer.stop()
+        selected_sale_id = None
+        selected_row = self._selected_row()
+        if selected_row:
+            selected_sale_id = str(selected_row.get("sale_id") or "")
+        self._detail_summary_cache.clear()
+        self._last_detail_key = None
         self._build_model()
-        if self.proxy.rowCount() > 0:
+        selected = False
+        if selected_sale_id:
+            selected = self._select_row_by_sale_id(selected_sale_id)
+        if not selected and self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
-        # Ensure buttons are correctly enabled/disabled and details are fresh
-        self._update_action_states()
-        self._sync_details()
+            selected = True
+        if not selected:
+            self._update_action_states()
+            self._sync_details(force=True)
         self._update_filter_summary()
+
+    def _select_row_by_sale_id(self, sale_id: str) -> bool:
+        if not sale_id:
+            return False
+        for proxy_row in range(self.proxy.rowCount()):
+            src = self.proxy.mapToSource(self.proxy.index(proxy_row, 0))
+            try:
+                row_data = self.base.at(src.row())
+            except Exception:
+                continue
+            current_sale_id = str(row_data.get("sale_id") or "")
+            if current_sale_id != sale_id:
+                continue
+            self.view.tbl.selectRow(proxy_row)
+            return True
+        return False
 
     def _selected_row(self) -> dict | None:
         try:
@@ -603,55 +643,51 @@ class SalesController(BaseModule):
           calculated_total_amount, remaining_due
         remaining_due = calculated_total_amount - paid_amount - advance_payment_applied (clamped ≥ 0)
         """
-        row = self.conn.execute(
-            """
-            SELECT
-              s.total_amount,
-              srt.paid_amount,
-              srt.advance_payment_applied,
-              srt.canonical_total_amount AS calculated_total_amount,
-              srt.remaining_due
-            FROM sales s
-            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-            WHERE s.sale_id = ?;
-            """,
-            (sale_id,),
-        ).fetchone()
-        if not row:
-            return {
-                "total_amount": 0.0,
-                "paid_amount": 0.0,
-                "advance_payment_applied": 0.0,
-                "calculated_total_amount": 0.0,
-                "remaining_due": 0.0,
-            }
-        calc_total = float(row["calculated_total_amount"] or 0.0)
-        paid = float(row["paid_amount"] or 0.0)
-        adv = float(row["advance_payment_applied"] or 0.0)
-        remaining = float(row["remaining_due"] or 0.0)
+        summary = self._get_sale_detail_summary(sale_id)
+        calc_total = float(summary.get("calculated_total_amount") or 0.0)
+        paid = float(summary.get("paid_amount") or 0.0)
+        adv = float(summary.get("advance_payment_applied") or 0.0)
+        remaining = float(summary.get("remaining_due") or 0.0)
         return {
-            "total_amount": float(row["total_amount"] or 0.0),
+            "total_amount": float(summary.get("total_amount") or 0.0),
             "paid_amount": paid,
             "advance_payment_applied": adv,
             "calculated_total_amount": calc_total,
             "remaining_due": remaining,
         }
 
-    def _sync_details(self, *args):
+    def _get_sale_detail_summary(self, sale_id: str) -> dict:
+        cached = self._detail_summary_cache.get(str(sale_id))
+        if cached is not None:
+            return dict(cached)
+        summary = dict(self.repo.get_sale_detail_summary(str(sale_id)))
+        self._detail_summary_cache[str(sale_id)] = dict(summary)
+        return summary
+
+    def _clear_detail_views(self):
+        self.view.items.set_rows([])
+        try:
+            if hasattr(self.view, "payments"):
+                self.view.payments.set_rows([])
+        except (AttributeError, RuntimeError):
+            _log.exception("Could not clear sales payments view")
+        except Exception:
+            _log.exception("Unexpected error clearing sales payments view")
+        self.view.details.set_data(None)
+
+    def _sync_details(self, *args, force: bool = False):
         r = self._selected_row()
 
         # default: nothing selected → clear subviews
         if not r:
-            self.view.items.set_rows([])
-            try:
-                if hasattr(self.view, "payments"):
-                    self.view.payments.set_rows([])
-            except (AttributeError, RuntimeError):
-                _log.exception("Could not clear sales payments view")
-            except Exception:
-                _log.exception("Unexpected error clearing sales payments view")
-            self.view.details.set_data(None)
+            self._last_detail_key = None
+            self._clear_detail_views()
             return
+
+        detail_key = (self._doc_type, str(r.get("sale_id") or ""))
+        if not force and detail_key == self._last_detail_key:
+            return
+        self._last_detail_key = detail_key
 
         # Always load item rows for the selected sale/quotation
         items = self.repo.list_items(r["sale_id"])
@@ -661,12 +697,11 @@ class SalesController(BaseModule):
 
         # Returns summary for details panel (quotations naturally zero)
         try:
-            rt = self.repo.sale_return_totals(r["sale_id"])
-            position = self.repo.get_receivable_position(r["sale_id"])
-            r["returned_qty"] = float(rt.get("qty", 0.0))
-            r["returned_value"] = float(position["returned_value"])
-            r["gross_total_amount"] = float(position["gross_total_amount"])
-            r["net_total_amount"] = float(position["net_total_amount"])
+            summary = self._get_sale_detail_summary(str(r["sale_id"]))
+            r["returned_qty"] = float(summary.get("returned_qty", 0.0))
+            r["returned_value"] = float(summary.get("returned_value", 0.0))
+            r["gross_total_amount"] = float(summary.get("gross_total_amount", r.get("total_amount", 0.0)))
+            r["net_total_amount"] = float(summary.get("net_total_amount", r.get("total_amount", 0.0)))
         except (sqlite3.Error, KeyError, TypeError, ValueError):
             _log.exception("Could not load return totals for sale_id=%s", r.get("sale_id"))
             r["returned_qty"] = 0.0
@@ -688,7 +723,7 @@ class SalesController(BaseModule):
             # Payments list
             try:
                 from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
-                pay_repo = SalePaymentsRepo(self._db_path)
+                pay_repo = SalePaymentsRepo(self.conn)
                 payments_rows = list(pay_repo.list_by_sale(r["sale_id"])) or []
             except ImportError as exc:
                 _log.warning("Sale payments repository is unavailable: %s", exc)
@@ -703,7 +738,7 @@ class SalesController(BaseModule):
             # Customer credit balance
             try:
                 from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo  # type: ignore
-                adv_repo = CustomerAdvancesRepo(self._db_path)
+                adv_repo = CustomerAdvancesRepo(self.conn)
                 bal = adv_repo.get_balance(int(r.get("customer_id") or 0))
                 r["customer_credit_balance"] = float(bal or 0.0)
             except ImportError as exc:

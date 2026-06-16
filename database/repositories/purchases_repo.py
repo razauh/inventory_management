@@ -47,14 +47,16 @@ class PurchaseItem:
 
 
 class PurchasesRepo:
+    DEFAULT_LIST_LIMIT = 200
+
     def __init__(self, conn: sqlite3.Connection):
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
         self.conn = conn
 
     # ---------- Query ----------
-    def list_purchases(self) -> list[dict]:
-        sql = """
+    def _purchase_list_select_sql(self) -> str:
+        return """
         SELECT p.purchase_id, p.date, p.vendor_id, v.name AS vendor_name,
                CAST(p.total_amount AS REAL) AS total_amount,
                COALESCE(CAST(pr.returned_value AS REAL), 0.0) AS returned_value,
@@ -77,9 +79,73 @@ class PurchasesRepo:
             FROM purchase_return_valuations
             GROUP BY purchase_id
         ) pr ON pr.purchase_id = p.purchase_id
+        """
+
+    def list_purchases(self, limit: int = DEFAULT_LIST_LIMIT) -> list[dict]:
+        sql = """
+        """ + self._purchase_list_select_sql() + """
         ORDER BY DATE(p.date) DESC, p.purchase_id DESC
         """
-        return self.conn.execute(sql).fetchall()
+        params: list[object] = []
+        if limit and limit > 0:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return self.conn.execute(sql, params).fetchall()
+
+    def search_purchases(
+        self,
+        query: str = "",
+        search_field: str = "all",
+        limit: int = DEFAULT_LIST_LIMIT,
+    ) -> list[dict]:
+        query = (query or "").strip()
+        if not query:
+            return self.list_purchases(limit=limit)
+
+        like = f"%{query}%"
+        field = (search_field or "all").strip().lower()
+        where_sql = ""
+        params: list[object] = []
+
+        if field == "id":
+            where_sql = " WHERE p.purchase_id LIKE ? COLLATE NOCASE"
+            params.append(like)
+        elif field == "vendor":
+            where_sql = " WHERE v.name LIKE ? COLLATE NOCASE"
+            params.append(like)
+        elif field == "status":
+            where_sql = " WHERE p.payment_status LIKE ? COLLATE NOCASE"
+            params.append(like)
+        else:
+            where_sql = """
+            WHERE (
+                p.purchase_id LIKE ? COLLATE NOCASE
+                OR p.date LIKE ? COLLATE NOCASE
+                OR v.name LIKE ? COLLATE NOCASE
+                OR p.payment_status LIKE ? COLLATE NOCASE
+                OR CAST(p.total_amount AS TEXT) LIKE ? COLLATE NOCASE
+                OR CAST(COALESCE(pr.returned_value, 0.0) AS TEXT) LIKE ? COLLATE NOCASE
+                OR CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS TEXT) LIKE ? COLLATE NOCASE
+                OR CAST(COALESCE(p.paid_amount, 0.0) AS TEXT) LIKE ? COLLATE NOCASE
+                OR CAST(
+                    MAX(
+                        0.0,
+                        COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
+                        - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                        - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+                    ) AS TEXT
+                ) LIKE ? COLLATE NOCASE
+            )
+            """
+            params.extend([like] * 9)
+
+        sql = self._purchase_list_select_sql() + where_sql + """
+        ORDER BY DATE(p.date) DESC, p.purchase_id DESC
+        """
+        if limit and limit > 0:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return self.conn.execute(sql, params).fetchall()
 
     def get_header(self, pid: str) -> dict | None:
         return self.conn.execute("SELECT * FROM purchases WHERE purchase_id=?", (pid,)).fetchone()
@@ -127,6 +193,76 @@ class PurchasesRepo:
         ORDER BY pi.item_id
         """
         return self.conn.execute(sql, (pid,)).fetchall()
+
+    def get_purchase_detail_snapshot(self, purchase_id: str) -> dict:
+        header = self.conn.execute(
+            """
+            SELECT
+              p.purchase_id,
+              p.date,
+              p.vendor_id,
+              v.name AS vendor_name,
+              CAST(p.total_amount AS REAL) AS total_amount,
+              CAST(p.order_discount AS REAL) AS order_discount,
+              p.payment_status,
+              CAST(p.paid_amount AS REAL) AS paid_amount,
+              CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
+              p.notes,
+              COALESCE(CAST(pr.qty_returned AS REAL), 0.0) AS returned_qty,
+              COALESCE(CAST(pr.value_returned AS REAL), 0.0) AS returned_value,
+              COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS calculated_total_amount,
+              MAX(
+                  0.0,
+                  COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
+                  - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                  - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+              ) AS remaining_due,
+              lp.method AS latest_payment_method,
+              COALESCE(CAST(lp.amount AS REAL), 0.0) AS latest_payment_amount,
+              lp.clearing_state AS latest_payment_status,
+              COALESCE((
+                SELECT SUM(CAST(amount AS REAL))
+                FROM vendor_advances
+                WHERE source_type='deposit'
+                  AND source_id=?
+                  AND notes LIKE 'Excess payment converted to vendor credit%'
+              ), 0.0) AS overpayment_credited
+            FROM purchases p
+            JOIN vendors v ON v.vendor_id = p.vendor_id
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+            LEFT JOIN (
+                SELECT purchase_id,
+                       SUM(CAST(qty_returned AS REAL)) AS qty_returned,
+                       SUM(CAST(return_value AS REAL)) AS value_returned
+                FROM purchase_return_valuations
+                GROUP BY purchase_id
+            ) pr ON pr.purchase_id = p.purchase_id
+            LEFT JOIN purchase_payments lp
+              ON lp.payment_id = (
+                  SELECT payment_id
+                  FROM purchase_payments
+                  WHERE purchase_id = p.purchase_id
+                  ORDER BY date DESC, payment_id DESC
+                  LIMIT 1
+              )
+            WHERE p.purchase_id = ?
+            """,
+            (purchase_id, purchase_id),
+        ).fetchone()
+        if not header:
+            return {}
+
+        return {
+            "row": dict(header),
+            "items": [dict(row) for row in self.list_items(purchase_id)],
+            "payment_summary": {
+                "method": header["latest_payment_method"],
+                "amount": float(header["latest_payment_amount"] or 0.0),
+                "status": header["latest_payment_status"] or "posted",
+                "overpayment": float(header["overpayment_credited"] or 0.0),
+                "counterparty_label": "Vendor",
+            } if header["latest_payment_method"] or float(header["latest_payment_amount"] or 0.0) > 0 else None,
+        }
 
     def get_returnable_for_items(self, purchase_id: str) -> list[dict]:
         """
