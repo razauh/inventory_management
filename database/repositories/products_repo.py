@@ -89,6 +89,88 @@ class ProductsRepo:
         ).fetchone()
         return int(row["c"] if row else 0)
 
+    def product_summary(self) -> dict[str, int]:
+        row = self.conn.execute(
+            """
+            WITH base_uoms AS (
+              SELECT product_id
+              FROM product_uoms
+              WHERE is_base = 1
+              GROUP BY product_id
+            ),
+            latest_stock AS (
+              SELECT svh.product_id, MAX(svh.valuation_id) AS last_vid
+              FROM stock_valuation_history svh
+              GROUP BY svh.product_id
+            ),
+            stock AS (
+              SELECT
+                ls.product_id,
+                CAST(svh.quantity AS REAL) AS on_hand_base
+              FROM latest_stock ls
+              JOIN stock_valuation_history svh ON svh.valuation_id = ls.last_vid
+            ),
+            latest_purchase AS (
+              SELECT
+                pi.product_id,
+                CAST(pi.sale_price AS REAL) /
+                  COALESCE(NULLIF(CAST(pu.factor_to_base AS REAL), 0.0), 1.0) AS sale_price_base_default,
+                ROW_NUMBER() OVER (
+                  PARTITION BY pi.product_id
+                  ORDER BY p.date DESC, pi.item_id DESC
+                ) AS rn
+              FROM purchase_items pi
+              JOIN purchases p ON p.purchase_id = pi.purchase_id
+              LEFT JOIN product_uoms pu
+                ON pu.product_id = pi.product_id
+               AND pu.uom_id = pi.uom_id
+            ),
+            latest_manual_sale AS (
+              SELECT
+                psp.product_id,
+                CAST(psp.price AS REAL) AS sale_price_base_override,
+                ROW_NUMBER() OVER (
+                  PARTITION BY psp.product_id
+                  ORDER BY (psp.date IS NULL), psp.date DESC, psp.price_id DESC
+                ) AS rn
+              FROM product_sale_prices psp
+            )
+            SELECT
+              COUNT(*) AS total,
+              SUM(
+                CASE
+                  WHEN CAST(p.min_stock_level AS REAL) > 0
+                   AND COALESCE(s.on_hand_base, 0.0) < CAST(p.min_stock_level AS REAL)
+                  THEN 1 ELSE 0
+                END
+              ) AS low_stock,
+              SUM(
+                CASE
+                  WHEN COALESCE(ms.sale_price_base_override, lp.sale_price_base_default, 0.0) > 0
+                  THEN 1 ELSE 0
+                END
+              ) AS priced,
+              SUM(CASE WHEN bu.product_id IS NOT NULL THEN 1 ELSE 0 END) AS with_uoms
+            FROM products p
+            LEFT JOIN base_uoms bu ON bu.product_id = p.product_id
+            LEFT JOIN stock s ON s.product_id = p.product_id
+            LEFT JOIN latest_purchase lp
+              ON lp.product_id = p.product_id
+             AND lp.rn = 1
+            LEFT JOIN latest_manual_sale ms
+              ON ms.product_id = p.product_id
+             AND ms.rn = 1
+            """
+        ).fetchone()
+        if not row:
+            return {"total": 0, "low_stock": 0, "priced": 0, "with_uoms": 0}
+        return {
+            "total": int(row["total"] or 0),
+            "low_stock": int(row["low_stock"] or 0),
+            "priced": int(row["priced"] or 0),
+            "with_uoms": int(row["with_uoms"] or 0),
+        }
+
     def list_products(
         self,
         search: str | None = None,

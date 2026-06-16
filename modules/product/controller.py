@@ -247,6 +247,7 @@ class ProductController(BaseModule):
         self._page_offset = 0
         self._total_products = 0
         self._metrics_token = 0
+        self._summary_cache: ProductSummary | None = None
         self.base_model = ProductsTableModel([])
         self.proxy = QSortFilterProxyModel(self.view)
         self.proxy.setSourceModel(self.base_model)
@@ -263,7 +264,7 @@ class ProductController(BaseModule):
         except Exception:
             pass
         self._connect_signals()
-        self._reload()
+        self._reload(force_summary=True)
 
     def get_widget(self) -> QWidget:
         return self.view
@@ -282,7 +283,7 @@ class ProductController(BaseModule):
         self.view.btn_next_page.clicked.connect(self._next_page)
         self._wired = True
 
-    def _build_model(self, selected_pid: int | None = None):
+    def _build_model(self, selected_pid: int | None = None, *, force_summary: bool = False):
         search = self.view.search.text()
         self._total_products = self.repo.count_products(search)
         if self._page_offset >= self._total_products:
@@ -296,12 +297,12 @@ class ProductController(BaseModule):
         self._resize_table_columns(len(rows))
         self._sync_page_controls()
         self._restore_selection(selected_pid)
-        self._update_summary(rows, total_count=self._total_products)
+        self._refresh_summary(force=force_summary)
         self._update_selected_details()
         self._schedule_page_metrics()
 
-    def _reload(self):
-        self._build_model(self._selected_id())
+    def _reload(self, *, force_summary: bool = False):
+        self._build_model(self._selected_id(), force_summary=force_summary)
 
     def _apply_filter(self, text: str):
         self._search_timer.start()
@@ -345,8 +346,6 @@ class ProductController(BaseModule):
         if token != self._metrics_token:
             return
         self.base_model.apply_metrics(metrics)
-        rows = self.base_model.rows()
-        self._update_summary(rows, total_count=self._total_products)
         self._update_selected_details()
 
     def _resolve_uom_ref(self, ref: dict) -> int:
@@ -384,28 +383,16 @@ class ProductController(BaseModule):
         self.view.table.clearSelection()
         self._set_action_state(False)
 
-    def _update_summary(self, rows, total_count: int | None = None):
-        low_stock = 0
-        priced = 0
-        with_uoms = 0
-        for p in rows:
-            min_stock = float(getattr(p, "min_stock_level", 0.0) or 0.0)
-            on_hand = float(getattr(p, "on_hand_base", 0.0) or 0.0)
-            if min_stock > 0 and on_hand < min_stock:
-                low_stock += 1
-            sale_price = float(getattr(p, "sale_price_base", 0.0) or 0.0)
-            if sale_price > 0:
-                priced += 1
-            if getattr(p, "base_uom_name", None):
-                with_uoms += 1
-        self.view.summary.set_summary(
-            ProductSummary(
-                total=len(rows) if total_count is None else int(total_count),
-                low_stock=low_stock,
-                priced=priced,
-                with_uoms=with_uoms,
+    def _refresh_summary(self, *, force: bool = False):
+        if force or self._summary_cache is None:
+            values = self.repo.product_summary()
+            self._summary_cache = ProductSummary(
+                total=int(values.get("total", 0) or 0),
+                low_stock=int(values.get("low_stock", 0) or 0),
+                priced=int(values.get("priced", 0) or 0),
+                with_uoms=int(values.get("with_uoms", 0) or 0),
             )
-        )
+        self.view.summary.set_summary(self._summary_cache)
 
     def _update_selected_details(self, *_):
         product = self._selected_product()
@@ -509,7 +496,7 @@ class ProductController(BaseModule):
             error(self.view, "Not saved", str(e))
             return
         info(self.view, "Saved", f"Product #{pid} created.")
-        self._reload()
+        self._reload(force_summary=True)
 
     def _import_products(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -561,7 +548,7 @@ class ProductController(BaseModule):
                 f"Skipped/failed rows: {result.failed_count}"
             ),
         )
-        self._reload()
+        self._reload(force_summary=True)
 
     def _edit(self):
         pid = self._selected_id()
@@ -608,7 +595,7 @@ class ProductController(BaseModule):
             error(self.view, "Not saved", str(e))
             return
         info(self.view, "Saved", f"Product #{pid} updated.")
-        self._reload()
+        self._reload(force_summary=True)
 
     def _delete(self):
         """
@@ -638,7 +625,7 @@ class ProductController(BaseModule):
             error(self.view, "Blocked", str(de))
             return
         info(self.view, "Deleted", f"Product #{pid} deleted.")
-        self._reload()
+        self._reload(force_summary=True)
 
     def _set_price(self):
         """
@@ -712,4 +699,4 @@ class ProductController(BaseModule):
 
         info(self.view, "Saved", f"Sale price for product #{pid} updated to {price:.2f}.")
         # Refresh product list so any price-dependent columns stay in sync
-        self._reload()
+        self._reload(force_summary=True)

@@ -93,47 +93,62 @@ def test_list_products_searches_uoms_and_paginates(conn):
     assert [p.product_id for p in page] == [second_id]
 
 
-def test_update_summary_uses_cached_row_metrics_only():
-    captured: list[ProductSummary] = []
+def test_product_summary_uses_aggregate_counts(conn):
+    repo = ProductsRepo(conn)
+    before = repo.product_summary()
+    product_id = repo.create("Aggregate Summary Product", None, "Tools", 8)
+    base_uom_id = conn.execute(
+        "INSERT INTO uoms (unit_name) VALUES ('Aggregate Summary Unit')"
+    ).lastrowid
+    repo.set_base_uom(product_id, int(base_uom_id))
+    conn.execute(
+        """
+        INSERT INTO product_sale_prices (product_id, price, date)
+        VALUES (?, 17, '2026-06-15')
+        """,
+        (product_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO stock_valuation_history (
+            product_id, valuation_date, quantity, unit_value, total_value, valuation_method
+        ) VALUES (?, '2026-06-15', 7, 10, 70, 'moving_average')
+        """,
+        (product_id,),
+    )
 
-    def _unexpected(*_args, **_kwargs):
-        raise AssertionError("summary should not query repo")
+    after = repo.product_summary()
+
+    assert after["total"] == before["total"] + 1
+    assert after["low_stock"] == before["low_stock"] + 1
+    assert after["priced"] == before["priced"] + 1
+    assert after["with_uoms"] == before["with_uoms"] + 1
+
+
+def test_refresh_summary_uses_cache_until_forced():
+    captured: list[ProductSummary] = []
+    calls: list[bool] = []
 
     controller = ProductController.__new__(ProductController)
+    controller._summary_cache = None
     controller.repo = SimpleNamespace(
-        on_hand_base=_unexpected,
-        latest_prices_base=_unexpected,
+        product_summary=lambda: calls.append(True)
+        or {"total": 4, "low_stock": 1, "priced": 2, "with_uoms": 3}
     )
     controller.view = SimpleNamespace(
         summary=SimpleNamespace(set_summary=lambda summary: captured.append(summary))
     )
 
-    controller._update_summary(
-        [
-            Product(
-                product_id=1,
-                name="A",
-                description=None,
-                category=None,
-                min_stock_level=5,
-                base_uom_name="Piece",
-                on_hand_base=2,
-                sale_price_base=20,
-            ),
-            Product(
-                product_id=2,
-                name="B",
-                description=None,
-                category=None,
-                min_stock_level=1,
-                base_uom_name=None,
-                on_hand_base=3,
-                sale_price_base=0,
-            ),
-        ]
-    )
+    controller._refresh_summary()
+    controller._refresh_summary()
+    controller._refresh_summary(force=True)
 
-    assert captured == [ProductSummary(total=2, low_stock=1, priced=1, with_uoms=1)]
+    assert calls == [True, True]
+    assert captured == [
+        ProductSummary(total=4, low_stock=1, priced=2, with_uoms=3),
+        ProductSummary(total=4, low_stock=1, priced=2, with_uoms=3),
+        ProductSummary(total=4, low_stock=1, priced=2, with_uoms=3),
+    ]
 
 
 def test_update_selected_details_uses_cached_selected_product_only():
@@ -219,7 +234,7 @@ def test_build_model_reuses_model_and_fetches_one_page():
     controller.proxy = object()
     controller._resize_table_columns = lambda row_count: None
     controller._restore_selection = lambda selected_pid: None
-    controller._update_summary = lambda rows, total_count=None: None
+    controller._refresh_summary = lambda force=False: None
     controller._update_selected_details = lambda: None
     controller._schedule_page_metrics = lambda: None
 
