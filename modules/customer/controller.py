@@ -222,8 +222,12 @@ class CustomerController(BaseModule):
         return path if name == "main" and path else None
 
     def _details_enrichment(self, customer_id: int) -> Dict[str, Any]:
+        if not hasattr(self, "_detail_cache"):
+            self._detail_cache = {}
         snapshot = self._detail_cache.get(int(customer_id))
         if snapshot is None:
+            if not hasattr(self, "repo"):
+                self.repo = CustomersRepo(self.conn)
             snapshot = self.repo.get_detail_snapshot(customer_id) or {}
             if snapshot:
                 self._detail_cache[int(customer_id)] = dict(snapshot)
@@ -285,6 +289,8 @@ class CustomerController(BaseModule):
         self._set_actions_enabled(True)
 
     def _clear_detail_cache(self) -> None:
+        if not hasattr(self, "_detail_cache"):
+            self._detail_cache = {}
         self._detail_cache.clear()
         self._last_detail_customer_id = None
 

@@ -179,6 +179,24 @@ class StockValuationWidget(QWidget):
                 self._name_to_id.setdefault(item.name.lower(), []).append(item.product_id)
                 labels.append(item.label)
             self._product_completion_model.setStringList(labels)
+            dup_labels = [
+                f"{name} (ID: {pid})"
+                for name, ids in self._name_to_id.items()
+                if len(ids) > 1
+                for pid in ids
+            ]
+            if dup_labels:
+                try:
+                    ui.info(
+                        self,
+                        "Duplicate product names",
+                        "Multiple products share the following names:\n"
+                        + ", ".join(sorted(dup_labels)),
+                    )
+                except Exception as e:
+                    logging.getLogger(__name__).warning(
+                        "Failed to show duplicate product names info dialog: %s", e, exc_info=True
+                    )
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:

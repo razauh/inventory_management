@@ -807,10 +807,30 @@ class PurchaseReportsTab(QWidget):
         self._loaded_rows.clear()
         self._has_next_page.clear()
         self._page_index.clear()
+        if self._uses_in_memory_db():
+            filters = self._filters()
+            with self.repo.read_snapshot():
+                for key in self._TAB_KEYS:
+                    self._has_next_page[key] = False
+                    self._loaded_rows[key] = self._load_key(key, filters)
+            for key in self._TAB_KEYS:
+                self._apply_page(key)
+            self._sync_page_label()
+            return
         key = self._current_table_key()
         if key:
             self._ensure_loaded(key, force=True)
         self._sync_page_label()
+
+    def _uses_in_memory_db(self) -> bool:
+        try:
+            row = self.conn.execute("PRAGMA database_list").fetchone()
+            if not row:
+                return False
+            path = row["file"] if hasattr(row, "keys") else row[2]
+            return not str(path or "").strip()
+        except Exception:
+            return False
 
     # ------------------------------ Export ------------------------------
     def _active_table(self) -> Optional[_BaseTableView]:

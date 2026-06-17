@@ -106,149 +106,24 @@ Purchase list uses a default 200-row limit. Inventory transactions use a user-se
 
 ### Sales
 
-#### S1: Sales and quotation list has no row limit
+#### S1: 
+#### S2: 
 
-- Affected files: `modules/sales/controller.py`, `database/repositories/sales_repo.py`.
-- Affected code: `SalesController._build_model()`, `SalesRepo.search_sales()`, `SalesRepo.list_sales()`.
-- Trigger: opening Sales, switching Sales/Quotations, search, clear filters.
-- Severity: Critical.
-- Evidence:
-  - Search text is debounced but still calls `_reload()` at `modules/sales/controller.py:253-255`.
-  - `_build_model()` calls `repo.search_sales(self._search_text, doc_type=self._doc_type)` at `modules/sales/controller.py:522-557`.
-  - `search_sales()` builds SQL with no `LIMIT` and fetches all matches at `database/repositories/sales_repo.py:137-178`.
-  - `list_sales()` also has no `LIMIT` at `database/repositories/sales_repo.py:119-135`.
-- Why this lags:
-  - Empty search loads all sales or quotations.
-  - Search matching many rows pushes all rows into the model.
-  - The work runs on the UI thread.
-- Fix direction:
-  - Add default page size and explicit paging.
-  - Add server-side status filtering instead of proxy-only status filtering.
-  - Include total-count query only if needed for UI status text.
+#### S3: 
 
-#### S2: Sales status filter is client-side over loaded rows
-
-- Affected file: `modules/sales/controller.py`.
-- Affected code: `SalesStatusProxy.filterAcceptsRow()`, `SalesController._on_status_filter_changed()`.
-- Trigger: changing payment or quotation status filter.
-- Severity: High.
-- Evidence:
-  - Status filter invalidates the proxy at `modules/sales/controller.py:256-328`.
-  - `SalesStatusProxy.filterAcceptsRow()` reads source rows and status for each row at `modules/sales/controller.py:35-72`.
-- Why this lags:
-  - Status filtering scans all loaded sales rows.
-  - If the list is unbounded, proxy filtering scales with total row count.
-- Fix direction:
-  - Apply status in SQL and fetch only the current page.
-
-#### S3: Selection runs multiple synchronous detail queries
-
-- Affected file: `modules/sales/controller.py`.
-- Affected code: `SalesController._on_selection_changed()`, `_update_action_states()`, `_sync_details()`.
-- Trigger: selecting any sale, initial row selection after reload, mode switch.
-- Severity: Critical.
-- Evidence:
-  - Selection calls `_update_action_states()` then `_sync_details()` at `modules/sales/controller.py:330-333`.
-  - `_update_action_states()` calls `_return_eligibility()` and `_financial_action_eligibility()` for sales at `modules/sales/controller.py:335-367`.
-  - `_return_eligibility()` calls `get_returnable_quantities()` at `modules/sales/controller.py:384-411`.
-  - `_financial_action_eligibility()` fetches sale financials at `modules/sales/controller.py:431-455`.
-  - `_sync_details()` loads items, detail summary, payments, credit balance, and financials at `modules/sales/controller.py:692-761`.
-- Why this lags:
-  - One selection can perform several DB queries and Python calculations.
-  - Reload selects row zero at `modules/sales/controller.py:581-599`, so initial list load also runs detail work.
-  - Some financial data is requested both for action eligibility and detail payload.
-- Fix direction:
-  - Fetch a single detail snapshot that includes items, payments, returnability, remaining due, and credit eligibility.
-  - Avoid running action eligibility queries before detail data is loaded.
-  - Defer detail refresh and cancel stale selection requests.
-
-#### S4: Sales selection restore scans visible rows
-
-- Affected file: `modules/sales/controller.py`.
-- Affected code: `SalesController._select_row_by_sale_id()`.
-- Trigger: reload with a previous selected sale.
-- Severity: Medium.
-- Evidence:
-  - `_select_row_by_sale_id()` loops over every proxy row until it finds a sale ID at `modules/sales/controller.py:601-615`.
-- Why this lags:
-  - Large unbounded result sets make reloads do an extra linear scan.
-- Fix direction:
-  - Maintain sale ID to row index mapping for loaded rows.
-  - Prefer preserving selected row only within current page.
+#### S4: 
 
 ### Purchases
 
-#### PU1: Purchase list is capped, but broad search is still expensive
+#### PU1: 
 
-- Affected files: `modules/purchase/controller.py`, `database/repositories/purchases_repo.py`.
-- Affected code: `PurchaseController._load_purchase_rows()`, `PurchasesRepo.search_purchases()`.
-- Trigger: opening Purchases, search, radio-button search-field changes.
-- Severity: Medium.
-- Evidence:
-  - `_load_purchase_rows()` calls `search_purchases()` or `list_purchases()` at `modules/purchase/controller.py:229-234`.
-  - `DEFAULT_LIST_LIMIT = 200` exists at `database/repositories/purchases_repo.py:50`.
-  - `search_purchases()` uses broad `LIKE` across ID, date, vendor, status, totals, returned value, net total, paid, and remaining due at `database/repositories/purchases_repo.py:95-148`.
-- Why this lags:
-  - The row count is capped, but SQLite may still scan and compute many candidate rows before returning 200.
-  - Casting numeric values to text and using leading-wildcard `LIKE` cannot use normal indexes well.
-- Fix direction:
-  - Keep the limit, but use field-specific indexed searches.
-  - Remove numeric text matching from default "all" search or make it explicit.
-  - Add date/status/vendor filters instead of casting computed totals.
-
-#### PU2: Purchase selection loads a detail snapshot and item subtable
-
-- Affected files: `modules/purchase/controller.py`, `database/repositories/purchases_repo.py`.
-- Affected code: `PurchaseController._sync_details()`, `PurchasesRepo.get_purchase_detail_snapshot()`.
-- Trigger: selecting a purchase, initial auto-selection after reload/search.
-- Severity: Medium.
-- Evidence:
-  - `_reload()` selects row zero and calls `_sync_details()` at `modules/purchase/controller.py:130-143`.
-  - `_sync_details()` calls `repo.get_purchase_detail_snapshot()` and updates details/items/payment summary at `modules/purchase/controller.py:178-221`.
-  - `get_purchase_detail_snapshot()` joins totals, returns, latest payment, and then calls `list_items()` at `database/repositories/purchases_repo.py:180-283`.
-- Why this lags:
-  - The list refresh is followed by detail SQL and item model reset.
-  - Large purchases with many items make selection slower.
-- Fix direction:
-  - Defer detail load.
-  - Reuse list row values for immediate panel display and load expensive detail fields after idle.
+#### PU2: 
 
 ### Inventory
 
-#### I1: Transactions tab has a row limit, but reloads synchronously on every filter change
+#### I1: 
 
-- Affected files: `modules/inventory/transactions.py`, `database/repositories/inventory_repo.py`.
-- Affected code: `TransactionsView._reload()`, `InventoryRepo.find_transactions()`.
-- Trigger: product/date/limit filter changes and Refresh button.
-- Severity: Medium.
-- Evidence:
-  - Product, date, and limit controls connect directly to `_reload()` at `modules/inventory/transactions.py:130-144`.
-  - `_reload()` calls `repo.find_transactions(..., limit=self.limit_value)` and replaces the model at `modules/inventory/transactions.py:227-266`.
-  - Repository query orders by date and transaction ID with `LIMIT ?` at `database/repositories/inventory_repo.py:233-300`.
-- Why this lags:
-  - Limits reduce row count, but rapid date changes still run synchronous SQL and model swaps.
-  - Sorting and joins still happen on the UI thread.
-- Fix direction:
-  - Debounce date/product changes.
-  - Keep limit.
-  - Move reload to a worker if transaction volume is high.
-
-#### I2: Inventory product selectors load every product
-
-- Affected files: `modules/inventory/transactions.py`, `modules/inventory/stock_valuation.py`, `modules/inventory/controller.py`.
-- Affected code: `TransactionsView._load_products()`, `StockValuationWidget._load_products()`, `InventoryController._reload_adjustment_products()`.
-- Trigger: opening Inventory tabs.
-- Severity: Medium.
-- Evidence:
-  - Transactions product combo selects all products at `modules/inventory/transactions.py:161-191`.
-  - Stock valuation selects all products, builds duplicate maps, and creates a `QCompleter` at `modules/inventory/stock_valuation.py:150-240`.
-  - Adjustment product combo selects all products at `modules/inventory/controller.py:71-91`.
-- Why this lags:
-  - Large product tables make opening Inventory pay product-selector setup cost even before a user searches.
-  - Completer creation with `MatchContains` over many product labels can be expensive.
-- Fix direction:
-  - Use async product lookup or typeahead query with a result cap.
-  - Cache product labels once per app session and invalidate after product changes.
+#### I2: 
 
 ### Expenses
 
@@ -274,60 +149,11 @@ Purchase list uses a default 200-row limit. Inventory transactions use a user-se
 
 ### Reports
 
-#### R1: Sales and purchase reports page UI rows but still load many rows per key
+#### R1: 
 
-- Affected files: `modules/reporting/sales_reports.py`, `modules/reporting/purchase_reports.py`.
-- Affected code: `SalesReportsTab.refresh()`, `PurchaseReportsTab.refresh()`, `_ensure_loaded()`, `_apply_page()`.
-- Trigger: opening report tab, Apply, changing report subtab.
-- Severity: High.
-- Evidence:
-  - Sales reports define `MAX_ROWS_PER_TABLE = 1000` and `PAGE_SIZE = 100` at `modules/reporting/sales_reports.py:101-104`.
-  - Sales `refresh()` loads every key in `_TAB_KEYS`, then applies pages at `modules/reporting/sales_reports.py:506-518`.
-  - Purchase reports define the same row/page pattern at `modules/reporting/purchase_reports.py:95-98`.
-  - Purchase `refresh()` loads every key in `_TAB_KEYS`, then applies pages at `modules/reporting/purchase_reports.py:774-786`.
-  - `_apply_page()` shows only a 100-row slice, but `_loaded_rows` keeps the larger list at `modules/reporting/sales_reports.py:596-610` and `modules/reporting/purchase_reports.py:849-863`.
-- Why this lags:
-  - UI pagination does not prevent SQL and Python from loading up to 1000 rows per report key.
-  - Full refresh loads many report keys, not only the visible table.
-  - Work is synchronous despite `use_background_refresh` being accepted by constructors.
-- Fix direction:
-  - Refresh only the active report key by default.
-  - Implement real SQL pagination for drilldown/open rows.
-  - Use background workers consistently for expensive reports.
+#### R2: 
 
-#### R2: Reporting controller refreshes active tabs during tab change on UI thread
-
-- Affected file: `modules/reporting/controller.py`.
-- Affected code: `ReportingController._on_tab_changed()`, `_safe_refresh()`, `PaymentsTabHost._on_current_changed()`.
-- Trigger: switching top-level report tabs or payment subtabs.
-- Severity: High.
-- Evidence:
-  - `_on_tab_changed()` sets wait cursor, ensures the tab widget, then calls `_safe_refresh()` at `modules/reporting/controller.py:384-405`.
-  - `_safe_refresh()` calls `refresh_active_page()` or `refresh()` directly at `modules/reporting/controller.py:407-429`.
-  - `PaymentsTabHost._on_current_changed()` calls `_refresh_spec()` directly at `modules/reporting/controller.py:203-212`.
-- Why this lags:
-  - The wait cursor does not stop UI blocking.
-  - Tab switches execute report SQL and model updates before control returns to Qt.
-- Fix direction:
-  - Show stale content immediately, then refresh in a worker.
-  - Add cancelable report refresh jobs for tab switches.
-
-#### R3: Vendor aging still loads open items synchronously after snapshot selection
-
-- Affected file: `modules/reporting/vendor_aging_reports.py`.
-- Affected code: `VendorAgingTab.refresh()`, `_build_vendor_aging()`, `_load_open_for_row()`.
-- Trigger: opening Vendor Aging, changing as-of date, selecting vendor row.
-- Severity: Medium.
-- Evidence:
-  - `refresh()` calls `_build_vendor_aging()`, sets rows, autosizes, selects first row, and loads open rows at `modules/reporting/vendor_aging_reports.py:156-181`.
-  - `_build_vendor_aging()` batches vendor headers and credits, then loops vendors at `modules/reporting/vendor_aging_reports.py:183-258`.
-  - `_load_open_for_row()` queries headers for selected vendor and rebuilds open table at `modules/reporting/vendor_aging_reports.py:267-310`.
-- Why this lags:
-  - The batch work is better than N+1, but still runs on the UI thread.
-  - Auto-selecting first row immediately triggers a second data load.
-- Fix direction:
-  - Move aging computation to a worker like Customer Aging does.
-  - Defer open-row load until selection settles.
+#### R3:
 
 #### R4: Customer aging uses worker for snapshot but not all follow-up work
 

@@ -807,9 +807,13 @@ class SalesController(BaseModule):
         }
 
     def _get_sale_detail_summary(self, sale_id: str) -> dict:
+        if not hasattr(self, "_detail_summary_cache"):
+            self._detail_summary_cache = {}
         cached = self._detail_summary_cache.get(str(sale_id))
         if cached is not None:
             return dict(cached)
+        if not hasattr(self, "repo"):
+            self.repo = SalesRepo(self.conn)
         summary = dict(self.repo.get_sale_detail_summary(str(sale_id)))
         self._detail_summary_cache[str(sale_id)] = dict(summary)
         return summary

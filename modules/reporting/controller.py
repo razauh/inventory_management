@@ -126,6 +126,7 @@ class PaymentsTabHost(QWidget):
             self.tabs.addTab(host, spec["title"])
         self.tabs.currentChanged.connect(self._on_current_changed)
         root.addWidget(self.tabs)
+        self._ensure_family(str(self._flat_tabs[self.tabs.currentIndex()]["family"]))
 
     def _build_source(self, family: str) -> QWidget:
         if family == "summary":
@@ -218,6 +219,7 @@ class PaymentsTabHost(QWidget):
     def _on_current_changed(self, index: int) -> None:
         if index < 0 or index >= len(self._flat_tabs):
             return
+        self._ensure_family(str(self._flat_tabs[index]["family"]))
         self._schedule_refresh(index)
 
     def _schedule_refresh(self, index: int) -> None:
@@ -279,6 +281,7 @@ class ReportingController(BaseModule):
 
         self._register_tabs()
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._ensure_tab(self.tabs.currentIndex())
         self._schedule_tab_refresh(self.tabs.currentIndex())
 
     def _register_tabs(self) -> None:
@@ -398,6 +401,7 @@ class ReportingController(BaseModule):
 
     @Slot(int)
     def _on_tab_changed(self, index: int) -> None:
+        self._ensure_tab(index)
         self._schedule_tab_refresh(index)
 
     def _schedule_tab_refresh(self, index: int) -> None:

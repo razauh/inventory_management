@@ -199,6 +199,8 @@ class VendorController(BaseModule):
     def _vendor_row_for_id(self, vendor_id: int | None) -> dict | None:
         if vendor_id is None:
             return None
+        if not hasattr(self, "base_model"):
+            return None
         row = self.base_model.row_for_id(vendor_id)
         return self.base_model.row_at(row) if row is not None else None
     def _current_vendor_row(self) -> dict | None:
@@ -675,6 +677,8 @@ class VendorController(BaseModule):
     def _clear_accounts_cache(self, vendor_id: int | None = None) -> None:
         if not hasattr(self, "_accounts_cache"):
             self._accounts_cache = {}
+        if not hasattr(self, "_accounts_loaded_vendor_id"):
+            self._accounts_loaded_vendor_id = None
         if vendor_id is None:
             self._accounts_cache.clear()
             self._accounts_loaded_vendor_id = None
