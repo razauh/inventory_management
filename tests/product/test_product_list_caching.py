@@ -93,6 +93,26 @@ def test_list_products_searches_uoms_and_paginates(conn):
     assert [p.product_id for p in page] == [second_id]
 
 
+def test_list_products_search_matches_case_insensitive_substrings(conn):
+    repo = ProductsRepo(conn)
+    product_id = repo.create(
+        "ielts advantage with answers",
+        "Practice workbook",
+        "Exam Prep",
+        0,
+    )
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Study Pack')").lastrowid
+    repo.set_base_uom(product_id, int(uom_id))
+
+    assert [p.product_id for p in repo.list_products(search="ADVANTAGE")] == [product_id]
+    assert [p.product_id for p in repo.list_products(search="answer")] == [product_id]
+    assert [p.product_id for p in repo.list_products(search="with")] == [product_id]
+    assert [p.product_id for p in repo.list_products(search="work")] == [product_id]
+    assert [p.product_id for p in repo.list_products(search="prep")] == [product_id]
+    assert [p.product_id for p in repo.list_products(search="pack")] == [product_id]
+    assert repo.count_products(str(product_id)[-1:]) >= 1
+
+
 def test_product_summary_uses_aggregate_counts(conn):
     repo = ProductsRepo(conn)
     before = repo.product_summary()

@@ -63,22 +63,22 @@ class ProductsRepo:
         text = (search or "").strip()
         if not text:
             return "", []
-        pattern = f"%{text.lower()}%"
+        needle = text.lower()
         return (
             """
-            WHERE CAST(p.product_id AS TEXT) LIKE ?
-               OR LOWER(p.name) LIKE ?
-               OR LOWER(COALESCE(p.category, '')) LIKE ?
-               OR LOWER(COALESCE(p.description, '')) LIKE ?
+            WHERE INSTR(LOWER(CAST(p.product_id AS TEXT)), ?) > 0
+               OR INSTR(LOWER(p.name), ?) > 0
+               OR INSTR(LOWER(COALESCE(p.category, '')), ?) > 0
+               OR INSTR(LOWER(COALESCE(p.description, '')), ?) > 0
                OR EXISTS (
                     SELECT 1
                     FROM product_uoms pu
                     JOIN uoms u ON u.uom_id = pu.uom_id
                     WHERE pu.product_id = p.product_id
-                      AND LOWER(u.unit_name) LIKE ?
+                      AND INSTR(LOWER(u.unit_name), ?) > 0
                )
             """,
-            [pattern, pattern, pattern, pattern, pattern],
+            [needle, needle, needle, needle, needle],
         )
 
     def count_products(self, search: str | None = None) -> int:

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 ROOT = Path(SPECPATH).resolve().parents[1]
 
 
@@ -24,7 +26,7 @@ a = Analysis(
         "inventory_management.modules.reporting.controller",
         "inventory_management.modules.backup_restore",
         "inventory_management.modules.updater",
-    ],
+    ] + collect_submodules("inventory_management.modules.reporting"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -573,6 +573,7 @@ class SaleForm(QDialog):
         Parse product ID from text in format "Name (#ID)".
         Returns the product ID if found and valid, otherwise None.
         """
+        text = (text or "").strip()
         if not text:
             return None
         # Use regex to match (#digits) at the end of the string
@@ -582,6 +583,13 @@ class SaleForm(QDialog):
                 return int(match.group(1))
             except ValueError:
                 return None
+        matches = [
+            int(p.product_id)
+            for p in self._all_products()
+            if str(p.name).strip().casefold() == text.casefold()
+        ]
+        if len(matches) == 1:
+            return matches[0]
         return None
 
     def _base_uom_id(self, product_id: int) -> int:

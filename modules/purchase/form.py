@@ -905,6 +905,44 @@ class PurchaseForm(QDialog):
         if base: return int(base["uom_id"])
         return None
 
+    def _product_id_from_combo(self, cmb_prod: QComboBox) -> int | None:
+        product_id = cmb_prod.currentData()
+        if product_id not in (None, ""):
+            return int(product_id)
+
+        text = cmb_prod.currentText().strip()
+        if not text:
+            return None
+
+        for i in range(cmb_prod.count()):
+            if cmb_prod.itemText(i).strip().casefold() == text.casefold():
+                item_data = cmb_prod.itemData(i)
+                if item_data not in (None, ""):
+                    cmb_prod.setCurrentIndex(i)
+                    return int(item_data)
+
+        if text.endswith(")") and "(#" in text:
+            product_id_text = text.rsplit("(#", 1)[-1].rstrip(")").strip()
+            if product_id_text.isdigit():
+                product_id = int(product_id_text)
+                i = cmb_prod.findData(product_id)
+                if i >= 0:
+                    cmb_prod.setCurrentIndex(i)
+                    return product_id
+
+        matches = [
+            int(p.product_id)
+            for p in self._all_products()
+            if str(p.name).strip().casefold() == text.casefold()
+        ]
+        if len(matches) == 1:
+            i = cmb_prod.findData(matches[0])
+            if i >= 0:
+                cmb_prod.setCurrentIndex(i)
+            return matches[0]
+
+        return None
+
     def _delete_row_for_button(self, btn: QPushButton):
         for r in range(self.tbl.rowCount()):
             if self.tbl.cellWidget(r, 6) is btn:
@@ -926,7 +964,7 @@ class PurchaseForm(QDialog):
 
     def _add_row(self, pre: dict | None = None):
         def on_prod_changed():
-            pid = cmb_prod.currentData()
+            pid = self._product_id_from_combo(cmb_prod)
             if pid:
                 uom_id = self._base_uom_id(int(pid))
                 if uom_id is not None:
@@ -951,9 +989,10 @@ class PurchaseForm(QDialog):
 
         cmb_prod = QComboBox()
         cmb_prod.setEditable(True)
-        product_names = [p.name for p in self._all_products()]
+        product_names = [f"{p.name} (#{p.product_id})" for p in self._all_products()]
         completer = QCompleter(product_names, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
         cmb_prod.setCompleter(completer)
 
         # Add an empty item first to avoid auto-selecting the first product
@@ -987,6 +1026,9 @@ class PurchaseForm(QDialog):
 
         
         cmb_prod.currentIndexChanged.connect(on_prod_changed)
+        if cmb_prod.lineEdit():
+            cmb_prod.lineEdit().editingFinished.connect(on_prod_changed)
+        completer.activated.connect(lambda _text=None: on_prod_changed())
 
         
         if pre:
@@ -1128,7 +1170,7 @@ class PurchaseForm(QDialog):
     def _row_payload(self, r: int) -> dict | None:
         cmb_prod: QComboBox = self.tbl.cellWidget(r, 1)
         if not cmb_prod: return None
-        pid = cmb_prod.currentData()
+        pid = self._product_id_from_combo(cmb_prod)
         if not pid: return None
 
         def num(c):
@@ -1185,7 +1227,7 @@ class PurchaseForm(QDialog):
             cmb_prod = self.tbl.cellWidget(r, 1)
             if not cmb_prod:
                 continue
-            product_id = cmb_prod.currentData()
+            product_id = self._product_id_from_combo(cmb_prod)
             if product_id in (None, ""):
                 errors.append(f"Row {r+1}: Please select a product.")
                 continue
@@ -1421,7 +1463,7 @@ class PurchaseForm(QDialog):
         for r in range(self.tbl.rowCount()):
             cmb_prod = self.tbl.cellWidget(r, 1)
             if not cmb_prod: continue
-            product_id = cmb_prod.currentData()
+            product_id = self._product_id_from_combo(cmb_prod)
             if product_id in (None, ""): continue
             
             def num(c):
@@ -1593,6 +1635,8 @@ class PurchaseForm(QDialog):
             QMessageBox.warning(self, "Missing/Invalid Fields",
                                 "Please enter valid purchase details (all required fields must be filled).")
             return
+        if self._payload and self._payload.get("_should_print"):
+            p["_should_print"] = True
         # Update the cached payload with the fresh data
         self._payload = p
         super().accept()
