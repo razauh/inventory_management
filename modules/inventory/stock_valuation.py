@@ -94,6 +94,7 @@ class StockValuationWidget(QWidget):
         self._product_completer = QCompleter(self._product_completion_model, self)
         self._product_completer.setCaseSensitivity(Qt.CaseInsensitive)
         self._product_completer.setFilterMode(Qt.MatchContains)
+        self._product_completer.setCompletionMode(QCompleter.PopupCompletion)
         self.txt_product.setCompleter(self._product_completer)
 
         self.btn_refresh = QPushButton("Refresh")
@@ -197,6 +198,9 @@ class StockValuationWidget(QWidget):
                     logging.getLogger(__name__).warning(
                         "Failed to show duplicate product names info dialog: %s", e, exc_info=True
                     )
+            if search_text and self.txt_product.hasFocus():
+                self.txt_product.setCursorPosition(len(self.txt_product.text()))
+                self._product_completer.complete()
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:

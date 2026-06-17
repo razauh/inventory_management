@@ -196,11 +196,13 @@ def test_search_purchases_and_detail_snapshot_return_sql_backed_results(purchase
         notes=None,
     )
 
-    vendor_rows = repo.search_purchases("Purchase List Vendor", search_field="vendor")
+    vendor_rows = repo.search_purchases("List Vendor", search_field="vendor")
+    id_rows = repo.search_purchases("LIST-N", search_field="id")
     status_rows = repo.search_purchases("partial", search_field="status")
     snapshot = repo.get_purchase_detail_snapshot("PO-LIST-NET")
 
     assert [row["purchase_id"] for row in vendor_rows] == ["PO-LIST-NET"]
+    assert [row["purchase_id"] for row in id_rows] == ["PO-LIST-NET"]
     assert [row["purchase_id"] for row in status_rows] == ["PO-LIST-NET"]
     assert snapshot["row"]["purchase_id"] == "PO-LIST-NET"
     assert snapshot["row"]["returned_value"] == pytest.approx(20.0)
@@ -222,7 +224,7 @@ def test_search_purchases_all_uses_text_fields_not_numeric_casts(purchase_list_d
     assert [row["purchase_id"] for row in vendor_rows] == ["PO-LIST-NET"]
 
 
-def test_search_purchases_status_uses_exact_match(purchase_list_db):
+def test_search_purchases_status_uses_substring_match(purchase_list_db):
     conn, ids = purchase_list_db
     repo = _create_purchase(conn, ids)
     conn.execute(
@@ -235,6 +237,6 @@ def test_search_purchases_status_uses_exact_match(purchase_list_db):
         (ids["vendor_id"],),
     )
 
-    rows = repo.search_purchases("paid", search_field="status")
+    rows = repo.search_purchases("pai", search_field="status")
 
-    assert [row["purchase_id"] for row in rows] == ["PO-PAID-ONLY"]
+    assert [row["purchase_id"] for row in rows] == ["PO-PAID-ONLY", "PO-LIST-NET"]

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QMessageBox, QWidget, QTabWidget, QVBoxLayout, QComboBox
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QMessageBox, QWidget, QTabWidget, QVBoxLayout, QComboBox, QCompleter
 
 from ..base_module import BaseModule
 
@@ -71,6 +71,7 @@ class InventoryController(BaseModule):
     def _wire_adjustment_view(self) -> None:
         self._adjustment_view.cmb_product.setEditable(True)
         self._adjustment_view.cmb_product.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._configure_adjustment_product_completer()
         self._adjustment_view.cmb_product.currentIndexChanged.connect(
             lambda _=None: self._on_adjustment_product_changed()
         )
@@ -90,11 +91,27 @@ class InventoryController(BaseModule):
                 view.cmb_product.addItem(item.label, userData=item.product_id)
             if search_text:
                 view.cmb_product.setEditText(search_text)
+                view.cmb_product.lineEdit().setCursorPosition(len(search_text))
             else:
                 view.cmb_product.setCurrentIndex(0)
+            self._configure_adjustment_product_completer()
+            if search_text and view.cmb_product.lineEdit().hasFocus():
+                view.cmb_product.showPopup()
         finally:
             view.cmb_product.blockSignals(False)
         self._on_adjustment_product_changed()
+
+    def _configure_adjustment_product_completer(self) -> None:
+        completer = self._adjustment_view.cmb_product.completer()
+        if completer is None:
+            completer = QCompleter(
+                self._adjustment_view.cmb_product.model(),
+                self._adjustment_view.cmb_product,
+            )
+            self._adjustment_view.cmb_product.setCompleter(completer)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
 
     def _schedule_adjustment_product_lookup(self) -> None:
         self._adjustment_lookup_timer.start()

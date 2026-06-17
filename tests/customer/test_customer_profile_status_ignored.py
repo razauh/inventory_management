@@ -73,6 +73,27 @@ def test_customer_repo_list_search_count_and_paging():
     conn.close()
 
 
+def test_customer_repo_search_matches_case_insensitive_substrings():
+    conn = make_db()
+    repo = CustomersRepo(conn)
+    ielts_id = repo.create("IELTS Advantage Solutions", "Training Desk", "Blue Road")
+    contact_id = repo.create("Book Buyer", "answers hotline", "North Market")
+    address_id = repo.create("Paper House", "Sales Desk", "Solution Avenue")
+
+    assert [row.customer_id for row in repo.list_customers(search="ielts")] == [ielts_id]
+    assert [row.customer_id for row in repo.list_customers(search="ADVANTAGE")] == [ielts_id]
+    assert [row.customer_id for row in repo.list_customers(search="tage")] == [ielts_id]
+    assert [row.customer_id for row in repo.list_customers(search="answer")] == [contact_id]
+    assert [row.customer_id for row in repo.list_customers(search="solution")] == [
+        address_id,
+        ielts_id,
+    ]
+    assert [row.customer_id for row in repo.list_customers(search=str(ielts_id))] == [ielts_id]
+    assert repo.count_customers("SOLUTIONS") == 1
+
+    conn.close()
+
+
 def test_customer_table_and_details_have_no_status_ui(qtbot):
     details = CustomerDetails()
     qtbot.addWidget(details)

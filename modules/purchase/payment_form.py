@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtCore import QEvent, QObject
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...utils.helpers import today_str
+from ...utils.combo_search import configure_contains_completer
 from .validation import parse_strict_float
 import logging
 
@@ -91,6 +92,8 @@ class PaymentForm(QDialog):
         self.company_acct.setEditable(True)
         self.vendor_acct = QComboBox()
         self.vendor_acct.setEditable(True)
+        configure_contains_completer(self.company_acct)
+        configure_contains_completer(self.vendor_acct)
         self.instr_no = QLineEdit()
         self.instr_no.setPlaceholderText("Instrument / Cheque / Slip #")
         self.notes = QLineEdit()
@@ -286,6 +289,7 @@ class PaymentForm(QDialog):
             ).fetchall()
             for r in rows:
                 self.company_acct.addItem(r["label"], int(r["account_id"]))
+            configure_contains_completer(self.company_acct)
             
             current_method = self.method.currentText()
             if current_method == self.PAYMENT_METHODS['OTHER']:
@@ -307,6 +311,7 @@ class PaymentForm(QDialog):
         
         if not vid:
             self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+            configure_contains_completer(self.vendor_acct)
             return
         
         try:
@@ -329,6 +334,7 @@ class PaymentForm(QDialog):
                     primary_account_added = True
             
             self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+            configure_contains_completer(self.vendor_acct)
             
             previous_selection_restored = False
             if current_text and current_text != "":
@@ -358,6 +364,7 @@ class PaymentForm(QDialog):
             logging.exception("Error in _reload_vendor_accounts")
             
             self.vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+            configure_contains_completer(self.vendor_acct)
             
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")

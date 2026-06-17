@@ -43,13 +43,13 @@ class CustomersRepo:
         if not term:
             return "", []
         escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{escaped}%"
+        pattern = f"%{escaped.lower()}%"
         return (
             "WHERE "
-            "  CAST(customer_id AS TEXT) LIKE ? ESCAPE '\\' OR "
-            "  name LIKE ? ESCAPE '\\' OR "
-            "  contact_info LIKE ? ESCAPE '\\' OR "
-            "  address LIKE ? ESCAPE '\\' ",
+            "  LOWER(CAST(customer_id AS TEXT)) LIKE ? ESCAPE '\\' OR "
+            "  LOWER(COALESCE(name, '')) LIKE ? ESCAPE '\\' OR "
+            "  LOWER(COALESCE(contact_info, '')) LIKE ? ESCAPE '\\' OR "
+            "  LOWER(COALESCE(address, '')) LIKE ? ESCAPE '\\' ",
             [pattern, pattern, pattern, pattern],
         )
 

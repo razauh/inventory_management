@@ -24,6 +24,7 @@ try:
 except Exception:
     OverpayPurchaseError = None
 _EPS = 1e-9
+VENDOR_SEARCH_DELAY_MS = 150
 def info(parent, title: str, text: str):
     return uih.info(parent, title, text)
 class VendorController(BaseModule):
@@ -43,6 +44,7 @@ class VendorController(BaseModule):
         self.proxy.setSourceModel(self.base_model)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy.setFilterKeyColumn(-1)
+        self.proxy.setFilterRegularExpression("")
         self.view.table.setModel(self.proxy)
         sel = self.view.table.selectionModel()
         if sel:
@@ -53,7 +55,7 @@ class VendorController(BaseModule):
         self._pending_search = ""
         self._search_timer = QTimer(self.view)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(250)
+        self._search_timer.setInterval(VENDOR_SEARCH_DELAY_MS)
         self._search_timer.timeout.connect(self._run_search_reload)
         self._balance_token = 0
 

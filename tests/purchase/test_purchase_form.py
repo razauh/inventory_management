@@ -22,6 +22,18 @@ def test_po_ui_initial_state(purchase_form):
     assert purchase_form.cmb_vendor.count() > 1  # Empty item + seeded vendor
     assert purchase_form.lab_total.text() == "0.00"
 
+
+def test_po_searchable_combos_use_contains_completers(purchase_form):
+    product_combo = purchase_form.tbl.cellWidget(0, 1)
+
+    assert purchase_form.cmb_vendor.completer().filterMode() == Qt.MatchContains
+    assert purchase_form.cmb_vendor.completer().caseSensitivity() == Qt.CaseInsensitive
+    assert product_combo.completer().filterMode() == Qt.MatchContains
+    assert product_combo.completer().caseSensitivity() == Qt.CaseInsensitive
+    assert purchase_form.ip_company_acct.completer().filterMode() == Qt.MatchContains
+    assert purchase_form.ip_vendor_acct.completer().filterMode() == Qt.MatchContains
+
+
 def test_po_ui_add_row(purchase_form, qtbot):
     """PO-UI-004: Add a new row to the items table."""
     initial_rows = purchase_form.tbl.rowCount()

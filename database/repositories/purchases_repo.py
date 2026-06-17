@@ -103,20 +103,10 @@ class PurchasesRepo:
             return self.list_purchases(limit=limit)
 
         field = (search_field or "all").strip().lower()
-        prefix_like = f"{query}%"
-        exact = query.lower()
-        where_sql = ""
-        params: list[object] = []
-
-        if field == "id":
-            where_sql = " WHERE p.purchase_id LIKE ? COLLATE NOCASE"
-            params.append(prefix_like)
-        elif field == "vendor":
-            where_sql = " WHERE v.name LIKE ? COLLATE NOCASE"
-            params.append(prefix_like)
-        elif field == "status":
-            where_sql = """
-            WHERE CASE
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        contains_like = f"%{escaped.lower()}%"
+        status_expr = """
+            CASE
                 WHEN MAX(
                     0.0,
                     COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
@@ -126,22 +116,33 @@ class PurchasesRepo:
                 WHEN COALESCE(CAST(p.paid_amount AS REAL), 0.0) > 1e-9
                   OR COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
                 ELSE 'unpaid'
-            END = ?
-            """
-            params.append(exact)
+            END
+        """
+        where_sql = ""
+        params: list[object] = []
+
+        if field == "id":
+            where_sql = " WHERE LOWER(COALESCE(p.purchase_id, '')) LIKE ? ESCAPE '\\'"
+            params.append(contains_like)
+        elif field == "vendor":
+            where_sql = " WHERE LOWER(COALESCE(v.name, '')) LIKE ? ESCAPE '\\'"
+            params.append(contains_like)
+        elif field == "status":
+            where_sql = f" WHERE LOWER({status_expr}) LIKE ? ESCAPE '\\'"
+            params.append(contains_like)
         elif field == "date":
-            where_sql = " WHERE p.date LIKE ?"
-            params.append(prefix_like)
+            where_sql = " WHERE LOWER(COALESCE(p.date, '')) LIKE ? ESCAPE '\\'"
+            params.append(contains_like)
         else:
-            where_sql = """
+            where_sql = f"""
             WHERE (
-                p.purchase_id LIKE ? COLLATE NOCASE
-                OR p.date LIKE ?
-                OR v.name LIKE ? COLLATE NOCASE
-                OR p.payment_status = ?
+                LOWER(COALESCE(p.purchase_id, '')) LIKE ? ESCAPE '\\'
+                OR LOWER(COALESCE(p.date, '')) LIKE ? ESCAPE '\\'
+                OR LOWER(COALESCE(v.name, '')) LIKE ? ESCAPE '\\'
+                OR LOWER({status_expr}) LIKE ? ESCAPE '\\'
             )
             """
-            params.extend([prefix_like, prefix_like, prefix_like, exact])
+            params.extend([contains_like, contains_like, contains_like, contains_like])
 
         sql = self._purchase_list_select_sql() + where_sql + """
         ORDER BY DATE(p.date) DESC, p.purchase_id DESC

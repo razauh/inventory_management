@@ -93,6 +93,7 @@ class PurchaseController(BaseModule):
         self.proxy.setSourceModel(self.base)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy.setFilterKeyColumn(-1)
+        self.proxy.setFilterRegularExpression("")
         self.view.tbl.setModel(self.proxy)
         sel = self.view.tbl.selectionModel()
         if sel is not None:

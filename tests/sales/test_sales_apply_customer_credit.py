@@ -85,3 +85,43 @@ def test_apply_credit_does_not_report_success_or_refresh_on_action_failure(monke
 
     assert messages == [("Not saved", "Amount must be greater than zero.")]
     assert calls == {"reload": 0, "sync": 0}
+
+
+def test_apply_credit_sale_search_matches_displayed_substrings():
+    dlg = receipt_dialog._CustomerMoneyDialog.__new__(receipt_dialog._CustomerMoneyDialog)
+    rows = [
+        {
+            "sale_id": "S-1",
+            "doc_no": "INV-2026-00123",
+            "date": "2026-06-17",
+            "total": 500.0,
+            "paid": 250.0,
+            "remaining_due": 125.0,
+        },
+        {
+            "sale_id": "S-2",
+            "doc_no": "INV-2025-00999",
+            "date": "2025-01-01",
+            "total": 900.0,
+            "paid": 0.0,
+            "remaining_due": 900.0,
+        },
+    ]
+    dlg._original_sales = rows
+    dlg._get_sale_due = None
+    captured = []
+    dlg._populate_sales_table = lambda filtered: captured.append(filtered)
+
+    dlg._filter_sales_table("00123")
+    dlg._filter_sales_table("2026")
+    dlg._filter_sales_table("INV")
+    dlg._filter_sales_table("26-00")
+    dlg._filter_sales_table("250")
+    dlg._filter_sales_table("")
+
+    assert captured[0] == [rows[0]]
+    assert captured[1] == [rows[0]]
+    assert captured[2] == rows
+    assert captured[3] == [rows[0]]
+    assert captured[4] == [rows[0]]
+    assert captured[5] == rows

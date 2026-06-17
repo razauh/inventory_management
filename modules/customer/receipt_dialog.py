@@ -953,32 +953,56 @@ class _CustomerMoneyDialog(QDialog):
 
     def _filter_sales_table(self, text: str) -> None:
         """Filter sales in the table based on search text."""
-        if not hasattr(self, '_original_sales') or not self._original_sales:
+        if not hasattr(self, '_original_sales'):
             return
 
-        # Create filtered list based on search text
-        search_lower = text.lower()
-        filtered_sales = []
+        search_lower = (text or "").strip().lower()
+        if not search_lower:
+            self._populate_sales_table(list(self._original_sales or []))
+            return
 
-        for row in self._original_sales:
-            sid = str(row.get("sale_id", ""))
-            doc = str(row.get("doc_no", sid))
-            date = str(row.get("date", ""))
-            total = float(row.get("total", 0.0))
-            paid = float(row.get("paid", 0.0))
-            rem = float(row.get("remaining_due", total - paid - float(row.get("advance_payment_applied", 0.0))))
-
-            # Check if search text matches any part of the data
-            if (search_lower in sid.lower() or
-                search_lower in doc.lower() or
-                search_lower in date.lower() or
-                search_lower in f"{total:.2f}" or
-                search_lower in f"{paid:.2f}" or
-                search_lower in f"{rem:.2f}"):
-                filtered_sales.append(row)
-
-        # Update the table with filtered sales
+        filtered_sales = [
+            row
+            for row in self._original_sales
+            if any(search_lower in value.lower() for value in self._sale_search_values(row))
+        ]
         self._populate_sales_table(filtered_sales)
+
+    def _sale_search_values(self, row: dict) -> list[str]:
+        sale_id = str(row.get("sale_id", ""))
+        doc_no = str(row.get("doc_no", sale_id))
+        date = str(row.get("date", ""))
+        total = self._to_float(row.get("total", 0.0))
+        paid = self._to_float(row.get("paid", 0.0))
+        rem = self._sale_remaining_due(row, total, paid)
+        return [
+            sale_id,
+            doc_no,
+            date,
+            f"{total:.2f}",
+            f"{paid:.2f}",
+            f"{rem:.2f}",
+        ]
+
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def _sale_remaining_due(self, row: dict, total: float | None = None, paid: float | None = None) -> float:
+        total_value = self._to_float(row.get("total", 0.0)) if total is None else float(total)
+        paid_value = self._to_float(row.get("paid", 0.0)) if paid is None else float(paid)
+        fallback = total_value - paid_value - self._to_float(row.get("advance_payment_applied", 0.0))
+        rem = self._to_float(row.get("remaining_due", fallback))
+        sale_id = str(row.get("sale_id", ""))
+        if self._get_sale_due and sale_id:
+            try:
+                rem = float(self._get_sale_due(sale_id))
+            except Exception:
+                pass
+        return rem
 
     def _populate_sales_table(self, sales_list: list) -> None:
         """Populate the sales table with the provided sales list."""
@@ -996,15 +1020,9 @@ class _CustomerMoneyDialog(QDialog):
             sale_id = str(row_data.get("sale_id", ""))
             doc_no = str(row_data.get("doc_no", sale_id))
             date = str(row_data.get("date", ""))
-            total = float(row_data.get("total", 0.0))
-            paid = float(row_data.get("paid", 0.0))
-            rem = float(row_data.get("remaining_due", total - paid - float(row_data.get("advance_payment_applied", 0.0))))
-            sale_id = str(row_data.get("sale_id", ""))
-            if self._get_sale_due and sale_id:
-                try:
-                    rem = float(self._get_sale_due(sale_id))
-                except Exception:
-                    pass
+            total = self._to_float(row_data.get("total", 0.0))
+            paid = self._to_float(row_data.get("paid", 0.0))
+            rem = self._sale_remaining_due(row_data, total, paid)
 
             items = [
                 QStandardItem(sale_id),

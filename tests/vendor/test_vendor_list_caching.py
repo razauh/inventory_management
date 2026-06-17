@@ -68,6 +68,25 @@ def test_list_vendors_search_count_and_paging(vendor_balance_db):
     assert repo.count_vendors("missing") == 0
 
 
+def test_vendor_search_matches_case_insensitive_substrings_in_all_fields(vendor_balance_db):
+    conn, _vendor_a, _vendor_b = vendor_balance_db
+    repo = VendorsRepo(conn)
+    ielts_vendor = repo.create("IELTS Advantage Solutions", "training desk", "Blue Road")
+    contact_vendor = repo.create("Book Supplier", "answers hotline", "North Market")
+    address_vendor = repo.create("Paper House", "sales desk", "Solution Avenue")
+
+    assert [row.vendor_id for row in repo.list_vendors(search="ielts")] == [ielts_vendor]
+    assert [row.vendor_id for row in repo.list_vendors(search="ADVANTAGE")] == [ielts_vendor]
+    assert [row.vendor_id for row in repo.list_vendors(search="tage")] == [ielts_vendor]
+    assert [row.vendor_id for row in repo.list_vendors(search="answer")] == [contact_vendor]
+    assert [row.vendor_id for row in repo.list_vendors(search="solution")] == [
+        address_vendor,
+        ielts_vendor,
+    ]
+    assert [row.vendor_id for row in repo.list_vendors(search=str(ielts_vendor))] == [ielts_vendor]
+    assert repo.count_vendors("SOLUTIONS") == 1
+
+
 def test_update_details_uses_cached_vendor_row_balance():
     scheduled: list[int | None] = []
     credit_calls: list[float] = []

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
+from ...utils.combo_search import configure_contains_completer
 from ...utils.helpers import today_str, fmt_money
 from .validation import SALE_PRICE_RULE_MESSAGE, parse_strict_float
 import datetime
@@ -131,6 +132,7 @@ class PurchaseForm(QDialog):
         self.cmb_vendor.addItem("", None)  # Empty text with None data
         for v in self.vendors.list_vendors():
             self.cmb_vendor.addItem(f"{v.name} (#{v.vendor_id})", v.vendor_id)
+        configure_contains_completer(self.cmb_vendor)
         # Only set the first item (empty one) as the default if not in edit mode
         if not initial:
             self.cmb_vendor.setCurrentIndex(0)
@@ -271,6 +273,8 @@ class PurchaseForm(QDialog):
 
         self.ip_company_acct = QComboBox(); self.ip_company_acct.setEditable(True)
         self.ip_vendor_acct  = QComboBox(); self.ip_vendor_acct.setEditable(True)
+        configure_contains_completer(self.ip_company_acct)
+        configure_contains_completer(self.ip_vendor_acct)
         self.ip_instr_no   = QLineEdit(); self.ip_instr_no.setPlaceholderText("Instrument / Cheque / Slip #")
         self.ip_instr_date = QDateEdit(); self.ip_instr_date.setCalendarPopup(True); self.ip_instr_date.setDate(self.ip_date.date())
         self.ip_instr_date.setDisplayFormat("yyyy-MM-dd")  # Set a consistent format
@@ -632,6 +636,7 @@ class PurchaseForm(QDialog):
             ).fetchall()
             for r in rows:
                 self.ip_company_acct.addItem(r["label"], int(r["account_id"]))
+            configure_contains_completer(self.ip_company_acct)
             
             
             current_method = self.ip_method.currentText()
@@ -659,6 +664,7 @@ class PurchaseForm(QDialog):
         if not vid:
 
             self.ip_vendor_acct.addItem("Temporary", "TEMP_BANK")
+            configure_contains_completer(self.ip_vendor_acct)
             return
         
         try:
@@ -683,6 +689,7 @@ class PurchaseForm(QDialog):
             
             
             self.ip_vendor_acct.addItem("Temporary", "TEMP_BANK")
+            configure_contains_completer(self.ip_vendor_acct)
             
             
             previous_selection_restored = False
@@ -715,8 +722,9 @@ class PurchaseForm(QDialog):
         except Exception as e:
             print(f"Error loading vendor bank accounts: {e}")
             logging.exception("Error in _reload_vendor_accounts")
-            
+
             self.ip_vendor_acct.addItem("Temporary", "TEMP_BANK")
+            configure_contains_completer(self.ip_vendor_acct)
             
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Error", f"Could not load vendor bank accounts: {str(e)}")
@@ -993,6 +1001,7 @@ class PurchaseForm(QDialog):
         completer = QCompleter(product_names, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
         cmb_prod.setCompleter(completer)
 
         # Add an empty item first to avoid auto-selecting the first product

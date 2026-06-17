@@ -35,13 +35,13 @@ class VendorsRepo:
         if not text:
             return "", []
         escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{escaped}%"
+        pattern = f"%{escaped.lower()}%"
         return (
             """
-            WHERE CAST(v.vendor_id AS TEXT) LIKE ? ESCAPE '\\'
-               OR v.name LIKE ? ESCAPE '\\'
-               OR v.contact_info LIKE ? ESCAPE '\\'
-               OR COALESCE(v.address, '') LIKE ? ESCAPE '\\'
+            WHERE LOWER(CAST(v.vendor_id AS TEXT)) LIKE ? ESCAPE '\\'
+               OR LOWER(COALESCE(v.name, '')) LIKE ? ESCAPE '\\'
+               OR LOWER(COALESCE(v.contact_info, '')) LIKE ? ESCAPE '\\'
+               OR LOWER(COALESCE(v.address, '')) LIKE ? ESCAPE '\\'
             """,
             [pattern, pattern, pattern, pattern],
         )

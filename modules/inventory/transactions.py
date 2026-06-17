@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QFileDialog,
     QSizePolicy,
+    QCompleter,
 )
 
 from .model import TransactionsTableModel
@@ -81,6 +82,7 @@ class TransactionsView(QWidget):
         self.cmb_product.setEditable(True)
         self.cmb_product.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.cmb_product.setMinimumWidth(200)
+        self._configure_product_completer()
         row.addWidget(self.cmb_product, 1)
 
         # Date from
@@ -192,8 +194,12 @@ class TransactionsView(QWidget):
                 self.cmb_product.addItem(item.label, userData=item.product_id)
             if search_text:
                 self.cmb_product.setEditText(search_text)
+                self.cmb_product.lineEdit().setCursorPosition(len(search_text))
             else:
                 self.cmb_product.setCurrentIndex(0)
+            self._configure_product_completer()
+            if search_text and self.cmb_product.lineEdit().hasFocus():
+                self.cmb_product.showPopup()
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:
@@ -253,6 +259,15 @@ class TransactionsView(QWidget):
     # ----------------------------------------------------------------------
     # Actions
     # ----------------------------------------------------------------------
+    def _configure_product_completer(self) -> None:
+        completer = self.cmb_product.completer()
+        if completer is None:
+            completer = QCompleter(self.cmb_product.model(), self.cmb_product)
+            self.cmb_product.setCompleter(completer)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+
     def _schedule_product_lookup(self) -> None:
         self._product_lookup_timer.start()
 

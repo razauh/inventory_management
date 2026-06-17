@@ -15,6 +15,9 @@ from ...database.repositories.customers_repo import CustomersRepo
 from ...utils.ui_helpers import info
 
 
+CUSTOMER_SEARCH_DELAY_MS = 150
+
+
 class CustomerController(BaseModule):
     """
     Customers controller with payment/credit actions and enriched details.
@@ -38,7 +41,7 @@ class CustomerController(BaseModule):
         self.view = CustomerView()
         self._search_timer = QTimer(self.view)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(250)
+        self._search_timer.setInterval(CUSTOMER_SEARCH_DELAY_MS)
         self._pending_search = ""
         self._detail_timer = QTimer(self.view)
         self._detail_timer.setSingleShot(True)
@@ -87,6 +90,7 @@ class CustomerController(BaseModule):
         self.proxy.setSourceModel(self.base)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy.setFilterKeyColumn(-1)
+        self.proxy.setFilterRegularExpression("")
         self.view.table.setModel(self.proxy)
         sel = self.view.table.selectionModel()
         sel.selectionChanged.connect(self._schedule_details_update)

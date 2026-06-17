@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6.QtGui import QBrush, QColor
+from ...utils.combo_search import configure_contains_completer
 from ...utils.helpers import today_str, fmt_money
 from .validation import parse_strict_float
 
@@ -184,6 +185,8 @@ class PurchaseReturnForm(QDialog):
         self.cmb_company_acct.setEditable(True)
         self.cmb_vendor_acct = QComboBox()
         self.cmb_vendor_acct.setEditable(True)
+        configure_contains_completer(self.cmb_company_acct)
+        configure_contains_completer(self.cmb_vendor_acct)
 
         # Instrument fields
         self.txt_instr_no = QLineEdit()
@@ -335,6 +338,7 @@ class PurchaseReturnForm(QDialog):
             # Fallback to default accounts if there's an error
             self.cmb_company_acct.addItem("Meezan — Current", 1)
             self.cmb_company_acct.addItem("HBL — Current", 2)
+        configure_contains_completer(self.cmb_company_acct)
 
     def _load_company_accounts(self):
         """Load company bank accounts"""
@@ -364,6 +368,7 @@ class PurchaseReturnForm(QDialog):
                 primary_index = i
         if self.cmb_vendor_acct.count() > 0:
             self.cmb_vendor_acct.setCurrentIndex(primary_index)
+        configure_contains_completer(self.cmb_vendor_acct)
 
     # ---------- items ----------
     def set_items(self, items: list[dict]):
@@ -1055,6 +1060,7 @@ class PurchaseReturnForm(QDialog):
         
         if not vid:
             self.cmb_vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+            configure_contains_completer(self.cmb_vendor_acct)
             return
         
         rows = []
@@ -1076,6 +1082,7 @@ class PurchaseReturnForm(QDialog):
                 primary_index = i
         
         self.cmb_vendor_acct.addItem("Temporary/External Bank Account", self.TEMP_BANK_KEY)
+        configure_contains_completer(self.cmb_vendor_acct)
         
         import logging
         try:
