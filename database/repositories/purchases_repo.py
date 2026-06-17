@@ -102,42 +102,46 @@ class PurchasesRepo:
         if not query:
             return self.list_purchases(limit=limit)
 
-        like = f"%{query}%"
         field = (search_field or "all").strip().lower()
+        prefix_like = f"{query}%"
+        exact = query.lower()
         where_sql = ""
         params: list[object] = []
 
         if field == "id":
             where_sql = " WHERE p.purchase_id LIKE ? COLLATE NOCASE"
-            params.append(like)
+            params.append(prefix_like)
         elif field == "vendor":
             where_sql = " WHERE v.name LIKE ? COLLATE NOCASE"
-            params.append(like)
+            params.append(prefix_like)
         elif field == "status":
-            where_sql = " WHERE p.payment_status LIKE ? COLLATE NOCASE"
-            params.append(like)
+            where_sql = """
+            WHERE CASE
+                WHEN MAX(
+                    0.0,
+                    COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
+                    - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                    - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+                ) <= 1e-9 THEN 'paid'
+                WHEN COALESCE(CAST(p.paid_amount AS REAL), 0.0) > 1e-9
+                  OR COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
+                ELSE 'unpaid'
+            END = ?
+            """
+            params.append(exact)
+        elif field == "date":
+            where_sql = " WHERE p.date LIKE ?"
+            params.append(prefix_like)
         else:
             where_sql = """
             WHERE (
                 p.purchase_id LIKE ? COLLATE NOCASE
-                OR p.date LIKE ? COLLATE NOCASE
+                OR p.date LIKE ?
                 OR v.name LIKE ? COLLATE NOCASE
-                OR p.payment_status LIKE ? COLLATE NOCASE
-                OR CAST(p.total_amount AS TEXT) LIKE ? COLLATE NOCASE
-                OR CAST(COALESCE(pr.returned_value, 0.0) AS TEXT) LIKE ? COLLATE NOCASE
-                OR CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS TEXT) LIKE ? COLLATE NOCASE
-                OR CAST(COALESCE(p.paid_amount, 0.0) AS TEXT) LIKE ? COLLATE NOCASE
-                OR CAST(
-                    MAX(
-                        0.0,
-                        COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
-                        - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
-                        - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
-                    ) AS TEXT
-                ) LIKE ? COLLATE NOCASE
+                OR p.payment_status = ?
             )
             """
-            params.extend([like] * 9)
+            params.extend([prefix_like, prefix_like, prefix_like, exact])
 
         sql = self._purchase_list_select_sql() + where_sql + """
         ORDER BY DATE(p.date) DESC, p.purchase_id DESC

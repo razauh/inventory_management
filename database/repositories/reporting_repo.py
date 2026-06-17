@@ -59,9 +59,11 @@ class ReportingRepo:
                 self.conn.execute("ROLLBACK")
 
     @staticmethod
-    def _limit_clause(limit: Optional[int]) -> tuple[str, list[object]]:
+    def _limit_clause(limit: Optional[int], offset: int = 0) -> tuple[str, list[object]]:
         if limit is None:
             return "", []
+        if offset > 0:
+            return " LIMIT ? OFFSET ? ", [int(limit), max(0, int(offset))]
         return " LIMIT ? ", [int(limit)]
     
     def close(self):
@@ -1543,6 +1545,7 @@ END
         product_id: Optional[int],
         category: Optional[str],
         limit: Optional[int] = 1000,
+        offset: int = 0,
     ) -> list[sqlite3.Row]:
         """
         Return header-level rows filtered by the same criteria,
@@ -1588,6 +1591,6 @@ END
         FROM filtered
         ORDER BY date DESC, sale_id DESC
         """
-        lim_sql, lim_params = self._limit_clause(limit)
+        lim_sql, lim_params = self._limit_clause(limit, offset)
         sql += lim_sql
         return list(self.conn.execute(sql, [*status_params, *params, *lim_params]))

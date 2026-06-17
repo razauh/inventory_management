@@ -138,6 +138,7 @@ class PurchaseReportsTab(QWidget):
         self.repo = ReportingRepo(conn)
         self._loaded_rows: Dict[str, List[Dict[str, Any]]] = {}
         self._page_index: Dict[str, int] = {}
+        self._has_next_page: Dict[str, bool] = {}
         self._use_background_refresh = use_background_refresh
 
         self._build_ui()
@@ -386,7 +387,14 @@ class PurchaseReportsTab(QWidget):
             "category": self._category_value(),
         }
 
-    def _load_key(self, key: str, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _load_key(
+        self,
+        key: str,
+        filters: Dict[str, Any],
+        *,
+        page_limit: int | None = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
         df = filters["df"]
         dt = filters["dt"]
         gran = filters["gran"]
@@ -702,10 +710,16 @@ class PurchaseReportsTab(QWidget):
                 WHERE DATE(p.date) BETWEEN DATE(?) AND DATE(?)
                   AND (COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
                 ORDER BY DATE(p.date) DESC, p.purchase_id DESC
-            """
+                {page}
+            """.format(
+                page="LIMIT ? OFFSET ?" if page_limit is not None else "",
+            )
+            params = [df, dt]
+            if page_limit is not None:
+                params.extend([int(page_limit), max(0, int(offset))])
             return [
                 {k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k]) for k in r.keys()}
-                for r in self.conn.execute(sql, (df, dt))
+                for r in self.conn.execute(sql, params)
             ][: self.MAX_ROWS_PER_TABLE]
 
         if key == "drilldown":
@@ -723,10 +737,13 @@ class PurchaseReportsTab(QWidget):
                   {prod}
                   {cat}
                 ORDER BY DATE(p.date) DESC, p.purchase_id DESC
-            """.format(
+                {page}
+            """
+            sql = sql.format(
                 vend="AND p.vendor_id = ?" if vendor_id else "",
                 prod="AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.purchase_id = p.purchase_id AND pi.product_id = ?)" if product_id else "",
                 cat="AND EXISTS (SELECT 1 FROM purchase_items pi JOIN products pr ON pr.product_id = pi.product_id WHERE pi.purchase_id = p.purchase_id AND pr.category = ?)" if category else "",
+                page="LIMIT ? OFFSET ?" if page_limit is not None else "",
             )
             params = [df, dt]
             if vendor_id:
@@ -735,6 +752,8 @@ class PurchaseReportsTab(QWidget):
                 params.append(product_id)
             if category:
                 params.append(category)
+            if page_limit is not None:
+                params.extend([int(page_limit), max(0, int(offset))])
             return [
                 {k: (float(r[k]) if k in ("total_amount", "paid_amount", "adv", "remaining") else r[k]) for k in r.keys()}
                 for r in self.conn.execute(sql, params)
@@ -759,7 +778,18 @@ class PurchaseReportsTab(QWidget):
             return
         filters = self._filters()
         with self.repo.read_snapshot():
-            self._loaded_rows[key] = self._load_key(key, filters)
+            if key in {"open_purchases", "drilldown"}:
+                rows = self._load_key(
+                    key,
+                    filters,
+                    page_limit=self.PAGE_SIZE + 1,
+                    offset=self._page_index.get(key, 0) * self.PAGE_SIZE,
+                )
+                self._has_next_page[key] = len(rows) > self.PAGE_SIZE
+                self._loaded_rows[key] = rows[: self.PAGE_SIZE]
+            else:
+                self._has_next_page[key] = False
+                self._loaded_rows[key] = self._load_key(key, filters)
         self._apply_page(key)
 
     def refresh_active_page(self) -> None:
@@ -775,12 +805,11 @@ class PurchaseReportsTab(QWidget):
         if not self._validate_date_ranges():
             return
         self._loaded_rows.clear()
-        filters = self._filters()
-        with self.repo.read_snapshot():
-            for key in self._TAB_KEYS:
-                self._loaded_rows[key] = self._load_key(key, filters)
-        for key in self._TAB_KEYS:
-            self._apply_page(key)
+        self._has_next_page.clear()
+        self._page_index.clear()
+        key = self._current_table_key()
+        if key:
+            self._ensure_loaded(key, force=True)
         self._sync_page_label()
 
     # ------------------------------ Export ------------------------------
@@ -843,6 +872,9 @@ class PurchaseReportsTab(QWidget):
         return self._TAB_KEYS[idx]
 
     def _max_page(self, key: str) -> int:
+        if key in {"open_purchases", "drilldown"}:
+            current = self._page_index.get(key, 0)
+            return current + (1 if self._has_next_page.get(key, False) else 0)
         rows = self._loaded_rows.get(key, [])
         if not rows:
             return 0
@@ -856,7 +888,7 @@ class PurchaseReportsTab(QWidget):
         if not tv:
             return
         rows = self._loaded_rows.get(key, [])
-        start = self._page_index[key] * self.PAGE_SIZE
+        start = 0 if key in {"open_purchases", "drilldown"} else self._page_index[key] * self.PAGE_SIZE
         model: _SimpleTableModel = tv.model()  # type: ignore
         model.set_rows(rows[start:start + self.PAGE_SIZE])
         maybe_resize_columns(tv)
@@ -867,14 +899,20 @@ class PurchaseReportsTab(QWidget):
         if not key:
             return
         self._page_index[key] = max(0, self._page_index.get(key, 0) - 1)
-        self._apply_page(key)
+        if key in {"open_purchases", "drilldown"}:
+            self._ensure_loaded(key, force=True)
+        else:
+            self._apply_page(key)
 
     def _next_page(self) -> None:
         key = self._current_table_key()
         if not key:
             return
         self._page_index[key] = min(self._max_page(key), self._page_index.get(key, 0) + 1)
-        self._apply_page(key)
+        if key in {"open_purchases", "drilldown"}:
+            self._ensure_loaded(key, force=True)
+        else:
+            self._apply_page(key)
 
     def _sync_page_label(self) -> None:
         key = self._current_table_key()

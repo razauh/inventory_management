@@ -15,7 +15,7 @@ from typing import Optional
 
 import csv
 
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -33,7 +33,12 @@ from .model import TransactionsTableModel
 from ..reporting.csv_export import safe_csv_row
 from ..reporting.large_results import maybe_resize_columns
 from ...utils import ui_helpers as ui
+from ...utils.product_lookup import DEFAULT_PRODUCT_LOOKUP_LIMIT, product_ids_by_exact_name, search_products
 from ...database.repositories.inventory_repo import InventoryRepo
+
+
+FILTER_RELOAD_DELAY_MS = 250
+PRODUCT_LOOKUP_DELAY_MS = 150
 
 
 class TransactionsView(QWidget):
@@ -47,6 +52,14 @@ class TransactionsView(QWidget):
         super().__init__(parent)
         self.repo = repo
         self._last_invalid_range: tuple[str, str] | None = None
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(FILTER_RELOAD_DELAY_MS)
+        self._reload_timer.timeout.connect(self._reload)
+        self._product_lookup_timer = QTimer(self)
+        self._product_lookup_timer.setSingleShot(True)
+        self._product_lookup_timer.setInterval(PRODUCT_LOOKUP_DELAY_MS)
+        self._product_lookup_timer.timeout.connect(self._refresh_product_lookup)
         self.setWindowTitle("Inventory — Transactions")
 
         root = QVBoxLayout(self)
@@ -65,6 +78,8 @@ class TransactionsView(QWidget):
         row.addWidget(lbl_prod)
 
         self.cmb_product = QComboBox(self)
+        self.cmb_product.setEditable(True)
+        self.cmb_product.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.cmb_product.setMinimumWidth(200)
         row.addWidget(self.cmb_product, 1)
 
@@ -130,10 +145,11 @@ class TransactionsView(QWidget):
         # ------------------------------------------------------------------
         # Wire signals
         # ------------------------------------------------------------------
-        self.cmb_product.currentIndexChanged.connect(lambda _=None: self._reload())
-        self.date_from.dateChanged.connect(lambda _=None: self._reload())
-        self.date_to.dateChanged.connect(lambda _=None: self._reload())
-        self.cmb_limit.currentIndexChanged.connect(lambda _=None: self._reload())
+        self.cmb_product.currentIndexChanged.connect(lambda _=None: self._schedule_reload())
+        self.cmb_product.lineEdit().textEdited.connect(lambda _=None: self._schedule_product_lookup())
+        self.date_from.dateChanged.connect(lambda _=None: self._schedule_reload())
+        self.date_to.dateChanged.connect(lambda _=None: self._schedule_reload())
+        self.cmb_limit.currentIndexChanged.connect(lambda _=None: self._schedule_reload())
         self.btn_refresh.clicked.connect(self._reload)
         self.btn_export_csv.clicked.connect(self._on_export_csv)
 
@@ -158,33 +174,26 @@ class TransactionsView(QWidget):
         w.setDate(w.minimumDate())
         w.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-    def _load_products(self) -> None:
+    def _load_products(self, search_text: str = "") -> None:
         """
-        Populate product combo box.
+        Populate product combo box with a capped lookup result.
         First item is '(All)' with userData=None.
 
         Works whether self.repo is InventoryRepo (has `.conn`) or a raw sqlite3.Connection.
         """
+        search_text = (search_text or "").strip()
         self.cmb_product.blockSignals(True)
         try:
             self.cmb_product.clear()
             self.cmb_product.addItem("(All)", userData=None)
 
-            # normalize to a connection
             conn = getattr(self.repo, "conn", None) or self.repo
-            rows = conn.execute(
-                "SELECT product_id AS id, name AS name FROM products ORDER BY name"
-            ).fetchall()
-
-            for r in rows:
-                # support both sqlite3.Row and tuples
-                if hasattr(r, "keys"):
-                    pid = int(r["id"])
-                    name = r["name"]
-                else:
-                    pid = int(r[0])
-                    name = r[1]
-                self.cmb_product.addItem(f"{name} (ID: {pid})", userData=pid)
+            for item in search_products(conn, search_text, limit=DEFAULT_PRODUCT_LOOKUP_LIMIT):
+                self.cmb_product.addItem(item.label, userData=item.product_id)
+            if search_text:
+                self.cmb_product.setEditText(search_text)
+            else:
+                self.cmb_product.setCurrentIndex(0)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:
@@ -195,7 +204,27 @@ class TransactionsView(QWidget):
     # ----------------------------------------------------------------------
     @property
     def selected_product_id(self) -> Optional[int]:
-        return self.cmb_product.currentData()
+        current = self.cmb_product.currentData()
+        current_index = self.cmb_product.currentIndex()
+        text = (self.cmb_product.currentText() or "").strip()
+        if (
+            current is not None
+            and current_index >= 0
+            and text == (self.cmb_product.itemText(current_index) or "").strip()
+        ):
+            return int(current)
+        if not text or text == "(All)":
+            return None
+        if text.endswith(")") and "(ID:" in text:
+            try:
+                start = text.rfind("(ID:") + len("(ID:")
+                end = text.rfind(")")
+                return int(text[start:end].strip())
+            except Exception:
+                pass
+        conn = getattr(self.repo, "conn", None) or self.repo
+        ids = product_ids_by_exact_name(conn, text)
+        return ids[0] if len(ids) == 1 else None
 
     @property
     def date_from_str(self) -> Optional[str]:
@@ -224,8 +253,21 @@ class TransactionsView(QWidget):
     # ----------------------------------------------------------------------
     # Actions
     # ----------------------------------------------------------------------
+    def _schedule_product_lookup(self) -> None:
+        self._product_lookup_timer.start()
+
+    def _refresh_product_lookup(self) -> None:
+        self._load_products(self.cmb_product.currentText())
+
+    def _schedule_reload(self) -> None:
+        if self._last_invalid_range is not None and not self._has_invalid_date_range():
+            self._reload()
+            return
+        self._reload_timer.start()
+
     def _reload(self) -> None:
         """Reload table with current filters."""
+        self._reload_timer.stop()
         if self._has_invalid_date_range():
             model = TransactionsTableModel([])
             self.tbl_txn.setModel(model)

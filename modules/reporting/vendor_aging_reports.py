@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, date
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt, QDate, QModelIndex, Slot
+from PySide6.QtCore import Qt, QDate, QModelIndex, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -43,6 +43,7 @@ from ...database.repositories.reporting_repo import ReportingRepo
 
 
 _EPS = 1e-9  # guard for tiny float noise when comparing remaining due
+OPEN_LOAD_DELAY_MS = 150
 
 
 def _days_between(older_yyyy_mm_dd: str, asof_yyyy_mm_dd: str) -> int:
@@ -53,6 +54,94 @@ def _days_between(older_yyyy_mm_dd: str, asof_yyyy_mm_dd: str) -> int:
         return (d2 - d1).days
     except Exception:
         return 0
+
+
+def _build_vendor_aging_rows(repo: ReportingRepo, as_of: str, max_rows: int) -> List[Dict]:
+    rows: List[Dict] = []
+
+    vendors = repo.get_all_vendors()
+    vendor_ids = [int(v["vendor_id"]) for v in vendors]
+    vendor_headers = repo.vendor_headers_as_of_batch(vendor_ids, as_of)
+
+    headers_by_vendor: dict[int, list] = {}
+    for header in vendor_headers:
+        vid = int(header["vendor_id"])
+        headers_by_vendor.setdefault(vid, []).append(header)
+
+    vendor_credits = repo.vendor_credit_as_of_batch(vendor_ids, as_of)
+
+    for v in vendors:
+        vid = int(v["vendor_id"])
+        vname = str(v["name"] or vid)
+
+        total_due = 0.0
+        b_0_30 = b_31_60 = b_61_90 = b_91_plus = 0.0
+
+        for h in headers_by_vendor.get(vid, []):
+            total_amount = float(h["total_amount"] or 0.0)
+            paid_amount = float(h["paid_amount"] or 0.0)
+            adv_applied = float(h["advance_payment_applied"] or 0.0)
+            raw_remaining = total_amount - paid_amount - adv_applied
+            remaining = raw_remaining if raw_remaining > _EPS else 0.0
+            if remaining <= 0.0:
+                continue
+
+            days = _days_between(str(h["date"]), as_of)
+            total_due += remaining
+            if days <= 30:
+                b_0_30 += remaining
+            elif days <= 60:
+                b_31_60 += remaining
+            elif days <= 90:
+                b_61_90 += remaining
+            else:
+                b_91_plus += remaining
+
+        if total_due == 0.0:
+            continue
+
+        rows.append({
+            "vendor_id": vid,
+            "name": vname,
+            "total_due": total_due,
+            "b_0_30": b_0_30,
+            "b_31_60": b_31_60,
+            "b_61_90": b_61_90,
+            "b_91_plus": b_91_plus,
+            "available_credit": vendor_credits.get(vid, 0.0),
+        })
+
+    rows.sort(key=lambda r: r["name"].lower())
+    return rows[:max_rows]
+
+
+class VendorAgingWorker(QThread):
+    result_ready = Signal(int, object)
+    error = Signal(int, str)
+
+    def __init__(self, token: int, db_path: str, as_of: str, max_rows: int) -> None:
+        super().__init__()
+        self.token = token
+        self.db_path = db_path
+        self.as_of = as_of
+        self.max_rows = max_rows
+
+    def run(self) -> None:
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            repo = ReportingRepo(conn)
+            self.result_ready.emit(
+                self.token,
+                _build_vendor_aging_rows(repo, self.as_of, self.max_rows),
+            )
+        except Exception as exc:
+            self.error.emit(self.token, str(exc))
+        finally:
+            if conn is not None:
+                conn.close()
 
 
 class VendorAgingTab(QWidget):
@@ -76,6 +165,14 @@ class VendorAgingTab(QWidget):
         super().__init__(parent)
         self.conn = conn
         self.repo = ReportingRepo(conn)
+        self._worker: VendorAgingWorker | None = None
+        self._workers: list[VendorAgingWorker] = []
+        self._refresh_token = 0
+        self._pending_open_row: tuple[int, str] | None = None
+        self._open_load_timer = QTimer(self)
+        self._open_load_timer.setSingleShot(True)
+        self._open_load_timer.setInterval(OPEN_LOAD_DELAY_MS)
+        self._open_load_timer.timeout.connect(self._load_pending_open_row)
 
         # Keep raw rows for export/drilldown
         self._aging_rows: List[Dict] = []
@@ -156,7 +253,64 @@ class VendorAgingTab(QWidget):
     def refresh(self) -> None:
         """Rebuild the aging snapshot and re-bind selection."""
         as_of = self.dt_asof.date().toString("yyyy-MM-dd")
-        self._aging_rows = self._build_vendor_aging(as_of)
+        db_path = self._database_path()
+        if not db_path:
+            self._apply_aging_rows(self._build_vendor_aging(as_of), as_of)
+            return
+
+        self._refresh_token += 1
+        token = self._refresh_token
+        self._open_load_timer.stop()
+        self._pending_open_row = None
+        self.model_open.set_rows([])
+        self.btn_refresh.setEnabled(False)
+
+        if self._worker and self._worker.isRunning():
+            self._worker.requestInterruption()
+
+        self._worker = VendorAgingWorker(token, db_path, as_of, self.MAX_ROWS)
+        self._workers.append(self._worker)
+        self._worker.result_ready.connect(self._on_worker_finished)
+        self._worker.error.connect(self._on_worker_error)
+        self._worker.start()
+
+    def _database_path(self) -> str | None:
+        try:
+            for row in self.conn.execute("PRAGMA database_list"):
+                seq = row["seq"] if hasattr(row, "keys") else row[0]
+                name = row["name"] if hasattr(row, "keys") else row[1]
+                path = row["file"] if hasattr(row, "keys") else row[2]
+                if int(seq) == 0 and str(name) == "main" and str(path or "").strip():
+                    return str(path)
+        except Exception:
+            return None
+        return None
+
+    def _on_worker_finished(self, token: int, rows: object) -> None:
+        self._forget_worker()
+        if token != self._refresh_token:
+            return
+        self.btn_refresh.setEnabled(True)
+        self._apply_aging_rows(list(rows or []), self.dt_asof.date().toString("yyyy-MM-dd"))
+
+    def _on_worker_error(self, token: int, error_msg: str) -> None:
+        self._forget_worker()
+        if token != self._refresh_token:
+            return
+        self.btn_refresh.setEnabled(True)
+        QMessageBox.warning(self, "Error", f"Error computing vendor aging:\n{error_msg}")
+
+    def _forget_worker(self) -> None:
+        worker = self.sender()
+        if isinstance(worker, VendorAgingWorker):
+            if worker in self._workers:
+                self._workers.remove(worker)
+            if self._worker is worker:
+                self._worker = None
+            worker.deleteLater()
+
+    def _apply_aging_rows(self, rows: List[Dict], as_of: str) -> None:
+        self._aging_rows = rows
         self.model_aging.set_rows(self._aging_rows)
         self._autosize(self.tbl_aging)
 
@@ -172,7 +326,7 @@ class VendorAgingTab(QWidget):
         # Auto-select first vendor if available
         if self.model_aging.rowCount() > 0:
             self.tbl_aging.selectRow(0)
-            self._load_open_for_row(0, as_of)
+            self._schedule_open_load(0, as_of)
         else:
             self.model_open.set_rows([])
             self._autosize(self.tbl_open)
@@ -186,78 +340,7 @@ class VendorAgingTab(QWidget):
         all vendor headers and credits in batch operations instead of individual queries.
         Expected performance improvement: 10x+ with 1000+ vendors.
         """
-        rows: List[Dict] = []
-        
-        # Performance optimization: Fetch all vendors in a single query to avoid individual lookups
-        vendors = self.repo.get_all_vendors()
-        vendor_ids = [int(v["vendor_id"]) for v in vendors]
-        
-        # Performance optimization: Batch fetch all vendor headers to avoid N+1 queries
-        vendor_headers = self.repo.vendor_headers_as_of_batch(vendor_ids, as_of)
-        
-        # Organize headers by vendor_id for efficient lookup
-        headers_by_vendor = {}
-        for header in vendor_headers:
-            vid = int(header["vendor_id"])
-            if vid not in headers_by_vendor:
-                headers_by_vendor[vid] = []
-            headers_by_vendor[vid].append(header)
-        
-        # Performance optimization: Batch fetch all vendor credits to avoid N+1 queries
-        vendor_credits = self.repo.vendor_credit_as_of_batch(vendor_ids, as_of)
-
-        for v in vendors:
-            vid = int(v["vendor_id"])
-            vname = str(v["name"] or vid)
-
-            total_due = 0.0
-            b_0_30 = b_31_60 = b_61_90 = b_91_plus = 0.0
-
-            # Use header roll-ups as of the selected date; these reflect trigger math:
-            # remaining = total_amount - paid_amount - advance_payment_applied
-            headers = headers_by_vendor.get(vid, [])  # Get headers from the pre-fetched batch
-            for h in headers:
-                total_amount = float(h["total_amount"] or 0.0)
-                paid_amount = float(h["paid_amount"] or 0.0)
-                adv_applied = float(h["advance_payment_applied"] or 0.0)
-                raw_remaining = total_amount - paid_amount - adv_applied
-                remaining = raw_remaining if raw_remaining > _EPS else 0.0
-                if remaining <= 0.0:
-                    continue
-
-                days = _days_between(str(h["date"]), as_of)
-                total_due += remaining
-                if days <= 30:
-                    b_0_30 += remaining
-                elif days <= 60:
-                    b_31_60 += remaining
-                elif days <= 90:
-                    b_61_90 += remaining
-                else:
-                    b_91_plus += remaining
-
-            if total_due == 0.0:
-                # Keep list concise; remove vendors with no outstanding balance.
-                continue
-
-            # Show available credit separately; not part of remaining due computation.
-            # Get credit from the pre-fetched batch instead of individual query
-            avail_credit = vendor_credits.get(vid, 0.0)
-
-            rows.append({
-                "vendor_id": vid,          # keep internal id for drill-down
-                "name": vname,
-                "total_due": total_due,
-                "b_0_30": b_0_30,
-                "b_31_60": b_31_60,
-                "b_61_90": b_61_90,
-                "b_91_plus": b_91_plus,
-                "available_credit": avail_credit,
-            })
-
-        # Sort by name ASC (model sorts visually too; keep deterministic data order)
-        rows.sort(key=lambda r: r["name"].lower())
-        return rows[: self.MAX_ROWS]
+        return _build_vendor_aging_rows(self.repo, as_of, self.MAX_ROWS)
 
     def _load_open_for_row(self, row_index: int, as_of: str) -> None:
         """Populate bottom table with open purchases for the selected vendor."""
@@ -311,7 +394,26 @@ class VendorAgingTab(QWidget):
             self._autosize(self.tbl_open)
             return
         row = indexes[0].row()
+        self._schedule_open_load(row, as_of)
+
+    def _schedule_open_load(self, row: int, as_of: str) -> None:
+        self._pending_open_row = (row, as_of)
+        self._open_load_timer.start()
+
+    def _load_pending_open_row(self) -> None:
+        pending = self._pending_open_row
+        self._pending_open_row = None
+        if pending is None:
+            return
+        row, as_of = pending
         self._load_open_for_row(row, as_of)
+
+    def cancel_refresh(self) -> None:
+        self._refresh_token += 1
+        self._pending_open_row = None
+        self._open_load_timer.stop()
+        if self._worker and self._worker.isRunning():
+            self._worker.requestInterruption()
 
     # ---------------------------- Export ---------------------------------
 

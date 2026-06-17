@@ -131,6 +131,7 @@ class SalesReportsTab(QWidget):
         self.repo = ReportingRepo(conn)
         self._loaded_rows: Dict[str, List[Dict[str, Any]]] = {}
         self._page_index: Dict[str, int] = {}
+        self._has_next_page: Dict[str, bool] = {}
         self._use_background_refresh = use_background_refresh
 
         self._build_ui()
@@ -451,7 +452,7 @@ class SalesReportsTab(QWidget):
             "top_products": ("top_products", filters["date_from"], filters["date_to"], filters["statuses"], filters["top_n"]),
             "returns_summary": ("returns_summary", filters["date_from"], filters["date_to"]),
             "status_breakdown": ("status_breakdown", filters["date_from"], filters["date_to"], filters["customer_id"], filters["product_id"], filters["category"]),
-            "drilldown": ("drilldown_sales", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"]),
+            "drilldown": ("drilldown_sales", filters["date_from"], filters["date_to"], filters["statuses"], filters["customer_id"], filters["product_id"], filters["category"], self.MAX_ROWS_PER_TABLE),
         }
         repo_method, *args = args_map[key]
         try:
@@ -486,12 +487,38 @@ class SalesReportsTab(QWidget):
                 row["remaining"] = total - paid - adv
         return out[: self.MAX_ROWS_PER_TABLE]
 
+    def _load_drilldown_page(self, filters: Dict[str, Any], page: int) -> None:
+        rows = self.repo.drilldown_sales(
+            filters["date_from"],
+            filters["date_to"],
+            filters["statuses"],
+            filters["customer_id"],
+            filters["product_id"],
+            filters["category"],
+            limit=self.PAGE_SIZE + 1,
+            offset=max(0, int(page)) * self.PAGE_SIZE,
+        )
+        out: List[Dict[str, Any]] = []
+        for row in rows or []:
+            rec = {k: row[k] for k in row.keys()} if hasattr(row, "keys") else dict(row)
+            total = float(rec.get("total_amount") or 0.0)
+            paid = float(rec.get("paid_amount") or 0.0)
+            adv = float(rec.get("advance_payment_applied") or 0.0)
+            rec["remaining"] = total - paid - adv
+            out.append(rec)
+        self._has_next_page["drilldown"] = len(out) > self.PAGE_SIZE
+        self._loaded_rows["drilldown"] = out[: self.PAGE_SIZE]
+
     def _ensure_loaded(self, key: str, force: bool = False) -> None:
         if not force and key in self._loaded_rows:
             return
         filters = self._filters()
         with self.repo.read_snapshot():
-            self._loaded_rows[key] = self._load_key(key, filters)
+            if key == "drilldown":
+                self._load_drilldown_page(filters, self._page_index.get(key, 0))
+            else:
+                self._has_next_page[key] = False
+                self._loaded_rows[key] = self._load_key(key, filters)
         self._apply_page(key)
 
     def refresh_active_page(self) -> None:
@@ -507,12 +534,11 @@ class SalesReportsTab(QWidget):
         if not self._validate_date_ranges():
             return
         self._loaded_rows.clear()
-        filters = self._filters()
-        with self.repo.read_snapshot():
-            for key in self._TAB_KEYS:
-                self._loaded_rows[key] = self._load_key(key, filters)
-        for key in self._TAB_KEYS:
-            self._apply_page(key)
+        self._has_next_page.clear()
+        self._page_index.clear()
+        key = self._current_table_key()
+        if key:
+            self._ensure_loaded(key, force=True)
         self._sync_page_label()
 
     # -------------- Export helpers --------------
@@ -590,6 +616,9 @@ class SalesReportsTab(QWidget):
         return self._TAB_KEYS[idx]
 
     def _max_page(self, key: str) -> int:
+        if key == "drilldown":
+            current = self._page_index.get(key, 0)
+            return current + (1 if self._has_next_page.get(key, False) else 0)
         rows = self._loaded_rows.get(key, [])
         if not rows:
             return 0
@@ -603,7 +632,7 @@ class SalesReportsTab(QWidget):
         if not tv:
             return
         rows = self._loaded_rows.get(key, [])
-        start = self._page_index[key] * self.PAGE_SIZE
+        start = 0 if key == "drilldown" else self._page_index[key] * self.PAGE_SIZE
         model: _SimpleTableModel = tv.model()  # type: ignore
         model.set_rows(rows[start:start + self.PAGE_SIZE])
         maybe_resize_columns(tv)
@@ -614,14 +643,20 @@ class SalesReportsTab(QWidget):
         if not key:
             return
         self._page_index[key] = max(0, self._page_index.get(key, 0) - 1)
-        self._apply_page(key)
+        if key == "drilldown":
+            self._ensure_loaded(key, force=True)
+        else:
+            self._apply_page(key)
 
     def _next_page(self) -> None:
         key = self._current_table_key()
         if not key:
             return
         self._page_index[key] = min(self._max_page(key), self._page_index.get(key, 0) + 1)
-        self._apply_page(key)
+        if key == "drilldown":
+            self._ensure_loaded(key, force=True)
+        else:
+            self._apply_page(key)
 
     def _sync_page_label(self) -> None:
         key = self._current_table_key()

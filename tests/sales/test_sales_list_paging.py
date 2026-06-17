@@ -7,6 +7,26 @@ from inventory_management.modules.sales.controller import SalesController, Sales
 from inventory_management.modules.sales.model import SalesTableModel
 
 
+class _ButtonStub:
+    def __init__(self):
+        self.enabled = None
+        self.tooltip = ""
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+    def setToolTip(self, text):
+        self.tooltip = text
+
+
+class _LabelStub:
+    def __init__(self):
+        self.text = ""
+
+    def setText(self, text):
+        self.text = text
+
+
 def _sales_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -180,10 +200,14 @@ def test_sales_search_reload_resets_to_first_page():
 def test_sales_status_filter_resets_to_first_page():
     reload_offsets: list[int] = []
 
+    class ProxyShouldStayIdle(SalesStatusProxy):
+        def set_status_filter(self, status: str):
+            raise AssertionError("status filter should be SQL-backed")
+
     controller = SalesController.__new__(SalesController)
     controller._page_offset = 200
     controller._status_filter = "all"
-    controller.proxy = SimpleNamespace()
+    controller.proxy = ProxyShouldStayIdle()
     controller.view = SimpleNamespace(
         status_filter=SimpleNamespace(
             currentData=lambda: "paid",
@@ -211,3 +235,179 @@ def test_sales_next_and_prev_page_move_by_page_size():
     controller._prev_page()
 
     assert reload_offsets == [controller.PAGE_SIZE, 0]
+
+
+def test_sales_table_model_indexes_rows_by_sale_id():
+    model = SalesTableModel(
+        [
+            {"sale_id": "SO-1", "date": "", "customer_name": "", "total_amount": 0, "paid_amount": 0, "payment_status": "unpaid"},
+            {"sale_id": "SO-2", "date": "", "customer_name": "", "total_amount": 0, "paid_amount": 0, "payment_status": "paid"},
+        ]
+    )
+
+    assert model.row_for_sale_id("SO-2") == 1
+    assert model.row_for_sale_id("SO-MISSING") is None
+
+    model.replace(
+        [
+            {"sale_id": "SO-3", "date": "", "customer_name": "", "total_amount": 0, "paid_amount": 0, "payment_status": "unpaid"}
+        ]
+    )
+
+    assert model.row_for_sale_id("SO-2") is None
+    assert model.row_for_sale_id("SO-3") == 0
+
+
+def test_select_row_by_sale_id_uses_model_row_map(app):
+    selected_rows: list[int] = []
+    scroll_rows: list[int] = []
+
+    class ProxyNoLoop(SalesStatusProxy):
+        def rowCount(self, parent=None):
+            raise AssertionError("restore should not scan proxy rows")
+
+    controller = SalesController.__new__(SalesController)
+    controller.base = SalesTableModel(
+        [
+            {"sale_id": "SO-1", "date": "", "customer_name": "", "total_amount": 0, "paid_amount": 0, "payment_status": "unpaid"},
+            {"sale_id": "SO-2", "date": "", "customer_name": "", "total_amount": 0, "paid_amount": 0, "payment_status": "paid"},
+        ]
+    )
+    controller.proxy = ProxyNoLoop()
+    controller.proxy.setSourceModel(controller.base)
+    controller.view = SimpleNamespace(
+        tbl=SimpleNamespace(
+            selectRow=lambda row: selected_rows.append(row),
+            scrollTo=lambda index: scroll_rows.append(index.row()),
+        )
+    )
+
+    assert controller._select_row_by_sale_id("SO-2") is True
+    assert selected_rows == [1]
+    assert scroll_rows == [1]
+    assert controller._select_row_by_sale_id("SO-MISSING") is False
+
+
+def test_sales_selection_defers_detail_queries():
+    starts: list[bool] = []
+
+    controller = SalesController.__new__(SalesController)
+    controller._doc_type = "sale"
+    controller._detail_request_token = 0
+    controller._selected_row = lambda: {
+        "sale_id": "SO-DEFER",
+        "customer_id": 1,
+        "payment_status": "unpaid",
+    }
+    controller._detail_timer = SimpleNamespace(start=lambda: starts.append(True))
+    controller.repo = SimpleNamespace(
+        get_sale_detail_snapshot=lambda sale_id: (_ for _ in ()).throw(
+            AssertionError("selection should defer detail query")
+        )
+    )
+    controller.view = SimpleNamespace(
+        btn_edit=_ButtonStub(),
+        btn_print=_ButtonStub(),
+        btn_return=_ButtonStub(),
+        lbl_return_eligibility=_LabelStub(),
+        btn_record_payment=_ButtonStub(),
+        btn_apply_credit=_ButtonStub(),
+        btn_convert=_ButtonStub(),
+    )
+
+    controller._on_selection_changed()
+
+    assert starts == [True]
+    assert controller.view.btn_return.enabled is False
+    assert controller.view.lbl_return_eligibility.text == "Return eligibility loading."
+
+
+def test_sales_sync_details_uses_single_snapshot():
+    snapshot_calls: list[str] = []
+    item_rows: list[list[dict]] = []
+    payment_rows: list[list[dict]] = []
+    detail_payloads: list[dict] = []
+
+    class RepoStub:
+        def get_sale_detail_snapshot(self, sale_id):
+            snapshot_calls.append(sale_id)
+            return {
+                "header": {
+                    "sale_id": sale_id,
+                    "customer_id": 1,
+                    "customer_name": "Alpha Customer",
+                    "order_discount": 1.0,
+                    "total_amount": 20.0,
+                    "paid_amount": 5.0,
+                    "doc_type": "sale",
+                },
+                "items": [
+                    {
+                        "item_id": 1,
+                        "sale_id": sale_id,
+                        "product_id": 1,
+                        "product_name": "Widget",
+                        "quantity": 2.0,
+                        "uom_id": 1,
+                        "unit_name": "Piece",
+                        "unit_price": 10.0,
+                        "item_discount": 1.0,
+                    }
+                ],
+                "summary": {
+                    "returned_qty": 0.0,
+                    "returned_value": 0.0,
+                    "gross_total_amount": 20.0,
+                    "net_total_amount": 18.0,
+                    "paid_amount": 5.0,
+                    "advance_payment_applied": 0.0,
+                    "calculated_total_amount": 18.0,
+                    "remaining_due": 13.0,
+                },
+                "payments": [{"payment_id": 1, "sale_id": sale_id, "amount": 5.0}],
+                "customer_credit_balance": 20.0,
+                "returnable_lines": 1,
+            }
+
+        def list_items(self, sale_id):
+            raise AssertionError("items must come from detail snapshot")
+
+        def get_sale_detail_summary(self, sale_id):
+            raise AssertionError("summary must come from detail snapshot")
+
+    controller = SalesController.__new__(SalesController)
+    controller._doc_type = "sale"
+    controller._last_detail_key = None
+    controller._detail_request_token = 1
+    controller._selected_row = lambda: {
+        "sale_id": "SO-SNAPSHOT",
+        "customer_id": 1,
+        "customer_name": "Alpha Customer",
+        "order_discount": 1.0,
+        "total_amount": 20.0,
+    }
+    controller.repo = RepoStub()
+    controller.view = SimpleNamespace(
+        items=SimpleNamespace(set_rows=lambda rows: item_rows.append(rows)),
+        payments=SimpleNamespace(set_rows=lambda rows: payment_rows.append(rows)),
+        details=SimpleNamespace(
+            set_mode=lambda mode: None,
+            set_data=lambda payload: detail_payloads.append(payload),
+        ),
+        btn_edit=_ButtonStub(),
+        btn_print=_ButtonStub(),
+        btn_return=_ButtonStub(),
+        lbl_return_eligibility=_LabelStub(),
+        btn_record_payment=_ButtonStub(),
+        btn_apply_credit=_ButtonStub(),
+        btn_convert=_ButtonStub(),
+    )
+
+    controller._sync_details_impl(token=1)
+
+    assert snapshot_calls == ["SO-SNAPSHOT"]
+    assert len(item_rows[0]) == 1
+    assert payment_rows[0][0]["payment_id"] == 1
+    assert detail_payloads[0]["remaining_due"] == 13.0
+    assert controller.view.btn_return.enabled is True
+    assert controller.view.btn_apply_credit.enabled is True

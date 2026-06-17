@@ -155,6 +155,20 @@ def test_perform_search_uses_repo_query_path(controller):
     assert controller.base.rowCount() == 1
 
 
+def test_reload_defers_purchase_detail_snapshot(controller):
+    row = _purchase_row(purchase_id="PO-DEFER-1")
+    controller.repo.list_purchases = MagicMock(return_value=[row])
+    controller.repo.get_purchase_detail_snapshot = MagicMock(
+        side_effect=AssertionError("detail snapshot should be deferred")
+    )
+
+    controller._reload()
+
+    controller.repo.get_purchase_detail_snapshot.assert_not_called()
+    assert controller.view.details.lab_id.text() == "PO-DEFER-1"
+    assert controller.view.items.model.rowCount() == 0
+
+
 def test_sync_details_uses_snapshot_once_per_selected_purchase(controller):
     row = _purchase_row(purchase_id="PO-SNAPSHOT-1")
     detail_row = dict(row)
@@ -192,6 +206,7 @@ def test_sync_details_uses_snapshot_once_per_selected_purchase(controller):
 
     controller._reload()
     controller._sync_details()
+    controller._run_deferred_detail_sync()
 
     controller.repo.get_purchase_detail_snapshot.assert_called_once_with("PO-SNAPSHOT-1")
     assert controller.view.details.lab_id.text() == "PO-SNAPSHOT-1"

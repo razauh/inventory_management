@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QTimer
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QTimer, QObject, QEvent
 import sqlite3, datetime, time
 from typing import Optional
 import logging
@@ -78,6 +78,7 @@ class PurchaseController(BaseModule):
         self.conn = conn
         self.user = current_user
         self.view = PurchaseView()
+        self.view.installEventFilter(self)
         self.repo = PurchasesRepo(conn)
         self.payments = PurchasePaymentsRepo(conn)
         self.vadv = VendorAdvancesRepo(conn)
@@ -86,6 +87,7 @@ class PurchaseController(BaseModule):
         self.products = ProductsRepo(conn)
         self._table_initialized = False
         self._last_detail_purchase_id: str | None = None
+        self._detail_request_token = 0
         self.base = PurchasesTableModel([])
         self.proxy = QSortFilterProxyModel(self.view)
         self.proxy.setSourceModel(self.base)
@@ -94,12 +96,26 @@ class PurchaseController(BaseModule):
         self.view.tbl.setModel(self.proxy)
         sel = self.view.tbl.selectionModel()
         if sel is not None:
-            sel.selectionChanged.connect(self._sync_details)
+            sel.selectionChanged.connect(self._schedule_details_update)
         self._wire()
         self._reload()
 
     def get_widget(self) -> QWidget:
         return self.view
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        view = getattr(self, "view", None)
+        if view is not None and obj is view and event.type() in (QEvent.Close, QEvent.Destroy):
+            try:
+                self._detail_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._search_timer.stop()
+            except Exception:
+                pass
+            self._detail_request_token += 1
+        return super().eventFilter(obj, event)
 
     def _wire(self):
         self.view.btn_add.clicked.connect(self._add)
@@ -111,6 +127,10 @@ class PurchaseController(BaseModule):
         self._search_timer = QTimer()
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._perform_search)
+        self._detail_timer = QTimer(self.view)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(75)
+        self._detail_timer.timeout.connect(self._run_deferred_detail_sync)
         
         # Connect search text changes to the debounced handler
         self.view.search.textChanged.connect(self._on_search_text_changed)
@@ -133,14 +153,9 @@ class PurchaseController(BaseModule):
 
         if self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
-            self._sync_details()
+            self._schedule_details_update()
         else:
-            self.view.details.set_data(None)
-            self.view.items.set_rows([])
-            try:
-                self.view.details.clear_payment_summary()
-            except Exception:
-                pass
+            self._clear_detail_views()
 
     def _on_search_text_changed(self, text):
         """Handle search text changes with adaptive debouncing."""
@@ -161,14 +176,9 @@ class PurchaseController(BaseModule):
         self.base.replace(self._load_purchase_rows())
         if self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
-            self._sync_details()
+            self._schedule_details_update()
         else:
-            self.view.details.set_data(None)
-            self.view.items.set_rows([])
-            try:
-                self.view.details.clear_payment_summary()
-            except Exception:
-                pass
+            self._clear_detail_views()
 
     def _apply_filter(self, _=None):  # parameter can be text or checked state
         """Apply filter when radio button selection changes."""
@@ -186,36 +196,78 @@ class PurchaseController(BaseModule):
         except Exception:
             return r
 
-    def _sync_details(self, *args):
+    def _clear_detail_views(self):
+        self._last_detail_purchase_id = None
+        self.view.details.set_data(None)
+        self.view.items.set_rows([])
+        try:
+            self.view.details.clear_payment_summary()
+        except Exception:
+            pass
+
+    def _clear_deferred_detail_views(self):
+        self.view.items.set_rows([])
+        try:
+            self.view.details.clear_payment_summary()
+        except Exception:
+            pass
+
+    def _schedule_details_update(self, *args):
         row = self._selected_row_dict()
-        if row:
-            purchase_id = row["purchase_id"]
-            if purchase_id == self._last_detail_purchase_id:
-                return
-            self._last_detail_purchase_id = purchase_id
-            snapshot = self.repo.get_purchase_detail_snapshot(purchase_id)
-            detail_row = snapshot.get("row") or dict(row)
-            self.view.details.set_data(detail_row)
-            self.view.items.set_rows(snapshot.get("items") or [])
-            payment_summary = snapshot.get("payment_summary")
-            if payment_summary:
-                try:
-                    self.view.details.set_payment_summary(payment_summary)
-                except Exception:
-                    pass
-            else:
-                try:
-                    self.view.details.clear_payment_summary()
-                except Exception:
-                    pass
+        if not row:
+            self._detail_request_token += 1
+            self._clear_detail_views()
+            return
+
+        purchase_id = str(row.get("purchase_id") or "")
+        if purchase_id == self._last_detail_purchase_id:
+            return
+
+        self._detail_request_token += 1
+        self.view.details.set_data(row)
+        self._clear_deferred_detail_views()
+        self._detail_timer.start()
+
+    def _run_deferred_detail_sync(self):
+        self._sync_details(token=self._detail_request_token)
+
+    def _sync_details(self, *args, token: int | None = None):
+        row = self._selected_row_dict()
+        if not row:
+            self._clear_detail_views()
+            return
+
+        purchase_id = str(row["purchase_id"])
+        if token is None:
+            self._detail_request_token += 1
+            try:
+                self._detail_timer.stop()
+            except Exception:
+                pass
+        if token is not None and token != self._detail_request_token:
+            return
+        if purchase_id == self._last_detail_purchase_id:
+            return
+
+        snapshot = self.repo.get_purchase_detail_snapshot(purchase_id)
+        if token is not None and token != self._detail_request_token:
+            return
+
+        detail_row = snapshot.get("row") or dict(row)
+        self.view.details.set_data(detail_row)
+        self.view.items.set_rows(snapshot.get("items") or [])
+        payment_summary = snapshot.get("payment_summary")
+        if payment_summary:
+            try:
+                self.view.details.set_payment_summary(payment_summary)
+            except Exception:
+                pass
         else:
-            self._last_detail_purchase_id = None
-            self.view.details.set_data(None)
-            self.view.items.set_rows([])
             try:
                 self.view.details.clear_payment_summary()
             except Exception:
                 pass
+        self._last_detail_purchase_id = purchase_id
 
     def _current_search_field(self) -> str:
         if self.view.rb_id.isChecked():

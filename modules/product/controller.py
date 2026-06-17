@@ -24,6 +24,7 @@ from .model import ProductsTableModel
 from .components import ProductSummary
 from ...database.repositories.products_repo import ProductsRepo, DomainError
 from ...utils.ui_helpers import info, error
+from ...utils.product_lookup import invalidate_product_lookup_cache
 from ...utils.validators import try_parse_float
 
 
@@ -495,6 +496,7 @@ class ProductController(BaseModule):
         except (DomainError, sqlite3.IntegrityError, ValueError) as e:
             error(self.view, "Not saved", str(e))
             return
+        invalidate_product_lookup_cache(self.conn)
         info(self.view, "Saved", f"Product #{pid} created.")
         self._reload(force_summary=True)
 
@@ -548,7 +550,8 @@ class ProductController(BaseModule):
                 f"Skipped/failed rows: {result.failed_count}"
             ),
         )
-        self._reload(force_summary=True)
+        invalidate_product_lookup_cache(self.conn)
+        self._reload()
 
     def _edit(self):
         pid = self._selected_id()
@@ -594,6 +597,7 @@ class ProductController(BaseModule):
         except (DomainError, sqlite3.IntegrityError, ValueError) as e:
             error(self.view, "Not saved", str(e))
             return
+        invalidate_product_lookup_cache(self.conn)
         info(self.view, "Saved", f"Product #{pid} updated.")
         self._reload(force_summary=True)
 
@@ -624,6 +628,7 @@ class ProductController(BaseModule):
             # Exact domain message, e.g. "Cannot delete product: it is referenced by transactions or mappings..."
             error(self.view, "Blocked", str(de))
             return
+        invalidate_product_lookup_cache(self.conn)
         info(self.view, "Deleted", f"Product #{pid} deleted.")
         self._reload(force_summary=True)
 

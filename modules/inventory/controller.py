@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
-from PySide6.QtWidgets import QMessageBox, QWidget, QTabWidget, QVBoxLayout
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QMessageBox, QWidget, QTabWidget, QVBoxLayout, QComboBox
 
 from ..base_module import BaseModule
 
 from ...database.repositories.inventory_repo import InventoryRepo
+from ...utils.product_lookup import DEFAULT_PRODUCT_LOOKUP_LIMIT, product_ids_by_exact_name, search_products
 from .model import TransactionsTableModel
 from .view import InventoryView
 from .transactions import TransactionsView
@@ -27,6 +29,10 @@ class InventoryController(BaseModule):
         self.conn = conn
         self.user = current_user
         self._repo = InventoryRepo(conn)
+        self._adjustment_lookup_timer = QTimer()
+        self._adjustment_lookup_timer.setSingleShot(True)
+        self._adjustment_lookup_timer.setInterval(150)
+        self._adjustment_lookup_timer.timeout.connect(self._refresh_adjustment_product_lookup)
 
         # Root container (tabbed)
         self._root = QWidget()
@@ -63,31 +69,60 @@ class InventoryController(BaseModule):
     # Adjustment wiring
     # ------------------------------------------------------------------
     def _wire_adjustment_view(self) -> None:
+        self._adjustment_view.cmb_product.setEditable(True)
+        self._adjustment_view.cmb_product.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._adjustment_view.cmb_product.currentIndexChanged.connect(
             lambda _=None: self._on_adjustment_product_changed()
         )
+        self._adjustment_view.cmb_product.lineEdit().textEdited.connect(
+            lambda _=None: self._schedule_adjustment_product_lookup()
+        )
         self._adjustment_view.btn_record.clicked.connect(self._record_adjustment)
 
-    def _reload_adjustment_products(self) -> None:
+    def _reload_adjustment_products(self, search_text: str = "") -> None:
         view = self._adjustment_view
+        search_text = (search_text or "").strip()
         view.cmb_product.blockSignals(True)
         try:
             view.cmb_product.clear()
             view.cmb_product.addItem("Select product...", userData=None)
-            rows = self.conn.execute(
-                "SELECT product_id, name FROM products ORDER BY name, product_id"
-            ).fetchall()
-            for row in rows:
-                if hasattr(row, "keys"):
-                    pid = int(row["product_id"])
-                    name = str(row["name"])
-                else:
-                    pid = int(row[0])
-                    name = str(row[1])
-                view.cmb_product.addItem(f"{name} (ID: {pid})", userData=pid)
+            for item in search_products(self.conn, search_text, limit=DEFAULT_PRODUCT_LOOKUP_LIMIT):
+                view.cmb_product.addItem(item.label, userData=item.product_id)
+            if search_text:
+                view.cmb_product.setEditText(search_text)
+            else:
+                view.cmb_product.setCurrentIndex(0)
         finally:
             view.cmb_product.blockSignals(False)
         self._on_adjustment_product_changed()
+
+    def _schedule_adjustment_product_lookup(self) -> None:
+        self._adjustment_lookup_timer.start()
+
+    def _refresh_adjustment_product_lookup(self) -> None:
+        self._reload_adjustment_products(self._adjustment_view.cmb_product.currentText())
+
+    def _selected_adjustment_product_id(self) -> int | None:
+        current = self._adjustment_view.cmb_product.currentData()
+        current_index = self._adjustment_view.cmb_product.currentIndex()
+        text = (self._adjustment_view.cmb_product.currentText() or "").strip()
+        if (
+            current is not None
+            and current_index >= 0
+            and text == (self._adjustment_view.cmb_product.itemText(current_index) or "").strip()
+        ):
+            return int(current)
+        if not text or text == "Select product...":
+            return None
+        if text.endswith(")") and "(ID:" in text:
+            try:
+                start = text.rfind("(ID:") + len("(ID:")
+                end = text.rfind(")")
+                return int(text[start:end].strip())
+            except Exception:
+                pass
+        ids = product_ids_by_exact_name(self.conn, text)
+        return ids[0] if len(ids) == 1 else None
 
     def _reload_adjustment_uoms(self, product_id: int) -> None:
         view = self._adjustment_view
@@ -128,7 +163,7 @@ class InventoryController(BaseModule):
             view.cmb_uom.blockSignals(False)
 
     def _on_adjustment_product_changed(self) -> None:
-        product_id = self._adjustment_view.selected_product_id
+        product_id = self._selected_adjustment_product_id()
         if product_id is None:
             self._adjustment_view.cmb_uom.blockSignals(True)
             try:
@@ -144,7 +179,7 @@ class InventoryController(BaseModule):
         self._adjustment_view.tbl_recent.setModel(TransactionsTableModel(rows))
 
     def _record_adjustment(self) -> None:
-        product_id = self._adjustment_view.selected_product_id
+        product_id = self._selected_adjustment_product_id()
         uom_id = self._adjustment_view.selected_uom_id
         qty_text = self._adjustment_view.quantity_text
         date_text = self._adjustment_view.date_text

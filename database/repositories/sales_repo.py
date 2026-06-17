@@ -1156,6 +1156,85 @@ class SalesRepo:
             "remaining_due": float(row["remaining_due"] or 0.0),
         }
 
+    def get_sale_detail_snapshot(self, sale_id: str) -> dict:
+        header = self.conn.execute(
+            """
+            SELECT s.*, c.name AS customer_name
+              FROM sales s
+              JOIN customers c ON c.customer_id = s.customer_id
+             WHERE s.sale_id = ?
+            """,
+            (sale_id,),
+        ).fetchone()
+        if not header:
+            raise ValueError(f"Unknown sale_id: {sale_id}")
+
+        items = self.list_items(sale_id)
+        summary = self.get_sale_detail_summary(sale_id)
+        doc_type = str(header["doc_type"] or "sale")
+
+        payments: list[sqlite3.Row] = []
+        customer_credit_balance: float | None = None
+        returnable_lines = 0
+        if doc_type == "sale":
+            payments = self.conn.execute(
+                """
+                SELECT *
+                  FROM sale_payments
+                 WHERE sale_id = ?
+                 ORDER BY date ASC, payment_id ASC
+                """,
+                (sale_id,),
+            ).fetchall()
+            credit_row = self.conn.execute(
+                """
+                SELECT balance
+                  FROM v_customer_advance_balance
+                 WHERE customer_id = ?
+                """,
+                (int(header["customer_id"]),),
+            ).fetchone()
+            customer_credit_balance = (
+                float(credit_row["balance"])
+                if credit_row and credit_row["balance"] is not None
+                else 0.0
+            )
+            returnable = self.conn.execute(
+                """
+                SELECT COUNT(*) AS line_count
+                  FROM (
+                    SELECT
+                      si.item_id,
+                      MAX(
+                        0.0,
+                        SUM(CAST(si.quantity AS REAL)) - COALESCE((
+                          SELECT SUM(CAST(it.quantity AS REAL))
+                            FROM inventory_transactions it
+                           WHERE it.transaction_type = 'sale_return'
+                             AND it.reference_table = 'sales'
+                             AND it.reference_id = si.sale_id
+                             AND it.reference_item_id = si.item_id
+                        ), 0.0)
+                      ) AS remaining_qty
+                    FROM sale_items si
+                   WHERE si.sale_id = ?
+                   GROUP BY si.item_id
+                  )
+                 WHERE remaining_qty > 0.000000001
+                """,
+                (sale_id,),
+            ).fetchone()
+            returnable_lines = int(returnable["line_count"] if returnable else 0)
+
+        return {
+            "header": dict(header),
+            "items": [dict(row) for row in items],
+            "summary": summary,
+            "payments": [dict(row) for row in payments],
+            "customer_credit_balance": customer_credit_balance,
+            "returnable_lines": returnable_lines,
+        }
+
     def get_receivable_position(self, sale_id: str, return_value: float = 0.0) -> dict:
         row = self.conn.execute(
             """

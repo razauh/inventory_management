@@ -13,8 +13,23 @@ class SalesTableModel(QAbstractTableModel):
     def __init__(self, rows: list, doc_type: str = "sale"):
         super().__init__()
         self._rows = rows
+        self._row_by_sale_id = self._build_row_index()
         self._doc_type = doc_type
         self._update_headers()
+
+    def _build_row_index(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for row_index, row in enumerate(self._rows):
+            try:
+                sale_id = str(row.get("sale_id") or "")
+            except AttributeError:
+                try:
+                    sale_id = str(row["sale_id"] or "")
+                except (KeyError, IndexError, TypeError):
+                    sale_id = ""
+            if sale_id:
+                out[sale_id] = row_index
+        return out
 
     def _update_headers(self):
         if self._doc_type == "quotation":
@@ -74,9 +89,16 @@ class SalesTableModel(QAbstractTableModel):
     def at(self, row: int) -> dict:
         return self._rows[row]
 
+    def row_for_sale_id(self, sale_id: str | None) -> int | None:
+        sale_id = str(sale_id or "")
+        if not sale_id:
+            return None
+        return self._row_by_sale_id.get(sale_id)
+
     def replace(self, rows: list):
         self.beginResetModel()
         self._rows = rows
+        self._row_by_sale_id = self._build_row_index()
         self.endResetModel()
 
 

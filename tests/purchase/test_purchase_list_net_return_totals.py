@@ -197,7 +197,7 @@ def test_search_purchases_and_detail_snapshot_return_sql_backed_results(purchase
     )
 
     vendor_rows = repo.search_purchases("Purchase List Vendor", search_field="vendor")
-    status_rows = repo.search_purchases("paid", search_field="status")
+    status_rows = repo.search_purchases("partial", search_field="status")
     snapshot = repo.get_purchase_detail_snapshot("PO-LIST-NET")
 
     assert [row["purchase_id"] for row in vendor_rows] == ["PO-LIST-NET"]
@@ -207,3 +207,34 @@ def test_search_purchases_and_detail_snapshot_return_sql_backed_results(purchase
     assert snapshot["row"]["remaining_due"] == pytest.approx(40.0)
     assert len(snapshot["items"]) == 1
     assert snapshot["payment_summary"]["method"] == "Cash"
+
+
+def test_search_purchases_all_uses_text_fields_not_numeric_casts(purchase_list_db):
+    conn, ids = purchase_list_db
+    repo = _create_purchase(conn, ids)
+
+    numeric_rows = repo.search_purchases("100.0", search_field="all")
+    id_rows = repo.search_purchases("PO-LIST", search_field="all")
+    vendor_rows = repo.search_purchases("Purchase List", search_field="all")
+
+    assert numeric_rows == []
+    assert [row["purchase_id"] for row in id_rows] == ["PO-LIST-NET"]
+    assert [row["purchase_id"] for row in vendor_rows] == ["PO-LIST-NET"]
+
+
+def test_search_purchases_status_uses_exact_match(purchase_list_db):
+    conn, ids = purchase_list_db
+    repo = _create_purchase(conn, ids)
+    conn.execute(
+        """
+        INSERT INTO purchases (
+            purchase_id, vendor_id, date, total_amount, order_discount,
+            payment_status, paid_amount, advance_payment_applied, notes, created_by
+        ) VALUES ('PO-PAID-ONLY', ?, '2026-06-11', 10.0, 0.0, 'paid', 10.0, 0.0, NULL, NULL)
+        """,
+        (ids["vendor_id"],),
+    )
+
+    rows = repo.search_purchases("paid", search_field="status")
+
+    assert [row["purchase_id"] for row in rows] == ["PO-PAID-ONLY"]

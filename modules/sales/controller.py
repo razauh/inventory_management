@@ -27,7 +27,10 @@ _log = logging.getLogger(__name__)
 
 class SalesStatusProxy(QSortFilterProxyModel):
     """
-    Filter sales by payment status and quotations by quotation status.
+    Compatibility proxy for the sales table.
+
+    Status filtering is handled by SalesRepo queries so changing status does
+    not scan loaded rows on the UI thread.
     """
 
     def __init__(self, parent=None):
@@ -36,40 +39,14 @@ class SalesStatusProxy(QSortFilterProxyModel):
         self._doc_type = "sale"
 
     def set_status_filter(self, status: str):
-        status = (status or "all").lower()
-        if status != self._status_filter:
-            self._status_filter = status
-            self.invalidateFilter()
+        self._status_filter = (status or "all").lower()
 
     def set_doc_type(self, doc_type: str):
         self._doc_type = (doc_type or "sale").lower()
         self.invalidateFilter()
 
     def filterAcceptsRow(self, source_row, source_parent):
-        if self._status_filter == "all":
-            return True
-        src_model = self.sourceModel()
-        if not hasattr(src_model, "at"):
-            return True
-        try:
-            row = src_model.at(source_row)
-        except Exception:
-            return True
-
-        try:
-            key = "quotation_status" if self._doc_type == "quotation" else "payment_status"
-            status = row.get(key, "") if isinstance(row, dict) else row[key]
-        except Exception:
-            status = ""
-        status = str(status or "").lower()
-
-        if self._status_filter == "paid":
-            return status == "paid"
-        if self._status_filter == "unpaid":
-            return status == "unpaid"
-        if self._status_filter == "partial":
-            return status in ("partial", "partial_paid")
-        return status == self._status_filter
+        return True
 
 
 class SalesController(BaseModule):
@@ -121,6 +98,7 @@ class SalesController(BaseModule):
         self._table_initialized = False
         self._page_offset = 0
         self._total_sales = 0
+        self._detail_request_token = 0
 
         # Repos using the shared connection
         self.repo = SalesRepo(conn)
@@ -146,6 +124,10 @@ class SalesController(BaseModule):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)
         self._search_timer.timeout.connect(self._run_search_reload)
+        self._detail_timer = QTimer(self.view)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(75)
+        self._detail_timer.timeout.connect(self._run_deferred_detail_sync)
 
         self.base = SalesTableModel([], doc_type=self._doc_type)
         self.proxy = SalesStatusProxy(self.view)
@@ -153,7 +135,6 @@ class SalesController(BaseModule):
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy.setFilterKeyColumn(-1)
         self.proxy.set_doc_type(self._doc_type)
-        self.proxy.set_status_filter(self._status_filter)
         self.view.tbl.setModel(self.proxy)
         sel = self.view.tbl.selectionModel()
         if sel is not None:
@@ -278,11 +259,6 @@ class SalesController(BaseModule):
             except Exception:
                 value = "all"
         self._status_filter = str(value or "all").lower()
-        try:
-            if isinstance(self.proxy, SalesStatusProxy):
-                self.proxy.set_status_filter(self._status_filter)
-        except Exception:
-            pass
         self._page_offset = 0
         self._reload()
 
@@ -346,9 +322,9 @@ class SalesController(BaseModule):
     def _on_selection_changed(self, *_):
         # Enable/disable buttons then refresh details
         self._update_action_states()
-        self._sync_details()
+        self._schedule_details_update()
 
-    def _update_action_states(self):
+    def _update_action_states(self, detail_payload: dict | None = None):
         """Guard toolbar buttons by selection and mode."""
         row = self._selected_row()
         selected = row is not None
@@ -363,8 +339,10 @@ class SalesController(BaseModule):
         allow_sales = (self._doc_type == "sale") and selected
         return_allowed = False
         return_message = "Select a sale to check return eligibility."
-        if allow_sales:
-            return_allowed, return_message = self._return_eligibility(row)
+        if allow_sales and detail_payload is None:
+            return_message = "Return eligibility loading."
+        elif allow_sales:
+            return_allowed, return_message = self._return_action_from_detail(detail_payload)
         if hasattr(self.view, "btn_return"):
             self.view.btn_return.setEnabled(return_allowed)
             self.view.btn_return.setToolTip(return_message)
@@ -374,13 +352,16 @@ class SalesController(BaseModule):
         payment_message = "Select a sale to record payment."
         credit_allowed = False
         credit_message = "Select a sale to apply credit."
-        if allow_sales:
+        if allow_sales and detail_payload is None:
+            payment_message = "Payment status loading."
+            credit_message = "Customer credit loading."
+        elif allow_sales:
             (
                 payment_allowed,
                 payment_message,
                 credit_allowed,
                 credit_message,
-            ) = self._financial_action_eligibility(row)
+            ) = self._financial_action_from_detail(detail_payload)
         if hasattr(self.view, "btn_record_payment"):
             self.view.btn_record_payment.setEnabled(payment_allowed)
             self.view.btn_record_payment.setToolTip(payment_message)
@@ -396,6 +377,77 @@ class SalesController(BaseModule):
 
         if hasattr(self.view, "btn_convert"):
             self.view.btn_convert.setEnabled(allow_convert)
+
+    def _return_action_from_detail(self, detail_payload: dict | None) -> tuple[bool, str]:
+        if self._doc_type != "sale":
+            return False, "Returns apply to sales only."
+        if not detail_payload:
+            return False, "Select a sale to check return eligibility."
+        returnable_lines = int(detail_payload.get("returnable_lines") or 0)
+        if returnable_lines <= 0:
+            return False, "Return unavailable: sale is fully returned."
+        noun = "item" if returnable_lines == 1 else "items"
+        return True, f"Return available: {returnable_lines} {noun} remaining."
+
+    def _financial_action_from_detail(
+        self, detail_payload: dict | None
+    ) -> tuple[bool, str, bool, str]:
+        if self._doc_type != "sale":
+            return (
+                False,
+                "Payments apply to sales only.",
+                False,
+                "Customer credit applies to sales only.",
+            )
+        if not detail_payload:
+            return (
+                False,
+                "Select a sale to record payment.",
+                False,
+                "Select a sale to apply credit.",
+            )
+
+        remaining = float(detail_payload.get("remaining_due") or 0.0)
+        if remaining <= 1e-9:
+            return (
+                False,
+                "Payment unavailable: sale is fully settled.",
+                False,
+                "Apply Credit unavailable: sale is fully settled.",
+            )
+
+        payment_message = f"Payment available: {fmt_money(remaining)} due."
+        customer_id = int(detail_payload.get("customer_id") or 0)
+        if not customer_id:
+            return (
+                True,
+                payment_message,
+                False,
+                "Apply Credit unavailable: customer information is missing.",
+            )
+        credit = detail_payload.get("customer_credit_balance")
+        if credit is None:
+            return (
+                True,
+                payment_message,
+                False,
+                "Apply Credit unavailable: customer credit could not be checked.",
+            )
+        credit_amount = float(credit or 0.0)
+        if credit_amount <= 1e-9:
+            return (
+                True,
+                payment_message,
+                False,
+                "Apply Credit unavailable: customer has no available credit.",
+            )
+        applicable = min(remaining, credit_amount)
+        return (
+            True,
+            payment_message,
+            True,
+            f"Apply Credit available: up to {fmt_money(applicable)}.",
+        )
 
     def _return_eligibility(self, row: dict | None) -> tuple[bool, str]:
         if self._doc_type != "sale":
@@ -636,7 +688,6 @@ class SalesController(BaseModule):
         self.base.set_doc_type(self._doc_type)
         self.base.replace(rows_to_use)
         self.proxy.set_doc_type(self._doc_type)
-        self.proxy.set_status_filter(self._status_filter)
         if not self._table_initialized:
             self.view.tbl.resizeColumnsToContents()
             self._table_initialized = True
@@ -692,18 +743,26 @@ class SalesController(BaseModule):
     def _select_row_by_sale_id(self, sale_id: str) -> bool:
         if not sale_id:
             return False
-        for proxy_row in range(self.proxy.rowCount()):
-            src = self.proxy.mapToSource(self.proxy.index(proxy_row, 0))
-            try:
-                row_data = self.base.at(src.row())
-            except Exception:
-                continue
-            current_sale_id = str(row_data.get("sale_id") or "")
-            if current_sale_id != sale_id:
-                continue
-            self.view.tbl.selectRow(proxy_row)
-            return True
-        return False
+        source_row = None
+        try:
+            if hasattr(self.base, "row_for_sale_id"):
+                source_row = self.base.row_for_sale_id(sale_id)
+        except Exception:
+            source_row = None
+        if source_row is None:
+            return False
+        source_index = self.base.index(int(source_row), 0)
+        proxy_index = self.proxy.mapFromSource(source_index)
+        if not proxy_index.isValid():
+            return False
+        self.view.tbl.selectRow(proxy_index.row())
+        try:
+            self.view.tbl.scrollTo(proxy_index)
+        except (AttributeError, RuntimeError):
+            pass
+        except Exception:
+            _log.exception("Could not scroll restored sales selection into view")
+        return True
 
     def _selected_row(self) -> dict | None:
         try:
@@ -766,7 +825,25 @@ class SalesController(BaseModule):
             _log.exception("Unexpected error clearing sales payments view")
         self.view.details.set_data(None)
 
+    def _schedule_details_update(self, *, force: bool = False):
+        self._detail_request_token += 1
+        if force:
+            self._sync_details_impl(force=True, token=self._detail_request_token)
+            return
+        self._detail_timer.start()
+
+    def _run_deferred_detail_sync(self):
+        self._sync_details_impl(token=self._detail_request_token)
+
     def _sync_details(self, *args, force: bool = False):
+        token = None
+        if args:
+            token = args[0]
+        return self._sync_details_impl(force=force, token=token)
+
+    def _sync_details_impl(self, *, force: bool = False, token: int | None = None):
+        if token is not None and token != self._detail_request_token:
+            return
         r = self._selected_row()
 
         # default: nothing selected → clear subviews
@@ -780,89 +857,35 @@ class SalesController(BaseModule):
             return
         self._last_detail_key = detail_key
 
-        # Always load item rows for the selected sale/quotation
-        items = self.repo.list_items(r["sale_id"])
-        line_disc = sum(float(it["quantity"]) * float(it["item_discount"]) for it in items)
-        r = dict(r)
-        r["overall_discount"] = float(r.get("order_discount") or 0.0) + line_disc
-
-        # Returns summary for details panel (quotations naturally zero)
         try:
-            summary = self._get_sale_detail_summary(str(r["sale_id"]))
-            r["returned_qty"] = float(summary.get("returned_qty", 0.0))
-            r["returned_value"] = float(summary.get("returned_value", 0.0))
-            r["gross_total_amount"] = float(summary.get("gross_total_amount", r.get("total_amount", 0.0)))
-            r["net_total_amount"] = float(summary.get("net_total_amount", r.get("total_amount", 0.0)))
+            if hasattr(self.repo, "get_sale_detail_snapshot"):
+                snapshot = self.repo.get_sale_detail_snapshot(str(r["sale_id"]))
+            else:
+                snapshot = self._legacy_detail_snapshot(dict(r))
         except (sqlite3.Error, KeyError, TypeError, ValueError):
-            _log.exception("Could not load return totals for sale_id=%s", r.get("sale_id"))
-            r["returned_qty"] = 0.0
-            r["returned_value"] = 0.0
-            r["gross_total_amount"] = float(r.get("total_amount", 0.0))
-            r["net_total_amount"] = float(r.get("total_amount", 0.0))
+            _log.exception("Could not load sales detail snapshot for sale_id=%s", r.get("sale_id"))
+            self._last_detail_key = None
+            self._clear_detail_views()
+            self._update_action_states()
+            return
         except Exception:
-            _log.exception("Unexpected error loading return totals for sale_id=%s", r.get("sale_id"))
-            r["returned_qty"] = 0.0
-            r["returned_value"] = 0.0
-            r["gross_total_amount"] = float(r.get("total_amount", 0.0))
-            r["net_total_amount"] = float(r.get("total_amount", 0.0))
+            _log.exception(
+                "Unexpected error loading sales detail snapshot for sale_id=%s",
+                r.get("sale_id"),
+            )
+            self._last_detail_key = None
+            self._clear_detail_views()
+            self._update_action_states()
+            return
+
+        if token is not None and token != self._detail_request_token:
+            return
+
+        detail_payload = self._detail_payload_from_snapshot(dict(r), snapshot)
+        items = detail_payload.pop("_items", [])
+        payments_rows = detail_payload.get("payments", [])
 
         self.view.items.set_rows(items)
-
-        # ---- payments + customer credit (sales only) ----
-        payments_rows: list[dict] = []
-        if self._doc_type == "sale":
-            # Payments list
-            try:
-                from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
-                pay_repo = SalePaymentsRepo(self.conn)
-                payments_rows = list(pay_repo.list_by_sale(r["sale_id"])) or []
-            except ImportError as exc:
-                _log.warning("Sale payments repository is unavailable: %s", exc)
-                payments_rows = []
-            except sqlite3.Error:
-                _log.exception("Could not load payments for sale_id=%s", r.get("sale_id"))
-                payments_rows = []
-            except Exception:
-                _log.exception("Unexpected error loading payments for sale_id=%s", r.get("sale_id"))
-                payments_rows = []
-
-            # Customer credit balance
-            try:
-                from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo  # type: ignore
-                adv_repo = CustomerAdvancesRepo(self.conn)
-                bal = adv_repo.get_balance(int(r.get("customer_id") or 0))
-                r["customer_credit_balance"] = float(bal or 0.0)
-            except ImportError as exc:
-                _log.warning("Customer advances repository is unavailable: %s", exc)
-                r["customer_credit_balance"] = None
-            except (sqlite3.Error, TypeError, ValueError):
-                _log.exception("Could not load customer credit for sale_id=%s", r.get("sale_id"))
-                r["customer_credit_balance"] = None
-            except Exception:
-                _log.exception("Unexpected error loading customer credit for sale_id=%s", r.get("sale_id"))
-                r["customer_credit_balance"] = None
-
-            # Financials including credit applied (NEW: include advance_payment_applied)
-            fin = self._fetch_sale_financials(r["sale_id"])
-            r["paid_amount"] = fin["paid_amount"]
-            r["advance_payment_applied"] = fin["advance_payment_applied"]
-            r["calculated_total_amount"] = fin["calculated_total_amount"]
-            r["net_total_amount"] = fin["calculated_total_amount"]
-            r["paid_plus_credit"] = fin["paid_amount"] + fin["advance_payment_applied"]
-            r["remaining_due"] = fin["remaining_due"]
-        else:
-            # Quotation: explicitly pass empty payments and no credit balance
-            payments_rows = []
-            r.pop("customer_credit_balance", None)
-            # Keep remaining_due aligned to quotations (0 by design)
-            r["advance_payment_applied"] = 0.0
-            r["paid_plus_credit"] = float(r.get("paid_amount") or 0.0)
-            r["remaining_due"] = 0.0
-
-        # Attach payments to the details payload
-        r["payments"] = payments_rows
-
-        # Feed the compact payments table on the left, if present
         try:
             if hasattr(self.view, "payments"):
                 self.view.payments.set_rows(payments_rows)
@@ -871,7 +894,6 @@ class SalesController(BaseModule):
         except Exception:
             _log.exception("Unexpected error updating sales payments view")
 
-        # Finally update the details panel and its mode (if supported)
         try:
             if hasattr(self.view.details, "set_mode"):
                 self.view.details.set_mode(self._doc_type)
@@ -879,7 +901,81 @@ class SalesController(BaseModule):
             _log.exception("Could not set sales details mode to %s", self._doc_type)
         except Exception:
             _log.exception("Unexpected error setting sales details mode to %s", self._doc_type)
-        self.view.details.set_data(r)
+        self.view.details.set_data(detail_payload)
+        self._update_action_states(detail_payload)
+
+    def _detail_payload_from_snapshot(self, selected_row: dict, snapshot: dict) -> dict:
+        items = list(snapshot.get("items") or [])
+        line_disc = sum(float(it["quantity"]) * float(it["item_discount"]) for it in items)
+        header = dict(snapshot.get("header") or {})
+        r = {**header, **selected_row}
+        r["overall_discount"] = float(r.get("order_discount") or 0.0) + line_disc
+
+        summary = dict(snapshot.get("summary") or {})
+        r["returned_qty"] = float(summary.get("returned_qty", 0.0))
+        r["returned_value"] = float(summary.get("returned_value", 0.0))
+        r["gross_total_amount"] = float(
+            summary.get("gross_total_amount", r.get("total_amount", 0.0))
+        )
+        r["net_total_amount"] = float(
+            summary.get("net_total_amount", r.get("total_amount", 0.0))
+        )
+        payments_rows = list(snapshot.get("payments") or [])
+        if self._doc_type == "sale":
+            r["customer_credit_balance"] = snapshot.get("customer_credit_balance")
+            r["returnable_lines"] = int(snapshot.get("returnable_lines") or 0)
+            r["paid_amount"] = float(summary.get("paid_amount") or 0.0)
+            r["advance_payment_applied"] = float(summary.get("advance_payment_applied") or 0.0)
+            r["calculated_total_amount"] = float(summary.get("calculated_total_amount") or 0.0)
+            r["net_total_amount"] = r["calculated_total_amount"]
+            r["paid_plus_credit"] = r["paid_amount"] + r["advance_payment_applied"]
+            r["remaining_due"] = float(summary.get("remaining_due") or 0.0)
+        else:
+            payments_rows = []
+            r.pop("customer_credit_balance", None)
+            r["advance_payment_applied"] = 0.0
+            r["paid_plus_credit"] = float(r.get("paid_amount") or 0.0)
+            r["remaining_due"] = 0.0
+
+        r["payments"] = payments_rows
+        r["_items"] = items
+        return r
+
+    def _legacy_detail_snapshot(self, row: dict) -> dict:
+        items = self.repo.list_items(row["sale_id"])
+        summary = self._get_sale_detail_summary(str(row["sale_id"]))
+        payments_rows: list[dict] = []
+        customer_credit_balance = None
+        returnable_lines = 0
+        if self._doc_type == "sale":
+            try:
+                from ...database.repositories.sale_payments_repo import SalePaymentsRepo  # type: ignore
+
+                payments_rows = list(SalePaymentsRepo(self.conn).list_by_sale(row["sale_id"])) or []
+            except (ImportError, sqlite3.Error):
+                _log.exception("Could not load payments for sale_id=%s", row.get("sale_id"))
+            try:
+                from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo  # type: ignore
+
+                customer_credit_balance = float(
+                    CustomerAdvancesRepo(self.conn).get_balance(int(row.get("customer_id") or 0))
+                    or 0.0
+                )
+            except (ImportError, sqlite3.Error, TypeError, ValueError):
+                _log.exception("Could not load customer credit for sale_id=%s", row.get("sale_id"))
+            try:
+                remaining = get_returnable_quantities(self.conn, row["sale_id"])
+                returnable_lines = sum(1 for qty in remaining.values() if float(qty) > 1e-9)
+            except (sqlite3.Error, KeyError, TypeError, ValueError):
+                _log.exception("Could not check return eligibility for sale_id=%s", row.get("sale_id"))
+        return {
+            "header": row,
+            "items": [dict(item) for item in items],
+            "summary": summary,
+            "payments": [dict(payment) for payment in payments_rows],
+            "customer_credit_balance": customer_credit_balance,
+            "returnable_lines": returnable_lines,
+        }
 
     # ---- helpers to open SaleForm with/without 'mode' ---------------------
 

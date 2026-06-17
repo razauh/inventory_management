@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, QStringListModel
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -37,7 +37,11 @@ from PySide6.QtWidgets import (
 
 from ...utils.helpers import fmt_money
 from ...utils import ui_helpers as ui
+from ...utils.product_lookup import DEFAULT_PRODUCT_LOOKUP_LIMIT, product_ids_by_exact_name, search_products
 from ...database.repositories.inventory_repo import InventoryRepo  # type: ignore
+
+
+PRODUCT_LOOKUP_DELAY_MS = 150
 
 
 def _fmt_float(val: Optional[float], places: int = 2) -> str:
@@ -60,6 +64,11 @@ class StockValuationWidget(QWidget):
         """
         super().__init__(parent)
         self.repo = repo_or_conn  # may be InventoryRepo or raw connection
+        self._name_to_id: dict[str, list[int]] = {}
+        self._product_lookup_timer = QTimer(self)
+        self._product_lookup_timer.setSingleShot(True)
+        self._product_lookup_timer.setInterval(PRODUCT_LOOKUP_DELAY_MS)
+        self._product_lookup_timer.timeout.connect(self._refresh_product_lookup)
         self.setWindowTitle("Inventory — Stock Valuation")
 
         root = QVBoxLayout(self)
@@ -80,6 +89,12 @@ class StockValuationWidget(QWidget):
         self.txt_product.setPlaceholderText("Start typing product name…")
         self.txt_product.setMinimumWidth(240)
         row.addWidget(self.txt_product, 1)
+
+        self._product_completion_model = QStringListModel(self)
+        self._product_completer = QCompleter(self._product_completion_model, self)
+        self._product_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._product_completer.setFilterMode(Qt.MatchContains)
+        self.txt_product.setCompleter(self._product_completer)
 
         self.btn_refresh = QPushButton("Refresh")
         row.addWidget(self.btn_refresh)
@@ -135,6 +150,7 @@ class StockValuationWidget(QWidget):
         # ------------------------------------------------------------------
         # Avoid querying on every keystroke; refresh when user confirms
         # via Enter.
+        self.txt_product.textEdited.connect(lambda _=None: self._schedule_product_lookup())
         self.txt_product.returnPressed.connect(self._refresh_clicked)
         self.btn_refresh.clicked.connect(self._refresh_clicked)
 
@@ -147,94 +163,22 @@ class StockValuationWidget(QWidget):
     # ----------------------------------------------------------------------
     # Data loading
     # ----------------------------------------------------------------------
-    def _load_products(self) -> None:
+    def _load_products(self, search_text: str = "") -> None:
         """
-        Populate the product combo:
-          0: "(Select…)" -> userData=None
-          n: product name -> userData=product_id
+        Populate the product completer with a capped lookup result.
 
         Works whether `self.repo` is an InventoryRepo (has `.conn`) or a raw
         sqlite3.Connection.
         """
-        # Build name→ids map and attach a completer to the line edit.
-        # Some databases may contain products with duplicate names; we keep
-        # all matching IDs so callers can disambiguate if needed.
-        self._name_to_id: dict[str, list[int]] = {}
+        self._name_to_id = {}
         self.txt_product.blockSignals(True)
         try:
-            # Use the repo's connection directly; add real product_id as userData
             conn = getattr(self.repo, "conn", None) or self.repo
-            rows = conn.execute(
-                "SELECT product_id, name FROM products ORDER BY name"
-            ).fetchall()
-            display_names: list[str] = []
-            # First pass: build name->ids map
-            for r in rows:
-                # tolerate Row or tuple
-                if hasattr(r, "keys"):
-                    pid = int(r["product_id"])
-                    name = r["name"]
-                else:
-                    pid = int(r[0])
-                    name = r[1]
-                display = str(name)
-                key = display.lower()
-                ids = self._name_to_id.setdefault(key, [])
-                ids.append(pid)
-
-            # Build display labels, appending ID when duplicates exist for a name
-            for r in rows:
-                if hasattr(r, "keys"):
-                    pid = int(r["product_id"])
-                    name = r["name"]
-                else:
-                    pid = int(r[0])
-                    name = r[1]
-                display = str(name)
-                key = display.lower()
-                ids = self._name_to_id.get(key, [])
-                if len(ids) > 1:
-                    label = f"{display} (ID: {pid})"
-                else:
-                    label = display
-                display_names.append(label)
-
-            # Detect case-insensitive names mapped to multiple product IDs.
-            # Strip a trailing " (ID:...)" only when it appears at the end so
-            # product names that legitimately contain that substring are preserved.
-            dup_keys = [k for k, ids in self._name_to_id.items() if len(ids) > 1]
-            dup_labels = set()
-            for name in display_names:
-                base, sep, _rest = name.rpartition(" (ID:")
-                key = (base if sep else name).lower()
-                if key in dup_keys:
-                    dup_labels.add(name)
-            dup_labels = sorted(dup_labels)
-            if dup_labels:
-                try:
-                    ui.info(
-                        self,
-                        "Duplicate product names",
-                        "Multiple products share the following names:\n"
-                        + ", ".join(dup_labels),
-                    )
-                except Exception as e:
-                    logging.getLogger(__name__).warning(
-                        "Failed to show duplicate product names info dialog: %s", e, exc_info=True
-                    )
-
-            # Deduplicate display labels while preserving original ordering
-            seen_names: set[str] = set()
-            unique_display_names: list[str] = []
-            for nm in display_names:
-                if nm not in seen_names:
-                    seen_names.add(nm)
-                    unique_display_names.append(nm)
-
-            completer = QCompleter(unique_display_names, self)
-            completer.setCaseSensitivity(Qt.CaseInsensitive)
-            completer.setFilterMode(Qt.MatchContains)
-            self.txt_product.setCompleter(completer)
+            labels = []
+            for item in search_products(conn, search_text, limit=DEFAULT_PRODUCT_LOOKUP_LIMIT):
+                self._name_to_id.setdefault(item.name.lower(), []).append(item.product_id)
+                labels.append(item.label)
+            self._product_completion_model.setStringList(labels)
         except Exception as e:
             ui.info(self, "Error", f"Failed to load products: {e}")
         finally:
@@ -243,6 +187,12 @@ class StockValuationWidget(QWidget):
     # ----------------------------------------------------------------------
     # Handlers
     # ----------------------------------------------------------------------
+    def _schedule_product_lookup(self) -> None:
+        self._product_lookup_timer.start()
+
+    def _refresh_product_lookup(self) -> None:
+        self._load_products(self.txt_product.text())
+
     def _on_filters_changed(self) -> None:
         """React to product change: load snapshot or clear if none selected."""
         pid, _reason = self._resolve_selected_product()
@@ -303,6 +253,9 @@ class StockValuationWidget(QWidget):
 
         name = lookup_name.lower()
         ids = self._name_to_id.get(name) or []
+        if not ids:
+            conn = getattr(self.repo, "conn", None) or self.repo
+            ids = product_ids_by_exact_name(conn, lookup_name)
         if not ids:
             return None, "not_found"
         if len(ids) > 1:

@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from importlib import import_module
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import Qt, Slot
-from PySide6.QtWidgets import QApplication, QLabel, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtCore import QTimer, Slot
+from PySide6.QtWidgets import QLabel, QTabWidget, QVBoxLayout, QWidget
 
 from ..base_module import BaseModule
 
@@ -70,6 +70,11 @@ class PaymentsTabHost(QWidget):
         self._sources: Dict[str, QWidget] = {}
         self._page_hosts: Dict[str, QWidget] = {}
         self._source_attached = False
+        self._pending_refresh_index: int | None = None
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(0)
+        self._refresh_timer.timeout.connect(self._run_scheduled_refresh)
         self._flat_tabs: list[dict[str, Any]] = [
             {"key": "summary", "title": "Summary", "family": "summary"},
             {
@@ -213,15 +218,30 @@ class PaymentsTabHost(QWidget):
     def _on_current_changed(self, index: int) -> None:
         if index < 0 or index >= len(self._flat_tabs):
             return
+        self._schedule_refresh(index)
+
+    def _schedule_refresh(self, index: int) -> None:
+        self._pending_refresh_index = index
+        self._refresh_timer.start()
+
+    def _run_scheduled_refresh(self) -> None:
+        index = self._pending_refresh_index
+        self._pending_refresh_index = None
+        if index is None or index < 0 or index >= len(self._flat_tabs):
+            return
+        if index != self.tabs.currentIndex():
+            return
         self._refresh_spec(self._flat_tabs[index])
 
     def refresh(self) -> None:
         idx = self.tabs.currentIndex()
         if idx < 0 or idx >= len(self._flat_tabs):
             return
-        self._refresh_spec(self._flat_tabs[idx])
+        self._schedule_refresh(idx)
 
     def cancel_refresh(self) -> None:
+        self._pending_refresh_index = None
+        self._refresh_timer.stop()
         for widget in self._sources.values():
             fn = getattr(widget, "cancel_refresh", None)
             if callable(fn):
@@ -238,6 +258,11 @@ class ReportingController(BaseModule):
         self.conn = conn
         self.user = current_user
         self._descriptors: list[_TabDescriptor] = []
+        self._pending_tab_index: int | None = None
+        self._refresh_timer = QTimer()
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(0)
+        self._refresh_timer.timeout.connect(self._run_scheduled_refresh)
 
         self._root = QWidget()
         self._root.setObjectName("ReportingModuleRoot")
@@ -254,8 +279,7 @@ class ReportingController(BaseModule):
 
         self._register_tabs()
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        self._ensure_tab(self.tabs.currentIndex())
-        self._safe_refresh(self.tabs.currentWidget())
+        self._schedule_tab_refresh(self.tabs.currentIndex())
 
     def _register_tabs(self) -> None:
         self._add_descriptor(
@@ -374,21 +398,37 @@ class ReportingController(BaseModule):
 
     @Slot(int)
     def _on_tab_changed(self, index: int) -> None:
-        app = QApplication.instance()
-        if app is not None:
-            try:
-                app.setOverrideCursor(Qt.WaitCursor)
-            except Exception:
-                app = None
+        self._schedule_tab_refresh(index)
+
+    def _schedule_tab_refresh(self, index: int) -> None:
+        if index < 0 or index >= len(self._descriptors):
+            return
+        self._cancel_widget_refresh(self.tabs.currentWidget())
+        self._pending_tab_index = index
+        self._refresh_timer.start()
+
+    def _run_scheduled_refresh(self) -> None:
+        index = self._pending_tab_index
+        self._pending_tab_index = None
+        if index is None or index < 0 or index >= len(self._descriptors):
+            return
+        if index != self.tabs.currentIndex():
+            return
         try:
             widget = self._ensure_tab(index)
             self._safe_refresh(widget)
-        finally:
-            if app is not None:
-                try:
-                    app.restoreOverrideCursor()
-                except Exception as exc:
-                    logger.error("Failed to restore override cursor: %s", exc, exc_info=True)
+        except Exception as exc:
+            logger.warning("Reporting.scheduled_refresh_failed index=%s exc=%s", index, exc, exc_info=True)
+
+    def _cancel_widget_refresh(self, widget: QWidget | None) -> None:
+        if widget is None:
+            return
+        fn = getattr(widget, "cancel_refresh", None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception as exc:
+                logger.debug("Reporting.cancel_refresh_failed widget=%s exc=%s", type(widget).__name__, exc)
 
     def _safe_refresh(self, widget: QWidget | None) -> None:
         if widget is None:
@@ -419,4 +459,4 @@ class ReportingController(BaseModule):
                 return
 
     def refresh(self) -> None:
-        self._safe_refresh(self.tabs.currentWidget())
+        self._schedule_tab_refresh(self.tabs.currentIndex())
