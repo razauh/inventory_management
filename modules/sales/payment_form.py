@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, QDate
 
 from typing import Callable, Iterable, Dict, Any
 from ...utils.helpers import today_str
+from ...utils.combo_search import configure_contains_completer
 
 
 class SalesPaymentForm(QDialog):
@@ -103,8 +104,10 @@ class SalesPaymentForm(QDialog):
             self.method.addItem(label, key)
 
         self.company_acct = QComboBox()
+        self.company_acct.setEditable(True)
         self.company_acct.setAccessibleName("Company bank account")
         self.company_acct.setAccessibleDescription("Required for bank, cheque, and deposit payments.")
+        configure_contains_completer(self.company_acct)
 
         self.instr_no = QLineEdit()
         self.instr_no.setPlaceholderText("Instrument / Cheque / Slip #")
@@ -168,6 +171,7 @@ class SalesPaymentForm(QDialog):
             except Exception:
                 rid_int = None
             self.company_acct.addItem(str(r.get("name", "")), rid_int)
+        configure_contains_completer(self.company_acct)
 
     def _current_company_bank_id(self):
         data = self.company_acct.currentData()

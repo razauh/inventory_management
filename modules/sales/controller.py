@@ -1041,7 +1041,7 @@ class SalesController(BaseModule):
             else:
                 # Fallback: direct SQL, same shape purchase controller uses
                 cur = self.conn.execute(
-                    "SELECT account_id AS id, label AS name "
+                    "SELECT account_id AS id, label AS name, bank_name, account_no "
                     "FROM company_bank_accounts WHERE is_active=1 ORDER BY account_id"
                 )
                 rows = [dict(r) for r in cur.fetchall()]
@@ -1050,14 +1050,20 @@ class SalesController(BaseModule):
             for r in rows or []:
                 d = dict(r)
                 _id = d.get("id") or d.get("account_id") or d.get("bank_account_id")
-                _name = (
-                    d.get("name")
-                    or d.get("account_name")
-                    or d.get("title")
-                    or d.get("account_title")
-                    or d.get("label")
-                )
-                if _id is not None and _name is not None:
+                display_parts = []
+                for key in ("name", "account_name", "title", "account_title", "label"):
+                    value = str(d.get(key) or "").strip()
+                    if value:
+                        display_parts.append(value)
+                        break
+                bank_name = str(d.get("bank_name") or "").strip()
+                account_no = str(d.get("account_no") or "").strip()
+                if bank_name:
+                    display_parts.append(bank_name)
+                if account_no:
+                    display_parts.append(account_no)
+                _name = " - ".join(display_parts)
+                if _id is not None and _name:
                     norm.append({"id": int(_id), "name": str(_name)})
             return norm
         except (sqlite3.Error, KeyError, TypeError, ValueError):

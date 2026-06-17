@@ -15,6 +15,7 @@ from ...database.repositories.customers_repo import CustomersRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.sales_repo import SalesRepo
 from ...utils.helpers import today_str, fmt_money
+from ...utils.combo_search import configure_contains_completer
 from ...utils.ui_helpers import info  # <-- added for visible validation messages
 
 
@@ -72,6 +73,7 @@ class SaleForm(QDialog):
         # Set window flags at the end of initialization like in PurchaseForm
 
         self.customers = customers; self.products = products; self.sales_repo = sales_repo; self.db_path = db_path; self.bank_accounts = bank_accounts
+        self._product_cache = None
 
         # --- header widgets ---
         self.cmb_customer = QComboBox(); self.cmb_customer.setEditable(True)
@@ -94,8 +96,8 @@ class SaleForm(QDialog):
         self.cmb_customer.setEditText("")
 
         self._completer = QCompleter(names, self)
-        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.cmb_customer.setCompleter(self._completer)
+        configure_contains_completer(self.cmb_customer)
 
         # auto-fill contact for existing selection and update payment history
         def _fill_contact_from_sel():
@@ -138,8 +140,9 @@ class SaleForm(QDialog):
                 self.cmb_customer.addItem(display_text, c.customer_id)
                 self._customers_by_name[c.name.lower()] = c
                 names.append(display_text)  # Use the same format as combo box items for completer
-            self._completer = QCompleter(names, self); self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+            self._completer = QCompleter(names, self)
             self.cmb_customer.setCompleter(self._completer)
+            configure_contains_completer(self.cmb_customer)
             # select new customer
             idx = self.cmb_customer.findData(new_id)
             if idx >= 0: self.cmb_customer.setCurrentIndex(idx)
@@ -566,7 +569,9 @@ class SaleForm(QDialog):
 
 
     def _all_products(self):
-        return self.products.list_products()
+        if self._product_cache is None:
+            self._product_cache = self.products.list_products()
+        return self._product_cache
 
     def _parse_product_id_from_text(self, text: str) -> int | None:
         """
@@ -646,6 +651,7 @@ class SaleForm(QDialog):
         completer = QCompleter(product_names, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
         product_edit.setCompleter(completer)
 
         self.tbl.setCellWidget(r, 1, product_edit)
@@ -822,7 +828,7 @@ class SaleForm(QDialog):
 
         # Also connect the completer's activated signal for immediate execution when user selects from dropdown
         if hasattr(completer, 'activated'):
-            completer.activated.connect(lambda: on_prod())
+            completer.activated.connect(lambda _text=None: on_prod())
         alt.currentIndexChanged.connect(on_alt_changed)
         # Don't call on_prod() initially since there's no default product selected
 

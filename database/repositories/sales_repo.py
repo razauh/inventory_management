@@ -147,16 +147,20 @@ class SalesRepo:
         params: list[object] = [doc_type]
 
         if query:
-            where.append("(s.sale_id LIKE ? COLLATE NOCASE OR c.name LIKE ? COLLATE NOCASE)")
-            params += [f"%{query}%", f"%{query}%"]
+            status_column = "s.quotation_status" if doc_type == "quotation" else "s.payment_status"
+            where.append(
+                "("
+                "s.sale_id LIKE ? COLLATE NOCASE "
+                "OR c.name LIKE ? COLLATE NOCASE "
+                f"OR COALESCE({status_column}, '') LIKE ? COLLATE NOCASE"
+                ")"
+            )
+            like_query = f"%{query}%"
+            params += [like_query, like_query, like_query]
 
         if date:
-            if query:
-                where.append("(s.sale_id = ? COLLATE NOCASE OR DATE(s.date) = DATE(?))")
-                params.extend([query, date])
-            else:
-                where.append("DATE(s.date) = DATE(?)")
-                params.append(date)
+            where.append("DATE(s.date) = DATE(?)")
+            params.append(date)
 
         statuses = self._normalise_status_filter(status, doc_type)
         if statuses:
