@@ -45,6 +45,7 @@ class SalesRepo:
       - Payments roll-up (paid_amount/payment_status) comes from sale_payments triggers.
         Header math helpers are deprecated and must not be used from UI.
     """
+    DEFAULT_LIST_LIMIT = 200
 
     def __init__(self, conn: sqlite3.Connection):
         # ensure rows behave like dicts/tuples
@@ -116,41 +117,37 @@ class SalesRepo:
     # ---------------------------------------------------------------------
     # READ — SALES
     # ---------------------------------------------------------------------
-    def list_sales(self) -> list[dict]:
-        """
-        List only real SALES (doc_type='sale').
-        """
-        sql = """
-        SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
-               CAST(s.total_amount AS REAL)   AS total_amount,
-               CAST(s.order_discount AS REAL) AS order_discount,
-               CAST(s.paid_amount AS REAL)    AS paid_amount,
-               s.payment_status, s.notes, s.doc_type, s.quotation_status,
-               s.source_type, s.source_id
-        FROM sales s
-        JOIN customers c ON c.customer_id = s.customer_id
-        WHERE s.doc_type = 'sale'
-        ORDER BY DATE(s.date) DESC, s.sale_id DESC
-        """
-        return self.conn.execute(sql).fetchall()
+    @staticmethod
+    def _normalise_status_filter(status: str | None, doc_type: str) -> list[str]:
+        status = (status or "all").strip().lower()
+        if not status or status == "all":
+            return []
+        if doc_type == "sale" and status == "partial":
+            return ["partial", "partial_paid"]
+        return [status]
 
-    def search_sales(
+    @staticmethod
+    def _append_limit(sql: str, params: list[object], limit: int | None, offset: int = 0) -> str:
+        if limit is not None and int(limit) > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), max(0, int(offset))])
+        return sql
+
+    def _sales_list_where(
         self,
         query: str = "",
         date: str | None = None,
         *,
-        doc_type: str = "sale",   # 'sale' (default) or 'quotation'
-    ) -> list[dict]:
-        """
-        Search within SALES by default.
-        Pass doc_type='quotation' to search quotations.
-        """
+        doc_type: str = "sale",
+        status: str | None = "all",
+    ) -> tuple[str, list[object]]:
         query = (query or "").strip()
+        doc_type = "quotation" if (doc_type or "").lower() == "quotation" else "sale"
         where = ["s.doc_type = ?"]
-        params: list = [doc_type]
+        params: list[object] = [doc_type]
 
         if query:
-            where.append("(s.sale_id LIKE ? OR c.name LIKE ?)")
+            where.append("(s.sale_id LIKE ? COLLATE NOCASE OR c.name LIKE ? COLLATE NOCASE)")
             params += [f"%{query}%", f"%{query}%"]
 
         if date:
@@ -161,21 +158,91 @@ class SalesRepo:
                 where.append("DATE(s.date) = DATE(?)")
                 params.append(date)
 
-        sql = """
-          SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
-                 CAST(s.total_amount AS REAL) AS total_amount,
-                 CAST(s.order_discount AS REAL) AS order_discount,
-                 CAST(s.paid_amount AS REAL)  AS paid_amount,
-                 s.payment_status, s.notes, s.doc_type, s.quotation_status,
-                 s.source_type, s.source_id
-          FROM sales s
-          JOIN customers c ON c.customer_id = s.customer_id
+        statuses = self._normalise_status_filter(status, doc_type)
+        if statuses:
+            column = "s.quotation_status" if doc_type == "quotation" else "s.payment_status"
+            placeholders = ",".join("?" for _ in statuses)
+            where.append(f"LOWER(COALESCE({column}, '')) IN ({placeholders})")
+            params.extend(statuses)
+
+        return " WHERE " + " AND ".join(where), params
+
+    def _sales_list_select_sql(self) -> str:
+        return """
+        SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
+               CAST(s.total_amount AS REAL)   AS total_amount,
+               CAST(s.order_discount AS REAL) AS order_discount,
+               CAST(s.paid_amount AS REAL)    AS paid_amount,
+               s.payment_status, s.notes, s.doc_type, s.quotation_status,
+               s.source_type, s.source_id
+        FROM sales s
+        JOIN customers c ON c.customer_id = s.customer_id
         """
-        if where:
-            sql += " WHERE " + " AND ".join(where)
+
+    def list_sales(
+        self,
+        limit: int | None = DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+        *,
+        status: str | None = "all",
+    ) -> list[dict]:
+        """
+        List only real SALES (doc_type='sale').
+        """
+        where_sql, params = self._sales_list_where(doc_type="sale", status=status)
+        sql = self._sales_list_select_sql() + where_sql + """
+        ORDER BY DATE(s.date) DESC, s.sale_id DESC
+        """
+        sql = self._append_limit(sql, params, limit, offset)
+        return self.conn.execute(sql, params).fetchall()
+
+    def search_sales(
+        self,
+        query: str = "",
+        date: str | None = None,
+        *,
+        doc_type: str = "sale",   # 'sale' (default) or 'quotation'
+        status: str | None = "all",
+        limit: int | None = DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+    ) -> list[dict]:
+        """
+        Search within SALES by default.
+        Pass doc_type='quotation' to search quotations.
+        """
+        where_sql, params = self._sales_list_where(
+            query,
+            date,
+            doc_type=doc_type,
+            status=status,
+        )
+        sql = self._sales_list_select_sql() + where_sql
         sql += " ORDER BY DATE(s.date) DESC, s.sale_id DESC"
+        sql = self._append_limit(sql, params, limit, offset)
 
         return self.conn.execute(sql, params).fetchall()
+
+    def count_sales(
+        self,
+        query: str = "",
+        date: str | None = None,
+        *,
+        doc_type: str = "sale",
+        status: str | None = "all",
+    ) -> int:
+        where_sql, params = self._sales_list_where(
+            query,
+            date,
+            doc_type=doc_type,
+            status=status,
+        )
+        sql = """
+        SELECT COUNT(*) AS total
+        FROM sales s
+        JOIN customers c ON c.customer_id = s.customer_id
+        """ + where_sql
+        row = self.conn.execute(sql, params).fetchone()
+        return int(row["total"] if row else 0)
 
     def get_header(self, sid: str) -> dict | None:
         return self.conn.execute("SELECT * FROM sales WHERE sale_id=?", (sid,)).fetchone()
@@ -222,23 +289,25 @@ class SalesRepo:
     # ---------------------------------------------------------------------
     # READ — QUOTATIONS
     # ---------------------------------------------------------------------
-    def list_quotations(self) -> list[dict]:
+    def list_quotations(
+        self,
+        limit: int | None = DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+        *,
+        status: str | None = "all",
+    ) -> list[dict]:
         """
         List only QUOTATIONS (doc_type='quotation').
         """
-        sql = """
-        SELECT s.sale_id, s.date, s.customer_id, c.name AS customer_name,
-               CAST(s.total_amount AS REAL)   AS total_amount,
-               CAST(s.order_discount AS REAL) AS order_discount,
-               CAST(s.paid_amount AS REAL)    AS paid_amount,
-               s.payment_status, s.notes, s.doc_type, s.quotation_status,
-               s.source_type, s.source_id
-        FROM sales s
-        JOIN customers c ON c.customer_id = s.customer_id
-        WHERE s.doc_type = 'quotation'
+        where_sql, params = self._sales_list_where(
+            doc_type="quotation",
+            status=status,
+        )
+        sql = self._sales_list_select_sql() + where_sql + """
         ORDER BY DATE(s.date) DESC, s.sale_id DESC
         """
-        return self.conn.execute(sql).fetchall()
+        sql = self._append_limit(sql, params, limit, offset)
+        return self.conn.execute(sql, params).fetchall()
 
     # ---------------------------------------------------------------------
     # INTERNAL WRITES

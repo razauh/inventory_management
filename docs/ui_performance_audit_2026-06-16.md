@@ -83,159 +83,26 @@ Purchase list uses a default 200-row limit. Inventory transactions use a user-se
 
 ### Products
 
-#### P1: Full product list uses heavy SQL and blocks screen load
+#### P1: 
 
-- Affected files: `modules/product/controller.py`, `database/repositories/products_repo.py`.
-- Affected code: `ProductController._build_model()`, `ProductsRepo.list_products()`.
-- Trigger: opening Products, reloading after add/edit/delete/import, changing price if reload follows.
-- Severity: Critical.
-- Evidence:
-  - `ProductController.__init__()` calls `_reload()` during construction at `modules/product/controller.py:240-247`.
-  - `_build_model()` calls `self.repo.list_products()` and builds a new model/proxy at `modules/product/controller.py:264-281`.
-  - `ProductsRepo.list_products()` runs CTEs for UoM labels, latest purchase, latest manual sale, joins `v_stock_on_hand`, and returns all rows at `database/repositories/products_repo.py:62-125`.
-- Why this lags:
-  - The query scans and groups product UoMs, purchase items, purchases, sale prices, and stock valuation data before the UI can paint.
-  - Every product row is converted into a dataclass and installed into a fresh Qt model.
-  - No pagination or limit exists.
-- Fix direction:
-  - Split list columns from computed summary fields.
-  - Load first page only.
-  - Fetch stock, latest price, and UoM aggregates on demand or in a cached batch.
-  - Keep one model/proxy and replace rows instead of rebuilding proxy objects on each reload.
+#### P2: 
 
-#### P2: Product search filters the full in-memory model
-
-- Affected files: `modules/product/controller.py`, `modules/product/model.py`.
-- Affected code: `ProductController._apply_filter()`, `ProductsTableModel.data()`.
-- Trigger: each product search text change.
-- Severity: High.
-- Evidence:
-  - Search text connects directly to `_apply_filter()` at `modules/product/controller.py:252-262`.
-  - `_apply_filter()` sets a `QRegularExpression` on the proxy at `modules/product/controller.py:286-288`.
-  - Product model builds display/user-role values from every matching row on demand at `modules/product/model.py:18-44`.
-- Why this lags:
-  - Qt proxy filtering must inspect rows already loaded in memory.
-  - Large product sets cause repeated data access and repaint work on each keystroke.
-- Fix direction:
-  - Use debounced server-side search with a row limit.
-  - Keep client-side proxy filtering only for small loaded pages.
-
-#### P3: Product summary recomputes over all products on each reload
-
-- Affected file: `modules/product/controller.py`.
-- Affected code: `ProductController._update_summary()`.
-- Trigger: Products reload.
-- Severity: Medium.
-- Evidence:
-  - `_update_summary()` loops over all product rows and computes low-stock/priced/UoM counts at `modules/product/controller.py:325-345`.
-- Why this lags:
-  - The loop runs after the already-heavy product query.
-  - It scales linearly with product count and blocks the UI thread.
-- Fix direction:
-  - Use a small aggregate query for counts.
-  - Cache summary values and refresh only after product/stock mutations.
+#### P3:
 
 ### Customers
 
-#### C1: Customer list loads all customers and filters in Qt
+#### C1: 
 
-- Affected files: `modules/customer/controller.py`, `database/repositories/customers_repo.py`.
-- Affected code: `CustomerController._reload()`, `CustomerController._apply_filter()`, `CustomersRepo.list_customers()`.
-- Trigger: opening Customers, add/edit/delete reload, search.
-- Severity: High.
-- Evidence:
-  - `_reload()` calls `self.repo.list_customers()` and replaces the full model at `modules/customer/controller.py:83-92`.
-  - `list_customers()` selects all customers ordered by ID at `database/repositories/customers_repo.py:41-50`.
-  - `_apply_filter()` applies a `QRegularExpression` to the proxy at `modules/customer/controller.py:102-109`.
-- Why this lags:
-  - All customer rows sit in the UI model.
-  - Search does not use `CustomersRepo.search()` in the current controller path.
-  - Proxy filtering scans the whole loaded list.
-- Fix direction:
-  - Use server-side search with `LIMIT/OFFSET`.
-  - Keep a visible count based on query metadata, not proxy row count over all rows.
-
-#### C2: Customer detail panel runs aggregate SQL on selection
-
-- Affected files: `modules/customer/controller.py`, `database/repositories/customers_repo.py`.
-- Affected code: `CustomerController._update_details()`, `CustomersRepo.get_detail_snapshot()`.
-- Trigger: selecting a customer, initial auto-selection after load/filter.
-- Severity: High.
-- Evidence:
-  - Selection change connects to `_update_details()` at `modules/customer/controller.py:73-82`.
-  - `_sync_table_state()` calls `_update_details()` after filter and reload at `modules/customer/controller.py:111-119`.
-  - `get_detail_snapshot()` runs subqueries for credit balance, sales count, open due sum, last sale, last payment, and last advance at `database/repositories/customers_repo.py:76-120`.
-- Why this lags:
-  - Each selected row can trigger several aggregate lookups.
-  - Reload/filter selects a row and immediately does detail work before the UI is idle.
-- Fix direction:
-  - Defer details with a short single-shot timer.
-  - Batch common detail counts into the list query only when needed.
-  - Cache selected customer snapshots until customer/payment data changes.
-
-#### C3: Customer selection restore scans the base model
-
-- Affected file: `modules/customer/controller.py`.
-- Affected code: `CustomerController._select_customer_id()`.
-- Trigger: reload or filter with a prior selected customer.
-- Severity: Medium.
-- Evidence:
-  - `_select_customer_id()` loops over `range(self.base.rowCount())` to find a matching ID at `modules/customer/controller.py:121-137`.
-- Why this lags:
-  - Large customer lists make every reload/filter restore perform a linear scan.
-- Fix direction:
-  - Track an ID-to-source-row map when replacing rows.
-  - Avoid restoring selection when filters produce many rows and no selected ID is visible.
+#### C2: 
+#### C3: 
 
 ### Vendors
 
-#### V1: Vendor list loads all vendors with balance data
+#### V1: 
 
-- Affected files: `modules/vendor/controller.py`, `database/repositories/vendors_repo.py`.
-- Affected code: `VendorController._build_model()`, `VendorsRepo.list_vendors()`.
-- Trigger: opening Vendors, reload after add/edit/import/account changes.
-- Severity: High.
-- Evidence:
-  - `_build_model()` calls `self.repo.list_vendors()` and replaces the full model at `modules/vendor/controller.py:85-97`.
-  - `list_vendors()` selects all vendors and joins `v_vendor_advance_balance` at `database/repositories/vendors_repo.py:33-47`.
-- Why this lags:
-  - Vendor row count and balance view cost both grow.
-  - All rows are pushed into the Qt model before the screen is ready.
-- Fix direction:
-  - Use paged vendor listing.
-  - Load balances separately for visible rows or selected vendor.
+#### V2: 
 
-#### V2: Vendor search filters the full model synchronously
-
-- Affected file: `modules/vendor/controller.py`.
-- Affected code: `VendorController._apply_filter()`.
-- Trigger: every vendor search text change.
-- Severity: High.
-- Evidence:
-  - Search text connects directly to `_apply_filter()` at `modules/vendor/controller.py:70-84`.
-  - `_apply_filter()` sets proxy regex and may select row zero at `modules/vendor/controller.py:104-111`.
-- Why this lags:
-  - Filtering scans the full loaded vendor model on every keystroke.
-  - Selecting the first result can also trigger detail/account work.
-- Fix direction:
-  - Debounce search.
-  - Move search into repository query with a result cap.
-
-#### V3: Vendor detail/account work follows selection
-
-- Affected file: `modules/vendor/controller.py`.
-- Affected code: `VendorController._update_details()`.
-- Trigger: selecting a vendor, initial auto-selection after reload.
-- Severity: Medium.
-- Evidence:
-  - `_reload()` selects row zero after loading at `modules/vendor/controller.py:97-103`.
-  - `_update_details()` sets detail data, credit, schedules account reload, and updates account buttons at `modules/vendor/controller.py:144-167`.
-- Why this lags:
-  - List paint and detail/account refresh happen back-to-back.
-  - Large vendor-account tables or slow balance view calls extend selection latency.
-- Fix direction:
-  - Defer account reload until after the list paint.
-  - Cache account rows per vendor during a session.
+#### V3: 
 
 ### Sales
 

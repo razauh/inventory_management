@@ -73,6 +73,8 @@ class SalesStatusProxy(QSortFilterProxyModel):
 
 
 class SalesController(BaseModule):
+    PAGE_SIZE = 100
+
     # CSS for PDF generation - shared between print and export methods
     _INVOICE_PDF_CSS = '''
         @page {
@@ -117,6 +119,8 @@ class SalesController(BaseModule):
         self._detail_summary_cache: dict[str, dict] = {}
         self._last_detail_key: tuple[str, str] | None = None
         self._table_initialized = False
+        self._page_offset = 0
+        self._total_sales = 0
 
         # Repos using the shared connection
         self.repo = SalesRepo(conn)
@@ -141,7 +145,7 @@ class SalesController(BaseModule):
         self._search_timer = QTimer(self.view)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)
-        self._search_timer.timeout.connect(self._reload)
+        self._search_timer.timeout.connect(self._run_search_reload)
 
         self.base = SalesTableModel([], doc_type=self._doc_type)
         self.proxy = SalesStatusProxy(self.view)
@@ -198,6 +202,10 @@ class SalesController(BaseModule):
             self.view.status_filter.currentIndexChanged.connect(self._on_status_filter_changed)
         if hasattr(self.view, "btn_clear_filters"):
             self.view.btn_clear_filters.clicked.connect(self._clear_filters)
+        if hasattr(self.view, "btn_prev_page"):
+            self.view.btn_prev_page.clicked.connect(self._prev_page)
+        if hasattr(self.view, "btn_next_page"):
+            self.view.btn_next_page.clicked.connect(self._next_page)
 
         if hasattr(self.view, "btn_record_payment"):
             self.view.btn_record_payment.clicked.connect(self._record_payment)
@@ -220,6 +228,7 @@ class SalesController(BaseModule):
         mode = (mode or "sale").lower()
         self._doc_type = "quotation" if mode == "quotation" else "sale"
         self._status_filter = "all"
+        self._page_offset = 0
 
         # Show a busy cursor while we rebuild potentially large models
         app = QApplication.instance()
@@ -254,6 +263,10 @@ class SalesController(BaseModule):
         self._search_text = text or ""
         self._search_timer.start()
 
+    def _run_search_reload(self):
+        self._page_offset = 0
+        self._reload()
+
     def _on_status_filter_changed(self, _idx: int):
         # Read the current data value; fall back to label if needed.
         value = None
@@ -270,7 +283,8 @@ class SalesController(BaseModule):
                 self.proxy.set_status_filter(self._status_filter)
         except Exception:
             pass
-        self._update_filter_summary()
+        self._page_offset = 0
+        self._reload()
 
     def _clear_filters(self):
         self.view.search.blockSignals(True)
@@ -282,6 +296,7 @@ class SalesController(BaseModule):
         self.view.status_filter.blockSignals(False)
         self._search_text = ""
         self._status_filter = "all"
+        self._page_offset = 0
         self._search_timer.stop()
         self._reload()
 
@@ -290,6 +305,7 @@ class SalesController(BaseModule):
             return
 
         visible_count = self.proxy.rowCount() if hasattr(self, "proxy") else 0
+        total_count = int(self._total_sales or 0)
         mode_label = "quotations" if self._doc_type == "quotation" else "sales"
         search_text = self._search_text.strip()
         status_text = ""
@@ -305,7 +321,7 @@ class SalesController(BaseModule):
         if status_text:
             filters.append(f"Status: {status_text}")
 
-        if visible_count == 0:
+        if total_count == 0:
             if filters:
                 message = f"No {mode_label} match. Active filters: " + " | ".join(filters)
                 style = "color: #a22; font-weight: bold;"
@@ -314,12 +330,12 @@ class SalesController(BaseModule):
                 style = "color: #555555;"
         elif filters:
             message = (
-                f"Showing {visible_count} {mode_label}. "
+                f"Showing {visible_count} of {total_count} {mode_label}. "
                 "Active filters: " + " | ".join(filters)
             )
             style = "color: #555555;"
         else:
-            message = f"Showing all {visible_count} {mode_label}."
+            message = f"Showing {visible_count} of {total_count} {mode_label}."
             style = "color: #555555;"
 
         self.view.lbl_filter_summary.setText(message)
@@ -513,11 +529,43 @@ class SalesController(BaseModule):
         Build the table model using server-side search (preferred).
         Falls back to list_* if search API is unavailable.
         """
+        try:
+            if hasattr(self.repo, "count_sales"):
+                self._total_sales = int(
+                    self.repo.count_sales(
+                        self._search_text,
+                        doc_type=self._doc_type,
+                        status=self._status_filter,
+                    )
+                )
+            else:
+                self._total_sales = 0
+        except (TypeError, sqlite3.Error):
+            _log.exception("Could not count sales for doc_type=%s", self._doc_type)
+            self._total_sales = 0
+        except Exception:
+            _log.exception("Unexpected error counting sales for doc_type=%s", self._doc_type)
+            self._total_sales = 0
+
+        if self._page_offset >= self._total_sales:
+            self._page_offset = max(
+                0,
+                ((self._total_sales - 1) // self.PAGE_SIZE) * self.PAGE_SIZE,
+            )
+
         # Try repo.search_sales(query, doc_type=...)
         rows_to_use = None
         try:
             if hasattr(self.repo, "search_sales"):
-                rows_to_use = list(self.repo.search_sales(self._search_text, doc_type=self._doc_type))
+                rows_to_use = list(
+                    self.repo.search_sales(
+                        self._search_text,
+                        doc_type=self._doc_type,
+                        status=self._status_filter,
+                        limit=self.PAGE_SIZE,
+                        offset=self._page_offset,
+                    )
+                )
         except TypeError:
             # some implementations might have different signature; try (query, doc_type) kw-agnostic
             try:
@@ -545,7 +593,13 @@ class SalesController(BaseModule):
         if rows_to_use is None:
             if self._doc_type == "quotation":
                 try:
-                    rows_to_use = list(self.repo.list_quotations())
+                    rows_to_use = list(
+                        self.repo.list_quotations(
+                            limit=self.PAGE_SIZE,
+                            offset=self._page_offset,
+                            status=self._status_filter,
+                        )
+                    )
                 except sqlite3.Error:
                     _log.exception("Could not list quotations after sales search fallback")
                     rows_to_use = []
@@ -553,7 +607,16 @@ class SalesController(BaseModule):
                     _log.exception("Unexpected error listing quotations after sales search fallback")
                     rows_to_use = []
             else:
-                rows_to_use = list(self.repo.list_sales())
+                rows_to_use = list(
+                    self.repo.list_sales(
+                        limit=self.PAGE_SIZE,
+                        offset=self._page_offset,
+                        status=self._status_filter,
+                    )
+                )
+
+        if not self._total_sales:
+            self._total_sales = len(rows_to_use)
 
         # Normalize quotations to keep table happy (no payments; show quotation_status or em dash)
         if self._doc_type == "quotation":
@@ -577,6 +640,34 @@ class SalesController(BaseModule):
         if not self._table_initialized:
             self.view.tbl.resizeColumnsToContents()
             self._table_initialized = True
+        self._sync_page_controls()
+
+    def _prev_page(self):
+        if self._page_offset <= 0:
+            return
+        self._page_offset = max(0, self._page_offset - self.PAGE_SIZE)
+        self._reload()
+
+    def _next_page(self):
+        next_offset = self._page_offset + self.PAGE_SIZE
+        if next_offset >= self._total_sales:
+            return
+        self._page_offset = next_offset
+        self._reload()
+
+    def _sync_page_controls(self):
+        if not all(
+            hasattr(self.view, attr)
+            for attr in ("lbl_page", "btn_prev_page", "btn_next_page")
+        ):
+            return
+        total_pages = max(1, (self._total_sales + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        current_page = min(total_pages, (self._page_offset // self.PAGE_SIZE) + 1)
+        self.view.lbl_page.setText(f"Page {current_page} / {total_pages}")
+        self.view.btn_prev_page.setEnabled(self._page_offset > 0)
+        self.view.btn_next_page.setEnabled(
+            self._page_offset + self.PAGE_SIZE < self._total_sales
+        )
 
     def _reload(self):
         self._search_timer.stop()
