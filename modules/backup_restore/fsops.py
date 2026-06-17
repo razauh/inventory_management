@@ -32,7 +32,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -50,7 +50,7 @@ __all__ = [
 # ----------------------------
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _log(logger: Optional[logging.Logger], verbose: bool, message: str, **fields) -> None:

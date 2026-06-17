@@ -4,7 +4,7 @@ import sqlite3
 from inventory_management.modules.purchase.controller import PurchaseController
 from inventory_management.database.repositories.purchases_repo import PurchasesRepo
 
-class TestConn:
+class StubConn:
     def __init__(self, real_conn):
         self.real_conn = real_conn
         self.row_factory = real_conn.row_factory
@@ -27,7 +27,7 @@ class TestConn:
 def controller(conn, current_user):
     """Fixture for PurchaseController."""
     conn.row_factory = sqlite3.Row
-    return PurchaseController(TestConn(conn), current_user)
+    return PurchaseController(StubConn(conn), current_user)
 
 def test_controller_add_flow(controller, monkeypatch, ids):
     """Test adding a new purchase via controller."""

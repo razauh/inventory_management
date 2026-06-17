@@ -43,7 +43,7 @@ class SalesStatusProxy(QSortFilterProxyModel):
 
     def set_doc_type(self, doc_type: str):
         self._doc_type = (doc_type or "sale").lower()
-        self.invalidateFilter()
+        self.invalidate()
 
     def filterAcceptsRow(self, source_row, source_parent):
         return True

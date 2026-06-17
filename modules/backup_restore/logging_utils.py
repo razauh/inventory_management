@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -90,7 +90,7 @@ class _JsonLineFormatter(logging.Formatter):
     """
     def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
         payload = {
-            "ts": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "level": record.levelname,
             "name": record.name,
             "msg": record.getMessage(),

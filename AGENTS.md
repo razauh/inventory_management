@@ -27,6 +27,83 @@ Operating instructions for AI coding agents working in this repository.
 - Avoid broad refactors unless the user asked for them.
 - If you need to touch database logic, preserve existing data and migration behavior.
 
+## Required Coding Skills
+
+Agents working in this repository must use both the Ponytail and Karpathy Guidelines skills as default coding discipline. Treat them as always-on unless the user explicitly asks for a different style.
+
+### Ponytail
+
+Use the `ponytail` skill and its related commands when writing, editing, reviewing, or planning code.
+
+Core rule: be lazy in the senior-engineer sense. Efficient, not careless. The best code is code that does not need to exist.
+
+Before adding code, walk this ladder and stop at the first rung that works:
+
+1. Does this need to be built at all? If not, skip it.
+2. Does the Python standard library or PySide6 already solve it? Use that.
+3. Does the current application already have a helper, repository, controller, widget, or service for it? Reuse that.
+4. Does an already-installed dependency solve it cleanly? Use it.
+5. Can the change be one clear line or one small local block? Keep it there.
+6. Only then write the minimum new code that works.
+
+Ponytail rules for this repo:
+
+- Prefer deletion and reuse over new files.
+- Do not add abstractions for one caller.
+- Do not add settings, extension points, registries, factories, adapters, or generic helpers unless the request truly needs them.
+- Do not add new dependencies when Python, PySide6, SQLite, or existing project code is enough.
+- Mark intentional simplifications with a `ponytail:` comment only when the shortcut has a known ceiling and a clear upgrade path.
+- Do not cut validation, data-loss protection, security, accessibility, or database migration safety.
+- For non-trivial logic, leave the smallest useful runnable check, unless the user has forbidden running or adding tests.
+
+Use Ponytail commands when available:
+
+- `@ponytail` to check or set the current Ponytail mode.
+- `@ponytail-review` before finishing larger diffs, especially if the change added new files or abstractions.
+- `@ponytail-audit` only for broad over-engineering reviews when the user asks for a repo-level audit.
+- `@ponytail-debt` when collecting existing `ponytail:` shortcuts into follow-up work.
+- `@ponytail-help` when command behavior is unclear.
+
+### Karpathy Guidelines
+
+Use the `karpathy-guidelines` skill for all non-trivial coding, review, refactor, debugging, and planning work.
+
+Core rule: do not silently guess. Surface assumptions, keep changes surgical, and define success criteria before changing code.
+
+Apply these four principles:
+
+1. Think before coding.
+   - State important assumptions.
+   - If the request has multiple plausible meanings, ask or briefly present the options.
+   - Push back when the simpler approach better matches the user's goal.
+   - Stop and ask when confusion would make the edit risky.
+
+2. Simplicity first.
+   - Build only what the user asked for.
+   - Avoid speculative features and "future-proof" layers.
+   - If a solution is getting large, look for the smaller existing path.
+   - Prefer a boring direct fix over a clever generalized one.
+
+3. Surgical changes.
+   - Touch only files and lines needed for the request.
+   - Match existing project style even when another style is personally preferred.
+   - Do not clean up adjacent code, comments, formatting, or dead code unless it was caused by the current change.
+   - Remove imports, variables, functions, or tests made unused by the current change.
+   - Mention unrelated problems instead of fixing them silently.
+
+4. Goal-driven execution.
+   - Convert vague work into concrete success criteria.
+   - For bug fixes, identify the failing behavior before patching.
+   - For features, identify the smallest user-visible behavior that proves success.
+   - For refactors, preserve behavior and keep verification focused.
+   - When allowed to verify, loop until the stated check passes or a clear blocker is found.
+
+When Ponytail and Karpathy Guidelines overlap, apply the stricter rule:
+
+- Ponytail decides whether code should exist.
+- Karpathy Guidelines decide how to reason, scope, and verify the change.
+- Project instructions in this file still override both when they are more specific.
+
 ## Response Style
 
 - Always provide user-facing output in caveman style.
