@@ -101,6 +101,19 @@ class PurchaseController(BaseModule):
         self._wire()
         self._reload()
 
+    def _current_user_id(self) -> int | None:
+        if not self.user:
+            return None
+        try:
+            user_id = int(self.user.get("user_id"))
+        except (TypeError, ValueError):
+            return None
+        row = self.conn.execute(
+            "SELECT 1 FROM users WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        return user_id if row else None
+
     def get_widget(self) -> QWidget:
         return self.view
 
@@ -410,7 +423,7 @@ class PurchaseController(BaseModule):
             paid_amount=0.0,
             advance_payment_applied=0.0,
             notes=p.get("notes"),
-            created_by=(self.user["user_id"] if self.user else None),
+            created_by=self._current_user_id(),
         )
         items = [
             PurchaseItem(
@@ -462,7 +475,7 @@ class PurchaseController(BaseModule):
                         ref_no=ip.get("ref_no"),
                         notes=ip.get("notes") or "Initial payment",
                         date=ip.get("date") or p["date"],
-                        created_by=(self.user["user_id"] if self.user else None),
+                        created_by=self._current_user_id(),
                         temp_vendor_bank_name=ip.get("temp_vendor_bank_name"),
                         temp_vendor_bank_number=ip.get("temp_vendor_bank_number"),
                     )
@@ -519,7 +532,7 @@ class PurchaseController(BaseModule):
                         ref_no=ref_no,
                         notes=pay_notes,
                         date=p["date"],
-                        created_by=(self.user["user_id"] if self.user else None),
+                        created_by=self._current_user_id(),
                         temp_vendor_bank_name=p.get("temp_vendor_bank_name"),
                         temp_vendor_bank_number=p.get("temp_vendor_bank_number"),
                     )
@@ -545,7 +558,7 @@ class PurchaseController(BaseModule):
                     amount=init_credit,
                     date=p["date"],
                     notes=p.get("initial_credit_notes"),
-                    created_by=(self.user["user_id"] if self.user else None),
+                    created_by=self._current_user_id(),
                 )
                 _log.info("Applied initial vendor credit for %s amount=%.4f", pid, init_credit)
                 self._recompute_header_totals_from_rows(pid)
@@ -564,7 +577,7 @@ class PurchaseController(BaseModule):
                         amount=auto_apply_amount,
                         date=p["date"],
                         notes=f"Auto-applied vendor advance from available credit",
-                        created_by=(self.user["user_id"] if self.user else None),
+                        created_by=self._current_user_id(),
                     )
                     _log.info("Auto-applied vendor credit for %s amount=%.4f", pid, auto_apply_amount)
                     self._recompute_header_totals_from_rows(pid)
@@ -910,7 +923,7 @@ class PurchaseController(BaseModule):
             paid_amount=row["paid_amount"],
             advance_payment_applied=row["advance_payment_applied"],
             notes=p["notes"],
-            created_by=(self.user["user_id"] if self.user else None),
+            created_by=self._current_user_id(),
         )
         items = [
             PurchaseItem(
@@ -948,7 +961,7 @@ class PurchaseController(BaseModule):
                         amount=auto_apply_amount,
                         date=p["date"],
                         notes=f"Auto-applied vendor advance from available credit (after edit)",
-                        created_by=(self.user["user_id"] if self.user else None),
+                        created_by=self._current_user_id(),
                     )
                     _log.info("Auto-applied vendor credit after edit for %s amount=%.4f", pid, auto_apply_amount)
                 except Exception as e:
@@ -1021,7 +1034,7 @@ class PurchaseController(BaseModule):
             self.repo.record_return(
                 pid=pid,
                 date=payload["date"],
-                created_by=(self.user["user_id"] if self.user else None),
+                created_by=self._current_user_id(),
                 lines=lines,
                 notes=payload.get("notes"),
                 settlement=settlement,
@@ -1073,7 +1086,7 @@ class PurchaseController(BaseModule):
                 amount=amt,
                 date=when,
                 notes=notes,
-                created_by=(self.user["user_id"] if self.user else None),
+                created_by=self._current_user_id(),
             )
             self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         except Exception as e:
@@ -1127,7 +1140,7 @@ class PurchaseController(BaseModule):
                         ref_no=payload["ref_no"],
                         notes=payload["notes"],
                         date=payload["date"],
-                        created_by=(self.user["user_id"] if self.user else None),
+                        created_by=self._current_user_id(),
                         temp_vendor_bank_name=payload["temp_vendor_bank_name"],
                         temp_vendor_bank_number=payload["temp_vendor_bank_number"],
                     )

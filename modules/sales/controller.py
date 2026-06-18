@@ -145,6 +145,19 @@ class SalesController(BaseModule):
 
     # ---- internals --------------------------------------------------------
 
+    def _current_user_id(self) -> int | None:
+        if not self.user:
+            return None
+        try:
+            user_id = int(self.user.get("user_id"))
+        except (TypeError, ValueError):
+            return None
+        row = self.conn.execute(
+            "SELECT 1 FROM users WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        return user_id if row else None
+
     @staticmethod
     def _get_db_path_from_conn(conn: sqlite3.Connection) -> str:
         """
@@ -1216,7 +1229,7 @@ class SalesController(BaseModule):
                 paid_amount=0.0,
                 advance_payment_applied=0.0,
                 notes=p["notes"],
-                created_by=(self.user["user_id"] if self.user else None),
+                created_by=self._current_user_id(),
                 source_type="direct",
                 source_id=None,
             )
@@ -1270,7 +1283,7 @@ class SalesController(BaseModule):
             paid_amount=0.0,
             advance_payment_applied=0.0,
             notes=p["notes"],
-            created_by=(self.user["user_id"] if self.user else None),
+            created_by=self._current_user_id(),
         )
         items = [
             SaleItem(
@@ -1300,7 +1313,7 @@ class SalesController(BaseModule):
                 "amount": init_amt,
                 "method": method,
                 "date": p["date"],
-                "created_by": (self.user["user_id"] if self.user else None),
+                "created_by": self._current_user_id(),
                 "notes": "[Init payment]",
             }
 
@@ -1474,7 +1487,7 @@ class SalesController(BaseModule):
                     paid_amount=0.0,
                     advance_payment_applied=0.0,
                     notes=p["notes"],
-                    created_by=(self.user["user_id"] if self.user else None),
+                    created_by=self._current_user_id(),
                     source_type=r.get("source_type", "direct"),
                     source_id=r.get("source_id"),
                 )
@@ -1525,7 +1538,7 @@ class SalesController(BaseModule):
             paid_amount=r["paid_amount"],
             advance_payment_applied=0.0,
             notes=p["notes"],
-            created_by=(self.user["user_id"] if self.user else None),
+            created_by=self._current_user_id(),
         )
         items = [
             SaleItem(
@@ -1604,7 +1617,7 @@ class SalesController(BaseModule):
                 qo_id=qo_id,
                 new_so_id=None,
                 date=date_for_so,
-                created_by=(self.user["user_id"] if self.user else None),
+                created_by=self._current_user_id(),
             )
         except Exception as e:
             info(self.view, "Error", f"Conversion failed: {e}")
@@ -1955,7 +1968,7 @@ class SalesController(BaseModule):
         result = self.repo.record_return(
             sid=sid,
             date=return_date,
-            created_by=(self.user["user_id"] if self.user else None),
+            created_by=self._current_user_id(),
             lines=lines,
             notes="[Return]",
             settlement={
