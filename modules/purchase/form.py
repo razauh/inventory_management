@@ -254,11 +254,12 @@ class PurchaseForm(QDialog):
         left_layout.addWidget(items_box, 2)
 
         # Add left side to main layout
-        main_layout.addWidget(left_widget, 2)  # Left side gets 2/3 of space
+        main_layout.addWidget(left_widget, 4)  # Left side gets more space
 
         self.ip_box = QGroupBox("Initial Payment (optional)")
         self.ip_box.setEnabled(allow_initial_payment)
         self.ip_box.setVisible(allow_initial_payment)
+        self.ip_box.setMaximumWidth(240)
 
         # Use a vertical layout for the single column format
         ip_layout = QVBoxLayout(self.ip_box)
@@ -402,7 +403,7 @@ class PurchaseForm(QDialog):
         ip_layout.addStretch(1)
 
         # Add right side (Initial Payment) to main layout
-        main_layout.addWidget(self.ip_box, 1)  # Right side gets 1/3 of space
+        main_layout.addWidget(self.ip_box, 1)  # Right side gets less space
 
         
 

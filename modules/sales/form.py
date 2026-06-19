@@ -313,6 +313,7 @@ class SaleForm(QDialog):
         self.pay_box = QWidget()
         pay = QHBoxLayout(self.pay_box)
         self.pay_amount = QLineEdit(); self.pay_amount.setPlaceholderText("0")
+        self.pay_amount.setMinimumWidth(180)
         self.pay_amount.setAccessibleName("Initial payment amount")
         self.pay_amount.setAccessibleDescription("Amount received when this sale is saved.")
         self.pay_limit_label = QLabel("Max: 0.00 | Balance: 0.00")

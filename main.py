@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 from PySide6.QtCore import Qt, QEvent, QSize
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from pathlib import Path
 import sys
 import traceback
@@ -350,6 +350,7 @@ class MainWindow(QMainWindow):
         # ---- Backup & Restore (replace previous placeholder) ----
         self._add_backup_restore_module_deferred()
         self._register_backup_restore_file_actions()
+        self._register_global_shortcuts()
         self._register_updater_actions()
 
         # Ensure first page is visible
@@ -903,6 +904,45 @@ class MainWindow(QMainWindow):
 
     def _open_new_quotation(self):
         self._invoke_sales_action("new_quotation", "Could not open New Quotation form.")
+
+    def _get_purchase_controller(self):
+        info_idx = self._find_module_info_index("Purchases")
+        if info_idx is None:
+            QMessageBox.warning(self, "Missing", "Purchases module is not available.")
+            return None
+
+        self._load_module_at_index(info_idx)
+
+        mod_idx = self._find_module_index("Purchases")
+        if mod_idx is None or mod_idx >= len(self.modules):
+            QMessageBox.warning(self, "Missing", "Purchases module could not be loaded.")
+            return None
+
+        return self.modules[mod_idx][1]
+
+    def _invoke_purchase_action(self, action_name: str, error_message: str) -> None:
+        ctrl = self._get_purchase_controller()
+        if ctrl and hasattr(ctrl, action_name):
+            try:
+                getattr(ctrl, action_name)()
+            except Exception:
+                QMessageBox.warning(self, "Error", error_message)
+
+    def _open_new_purchase(self):
+        self._invoke_purchase_action("new_purchase", "Could not open New Purchase form.")
+
+    def _register_global_shortcuts(self) -> None:
+        self._global_shortcuts = [
+            QShortcut(QKeySequence("Ctrl+Shift+P"), self),
+            QShortcut(QKeySequence("Ctrl+Shift+S"), self),
+            QShortcut(QKeySequence("Ctrl+Shift+Q"), self),
+        ]
+        for shortcut in self._global_shortcuts:
+            shortcut.setContext(Qt.ApplicationShortcut)
+
+        self._global_shortcuts[0].activated.connect(self._open_new_purchase)
+        self._global_shortcuts[1].activated.connect(self._open_new_sale)
+        self._global_shortcuts[2].activated.connect(self._open_new_quotation)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

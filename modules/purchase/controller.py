@@ -400,6 +400,9 @@ class PurchaseController(BaseModule):
         self.active_dialog.accepted.connect(self._handle_add_dialog_accept)
         self.active_dialog.show()
 
+    def new_purchase(self):
+        self._add()
+
     def _handle_add_dialog_accept(self):
         if not self.active_dialog:
             return
