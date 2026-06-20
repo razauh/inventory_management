@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable
 
+from constants import APP_UPDATER_USER_AGENT
 from .models import ReleaseAsset, ReleaseInfo
 from .versioning import parse_version
 
@@ -31,7 +32,7 @@ def fetch_releases(owner: str, repo: str, *, timeout: float = 8.0) -> tuple[Rele
         url,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "Al-Husnain-Updater",
+            "User-Agent": APP_UPDATER_USER_AGENT,
         },
     )
     try:

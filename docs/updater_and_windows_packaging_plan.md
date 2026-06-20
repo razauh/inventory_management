@@ -76,8 +76,8 @@ Why:
 
 Installer behavior:
 
-- Install to `%LOCALAPPDATA%\Programs\Al Husnain` by default.
-- Store DB/config/logs under `%LOCALAPPDATA%\Al Husnain`.
+- Install to `%LOCALAPPDATA%\Programs\Inventory Management` by default.
+- Store DB/config/logs under `%LOCALAPPDATA%\Inventory Management`.
 - Create Start Menu and optional desktop shortcuts.
 - Do not remove user data on uninstall by default.
 - Use stable `AppId` in Inno Setup so upgrades replace app files.
@@ -92,7 +92,7 @@ Release process:
 3. Tag release as `vMAJOR.MINOR.PATCH`.
 4. GitHub Actions builds on `windows-latest`.
 5. PyInstaller creates the app folder or single executable.
-6. Inno Setup creates `AlHusnain-Setup-vMAJOR.MINOR.PATCH.exe`.
+6. Inno Setup creates `InventoryManagement-Setup-vMAJOR.MINOR.PATCH.exe`.
 7. Workflow writes `SHA256SUMS.txt`.
 8. Assets are uploaded to the GitHub Release.
 9. Installed apps detect the release through GitHub Releases.
@@ -116,8 +116,8 @@ Release process:
 - `main.py`
 - `config.py`
 - `modules/backup_restore/controller.py`
-- `packaging/pyinstaller/al_husnain.spec`
-- `packaging/inno/al_husnain.iss`
+- `packaging/pyinstaller/inventory_management.spec`
+- `packaging/inno/inventory_management.iss`
 - `.github/workflows/windows-release.yml`
 - `docs/updater_and_windows_packaging_plan.md`
 
@@ -134,4 +134,4 @@ Release process:
 - Backup warning disables install until acknowledged.
 - Backup screen opens from update dialog.
 - Installer launches only after warning and checksum verification.
-- Packaged app preserves `%LOCALAPPDATA%\Al Husnain\myshop.db` across upgrade.
+- Packaged app preserves existing local `myshop.db` across upgrade.

@@ -27,7 +27,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(project_root))
 
-from constants import APP_NAME, STYLE_FILE
+from constants import APP_MUTEX_NAME, APP_NAME, STYLE_FILE
 from database import get_connection, get_unresolved_purchase_return_count
 from modules.base_module import BaseModule
 from version import APP_VERSION
@@ -302,6 +302,14 @@ class MainWindow(QMainWindow):
             "Vendors",
             "inventory_management.modules.vendor.controller",
             "VendorController",
+            self.conn,
+            fallback_placeholder=True,
+        )
+
+        self._add_module_deferred(
+            "Company Info",
+            "inventory_management.modules.company_info.controller",
+            "CompanyInfoController",
             self.conn,
             fallback_placeholder=True,
         )
@@ -964,7 +972,7 @@ def main():
     if sys.platform == "win32":
         import ctypes
         global _app_mutex
-        _app_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "AlHusnainMutex")
+        _app_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, APP_MUTEX_NAME)
 
     # Filter out warnings about signal disconnection
     import warnings

@@ -22,6 +22,7 @@ a = Analysis(
         "inventory_management.modules.sales.controller",
         "inventory_management.modules.customer.controller",
         "inventory_management.modules.vendor.controller",
+        "inventory_management.modules.company_info.controller",
         "inventory_management.modules.expense.controller",
         "inventory_management.modules.reporting.controller",
         "inventory_management.modules.backup_restore",
@@ -40,7 +41,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="AlHusnain",
+    name="InventoryManagement",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -59,5 +60,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="AlHusnain",
+    name="InventoryManagement",
 )

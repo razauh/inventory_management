@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT.parent))
 
 from inventory_management.database.repositories.sales_repo import SaleHeader, SaleItem, SalesRepo

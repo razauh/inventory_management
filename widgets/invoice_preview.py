@@ -189,11 +189,8 @@ class InvoicePreview(QWidget):
                 else:
                     enriched_data['initial_payment'] = None
                 
-                # Add company info
-                enriched_data['company'] = {
-                    'name': 'Your Company Name',  # This would come from a company settings table
-                    'logo_path': None  # This would come from company settings
-                }
+                from inventory_management.database.repositories.company_info_repo import get_invoice_company_context
+                enriched_data['company'] = get_invoice_company_context(self.conn)
                 
                 # Add payment status
                 enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')

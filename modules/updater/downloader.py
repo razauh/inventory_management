@@ -6,6 +6,7 @@ import tempfile
 import urllib.error
 import urllib.request
 
+from constants import APP_UPDATE_TEMP_PREFIX, APP_UPDATER_USER_AGENT
 from .models import ReleaseAsset
 
 
@@ -22,12 +23,12 @@ def download_asset(
 ) -> Path:
     if not asset.download_url.startswith("https://"):
         raise DownloadError("Only HTTPS downloads are allowed.")
-    target_dir = dest_dir or Path(tempfile.mkdtemp(prefix="alhusnain-update-"))
+    target_dir = dest_dir or Path(tempfile.mkdtemp(prefix=APP_UPDATE_TEMP_PREFIX))
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / Path(asset.name).name
     part = target.with_suffix(target.suffix + ".part")
 
-    request = urllib.request.Request(asset.download_url, headers={"User-Agent": "Al-Husnain-Updater"})
+    request = urllib.request.Request(asset.download_url, headers={"User-Agent": APP_UPDATER_USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             content_length = response.info().get("Content-Length")
@@ -53,7 +54,7 @@ def download_asset(
 def download_text(asset: ReleaseAsset, *, timeout: float = 15.0) -> str:
     if not asset.download_url.startswith("https://"):
         raise DownloadError("Only HTTPS downloads are allowed.")
-    request = urllib.request.Request(asset.download_url, headers={"User-Agent": "Al-Husnain-Updater"})
+    request = urllib.request.Request(asset.download_url, headers={"User-Agent": APP_UPDATER_USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read().decode("utf-8")

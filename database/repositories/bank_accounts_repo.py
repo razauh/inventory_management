@@ -15,9 +15,11 @@ class BankAccountsRepo:
                 account_id as bank_account_id,
                 bank_name,
                 label as account_title,
-                account_no
+                account_no,
+                iban,
+                is_primary
             FROM company_bank_accounts
             WHERE is_active = 1
-            ORDER BY label
+            ORDER BY is_primary DESC, label
         """)
         return [dict(row) for row in cursor.fetchall()]

@@ -12,7 +12,20 @@ CREATE TABLE IF NOT EXISTS company_info (
     company_id   INTEGER PRIMARY KEY CHECK (company_id = 1),
     company_name TEXT NOT NULL,
     address      TEXT,
-    logo_path    TEXT
+    logo_path    TEXT,
+    address_line1 TEXT,
+    address_line2 TEXT,
+    city TEXT,
+    state_region TEXT,
+    postal_code TEXT,
+    country TEXT,
+    phone TEXT,
+    email TEXT,
+    website TEXT,
+    tax_number TEXT,
+    invoice_footer_note TEXT,
+    terms_text TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS company_contacts (
@@ -427,6 +440,10 @@ CREATE TABLE IF NOT EXISTS company_bank_accounts (
   account_no   TEXT,
   iban         TEXT,
   routing_no   TEXT,
+  branch_name  TEXT,
+  swift_code   TEXT,
+  notes        TEXT,
+  is_primary   INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0,1)),
   is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
   FOREIGN KEY (company_id) REFERENCES company_info(company_id) ON DELETE CASCADE
 );
@@ -3611,6 +3628,71 @@ def _ensure_customer_advances_payment_metadata(conn: sqlite3.Connection) -> None
             conn.execute(sql)
 
 
+def _ensure_company_info_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA table_info(company_info);")
+    cols = {row[1] for row in cur.fetchall()}
+    migrations = {
+        "address_line1": "ALTER TABLE company_info ADD COLUMN address_line1 TEXT;",
+        "address_line2": "ALTER TABLE company_info ADD COLUMN address_line2 TEXT;",
+        "city": "ALTER TABLE company_info ADD COLUMN city TEXT;",
+        "state_region": "ALTER TABLE company_info ADD COLUMN state_region TEXT;",
+        "postal_code": "ALTER TABLE company_info ADD COLUMN postal_code TEXT;",
+        "country": "ALTER TABLE company_info ADD COLUMN country TEXT;",
+        "phone": "ALTER TABLE company_info ADD COLUMN phone TEXT;",
+        "email": "ALTER TABLE company_info ADD COLUMN email TEXT;",
+        "website": "ALTER TABLE company_info ADD COLUMN website TEXT;",
+        "tax_number": "ALTER TABLE company_info ADD COLUMN tax_number TEXT;",
+        "invoice_footer_note": "ALTER TABLE company_info ADD COLUMN invoice_footer_note TEXT;",
+        "terms_text": "ALTER TABLE company_info ADD COLUMN terms_text TEXT;",
+        "is_active": "ALTER TABLE company_info ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1));",
+    }
+    for col, sql in migrations.items():
+        if col not in cols:
+            conn.execute(sql)
+    conn.execute(
+        "UPDATE company_info SET address_line1 = address "
+        "WHERE COALESCE(address_line1, '') = '' AND COALESCE(address, '') <> '';"
+    )
+
+
+def _ensure_company_bank_account_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA table_info(company_bank_accounts);")
+    cols = {row[1] for row in cur.fetchall()}
+    migrations = {
+        "branch_name": "ALTER TABLE company_bank_accounts ADD COLUMN branch_name TEXT;",
+        "swift_code": "ALTER TABLE company_bank_accounts ADD COLUMN swift_code TEXT;",
+        "notes": "ALTER TABLE company_bank_accounts ADD COLUMN notes TEXT;",
+        "is_primary": "ALTER TABLE company_bank_accounts ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0,1));",
+    }
+    for col, sql in migrations.items():
+        if col not in cols:
+            conn.execute(sql)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_company_bank_accounts_one_primary "
+        "ON company_bank_accounts(company_id) WHERE is_primary = 1;"
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_company_bank_primary_active_ins
+        BEFORE INSERT ON company_bank_accounts
+        WHEN NEW.is_primary = 1 AND NEW.is_active <> 1
+        BEGIN
+          SELECT RAISE(ABORT, 'Primary company bank account must be active');
+        END;
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_company_bank_primary_active_upd
+        BEFORE UPDATE ON company_bank_accounts
+        WHEN NEW.is_primary = 1 AND NEW.is_active <> 1
+        BEGIN
+          SELECT RAISE(ABORT, 'Primary company bank account must be active');
+        END;
+        """
+    )
+
+
 def _backfill_purchase_return_snapshots(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -4421,6 +4503,8 @@ def init_schema(db_path: Path | str = "myshop.db") -> None:
         _ensure_sale_payments_converted_to_credit(conn)
         _ensure_vendor_advances_payment_metadata(conn)
         _ensure_customer_advances_payment_metadata(conn)
+        _ensure_company_info_columns(conn)
+        _ensure_company_bank_account_columns(conn)
         migrate_purchase_return_snapshots(conn)
         migrate_sale_return_snapshots(conn)
         conn.commit()

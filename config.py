@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from constants import DATA_DIR, DB_FILE_NAME
+from constants import APP_DATA_DIR_NAME, APP_LEGACY_DATA_DIR_NAME, DATA_DIR, DB_FILE_NAME
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -10,8 +10,14 @@ def _default_data_path() -> Path:
     if getattr(sys, "frozen", False):
         local_app_data = os.getenv("LOCALAPPDATA")
         if local_app_data:
-            return Path(local_app_data) / "Al Husnain"
-        return Path.home() / "AppData" / "Local" / "Al Husnain"
+            root = Path(local_app_data)
+        else:
+            root = Path.home() / "AppData" / "Local"
+        current = root / APP_DATA_DIR_NAME
+        legacy = root / APP_LEGACY_DATA_DIR_NAME
+        if not current.exists() and legacy.exists():
+            return legacy
+        return current
     return BASE_DIR / DATA_DIR
 
 

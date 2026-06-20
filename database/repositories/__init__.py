@@ -43,6 +43,7 @@ from .customer_advances_repo import (
     CustomerAdvancesRepo,
     get_customer_advances_repo,
 )
+from .company_info_repo import CompanyInfoRepo, get_invoice_company_context
 
 # ---------------- Inventory ----------------
 from .inventory_repo import InventoryRepo
@@ -76,6 +77,8 @@ __all__ = [
     # customer_advances_repo
     "CustomerAdvancesRepo",
     "get_customer_advances_repo",
+    "CompanyInfoRepo",
+    "get_invoice_company_context",
     # inventory_repo
     "InventoryRepo",
     # products_repo

@@ -1,4 +1,14 @@
-APP_NAME = "Al Husnain"
+APP_NAME = "Inventory Management"
+APP_EXECUTABLE_NAME = "InventoryManagement"
+APP_MUTEX_NAME = "InventoryManagementMutex"
+APP_DATA_DIR_NAME = "Inventory Management"
+APP_LEGACY_DATA_DIR_NAME = "Al Husnain"
+APP_SETTINGS_ORG = APP_NAME
+APP_SETTINGS_NAME = APP_NAME
+APP_BACKUP_DIR_NAME = "Inventory Management Backups"
+APP_BACKUP_FILE_PREFIX = "Inventory_Management"
+APP_UPDATER_USER_AGENT = "Inventory-Management-Updater"
+APP_UPDATE_TEMP_PREFIX = "inventory-management-update-"
 DB_FILE_NAME = "myshop.db"
 DATA_DIR = "data"
 TABLE_SCHEMA_VERSION = "schema_meta"   # used by versioning

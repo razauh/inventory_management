@@ -5,6 +5,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from constants import APP_SETTINGS_NAME, APP_SETTINGS_ORG, APP_UPDATE_TEMP_PREFIX
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
@@ -42,7 +43,7 @@ class UpdateDownloadWorker(QThread):
         try:
             if self.update.installer_asset is None:
                 raise RuntimeError("Release installer asset is missing.")
-            download_dir = Path(tempfile.mkdtemp(prefix="alhusnain-update-"))
+            download_dir = Path(tempfile.mkdtemp(prefix=APP_UPDATE_TEMP_PREFIX))
             self.status.emit("Downloading update installer...")
 
             def progress_callback(bytes_written: int, total_bytes: int | None) -> None:
@@ -83,7 +84,7 @@ class UpdaterController(QObject):
     state_changed = Signal(object)
     _check_finished = Signal(object, bool, str)
 
-    SETTINGS_SCOPE = ("Al Husnain", "Al Husnain")
+    SETTINGS_SCOPE = (APP_SETTINGS_ORG, APP_SETTINGS_NAME)
     SETTINGS_KEY_AUTO_CHECK = "updater/auto_check"
     SETTINGS_KEY_INCLUDE_PRERELEASE = "updater/include_prerelease"
     SETTINGS_KEY_DEFERRED_TAG = "updater/deferred_tag"

@@ -1,5 +1,5 @@
-#define MyAppName "Al Husnain"
-#define MyAppExeName "AlHusnain.exe"
+#define MyAppName "Inventory Management"
+#define MyAppExeName "InventoryManagement.exe"
 #ifndef MyAppVersion
 #define MyAppVersion "0.1.0"
 #endif
@@ -8,11 +8,11 @@
 AppId={{9B04F844-06E0-4E6B-9B3F-6D5E1D39B0E5}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppMutex=AlHusnainMutex
-DefaultDirName={localappdata}\Programs\Al Husnain
+AppMutex=InventoryManagementMutex
+DefaultDirName={localappdata}\Programs\Inventory Management
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputBaseFilename=AlHusnain-Setup-v{#MyAppVersion}
+OutputBaseFilename=InventoryManagement-Setup-v{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -20,7 +20,7 @@ PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Files]
-Source: "..\..\dist\AlHusnain\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\dist\InventoryManagement\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

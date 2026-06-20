@@ -24,6 +24,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
 
+from constants import (
+    APP_BACKUP_DIR_NAME,
+    APP_BACKUP_FILE_PREFIX,
+    APP_SETTINGS_NAME,
+    APP_SETTINGS_ORG,
+)
 from PySide6.QtCore import Qt, QObject, Signal, Slot, QCoreApplication, QTimer, QSettings, QEventLoop
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
@@ -72,7 +78,7 @@ class BackupRestoreController(QObject):
     operation_controls_enabled_changed = Signal(bool)
 
     TITLE = "Backup & Restore"
-    SETTINGS_SCOPE = ("Al Husnain", "Al Husnain")
+    SETTINGS_SCOPE = (APP_SETTINGS_ORG, APP_SETTINGS_NAME)
     SETTINGS_KEY_LAST_BACKUP = "backup_restore/last_backup_path"
 
     def __init__(
@@ -181,7 +187,7 @@ class BackupRestoreController(QObject):
         from .service import BackupJob
         from .views import ProgressDialog
 
-        base_dir = Path(dest_dir) if dest_dir else Path.home() / "Al Husnain Backups"
+        base_dir = Path(dest_dir) if dest_dir else Path.home() / APP_BACKUP_DIR_NAME
         try:
             base_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
@@ -189,7 +195,7 @@ class BackupRestoreController(QObject):
             return False
 
         stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        dest = base_dir / f"Al_Husnain_pre_update_{stamp}.imsdb"
+        dest = base_dir / f"{APP_BACKUP_FILE_PREFIX}_pre_update_{stamp}.imsdb"
         prog = ProgressDialog(parent=parent or self._widget or None)
         loop = QEventLoop()
         result = {"ok": False}

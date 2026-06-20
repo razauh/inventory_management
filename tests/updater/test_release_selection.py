@@ -18,26 +18,26 @@ def _release(*assets: ReleaseAsset) -> ReleaseInfo:
 def test_select_installer_prefers_setup_exe_on_windows(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Windows")
     release = _release(
-        ReleaseAsset("AlHusnain.msi", "https://example.com/AlHusnain.msi"),
-        ReleaseAsset("AlHusnain-Setup-v1.2.3.exe", "https://example.com/AlHusnain-Setup-v1.2.3.exe"),
+        ReleaseAsset("InventoryManagement.msi", "https://example.com/InventoryManagement.msi"),
+        ReleaseAsset("InventoryManagement-Setup-v1.2.3.exe", "https://example.com/InventoryManagement-Setup-v1.2.3.exe"),
     )
 
     selected = select_installer_asset(release)
 
     assert selected is not None
-    assert selected.name == "AlHusnain-Setup-v1.2.3.exe"
+    assert selected.name == "InventoryManagement-Setup-v1.2.3.exe"
 
 
 def test_select_installer_rejects_non_windows(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Linux")
-    release = _release(ReleaseAsset("AlHusnain-Setup-v1.2.3.exe", "https://example.com/app.exe"))
+    release = _release(ReleaseAsset("InventoryManagement-Setup-v1.2.3.exe", "https://example.com/app.exe"))
 
     assert select_installer_asset(release) is None
 
 
 def test_select_checksum_asset_finds_sha256sums():
     release = _release(
-        ReleaseAsset("AlHusnain-Setup-v1.2.3.exe", "https://example.com/app.exe"),
+        ReleaseAsset("InventoryManagement-Setup-v1.2.3.exe", "https://example.com/app.exe"),
         ReleaseAsset("SHA256SUMS.txt", "https://example.com/SHA256SUMS.txt"),
     )
 
@@ -59,7 +59,7 @@ def test_check_for_update_skips_release_without_checksum(monkeypatch):
         prerelease=False,
         draft=False,
         assets=[
-            ReleaseAsset("AlHusnain-Setup-v1.2.4.exe", "https://example.com/AlHusnain-Setup-v1.2.4.exe"),
+            ReleaseAsset("InventoryManagement-Setup-v1.2.4.exe", "https://example.com/InventoryManagement-Setup-v1.2.4.exe"),
             # No checksum asset here!
         ],
     )

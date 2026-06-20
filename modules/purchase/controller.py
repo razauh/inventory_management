@@ -832,11 +832,8 @@ class PurchaseController(BaseModule):
             # payment as `initial_payment` if anyone relies on it.
             enriched_data["initial_payment"] = payments[0] if payments else None
             
-            # Add company info
-            enriched_data['company'] = {
-                'name': 'Your Company Name',  # This would come from a company settings table
-                'logo_path': None  # This would come from company settings
-            }
+            from ...database.repositories.company_info_repo import get_invoice_company_context
+            enriched_data['company'] = get_invoice_company_context(self.conn)
             
             # Add payment status
             enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')

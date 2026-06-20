@@ -2177,21 +2177,8 @@ class SalesController(BaseModule):
             enriched_data['advance_payment_applied'] = advance_payment_applied
             enriched_data['remaining'] = remaining
 
-            # Add company info
-            company_row = self.conn.execute(
-                "SELECT company_name, logo_path FROM company_info WHERE company_id = 1"
-            ).fetchone()
-
-            if company_row:
-                enriched_data['company'] = {
-                    'name': company_row['company_name'],
-                    'logo_path': company_row['logo_path']
-                }
-            else:
-                enriched_data['company'] = {
-                    'name': 'Your Company Name',
-                    'logo_path': None
-                }
+            from ...database.repositories.company_info_repo import get_invoice_company_context
+            enriched_data['company'] = get_invoice_company_context(self.conn)
 
             # Add payment status
             enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
@@ -2322,17 +2309,8 @@ class SalesController(BaseModule):
                 "total": total,
             }
 
-            # Company info (same as sales)
-            company_row = self.conn.execute(
-                "SELECT company_name, logo_path FROM company_info WHERE company_id = 1"
-            ).fetchone()
-            if company_row:
-                enriched_data["company"] = {
-                    "name": company_row["company_name"],
-                    "logo_path": company_row["logo_path"],
-                }
-            else:
-                enriched_data["company"] = {"name": "Your Company Name", "logo_path": None}
+            from ...database.repositories.company_info_repo import get_invoice_company_context
+            enriched_data["company"] = get_invoice_company_context(self.conn)
 
         template = Template(template_content, autoescape=True)
         return template.render(**enriched_data)

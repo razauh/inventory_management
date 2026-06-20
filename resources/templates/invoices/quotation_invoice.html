@@ -42,9 +42,12 @@
         <div>
           <div class="company-name">{{ company.name }}</div>
           <div class="company-lines">
-            Address: XXXX
-            XXXXX: XXXXXX
-            XXXXXX: XXXXXX
+            {% for line in company.address_lines %}
+              {{ line }}<br>
+            {% endfor %}
+            {% for line in company.contact_lines %}
+              {{ line }}<br>
+            {% endfor %}
           </div>
         </div>
       </div>
@@ -67,19 +70,23 @@
       </div>
       <div class="card">
         <h3>Bank Details</h3>
-        <!-- Fixed bank blocks as requested -->
+        {% if company.bank_accounts %}
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+          {% for account in company.bank_accounts %}
           <div>
-            <div><strong>XXXXX Bank</strong></div>
-            <div>Account Title: XXXX</div>
-            <div>Account No: XXXX</div>
+            {% if account.bank_name %}<div><strong>{{ account.bank_name }}</strong></div>{% endif %}
+            <div>Account Title: {{ account.label }}</div>
+            {% if account.account_no %}<div>Account No: {{ account.account_no }}</div>{% endif %}
+            {% if account.iban %}<div>IBAN: {{ account.iban }}</div>{% endif %}
+            {% if account.branch_name %}<div>Branch: {{ account.branch_name }}</div>{% endif %}
+            {% if account.routing_no %}<div>Routing: {{ account.routing_no }}</div>{% endif %}
+            {% if account.swift_code %}<div>SWIFT: {{ account.swift_code }}</div>{% endif %}
           </div>
-          <div>
-            <div><strong>XXXX XXXX Bank</strong></div>
-            <div>Account Title: XXXXX</div>
-            <div>Account No: XXXX</div>
-          </div>
+          {% endfor %}
         </div>
+        {% else %}
+          <div class="muted">No bank details configured.</div>
+        {% endif %}
       </div>
     </div>
 
@@ -141,7 +148,8 @@
 
     <!-- Footer -->
     <div class="footer">
-      <div>Terms &amp; Conditions: Please confirm availability and prices before placing an order.</div>
+      <div>{{ company.terms_text or 'Terms & Conditions: Please confirm availability and prices before placing an order.' }}</div>
+      {% if company.invoice_footer_note %}<div>{{ company.invoice_footer_note }}</div>{% endif %}
     </div>
   </div>
 </body>
