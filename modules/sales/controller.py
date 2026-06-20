@@ -136,9 +136,13 @@ class SalesController(BaseModule):
         self.proxy.setFilterKeyColumn(-1)
         self.proxy.set_doc_type(self._doc_type)
         self.view.tbl.setModel(self.proxy)
+        self.view.payments_tbl.setModel(self.proxy)
         sel = self.view.tbl.selectionModel()
         if sel is not None:
             sel.selectionChanged.connect(self._on_selection_changed)
+        payment_sel = self.view.payments_tbl.selectionModel()
+        if payment_sel is not None:
+            payment_sel.selectionChanged.connect(self._sync_payment_tab_history)
 
         self._wire()
         self._reload()
@@ -188,6 +192,7 @@ class SalesController(BaseModule):
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_edit.clicked.connect(self._edit)
         self.view.btn_return.clicked.connect(self._return)
+        self.view.btn_return_all.clicked.connect(lambda: self._return(return_whole_order=True))
 
         # Server-side search: on change, refetch from repo
         self.view.search.textChanged.connect(self._on_search_changed)
@@ -359,6 +364,9 @@ class SalesController(BaseModule):
         if hasattr(self.view, "btn_return"):
             self.view.btn_return.setEnabled(return_allowed)
             self.view.btn_return.setToolTip(return_message)
+        if hasattr(self.view, "btn_return_all"):
+            self.view.btn_return_all.setEnabled(return_allowed)
+            self.view.btn_return_all.setToolTip(return_message)
         if hasattr(self.view, "lbl_return_eligibility"):
             self.view.lbl_return_eligibility.setText(return_message)
         payment_allowed = False
@@ -418,6 +426,16 @@ class SalesController(BaseModule):
                 "Select a sale to record payment.",
                 False,
                 "Select a sale to apply credit.",
+            )
+
+        returned_value = float(detail_payload.get("returned_value") or 0.0)
+        returnable_lines = int(detail_payload.get("returnable_lines") or 0)
+        if returned_value > 1e-9 and returnable_lines <= 0:
+            return (
+                False,
+                "Payment unavailable: sale is fully returned.",
+                False,
+                "Apply Credit unavailable: sale is fully returned.",
             )
 
         remaining = float(detail_payload.get("remaining_due") or 0.0)
@@ -703,6 +721,7 @@ class SalesController(BaseModule):
         self.proxy.set_doc_type(self._doc_type)
         if not self._table_initialized:
             self.view.tbl.resizeColumnsToContents()
+            self.view.payments_tbl.resizeColumnsToContents()
             self._table_initialized = True
         self._sync_page_controls()
 
@@ -747,6 +766,7 @@ class SalesController(BaseModule):
             selected = self._select_row_by_sale_id(selected_sale_id)
         if not selected and self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
+            self.view.payments_tbl.selectRow(0)
             selected = True
         if not selected:
             self._update_action_states()
@@ -769,17 +789,20 @@ class SalesController(BaseModule):
         if not proxy_index.isValid():
             return False
         self.view.tbl.selectRow(proxy_index.row())
+        self.view.payments_tbl.selectRow(proxy_index.row())
         try:
             self.view.tbl.scrollTo(proxy_index)
+            self.view.payments_tbl.scrollTo(proxy_index)
         except (AttributeError, RuntimeError):
             pass
         except Exception:
             _log.exception("Could not scroll restored sales selection into view")
         return True
 
-    def _selected_row(self) -> dict | None:
+    def _selected_row(self, table=None) -> dict | None:
+        table = table or self.view.tbl
         try:
-            idxs = self.view.tbl.selectionModel().selectedRows()
+            idxs = table.selectionModel().selectedRows()
         except Exception:
             return None
         if not idxs:
@@ -797,6 +820,21 @@ class SalesController(BaseModule):
             row_data.setdefault("total_amount", 0.0)
 
         return row_data
+
+    def _sync_payment_tab_history(self, *args):
+        row = self._selected_row(self.view.payments_tbl)
+        if not row or self._doc_type != "sale":
+            self.view.payments.set_rows([])
+            return
+        try:
+            snapshot = self.repo.get_sale_detail_snapshot(str(row["sale_id"]))
+            self.view.payments.set_rows(list(snapshot.get("payments") or []))
+        except Exception:
+            _log.exception(
+                "Could not update sales payment tab for sale_id=%s",
+                row.get("sale_id"),
+            )
+            self.view.payments.set_rows([])
 
     # --- small helper: fetch financials using calc view + header -----------
     def _fetch_sale_financials(self, sale_id: str) -> dict:
@@ -943,6 +981,7 @@ class SalesController(BaseModule):
             r["returnable_lines"] = int(snapshot.get("returnable_lines") or 0)
             r["paid_amount"] = float(summary.get("paid_amount") or 0.0)
             r["advance_payment_applied"] = float(summary.get("advance_payment_applied") or 0.0)
+            r["return_credit_amount"] = float(summary.get("return_credit_amount") or 0.0)
             r["calculated_total_amount"] = float(summary.get("calculated_total_amount") or 0.0)
             r["net_total_amount"] = r["calculated_total_amount"]
             r["paid_plus_credit"] = r["paid_amount"] + r["advance_payment_applied"]
@@ -1898,7 +1937,7 @@ class SalesController(BaseModule):
 
     # ---- Returns ----------------------------------------------------------
 
-    def _return(self):
+    def _return(self, return_whole_order: bool = False):
         """
         Inventory: insert sale_return transactions.
         Money:
@@ -1923,6 +1962,8 @@ class SalesController(BaseModule):
             return
 
         dlg = SaleReturnForm(self.view, repo=self.repo, sale_id=selected["sale_id"])
+        if return_whole_order:
+            dlg.chk_return_all.setChecked(True)
 
         # Store doc_type so the handler method knows the context
         self._pending_doc_type = doc_type

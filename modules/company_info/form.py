@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
 )
@@ -166,6 +167,52 @@ class BankAccountForm(QDialog):
             "swift_code": self.swift_code.text().strip(),
             "notes": self.notes.text().strip(),
             "is_primary": 1 if self.is_primary.isChecked() else 0,
+            "is_active": 1 if self.is_active.isChecked() else 0,
+        }
+        super().accept()
+
+    def payload(self):
+        return self._payload
+
+
+class ProprietorForm(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Company Proprietor")
+        self._payload = None
+        initial = initial or {}
+
+        self.name = QLineEdit(initial.get("name") or "")
+        self.phone = QLineEdit(initial.get("phone") or "")
+        self.sort_order = QSpinBox()
+        self.sort_order.setRange(0, 999)
+        self.sort_order.setValue(int(initial.get("sort_order") or 0))
+        self.is_active = QCheckBox("Active")
+        self.is_active.setChecked(bool(initial.get("is_active", 1)))
+
+        form = QFormLayout()
+        form.addRow("Name*", self.name)
+        form.addRow("Phone", self.phone)
+        form.addRow("Order", self.sort_order)
+        form.addRow("", self.is_active)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        root = QVBoxLayout(self)
+        root.addLayout(form)
+        root.addWidget(buttons)
+
+    def accept(self):
+        name = self.name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Required", "Proprietor name is required.")
+            return
+        self._payload = {
+            "name": name,
+            "phone": self.phone.text().strip(),
+            "sort_order": self.sort_order.value(),
             "is_active": 1 if self.is_active.isChecked() else 0,
         }
         super().accept()

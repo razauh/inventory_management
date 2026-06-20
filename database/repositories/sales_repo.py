@@ -177,10 +177,29 @@ class SalesRepo:
                CAST(s.total_amount AS REAL)   AS total_amount,
                CAST(s.order_discount AS REAL) AS order_discount,
                CAST(s.paid_amount AS REAL)    AS paid_amount,
+               CAST(COALESCE(srt.remaining_due, 0.0) AS REAL) AS remaining_due,
+               CAST(COALESCE(sdt.returned_value, 0.0) AS REAL) AS returned_value,
+               COALESCE((
+                   SELECT COUNT(*)
+                     FROM sale_items si
+                    WHERE si.sale_id = s.sale_id
+                      AND (
+                        CAST(si.quantity AS REAL) - COALESCE((
+                          SELECT SUM(CAST(it.quantity AS REAL))
+                            FROM inventory_transactions it
+                           WHERE it.transaction_type = 'sale_return'
+                             AND it.reference_table = 'sales'
+                             AND it.reference_id = si.sale_id
+                             AND it.reference_item_id = si.item_id
+                        ), 0.0)
+                      ) > 0.000000001
+               ), 0) AS returnable_lines,
                s.payment_status, s.notes, s.doc_type, s.quotation_status,
                s.source_type, s.source_id
         FROM sales s
         JOIN customers c ON c.customer_id = s.customer_id
+        LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+        LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
         """
 
     def list_sales(
@@ -1127,6 +1146,7 @@ class SalesRepo:
               CAST(COALESCE(sdt.net_total_amount, s.total_amount) AS REAL) AS net_total_amount,
               CAST(COALESCE(srt.paid_amount, 0.0) AS REAL) AS paid_amount,
               CAST(COALESCE(srt.advance_payment_applied, 0.0) AS REAL) AS advance_payment_applied,
+              CAST(COALESCE(rc.return_credit_amount, 0.0) AS REAL) AS return_credit_amount,
               CAST(COALESCE(srt.canonical_total_amount, s.total_amount) AS REAL) AS calculated_total_amount,
               CAST(COALESCE(srt.remaining_due, 0.0) AS REAL) AS remaining_due
             FROM sales s
@@ -1142,6 +1162,14 @@ class SalesRepo:
                   AND it.transaction_type = 'sale_return'
                 GROUP BY it.reference_id
             ) rt ON rt.sale_id = s.sale_id
+            LEFT JOIN (
+                SELECT
+                  source_id AS sale_id,
+                  COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS return_credit_amount
+                FROM customer_advances
+                WHERE source_type = 'return_credit'
+                GROUP BY source_id
+            ) rc ON rc.sale_id = s.sale_id
             WHERE s.sale_id = ?
             """,
             (sale_id,),
@@ -1156,6 +1184,7 @@ class SalesRepo:
             "net_total_amount": float(row["net_total_amount"] or 0.0),
             "paid_amount": float(row["paid_amount"] or 0.0),
             "advance_payment_applied": float(row["advance_payment_applied"] or 0.0),
+            "return_credit_amount": float(row["return_credit_amount"] or 0.0),
             "calculated_total_amount": float(row["calculated_total_amount"] or 0.0),
             "remaining_due": float(row["remaining_due"] or 0.0),
         }

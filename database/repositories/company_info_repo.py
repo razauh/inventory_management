@@ -16,6 +16,8 @@ DEFAULT_COMPANY_INFO = {
     "invoice_footer_note": "",
     "terms_text": "",
     "bank_accounts": [],
+    "proprietors": [],
+    "proprietor_lines": [],
 }
 
 
@@ -108,6 +110,65 @@ class CompanyInfoRepo:
         if refs and int(refs["c"] or 0) > 0:
             raise sqlite3.IntegrityError("Company info has bank accounts used by payments.")
         self.conn.execute("DELETE FROM company_info WHERE company_id = 1")
+        self.conn.commit()
+
+    def list_proprietors(self, active_only: bool = False) -> list[dict]:
+        sql = """
+            SELECT proprietor_id, company_id, name, phone, sort_order, is_active
+            FROM company_proprietors
+            WHERE company_id = 1
+        """
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY is_active DESC, sort_order, proprietor_id"
+        return [dict(row) for row in self.conn.execute(sql).fetchall()]
+
+    def get_proprietor(self, proprietor_id: int) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT proprietor_id, company_id, name, phone, sort_order, is_active
+            FROM company_proprietors
+            WHERE company_id = 1 AND proprietor_id = ?
+            """,
+            (proprietor_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def save_proprietor(self, data: dict[str, Any], proprietor_id: int | None = None) -> int:
+        name = (data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Proprietor name is required.")
+        values = {
+            "name": name,
+            "phone": (data.get("phone") or "").strip() or None,
+            "sort_order": int(data.get("sort_order") or 0),
+            "is_active": 0 if data.get("is_active") in (False, 0, "0") else 1,
+        }
+        with self.conn:
+            if proprietor_id is None:
+                cur = self.conn.execute(
+                    """
+                    INSERT INTO company_proprietors (company_id, name, phone, sort_order, is_active)
+                    VALUES (1, :name, :phone, :sort_order, :is_active)
+                    """,
+                    values,
+                )
+                return int(cur.lastrowid)
+            self.conn.execute(
+                """
+                UPDATE company_proprietors
+                SET name=:name, phone=:phone, sort_order=:sort_order, is_active=:is_active
+                WHERE company_id = 1 AND proprietor_id = :proprietor_id
+                """,
+                {**values, "proprietor_id": proprietor_id},
+            )
+            return int(proprietor_id)
+
+    def delete_proprietor(self, proprietor_id: int) -> None:
+        self.conn.execute(
+            "DELETE FROM company_proprietors WHERE company_id = 1 AND proprietor_id = ?",
+            (proprietor_id,),
+        )
         self.conn.commit()
 
     def list_bank_accounts(self, active_only: bool = False) -> list[dict]:
@@ -228,12 +289,18 @@ class CompanyInfoRepo:
             f"Website: {row['website']}" if row.get("website") else None,
             f"Tax No: {row['tax_number']}" if row.get("tax_number") else None,
         ]
+        proprietors = self.list_proprietors(active_only=True)
         return {
             **row,
             "name": row.get("company_name") or DEFAULT_COMPANY_INFO["name"],
             "address_lines": [line for line in address_lines if line],
             "contact_lines": [line for line in contact_lines if line],
             "bank_accounts": self.list_bank_accounts(active_only=True),
+            "proprietors": proprietors,
+            "proprietor_lines": [
+                f"Proprietor: {p['name']}" + (f" | {p['phone']}" if p.get("phone") else "")
+                for p in proprietors
+            ],
         }
 
 

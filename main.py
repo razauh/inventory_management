@@ -306,14 +306,6 @@ class MainWindow(QMainWindow):
             fallback_placeholder=True,
         )
 
-        self._add_module_deferred(
-            "Company Info",
-            "inventory_management.modules.company_info.controller",
-            "CompanyInfoController",
-            self.conn,
-            fallback_placeholder=True,
-        )
-
         # Expenses
         self._add_module_deferred(
             "Expenses",
@@ -341,15 +333,15 @@ class MainWindow(QMainWindow):
             fallback_placeholder=True,
         )
 
-        # # Payments (load actual module; not admin-gated)
-        # self._add_module_deferred(
-        #     "Payments",
-        #     "inventory_management.modules.payments.controller",
-        #     "PaymentsController",
-        #     self.conn,
-        #     current_user=self.user,
-        #     fallback_placeholder=True,
-        # )
+        # Payments (read-only shortcut to Reporting > Payments)
+        self._add_module_deferred(
+            "Payments",
+            "inventory_management.modules.payments.controller",
+            "PaymentsController",
+            self.conn,
+            current_user=self.user,
+            fallback_placeholder=True,
+        )
 
         # Admin-only: System Logs
         # if self.user and self.user.get("role") == "admin":
@@ -357,6 +349,15 @@ class MainWindow(QMainWindow):
 
         # ---- Backup & Restore (replace previous placeholder) ----
         self._add_backup_restore_module_deferred()
+
+        self._add_module_deferred(
+            "Company Info",
+            "inventory_management.modules.company_info.controller",
+            "CompanyInfoController",
+            self.conn,
+            fallback_placeholder=True,
+        )
+
         self._register_backup_restore_file_actions()
         self._register_global_shortcuts()
         self._register_updater_actions()

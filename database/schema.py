@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS company_contacts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_company_contacts_one_primary
 ON company_contacts(company_id) WHERE is_primary = 1;
 
+CREATE TABLE IF NOT EXISTS company_proprietors (
+    proprietor_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id    INTEGER NOT NULL DEFAULT 1,
+    name          TEXT NOT NULL CHECK (TRIM(name) <> ''),
+    phone         TEXT,
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    is_active     INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    FOREIGN KEY (company_id) REFERENCES company_info(company_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_company_proprietors_company
+ON company_proprietors(company_id, is_active, sort_order, proprietor_id);
+
 /* -------- users -------- */
 CREATE TABLE IF NOT EXISTS users (
     user_id         INTEGER PRIMARY KEY AUTOINCREMENT,

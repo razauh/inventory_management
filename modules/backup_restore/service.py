@@ -10,6 +10,8 @@ Public interface
 ----------------
 - BackupJob.run_async(dest_file: str, callbacks: ProgressCallbacks) -> None
 - RestoreJob.run_async(src_file: str, callbacks: ProgressCallbacks) -> None
+- purge_transactional_data(db_path: str, backup_path: Optional[str] = None) -> dict[str, int]
+- PurgeJob.run_async(backup_path: Optional[str], callbacks: ProgressCallbacks) -> None
 
 Where ProgressCallbacks is any object (or simple namespace) that exposes:
 - phase(text: str)
@@ -36,6 +38,27 @@ from .logging_utils import get_logger, log_event
 
 
 RESTORE_RESTART_REQUIRED_MARKER = "RESTORE_RESTART_REQUIRED"
+PURGE_TABLES = (
+    "sale_payment_state_reversals",
+    "customer_advances",
+    "vendor_advances",
+    "sale_payments",
+    "purchase_payments",
+    "purchase_refunds",
+    "inventory_transactions",
+    "stock_valuation_history",
+    "valuation_dirty",
+    "sale_items",
+    "purchase_items",
+    "sales",
+    "purchases",
+    "sales_document_sequences",
+    "expenses",
+)
+PURGE_COUNT_TABLES = PURGE_TABLES + (
+    "purchase_return_snapshots",
+    "sale_return_snapshots",
+)
 
 
 # ----------------------------
@@ -72,6 +95,57 @@ def _backup_destination(dest: Path) -> Path:
 
 def _backup_restore_logger() -> logging.Logger:
     return get_logger()
+
+
+def _backup_sqlite_file(src: Path, dest: Path) -> None:
+    dest = _backup_destination(dest)
+    if dest.resolve() in _active_db_family(src):
+        raise RuntimeError("Backup destination must not be the active database or its WAL/SHM files.")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(src) as source, sqlite3.connect(dest) as target:
+        source.backup(target)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone() is not None
+
+
+def purge_transactional_data(db_path: str, backup_path: Optional[str] = None) -> dict[str, int]:
+    db = Path(db_path).resolve()
+    if backup_path:
+        _backup_sqlite_file(db, Path(backup_path))
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        counts = {
+            table: int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+            for table in PURGE_COUNT_TABLES
+            if _table_exists(conn, table)
+        }
+        conn.execute("BEGIN IMMEDIATE")
+        for table in PURGE_TABLES:
+            if _table_exists(conn, table):
+                conn.execute(f'DELETE FROM "{table}"')
+        if _table_exists(conn, "sqlite_sequence"):
+            placeholders = ",".join("?" for _ in PURGE_TABLES)
+            conn.execute(
+                f"DELETE FROM sqlite_sequence WHERE name IN ({placeholders})",
+                PURGE_TABLES,
+            )
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError(f"Foreign key check failed after purge: {len(violations)} violation(s).")
+        conn.commit()
+        return counts
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _log_event(
@@ -309,6 +383,55 @@ class BackupJob(QObject):
     def _import_fsops():
         from . import fsops  # type: ignore
         return fsops
+
+
+# ----------------------------
+# Purge Job
+# ----------------------------
+
+class PurgeJob(QObject):
+    def __init__(self, sqlite_ops=None, logger: Optional[logging.Logger] = None) -> None:
+        super().__init__()
+        self._sqlite_ops = sqlite_ops
+        self._pool = QThreadPool.globalInstance()
+        self._log = logger or _backup_restore_logger()
+
+    def run_async(self, backup_path: Optional[str], callbacks) -> None:
+        cb = _queued_callbacks(callbacks)
+        runnable = _JobRunnable(lambda: self._run(backup_path, cb))
+        self._pool.start(runnable)
+
+    def _run(self, backup_path: Optional[str], cb: _Callbacks) -> None:
+        sqlite_ops = self._sqlite_ops or self._import_sqlite_ops()
+        db_path = sqlite_ops.get_db_path()
+        _log_event(self._log, "purge", "start", "Purge started.", {"backup_path": backup_path})
+        try:
+            _safe_call(cb.phase, "Creating backup" if backup_path else "Purging data")
+            _safe_call(cb.progress, -1)
+            counts = purge_transactional_data(db_path, backup_path=backup_path)
+            deleted = sum(counts.values())
+            _safe_call(cb.progress, 100)
+            _safe_call(cb.log, f"Deleted rows: {deleted}")
+            if backup_path:
+                _safe_call(cb.log, f"Backup written to: {_backup_destination(Path(backup_path))}")
+            _log_event(self._log, "purge", "completion", "Purge completed.", {"deleted_rows": deleted})
+            _safe_call(cb.finished, True, "Purge completed successfully.", str(_backup_destination(Path(backup_path))) if backup_path else None)
+        except Exception as exc:
+            _log_event(
+                self._log,
+                "purge",
+                "failure",
+                "Purge failed.",
+                {"error": f"{exc.__class__.__name__}: {exc}"},
+                level=logging.ERROR,
+            )
+            self._log.debug("Purge failed:\n%s", traceback.format_exc())
+            _safe_call(cb.finished, False, _fmt_err("Purge failed.", exc), None)
+
+    @staticmethod
+    def _import_sqlite_ops():
+        from . import sqlite_ops  # type: ignore
+        return sqlite_ops
 
 
 # ----------------------------

@@ -64,6 +64,7 @@ class PurchasesRepo:
                CAST(p.order_discount AS REAL) AS order_discount,
                p.payment_status, CAST(p.paid_amount AS REAL) AS paid_amount,
                CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
+               COALESCE(CAST(rc.return_credit_amount AS REAL), 0.0) AS return_credit_amount,
                MAX(
                    0.0,
                    COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
@@ -79,6 +80,12 @@ class PurchasesRepo:
             FROM purchase_return_valuations
             GROUP BY purchase_id
         ) pr ON pr.purchase_id = p.purchase_id
+        LEFT JOIN (
+            SELECT source_id AS purchase_id, SUM(CAST(amount AS REAL)) AS return_credit_amount
+            FROM vendor_advances
+            WHERE source_type = 'return_credit'
+            GROUP BY source_id
+        ) rc ON rc.purchase_id = p.purchase_id
         """
 
     def list_purchases(self, limit: int = DEFAULT_LIST_LIMIT) -> list[dict]:
@@ -1186,6 +1193,12 @@ class PurchasesRepo:
           p.total_amount,
           COALESCE(p.paid_amount, 0.0)              AS paid_amount,
           COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
+          COALESCE((
+            SELECT SUM(CAST(va.amount AS REAL))
+            FROM vendor_advances va
+            WHERE va.source_id = p.purchase_id
+              AND va.source_type = 'return_credit'
+          ), 0.0) AS return_credit_amount,
           COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount,
           COALESCE((
             SELECT SUM(CAST(pr.amount AS REAL))
@@ -1209,6 +1222,7 @@ class PurchasesRepo:
                 "total_amount": 0.0,
                 "paid_amount": 0.0,
                 "advance_payment_applied": 0.0,
+                "return_credit_amount": 0.0,
                 "calculated_total_amount": 0.0,
                 "remaining_due": 0.0,
                 "is_fully_paid": False,
@@ -1218,6 +1232,7 @@ class PurchasesRepo:
         calc = float(row["calculated_total_amount"] or 0.0)
         paid = float(row["paid_amount"] or 0.0)
         adv = float(row["advance_payment_applied"] or 0.0)
+        return_credit = float(row["return_credit_amount"] or 0.0)
         prior_refunded = float(row["prior_refunded_amount"] or 0.0)
         cleared_direct = float(row["cleared_direct_payments"] or 0.0)
         rem = max(0.0, calc - cleared_direct - adv)
@@ -1225,6 +1240,7 @@ class PurchasesRepo:
             "total_amount": float(row["total_amount"] or 0.0),
             "paid_amount": paid,
             "advance_payment_applied": adv,
+            "return_credit_amount": return_credit,
             "calculated_total_amount": calc,
             "remaining_due": rem,
             "is_fully_paid": rem <= 1e-9,

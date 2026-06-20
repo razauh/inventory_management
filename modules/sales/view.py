@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
     QSplitter, QWidget as W, QVBoxLayout as V, QGroupBox, QButtonGroup,
-    QComboBox,
+    QComboBox, QTabWidget,
 )
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal
 from ...widgets.table_view import TableView
@@ -145,6 +145,8 @@ class SalesView(QWidget):
         # self.btn_del = QPushButton("Delete")
         self.btn_return = QPushButton("Return…")
         self.btn_return.setAccessibleDescription("Open return entry for the selected sale.")
+        self.btn_return_all = QPushButton("Return Whole Order…")
+        self.btn_return_all.setAccessibleDescription("Open return entry for the selected sale and prefill all remaining quantities.")
         self.lbl_return_eligibility = QLabel("Select a sale to check return eligibility.")
         self.lbl_return_eligibility.setStyleSheet("color: #666666;")
 
@@ -155,6 +157,8 @@ class SalesView(QWidget):
         self.btn_record_payment.setAccessibleDescription("Record a payment for the selected sale.")
         self.btn_apply_credit.setAccessibleDescription("Apply customer credit to the selected sale.")
         self.btn_print.setAccessibleDescription("Open printing for the selected document.")
+        self.btn_record_payment.setEnabled(False)
+        self.btn_apply_credit.setEnabled(False)
 
         # Shown only in Quotation mode
         self.btn_convert = QPushButton("Convert to Sale…")
@@ -163,6 +167,7 @@ class SalesView(QWidget):
         bar.addWidget(self.btn_add)
         bar.addWidget(self.btn_edit)
         bar.addWidget(self.btn_return)
+        bar.addWidget(self.btn_return_all)
         bar.addWidget(self.lbl_return_eligibility)
         bar.addWidget(self.btn_record_payment)
         bar.addWidget(self.btn_apply_credit)  # NEW button in toolbar
@@ -209,7 +214,11 @@ class SalesView(QWidget):
         filter_bar.addWidget(self.btn_clear_filters)
         root.addLayout(filter_bar)
 
-        # --- Main split: left (list + items + payments), right (details) ---
+        # --- Main tabs: orders stay clean; payment history gets its own tab ---
+        self.tabs = QTabWidget()
+
+        orders_tab = QWidget()
+        orders_layout = QVBoxLayout(orders_tab)
         split = QSplitter(Qt.Horizontal)
 
         left = W()
@@ -231,8 +240,24 @@ class SalesView(QWidget):
         self._splitter = split
         self._splitter_initialized = False
         split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        root.addWidget(split, 1)
+        split.setStretchFactor(1, 1)
+        orders_layout.addWidget(split, 1)
+        self.tabs.addTab(orders_tab, "Orders")
+
+        payments_tab = QWidget()
+        payments_layout = QVBoxLayout(payments_tab)
+        payment_split = QSplitter(Qt.Horizontal)
+        self.payments_tbl = TableView()
+        self.payments_tbl.setAccessibleName("Sales payment history order list")
+        payment_split.addWidget(self.payments_tbl)
+        self.payments = PaymentsView()
+        payment_split.addWidget(self.payments)
+        payment_split.setStretchFactor(0, 3)
+        payment_split.setStretchFactor(1, 2)
+        payments_layout.addWidget(payment_split, 1)
+        self.tabs.addTab(payments_tab, "Payments")
+
+        root.addWidget(self.tabs, 1)
 
         # initial state for mode-dependent controls
         self._doc_type = "sale"
@@ -282,13 +307,17 @@ class SalesView(QWidget):
 
         self.btn_return.setVisible(not is_quote)
         self.btn_return.setEnabled(not is_quote)
+        self.btn_return_all.setVisible(not is_quote)
+        self.btn_return_all.setEnabled(not is_quote)
         self.lbl_return_eligibility.setVisible(not is_quote)
 
         self.btn_record_payment.setVisible(not is_quote)
-        self.btn_record_payment.setEnabled(not is_quote)
+        if is_quote:
+            self.btn_record_payment.setEnabled(False)
 
         self.btn_apply_credit.setVisible(not is_quote)   # NEW: only in Sales mode
-        self.btn_apply_credit.setEnabled(not is_quote)
+        if is_quote:
+            self.btn_apply_credit.setEnabled(False)
 
         # Search placeholder
         self.search.setPlaceholderText(
@@ -325,7 +354,7 @@ class SalesView(QWidget):
         total_width = self._splitter.width()
         if total_width > 0:
             self._splitter.setSizes([
-                int(total_width * 0.6),
-                int(total_width * 0.4),
+                int(total_width * 0.75),
+                int(total_width * 0.25),
             ])
             self._splitter_initialized = True

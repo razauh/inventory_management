@@ -1,5 +1,43 @@
 from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
+from PySide6.QtGui import QColor
 from ...utils.helpers import fmt_money
+
+
+PAID_BG = QColor("#d8f5df")
+PARTIAL_BG = QColor("#fff2bf")
+UNPAID_BG = QColor("#ffd9d9")
+RETURNED_BG = QColor("#ece6ff")
+
+
+def _value(row, key, default=None):
+    try:
+        return row.get(key, default)
+    except AttributeError:
+        try:
+            return row[key]
+        except (KeyError, IndexError, TypeError):
+            return default
+
+
+def _payment_bg(row) -> QColor | None:
+    status = str(_value(row, "payment_status", "") or "").lower()
+    if status == "paid":
+        return PAID_BG
+    if status == "partial":
+        return PARTIAL_BG
+    if status == "unpaid":
+        return UNPAID_BG
+    return None
+
+
+def _fully_returned(row) -> bool:
+    try:
+        returned = float(_value(row, "returned_value", 0.0) or 0.0)
+        returnable_lines = int(_value(row, "returnable_lines", 1) or 0)
+    except (TypeError, ValueError):
+        return False
+    return returned > 1e-9 and returnable_lines <= 0
+
 
 class SalesTableModel(QAbstractTableModel):
     QUOTATION_STATUS_LABELS = {
@@ -35,7 +73,7 @@ class SalesTableModel(QAbstractTableModel):
         if self._doc_type == "quotation":
             self.HEADERS = ["ID", "Date", "Customer", "Total", "Status"]
         else:  # sale
-            self.HEADERS = ["ID", "Date", "Customer", "Total", "Paid", "Status"]
+            self.HEADERS = ["ID", "Date", "Customer", "Total", "Paid", "Due", "Status"]
 
     def set_doc_type(self, doc_type: str):
         """Update document type and refresh headers."""
@@ -54,6 +92,10 @@ class SalesTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
         r = self._rows[index.row()]
+        if role == Qt.BackgroundRole and self._doc_type == "sale" and _fully_returned(r):
+            return RETURNED_BG
+        if role == Qt.BackgroundRole and self._doc_type == "sale" and index.column() in (5, 6):
+            return _payment_bg(r)
         if role in (Qt.DisplayRole, Qt.EditRole):
             c = index.column()
             # Mapping depends on document type
@@ -76,6 +118,7 @@ class SalesTableModel(QAbstractTableModel):
                     r["customer_name"],
                     fmt_money(r["total_amount"]),
                     fmt_money(r["paid_amount"]),
+                    fmt_money(_value(r, "remaining_due", 0.0)),
                     r["payment_status"]
                 ]
             return mapping[c] if c < len(mapping) else None

@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QMessageBox,
     QSizePolicy,
+    QCheckBox,
 )
 
 
@@ -352,6 +353,98 @@ class RestoreDialog(QDialog):
     def accept(self) -> None:
         super().accept()
         self.closed.emit()
+
+
+# ----------------------------
+# Purge Confirmation Dialog
+# ----------------------------
+
+class PurgeConfirmationDialog(QDialog):
+    CONFIRM_TEXT = "PURGE DATA"
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Purge Data")
+        self.setModal(True)
+        self.setMinimumWidth(620)
+        self._build_ui()
+        self._wire_events()
+        self._update_state()
+
+    @property
+    def create_backup(self) -> bool:
+        return self._backup_check.isChecked()
+
+    @property
+    def backup_path(self) -> str:
+        return self._backup_edit.text().strip()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        warn = QLabel("This deletes sales, purchases, payments, returns, stock movements, valuations, and expenses.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color: #a15c00;")
+        root.addWidget(warn)
+
+        keep = QLabel("Kept: products, UoMs, vendors, customers, company info, users, audit logs, and error logs.")
+        keep.setWordWrap(True)
+        root.addWidget(keep)
+
+        self._backup_check = QCheckBox("Create backup before purge")
+        self._backup_check.setChecked(True)
+        root.addWidget(self._backup_check)
+
+        grid = QGridLayout()
+        self._backup_edit = QLineEdit(str(Path.home() / _default_backup_filename()))
+        self._browse_btn = QPushButton("Browse…")
+        grid.addWidget(QLabel("Backup file:"), 0, 0)
+        grid.addWidget(self._backup_edit, 0, 1)
+        grid.addWidget(self._browse_btn, 0, 2)
+        root.addLayout(grid)
+
+        self._confirm_edit = QLineEdit()
+        self._confirm_edit.setPlaceholderText(self.CONFIRM_TEXT)
+        root.addWidget(QLabel(f"Type {self.CONFIRM_TEXT} to continue:"))
+        root.addWidget(self._confirm_edit)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self._cancel_btn = QPushButton("Cancel")
+        self._purge_btn = QPushButton("Purge Data")
+        btns.addWidget(self._cancel_btn)
+        btns.addWidget(self._purge_btn)
+        root.addLayout(btns)
+
+    def _wire_events(self) -> None:
+        self._backup_check.toggled.connect(self._update_state)
+        self._backup_edit.textChanged.connect(self._update_state)
+        self._confirm_edit.textChanged.connect(self._update_state)
+        self._browse_btn.clicked.connect(self._choose_backup_file)
+        self._cancel_btn.clicked.connect(self.reject)
+        self._purge_btn.clicked.connect(self.accept)
+
+    def _choose_backup_file(self) -> None:
+        start = self._backup_edit.text().strip() or str(Path.home() / _default_backup_filename())
+        fname, _ = QFileDialog.getSaveFileName(
+            self,
+            "Choose Backup File",
+            start,
+            "Backup files (*.imsdb);;All files (*.*)",
+        )
+        if fname:
+            path = Path(fname)
+            self._backup_edit.setText(str(path if path.suffix.lower() == ".imsdb" else path.with_suffix(".imsdb")))
+
+    def _update_state(self) -> None:
+        backup_on = self._backup_check.isChecked()
+        self._backup_edit.setEnabled(backup_on)
+        self._browse_btn.setEnabled(backup_on)
+        backup_ok = bool(self.backup_path) if backup_on else True
+        confirm_ok = self._confirm_edit.text() == self.CONFIRM_TEXT
+        self._purge_btn.setEnabled(backup_ok and confirm_ok)
 
 
 # ----------------------------

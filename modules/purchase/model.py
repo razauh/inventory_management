@@ -1,5 +1,43 @@
 from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
+from PySide6.QtGui import QColor
 from ...utils.helpers import fmt_money
+
+
+PAID_BG = QColor("#d8f5df")
+PARTIAL_BG = QColor("#fff2bf")
+UNPAID_BG = QColor("#ffd9d9")
+RETURNED_BG = QColor("#ece6ff")
+
+
+def _value(row, key, default=None):
+    try:
+        return row.get(key, default)
+    except AttributeError:
+        try:
+            return row[key]
+        except (KeyError, IndexError, TypeError):
+            return default
+
+
+def _payment_bg(row) -> QColor | None:
+    status = str(_value(row, "payment_status", "") or "").lower()
+    if status == "paid":
+        return PAID_BG
+    if status == "partial":
+        return PARTIAL_BG
+    if status == "unpaid":
+        return UNPAID_BG
+    return None
+
+
+def _fully_returned(row) -> bool:
+    try:
+        returned = float(_value(row, "returned_value", 0.0) or 0.0)
+        net_total = float(_value(row, "calculated_total_amount", _value(row, "total_amount", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return returned > 1e-9 and net_total <= 1e-9
+
 
 class PurchasesTableModel(QAbstractTableModel):
     HEADERS = ["ID", "Date", "Vendor", "Gross Total", "Returned", "Net Total", "Paid", "Due", "Status"]
@@ -11,6 +49,10 @@ class PurchasesTableModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid(): return None
         r = self._rows[index.row()]
+        if role == Qt.BackgroundRole and _fully_returned(r):
+            return RETURNED_BG
+        if role == Qt.BackgroundRole and index.column() in (7, 8):
+            return _payment_bg(r)
         if role in (Qt.DisplayRole, Qt.EditRole):
             c = index.column()
             keys = r.keys() if hasattr(r, "keys") else r

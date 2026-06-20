@@ -69,6 +69,7 @@ class SaleDetails(QWidget):
 
         self.lab_paid = QLabel("-")
         self.lab_credit_applied = QLabel("-")
+        self.lab_return_credit = QLabel("-")
         self.lab_remain = QLabel("-")
         self.lab_status = QLabel("-")
 
@@ -86,6 +87,7 @@ class SaleDetails(QWidget):
         f.addRow("Net Total:", self.lab_net_after)
         f.addRow("Paid:", self.lab_paid)
         f.addRow("Credit Applied:", self.lab_credit_applied)
+        f.addRow("Return Credit:", self.lab_return_credit)
         f.addRow("Due:", self.lab_remain)
         f.addRow("Status:", self.lab_status)
         f.addRow("Customer Credit:", self.lab_credit)
@@ -159,7 +161,7 @@ class SaleDetails(QWidget):
             self.lab_id, self.lab_date, self.lab_customer,
             self.lab_total, self.lab_discount, self.lab_total_discount,
             self.lab_returned_qty, self.lab_returned_val, self.lab_net_after,
-            self.lab_paid, self.lab_credit_applied, self.lab_remain,
+            self.lab_paid, self.lab_credit_applied, self.lab_return_credit, self.lab_remain,
             self.lab_status, self.lab_credit
         ):
             w.setText("-")
@@ -331,6 +333,7 @@ class SaleDetails(QWidget):
         order_discount = float(r.get("order_discount", 0.0) or 0.0)
         paid_amount = float(r.get("paid_amount", 0.0) or 0.0)
         credit_applied = float(r.get("advance_payment_applied", 0.0) or 0.0)
+        return_credit = float(r.get("return_credit_amount", 0.0) or 0.0)
         net_total = float(
             r.get(
                 "net_total_amount",
@@ -352,6 +355,7 @@ class SaleDetails(QWidget):
         # Settlement summary
         self.lab_paid.setText(fmt_money(paid_amount))
         self.lab_credit_applied.setText(fmt_money(credit_applied))
+        self.lab_return_credit.setText(fmt_money(return_credit))
         self.lab_remain.setText(fmt_money(remaining_due))
         self.lab_status.setText(r.get("payment_status", "-"))
 

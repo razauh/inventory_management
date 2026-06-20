@@ -1,6 +1,7 @@
 # ⚠️ VENDOR MODULE ONLY: Adds read-only Account Details box under the accounts table. Do not modify other modules.
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QSplitter, QFrame, QFormLayout
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QSplitter, QFrame, QFormLayout,
+    QSizePolicy
 )
 from PySide6.QtCore import Qt
 from ...widgets.table_view import TableView
@@ -62,14 +63,19 @@ class VendorView(QWidget):
 
         # Right: vertical split with details (top) and accounts (bottom)
         right = QSplitter(Qt.Vertical)
+        right.setMinimumWidth(0)
+        right.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 
         # Top-right: vendor details (keep compact)
         self.details = VendorDetails()
         self.details.setMaximumHeight(180)
+        self.details.setMinimumWidth(0)
         right.addWidget(self.details)
 
         # Bottom-right: bank accounts panel
         accounts_panel = QFrame()
+        accounts_panel.setMinimumWidth(0)
+        accounts_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         accounts_layout = QVBoxLayout(accounts_panel)
         accounts_header = QHBoxLayout()
 
@@ -84,6 +90,15 @@ class VendorView(QWidget):
         self.btn_acc_deactivate = QPushButton("Deactivate Account")
         self.btn_acc_activate = QPushButton("Activate Account")
         self.btn_acc_set_primary = QPushButton("Set Primary")
+        for btn in (
+            self.btn_acc_add,
+            self.btn_acc_edit,
+            self.btn_acc_deactivate,
+            self.btn_acc_activate,
+            self.btn_acc_set_primary,
+        ):
+            btn.setMinimumWidth(0)
+            btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         accounts_header.addWidget(self.btn_acc_add)
         accounts_header.addWidget(self.btn_acc_edit)
         accounts_header.addWidget(self.btn_acc_deactivate)
@@ -94,6 +109,8 @@ class VendorView(QWidget):
 
         # Accounts table
         self.accounts_table = TableView()
+        self.accounts_table.setMinimumWidth(0)
+        self.accounts_table.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         accounts_layout.addWidget(self.accounts_table, 1)
 
         # Create a fixed-height frame under the table
@@ -103,6 +120,8 @@ class VendorView(QWidget):
         self.account_details_box.setFrameShadow(QFrame.Sunken)
         self.account_details_box.setMinimumHeight(120)
         self.account_details_box.setMaximumHeight(160)
+        self.account_details_box.setMinimumWidth(0)
+        self.account_details_box.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 
         # Form layout for labels
         self.account_details_form = QFormLayout(self.account_details_box)
@@ -148,7 +167,9 @@ class VendorView(QWidget):
         right.setStretchFactor(1, 3)  # accounts
 
         split.addWidget(right)
+        split.setChildrenCollapsible(False)
         split.setStretchFactor(0, 3)  # vendor list
-        split.setStretchFactor(1, 2)  # right panel
+        split.setStretchFactor(1, 1)  # right panel
+        split.setSizes([900, 300])
 
         root.addWidget(split, 1)

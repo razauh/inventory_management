@@ -54,7 +54,7 @@ Ponytail rules for this repo:
 - Do not add new dependencies when Python, PySide6, SQLite, or existing project code is enough.
 - Mark intentional simplifications with a `ponytail:` comment only when the shortcut has a known ceiling and a clear upgrade path.
 - Do not cut validation, data-loss protection, security, accessibility, or database migration safety.
-- For non-trivial logic, leave the smallest useful runnable check, unless the user has forbidden running or adding tests.
+- For non-trivial logic, always write the smallest useful runnable check or test file, but do not run it unless the user explicitly asks you to run tests.
 
 Use Ponytail commands when available:
 
@@ -136,8 +136,11 @@ When Ponytail and Karpathy Guidelines overlap, apply the stricter rule:
 
 ## Verification
 
-- Do not run tests, builds, linters, formatters, type checkers, notebook execution, or benchmarks unless the user explicitly asks.
-- If you make changes, report the exact minimal commands the user should run to verify them.
+- Always write or update test files when making code changes, using the smallest useful coverage for the change.
+- Do not run tests under any condition unless the user explicitly asks you to run tests in the current turn.
+- Do not run test commands indirectly through scripts, make targets, IDE helpers, pre-commit hooks, or app startup smoke checks unless the user explicitly asks for that exact verification.
+- Do not run builds, linters, formatters, type checkers, notebook execution, benchmarks, or app startup checks unless the user explicitly asks.
+- If you make changes, report the exact minimal commands the user can run to verify them.
 - If a dependency or local artifact is missing, report the blocker and the exact setup step expected from the user.
 
 ## Git Hygiene

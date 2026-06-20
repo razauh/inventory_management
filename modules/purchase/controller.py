@@ -95,9 +95,13 @@ class PurchaseController(BaseModule):
         self.proxy.setFilterKeyColumn(-1)
         self.proxy.setFilterRegularExpression("")
         self.view.tbl.setModel(self.proxy)
+        self.view.payments_tbl.setModel(self.proxy)
         sel = self.view.tbl.selectionModel()
         if sel is not None:
             sel.selectionChanged.connect(self._schedule_details_update)
+        payment_sel = self.view.payments_tbl.selectionModel()
+        if payment_sel is not None:
+            payment_sel.selectionChanged.connect(self._sync_payment_tab_history)
         self._wire()
         self._reload()
 
@@ -135,7 +139,10 @@ class PurchaseController(BaseModule):
         self.view.btn_add.clicked.connect(self._add)
         self.view.btn_edit.clicked.connect(self._edit)
         self.view.btn_return.clicked.connect(self._return)
+        self.view.btn_return_all.clicked.connect(lambda: self._return(return_whole_order=True))
         self.view.btn_pay.clicked.connect(self._payment)
+        self._set_payment_action_state(None)
+        self._set_return_action_state(None)
         
         # Create a timer for debounced search
         self._search_timer = QTimer()
@@ -159,6 +166,7 @@ class PurchaseController(BaseModule):
         self.base.replace(self._load_purchase_rows())
         if not self._table_initialized:
             self.view.tbl.resizeColumnsToContents()
+            self.view.payments_tbl.resizeColumnsToContents()
             self._table_initialized = True
 
     def _reload(self):
@@ -167,7 +175,9 @@ class PurchaseController(BaseModule):
 
         if self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
+            self.view.payments_tbl.selectRow(0)
             self._schedule_details_update()
+            self._sync_payment_tab_history()
         else:
             self._clear_detail_views()
 
@@ -190,7 +200,9 @@ class PurchaseController(BaseModule):
         self.base.replace(self._load_purchase_rows())
         if self.proxy.rowCount() > 0:
             self.view.tbl.selectRow(0)
+            self.view.payments_tbl.selectRow(0)
             self._schedule_details_update()
+            self._sync_payment_tab_history()
         else:
             self._clear_detail_views()
 
@@ -199,8 +211,9 @@ class PurchaseController(BaseModule):
         # Re-apply the current search with the new filter criteria
         self._perform_search()
 
-    def _selected_row_dict(self) -> dict | None:
-        idxs = self.view.tbl.selectionModel().selectedRows()
+    def _selected_row_dict(self, table=None) -> dict | None:
+        table = table or self.view.tbl
+        idxs = table.selectionModel().selectedRows()
         if not idxs:
             return None
         src = self.proxy.mapToSource(idxs[0])
@@ -210,10 +223,40 @@ class PurchaseController(BaseModule):
         except Exception:
             return r
 
+    def _sync_payment_tab_history(self, *args):
+        row = self._selected_row_dict(self.view.payments_tbl)
+        if not row:
+            self.view.payments.set_rows([])
+            return
+        try:
+            self.view.payments.set_rows(
+                self._purchase_payments_for_view(str(row["purchase_id"]))
+            )
+        except Exception:
+            _log.exception(
+                "Could not update purchase payment tab for purchase_id=%s",
+                row.get("purchase_id"),
+            )
+            self.view.payments.set_rows([])
+
+    def _select_payment_tab_purchase(self, purchase_id: str) -> None:
+        for row_index in range(self.proxy.rowCount()):
+            index = self.proxy.index(row_index, 0)
+            source = self.proxy.mapToSource(index)
+            row = self.base.at(source.row())
+            if not isinstance(row, dict):
+                row = dict(row)
+            if str(row.get("purchase_id") or "") == purchase_id:
+                self.view.payments_tbl.selectRow(row_index)
+                return
+
     def _clear_detail_views(self):
         self._last_detail_purchase_id = None
         self.view.details.set_data(None)
         self.view.items.set_rows([])
+        self.view.payments.set_rows([])
+        self._set_payment_action_state(None)
+        self._set_return_action_state(None)
         try:
             self.view.details.clear_payment_summary()
         except Exception:
@@ -221,6 +264,9 @@ class PurchaseController(BaseModule):
 
     def _clear_deferred_detail_views(self):
         self.view.items.set_rows([])
+        self.view.payments.set_rows([])
+        self._set_payment_action_state(None, loading=True)
+        self._set_return_action_state(None, loading=True)
         try:
             self.view.details.clear_payment_summary()
         except Exception:
@@ -270,6 +316,13 @@ class PurchaseController(BaseModule):
         detail_row = snapshot.get("row") or dict(row)
         self.view.details.set_data(detail_row)
         self.view.items.set_rows(snapshot.get("items") or [])
+        self._set_payment_action_state(detail_row)
+        self._set_return_action_state(detail_row)
+        self._select_payment_tab_purchase(purchase_id)
+        try:
+            self.view.payments.set_rows(self._purchase_payments_for_view(purchase_id))
+        except Exception:
+            _log.exception("Could not update purchase payments view")
         payment_summary = snapshot.get("payment_summary")
         if payment_summary:
             try:
@@ -282,6 +335,92 @@ class PurchaseController(BaseModule):
             except Exception:
                 pass
         self._last_detail_purchase_id = purchase_id
+
+    def _fully_returned_purchase(self, row: dict | None) -> bool:
+        if not row:
+            return False
+        try:
+            returned = float(row.get("returned_value") or 0.0)
+            net_total = float(row.get("calculated_total_amount", row.get("total_amount", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        return returned > _EPS and net_total <= _EPS
+
+    def _set_return_action_state(self, row: dict | None, *, loading: bool = False) -> None:
+        if loading:
+            enabled = False
+            message = "Return status loading."
+        elif not row:
+            enabled = False
+            message = "Select a purchase to return items."
+        elif self._fully_returned_purchase(row):
+            enabled = False
+            message = "Return unavailable: purchase is fully returned."
+        else:
+            enabled = True
+            message = "Return available."
+        self.view.btn_return.setEnabled(enabled)
+        self.view.btn_return.setToolTip(message)
+        self.view.btn_return_all.setEnabled(enabled)
+        self.view.btn_return_all.setToolTip(message)
+
+    def _set_payment_action_state(self, row: dict | None, *, loading: bool = False) -> None:
+        if loading:
+            self.view.btn_pay.setEnabled(False)
+            self.view.btn_pay.setToolTip("Payment status loading.")
+            return
+        if not row:
+            self.view.btn_pay.setEnabled(False)
+            self.view.btn_pay.setToolTip("Select a purchase to record payment.")
+            return
+        if self._fully_returned_purchase(row):
+            self.view.btn_pay.setEnabled(False)
+            self.view.btn_pay.setToolTip("Payment unavailable: purchase is fully returned.")
+            return
+        try:
+            remaining = float(row.get("remaining_due") or 0.0)
+        except (TypeError, ValueError):
+            remaining = 0.0
+        if remaining <= _EPS:
+            self.view.btn_pay.setEnabled(False)
+            self.view.btn_pay.setToolTip("Payment unavailable: purchase is fully settled.")
+            return
+        self.view.btn_pay.setEnabled(True)
+        self.view.btn_pay.setToolTip(f"Payment available: {remaining:.2f} due.")
+
+    def _purchase_payments_for_view(self, purchase_id: str) -> list[dict]:
+        rows = list(self.payments.list_payments(purchase_id)) or []
+        bank_labels: dict[int, str] = {}
+        vendor_labels: dict[int, str] = {}
+        try:
+            bank_labels = {
+                int(r["account_id"]): str(r["label"])
+                for r in self.conn.execute("SELECT account_id, label FROM company_bank_accounts")
+            }
+        except Exception:
+            bank_labels = {}
+        try:
+            vendor_labels = {
+                int(r["vendor_bank_account_id"]): str(r["label"])
+                for r in self.conn.execute("SELECT vendor_bank_account_id, label FROM vendor_bank_accounts")
+            }
+        except Exception:
+            vendor_labels = {}
+        out: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            bank_id = item.get("bank_account_id")
+            vendor_bank_id = item.get("vendor_bank_account_id")
+            try:
+                item["bank_account_label"] = bank_labels.get(int(bank_id), "") if bank_id is not None else ""
+            except (TypeError, ValueError):
+                item["bank_account_label"] = ""
+            try:
+                item["vendor_bank_account_label"] = vendor_labels.get(int(vendor_bank_id), "") if vendor_bank_id is not None else ""
+            except (TypeError, ValueError):
+                item["vendor_bank_account_label"] = ""
+            out.append(item)
+        return out
 
     def _current_search_field(self) -> str:
         if self.view.rb_id.isChecked():
@@ -977,7 +1116,7 @@ class PurchaseController(BaseModule):
         if should_print_after_save:
             self._print_purchase_invoice(pid)
 
-    def _return(self):
+    def _return(self, return_whole_order: bool = False):
         row = self._selected_row_dict()
         if not row:
             info(self.view, "Select", "Select a purchase to return items from.")
@@ -985,6 +1124,10 @@ class PurchaseController(BaseModule):
         pid = row["purchase_id"]
         items = self.repo.list_items(pid)
         returnable = self._returnable_map(pid)
+        if not any(float(qty or 0.0) > _EPS for qty in returnable.values()):
+            info(self.view, "Return unavailable", "Purchase is fully returned.")
+            self._set_return_action_state({"returned_value": 1.0, "calculated_total_amount": 0.0})
+            return
         items_for_form = []
         for it in items:
             it2 = dict(it)
@@ -1006,6 +1149,8 @@ class PurchaseController(BaseModule):
         )
         # Set the purchase ID to allow remaining calculation
         dlg.set_purchase_id(pid)
+        if return_whole_order:
+            dlg.rb_return_whole.setChecked(True)
         if not dlg.exec():
             return
         payload = dlg.payload()
@@ -1115,6 +1260,15 @@ class PurchaseController(BaseModule):
 
         purchase_id = str(row["purchase_id"])
         vendor_id = int(row.get("vendor_id") or 0)
+        if self._fully_returned_purchase(row):
+            info(self.view, "Nothing to pay", "This purchase is fully returned.")
+            self._set_payment_action_state(row)
+            return
+        remaining = self._remaining_due_header(purchase_id)
+        if remaining <= _EPS:
+            info(self.view, "Nothing to pay", "This purchase has no remaining amount to pay.")
+            self._set_payment_action_state({"remaining_due": remaining})
+            return
 
         from .payment_form import PaymentForm
         dlg = PaymentForm(self.view, vendors=self.vendors, purchase_id=purchase_id, vendor_id=vendor_id)

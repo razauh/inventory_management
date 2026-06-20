@@ -15,12 +15,14 @@ def test_purchase_details_shows_cash_credit_and_total_settled(qtbot):
             "returned_value": 0.0,
             "paid_amount": 125.0,
             "advance_payment_applied": 75.0,
+            "return_credit_amount": 40.0,
             "payment_status": "partial",
         }
     )
 
     assert details.lab_paid.text() == "125.00"
     assert details.lab_credit_applied.text() == "75.00"
+    assert details.lab_return_credit.text() == "40.00"
     assert details.lab_total_settled.text() == "200.00"
     assert details.lab_remain.text() == "300.00"
 
@@ -43,5 +45,6 @@ def test_purchase_details_settlement_summary_defaults_invalid_values(qtbot):
 
     assert details.lab_paid.text() == "0.00"
     assert details.lab_credit_applied.text() == "0.00"
+    assert details.lab_return_credit.text() == "0.00"
     assert details.lab_total_settled.text() == "0.00"
     assert details.lab_remain.text() == "100.00"

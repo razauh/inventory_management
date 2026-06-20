@@ -78,3 +78,24 @@ def test_backup_restore_lazy_load_does_not_mark_earlier_nav_rows_loaded(qtbot, m
     assert window.modules[products_index][1] is not None
     assert window.stack.widget(products_index).objectName() == "loaded:ProductController"
     assert [name for name, _controller in created].count("ProductController") == 1
+
+
+def test_company_info_nav_entry_is_last_after_backup_restore(qtbot, monkeypatch):
+    def fake_lazy_get(module_path, class_name):
+        return lambda *args, **kwargs: _FakeController(*args, title=class_name, **kwargs)
+
+    def fake_import_module(module_path):
+        assert module_path == "inventory_management.modules.backup_restore"
+        return SimpleNamespace(
+            MODULE_TITLE="Backup & Restore",
+            create_module=_FakeBackupController,
+        )
+
+    monkeypatch.setattr(main, "_lazy_get", fake_lazy_get)
+    monkeypatch.setattr(main, "import_module", fake_import_module)
+
+    window = main.MainWindow(conn=object(), current_user={"role": "admin"})
+    qtbot.addWidget(window)
+
+    titles = [title for title, _controller in window.modules]
+    assert titles[-2:] == ["Backup & Restore", "Company Info"]

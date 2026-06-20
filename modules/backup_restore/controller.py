@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFrame,
     QMessageBox,
+    QTabWidget,
 )
 
 # Lazy imports within methods keep startup light, but we import the Qt types above for typing/usage.
@@ -244,9 +245,17 @@ class BackupRestoreController(QObject):
         subtitle.setStyleSheet("color: palette(mid);")
         root.addWidget(subtitle)
 
+        tabs = QTabWidget()
+        root.addWidget(tabs)
+
+        backup_restore_tab = QWidget()
+        backup_restore_root = QVBoxLayout(backup_restore_tab)
+        backup_restore_root.setContentsMargins(0, 12, 0, 0)
+        backup_restore_root.setSpacing(16)
+
         cards = QHBoxLayout()
         cards.setSpacing(16)
-        root.addLayout(cards)
+        backup_restore_root.addLayout(cards)
 
         backup_card = self._make_card(
             "Backup Database",
@@ -269,10 +278,39 @@ class BackupRestoreController(QObject):
         self._last_label = QLabel(self._format_last_backup_label())
         self._last_label.setWordWrap(True)
         self._last_label.setStyleSheet("color: palette(dark);")
-        root.addWidget(self._last_label)
+        backup_restore_root.addWidget(self._last_label)
+        backup_restore_root.addStretch(1)
+
+        purge_tab = self._build_purge_tab()
+        tabs.addTab(backup_restore_tab, "Backup / Restore")
+        tabs.addTab(purge_tab, "Purge Data")
 
         root.addStretch(1)
         return w
+
+    def _build_purge_tab(self) -> QWidget:
+        tab = QWidget()
+        root = QVBoxLayout(tab)
+        root.setContentsMargins(0, 12, 0, 0)
+        root.setSpacing(12)
+
+        title = QLabel("Purge business activity rows while keeping master data.")
+        title.setWordWrap(True)
+        root.addWidget(title)
+
+        detail = QLabel(
+            "Deletes sales, purchases, payments, returns, inventory movement, valuation history, and expenses. "
+            "Keeps products, UoMs, vendors, customers, company info, users, audit logs, and error logs."
+        )
+        detail.setWordWrap(True)
+        root.addWidget(detail)
+
+        btn = QPushButton("Purge Data…")
+        btn.clicked.connect(self._open_purge_dialog)
+        self._operation_buttons.append(btn)
+        root.addWidget(btn, alignment=Qt.AlignLeft)
+        root.addStretch(1)
+        return tab
 
     def _make_card(self, title: str, text: str, primary: bool, on_click: Callable[[], None]) -> QFrame:
         card = QFrame()
@@ -351,6 +389,19 @@ class BackupRestoreController(QObject):
 
         dlg.start_restore.connect(lambda src: self._start_restore(src, prog))
         dlg.show()
+
+    @Slot()
+    def _open_purge_dialog(self) -> None:
+        if self._is_job_active():
+            self._show_active_job_message()
+            return
+
+        from .views import ProgressDialog, PurgeConfirmationDialog
+
+        dlg = PurgeConfirmationDialog(parent=self._widget or None)
+        prog = ProgressDialog(parent=dlg)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._start_purge(dlg.backup_path if dlg.create_backup else None, prog)
 
     # -------- Orchestration with service layer --------
 
@@ -514,6 +565,52 @@ class BackupRestoreController(QObject):
         except Exception as exc:
             self._finish_job("restore")
             QMessageBox.critical(self._widget, "Restore Error", str(exc))
+
+    def _start_purge(self, backup_path: Optional[str], prog_dialog) -> None:
+        from .service import PurgeJob
+
+        if self._is_job_active():
+            self._show_active_job_message()
+            return
+        if backup_path is not None and not backup_path.strip():
+            QMessageBox.critical(self._widget, "Purge Error", "Backup path is required.")
+            return
+        if not self._begin_job("purge"):
+            return
+
+        cb = _Callbacks(
+            phase=prog_dialog.on_phase,
+            progress=prog_dialog.on_progress,
+            log=prog_dialog.on_log,
+            finished=lambda ok, msg, out_path: self._on_purge_finished(ok, msg, out_path, prog_dialog),
+        )
+        prog_dialog.on_phase("Starting purge…")
+        prog_dialog.on_progress(0)
+        prog_dialog.show()
+
+        try:
+            PurgeJob(sqlite_ops=None, logger=None).run_async(backup_path, callbacks=cb)
+        except Exception as exc:
+            self._finish_job("purge")
+            QMessageBox.critical(self._widget, "Purge Error", str(exc))
+
+    def _on_purge_finished(self, ok: bool, message: str, backup_path: Optional[str], prog_dialog) -> None:
+        try:
+            prog_dialog.on_log(message)
+            prog_dialog.on_finished(ok, message, backup_path)
+            if ok:
+                if backup_path:
+                    self._save_last_backup_path(Path(backup_path))
+                QMessageBox.information(
+                    self._widget,
+                    "Purge Completed",
+                    f"Data purge completed successfully."
+                    + (f"\n\nBackup created:\n{backup_path}" if backup_path else ""),
+                )
+            else:
+                QMessageBox.critical(self._widget, "Purge Failed", message)
+        finally:
+            self._finish_job("purge")
 
     def _confirm_restore(self, src_file: str, target_db_path: str) -> bool:
         ret = QMessageBox.warning(

@@ -33,12 +33,18 @@ def test_company_info_context_uses_saved_profile_and_primary_bank_first():
     )
     repo.save_bank_account({"label": "Secondary", "bank_name": "Bank B"})
     repo.save_bank_account({"label": "Primary", "bank_name": "Bank A", "is_primary": 1})
+    repo.save_proprietor({"name": "Owner Two", "phone": "222", "sort_order": 2})
+    repo.save_proprietor({"name": "Owner One", "phone": "111", "sort_order": 1})
 
     company = repo.invoice_context()
 
     assert company["name"] == "Acme Traders"
     assert company["address_lines"] == ["Line 1", "Lahore"]
     assert company["contact_lines"] == ["Phone: 123"]
+    assert company["proprietor_lines"] == [
+        "Proprietor: Owner One | 111",
+        "Proprietor: Owner Two | 222",
+    ]
     assert company["invoice_footer_note"] == "Thanks"
     assert [row["label"] for row in company["bank_accounts"]] == ["Primary", "Secondary"]
 
@@ -48,6 +54,25 @@ def test_company_info_fallback_is_centralized():
 
     assert company["name"] == "Your Company Name"
     assert company["bank_accounts"] == []
+    assert company["proprietors"] == []
+
+
+def test_company_info_repo_updates_and_deletes_multiple_proprietors():
+    conn = _conn()
+    repo = CompanyInfoRepo(conn)
+    repo.save({"company_name": "Acme Traders"})
+
+    first = repo.save_proprietor({"name": "Owner A", "phone": "111", "sort_order": 2})
+    second = repo.save_proprietor({"name": "Owner B", "phone": "222", "sort_order": 1})
+    repo.save_proprietor({"name": "Owner C", "is_active": 0})
+    repo.save_proprietor({"name": "Owner A+", "phone": "333", "sort_order": 3}, first)
+    repo.delete_proprietor(second)
+
+    active = repo.list_proprietors(active_only=True)
+
+    assert [row["name"] for row in active] == ["Owner A+"]
+    assert active[0]["phone"] == "333"
+    assert repo.get_proprietor(first)["name"] == "Owner A+"
 
 
 def test_invoice_templates_have_no_placeholder_company_blocks():
@@ -57,3 +82,4 @@ def test_invoice_templates_have_no_placeholder_company_blocks():
         assert "Address: XXXX" not in text
         assert "XXXXX" not in text
         assert "Account No: XXXX" not in text
+        assert "company.proprietor_lines" in text

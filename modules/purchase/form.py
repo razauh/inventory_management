@@ -288,18 +288,17 @@ class PurchaseForm(QDialog):
 
         # Create labels and add to the vertical layout as pairs
         def add_single_column_row(text, widget, required=False):
-            """Add a label and widget in a horizontal layout for single column format"""
+            """Add a label above the widget for the narrow payment panel."""
             from PySide6.QtWidgets import QSizePolicy
-            row_layout = QHBoxLayout()
-            row_layout.setSpacing(8)
+            row_layout = QVBoxLayout()
+            row_layout.setSpacing(2)
 
             if required:
                 label = create_required_label(text)
             else:
                 label = QLabel(text)
 
-            # Set label to align left
-            label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
 
             # Ensure all widgets have consistent size behavior
             if hasattr(widget, 'setSizePolicy'):
@@ -324,15 +323,7 @@ class PurchaseForm(QDialog):
         _, amount_layout = add_single_column_row("Amount", self.ip_amount, required=False)
         ip_layout.addLayout(amount_layout)
 
-        # Payment Date layout - label, then date field
-        payment_date_layout = QHBoxLayout()
-        payment_date_layout.setSpacing(8)
-        payment_date_label = QLabel("Payment Date")
-        payment_date_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        payment_date_layout.addWidget(payment_date_label)
-        self.ip_date.setFixedWidth(110)
-        payment_date_layout.addWidget(self.ip_date)
-        payment_date_layout.addStretch(1)  # Add stretch to align properly
+        _, payment_date_layout = add_single_column_row("Payment Date", self.ip_date, required=False)
         ip_layout.addLayout(payment_date_layout)
 
         _, method_layout = add_single_column_row("Method", self.ip_method, required=False)
@@ -347,24 +338,10 @@ class PurchaseForm(QDialog):
         self._ip_labels['vendor_acct'] = vendor_label
         ip_layout.addLayout(vendor_layout)
 
-        # Instrument No layout - separate row
-        instr_no_label = QLabel("Instrument No")
-        instr_no_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        instr_no_layout = QHBoxLayout()
-        instr_no_layout.setSpacing(8)
-        instr_no_layout.addWidget(instr_no_label)
-        instr_no_layout.addWidget(self.ip_instr_no)
+        instr_no_label, instr_no_layout = add_single_column_row("Instrument No", self.ip_instr_no, required=False)
         ip_layout.addLayout(instr_no_layout)
 
-        # Instrument Date layout - separate row
-        instr_date_label = QLabel("Instrument Date")
-        instr_date_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        instr_date_layout = QHBoxLayout()
-        instr_date_layout.setSpacing(8)  # Reduce spacing to bring label and field closer
-        instr_date_layout.addWidget(instr_date_label)
-        self.ip_instr_date.setFixedWidth(110)
-        instr_date_layout.addWidget(self.ip_instr_date)
-        instr_date_layout.addStretch(1)  # Add stretch to align properly
+        _, instr_date_layout = add_single_column_row("Instrument Date", self.ip_instr_date, required=False)
         ip_layout.addLayout(instr_date_layout)
 
         # Store reference for instrument label in _ip_labels
@@ -388,15 +365,7 @@ class PurchaseForm(QDialog):
         self.temp_bank_name.setVisible(False)
         self.temp_bank_number.setVisible(False)
 
-        # Add payment notes as a separate row
-        notes_label = QLabel("Payment Notes")
-        notes_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
-        self.ip_notes.setMinimumWidth(140)
-
-        notes_layout = QHBoxLayout()
-        notes_layout.addWidget(notes_label)
-        notes_layout.addWidget(self.ip_notes)
+        _, notes_layout = add_single_column_row("Payment Notes", self.ip_notes, required=False)
         ip_layout.addLayout(notes_layout)
 
         # Add stretch to fill remaining space

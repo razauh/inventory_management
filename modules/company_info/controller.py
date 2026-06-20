@@ -7,8 +7,8 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 from ..base_module import BaseModule
 from ...database.repositories.company_info_repo import CompanyInfoRepo
 from ...utils import ui_helpers as uih
-from .form import BankAccountForm, CompanyInfoForm
-from .model import CompanyBankAccountsTableModel
+from .form import BankAccountForm, CompanyInfoForm, ProprietorForm
+from .model import CompanyBankAccountsTableModel, CompanyProprietorsTableModel
 from .view import CompanyInfoView
 
 
@@ -20,6 +20,8 @@ class CompanyInfoController(BaseModule):
         self.view = CompanyInfoView()
         self.model = CompanyBankAccountsTableModel([])
         self.view.bank_table.setModel(self.model)
+        self.proprietor_model = CompanyProprietorsTableModel([])
+        self.view.proprietor_table.setModel(self.proprietor_model)
         self._wire()
         self._reload()
 
@@ -33,21 +35,32 @@ class CompanyInfoController(BaseModule):
         self.view.btn_edit_bank.clicked.connect(self._edit_bank)
         self.view.btn_delete_bank.clicked.connect(self._delete_bank)
         self.view.btn_primary_bank.clicked.connect(self._set_primary_bank)
+        self.view.btn_add_proprietor.clicked.connect(self._add_proprietor)
+        self.view.btn_edit_proprietor.clicked.connect(self._edit_proprietor)
+        self.view.btn_delete_proprietor.clicked.connect(self._delete_proprietor)
 
     def _reload(self):
         company = self.repo.get()
         self._show_company(company)
         rows = self.repo.list_bank_accounts(active_only=False)
         self.model.replace(rows)
+        proprietors = self.repo.list_proprietors(active_only=False)
+        self.proprietor_model.replace(proprietors)
         self.view.bank_status.setText(f"{len(rows)} account(s)" if company else "Add company info before bank accounts.")
+        self.view.proprietor_status.setText(f"{len(proprietors)} proprietor(s)" if company else "Add company info before proprietors.")
         self.view.bank_table.resizeColumnsToContents()
+        self.view.proprietor_table.resizeColumnsToContents()
         has_company = bool(company)
         self.view.btn_delete_company.setEnabled(has_company)
         self.view.btn_add_bank.setEnabled(has_company)
+        self.view.btn_add_proprietor.setEnabled(has_company)
         has_bank = bool(rows)
         self.view.btn_edit_bank.setEnabled(has_bank)
         self.view.btn_delete_bank.setEnabled(has_bank)
         self.view.btn_primary_bank.setEnabled(has_bank)
+        has_proprietor = bool(proprietors)
+        self.view.btn_edit_proprietor.setEnabled(has_proprietor)
+        self.view.btn_delete_proprietor.setEnabled(has_proprietor)
 
     def _show_company(self, company: dict | None):
         if not company:
@@ -76,6 +89,13 @@ class CompanyInfoController(BaseModule):
             company.get("terms_text") and f"Terms: {company.get('terms_text')}",
             "Active" if company.get("is_active") else "Inactive",
         ]
+        proprietors = self.repo.list_proprietors(active_only=True)
+        if proprietors:
+            lines.append("Proprietors:")
+            lines.extend(
+                f"- {p['name']}" + (f" ({p['phone']})" if p.get("phone") else "")
+                for p in proprietors
+            )
         self.view.company_details.setPlainText("\n".join(str(line) for line in lines if line))
 
     def _selected_bank_id(self) -> int | None:
@@ -87,6 +107,16 @@ class CompanyInfoController(BaseModule):
             return None
         row = self.model.row_at(rows[0].row())
         return int(row["account_id"]) if row else None
+
+    def _selected_proprietor_id(self) -> int | None:
+        selection = self.view.proprietor_table.selectionModel()
+        if not selection:
+            return None
+        rows = selection.selectedRows()
+        if not rows:
+            return None
+        row = self.proprietor_model.row_at(rows[0].row())
+        return int(row["proprietor_id"]) if row else None
 
     def _edit_company(self):
         dlg = CompanyInfoForm(self.view, self.repo.get())
@@ -163,5 +193,46 @@ class CompanyInfoController(BaseModule):
             self.repo.set_primary_bank_account(account_id)
         except Exception as exc:
             QMessageBox.warning(self.view, "Primary Failed", str(exc))
+            return
+        self._reload()
+
+    def _add_proprietor(self):
+        dlg = ProprietorForm(self.view)
+        if dlg.exec():
+            self._save_proprietor(dlg.payload())
+
+    def _edit_proprietor(self):
+        proprietor_id = self._selected_proprietor_id()
+        if proprietor_id is None:
+            uih.info(self.view, "Select", "Select a proprietor.")
+            return
+        dlg = ProprietorForm(self.view, self.repo.get_proprietor(proprietor_id))
+        if dlg.exec():
+            self._save_proprietor(dlg.payload(), proprietor_id)
+
+    def _save_proprietor(self, payload: dict, proprietor_id: int | None = None):
+        try:
+            self.repo.save_proprietor(payload, proprietor_id)
+        except Exception as exc:
+            QMessageBox.warning(self.view, "Save Failed", str(exc))
+            return
+        self._reload()
+        uih.info(self.view, "Saved", "Proprietor saved.")
+
+    def _delete_proprietor(self):
+        proprietor_id = self._selected_proprietor_id()
+        if proprietor_id is None:
+            uih.info(self.view, "Select", "Select a proprietor.")
+            return
+        if QMessageBox.question(
+            self.view,
+            "Delete Proprietor",
+            "Delete this proprietor?",
+        ) != QMessageBox.Yes:
+            return
+        try:
+            self.repo.delete_proprietor(proprietor_id)
+        except Exception as exc:
+            QMessageBox.warning(self.view, "Delete Failed", str(exc))
             return
         self._reload()
