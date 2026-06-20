@@ -15,7 +15,7 @@ import main
 
 
 class _FakeTabs:
-    def __init__(self, current_index=0, count=3):
+    def __init__(self, current_index=0, count=4):
         self.current_index = current_index
         self._count = count
 
@@ -65,11 +65,14 @@ def test_inventory_controller_selects_active_tabs_by_name():
     assert InventoryController.select_tab(controller, "valuation") is True
     assert controller.tabs.current_index == 0
 
-    assert InventoryController.select_tab(controller, "transactions") is True
+    assert InventoryController.select_tab(controller, "low_inventory") is True
     assert controller.tabs.current_index == 1
 
-    assert InventoryController.select_tab(controller, "adjustments") is True
+    assert InventoryController.select_tab(controller, "transactions") is True
     assert controller.tabs.current_index == 2
+
+    assert InventoryController.select_tab(controller, "adjustments") is True
+    assert controller.tabs.current_index == 3
 
 
 def test_inventory_quick_open_fallback_matches_active_tabs():
@@ -80,8 +83,11 @@ def test_inventory_quick_open_fallback_matches_active_tabs():
     assert window.nav.current_row == 0
     assert tabs.current_index == 0
 
-    main.MainWindow.open_inventory_sub(window, "transactions")
+    main.MainWindow.open_inventory_sub(window, "low_inventory")
     assert tabs.current_index == 1
 
-    main.MainWindow.open_inventory_sub(window, "adjustments")
+    main.MainWindow.open_inventory_sub(window, "transactions")
     assert tabs.current_index == 2
+
+    main.MainWindow.open_inventory_sub(window, "adjustments")
+    assert tabs.current_index == 3

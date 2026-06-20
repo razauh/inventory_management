@@ -51,6 +51,7 @@ def test_inventory_controller_uses_active_inventory_widgets_only():
 
     assert imported_names == {
         "InventoryView",
+        "LowInventoryTableModel",
         "TransactionsTableModel",
         "TransactionsView",
         "StockValuationWidget",

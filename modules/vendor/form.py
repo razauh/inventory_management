@@ -32,7 +32,7 @@ class VendorForm(QDialog):
         self.addr.setPlaceholderText("Address (optional)")
 
         lay = QVBoxLayout(self)
-        intro = QLabel("Enter vendor identity and contact details. Save first to manage bank accounts or credit.")
+        intro = QLabel("Enter vendor identity and contact details. Save first to manage bank accounts.")
         intro.setWordWrap(True)
         lay.addWidget(intro)
         form = QFormLayout()
@@ -46,16 +46,13 @@ class VendorForm(QDialog):
         ops_bar.addStretch(1)
 
         self.btn_manage_accounts = QPushButton("Manage Bank Accounts…")
-        self.btn_grant_credit = QPushButton("Grant Credit and Auto-Apply…")
 
         # Always enabled; _ensure_and_open(...) will save-on-demand if needed
         self.btn_manage_accounts.setEnabled(True)
-        self.btn_grant_credit.setEnabled(True)
 
         # Set tooltip text on both buttons
         tooltip_text = "Save the vendor first, then open this workflow."
         self.btn_manage_accounts.setToolTip(tooltip_text)
-        self.btn_grant_credit.setToolTip(tooltip_text)
 
         # In add mode, we need to ensure the vendor exists first before enabling these actions
         # Emit signals (controller will handle dialogs/DB work)
@@ -66,14 +63,7 @@ class VendorForm(QDialog):
             pass
         self.btn_manage_accounts.clicked.connect(self._on_manage_accounts_clicked)
 
-        try:
-            self.btn_grant_credit.clicked.disconnect()
-        except (TypeError, RuntimeError):
-            pass
-        self.btn_grant_credit.clicked.connect(self._on_grant_credit_clicked)
-
         ops_bar.addWidget(self.btn_manage_accounts)
-        ops_bar.addWidget(self.btn_grant_credit)
         lay.addLayout(ops_bar)
 
         # OK/Cancel buttons
@@ -92,9 +82,6 @@ class VendorForm(QDialog):
     def _on_manage_accounts_clicked(self):
         self._ensure_and_open("manage_accounts")
 
-    def _on_grant_credit_clicked(self):
-        self._ensure_and_open("grant_credit")
-
     def _ensure_and_open(self, action: str):
         # 1) Validate inputs first
         payload = self.get_payload()  # existing method; must focus invalid fields and return/raise on invalid
@@ -112,14 +99,11 @@ class VendorForm(QDialog):
         # 3) Fire the existing, already-wired signals for the action
         if action == "manage_accounts" and hasattr(self, "manageBankAccounts"):
             self.manageBankAccounts.emit(self._vendor_id)
-        elif action == "grant_credit" and hasattr(self, "grantVendorCredit"):
-            self.grantVendorCredit.emit(self._vendor_id)
 
     def set_vendor_id(self, vendor_id: int) -> None:
         """Enable operational actions once a vendor record exists (optional helper)."""
         self._vendor_id = int(vendor_id)
         self.btn_manage_accounts.setEnabled(True)
-        self.btn_grant_credit.setEnabled(True)
 
     def get_payload(self) -> dict | None:
         if not non_empty(self.name.text()):

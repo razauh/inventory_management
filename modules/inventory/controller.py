@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import sqlite3
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QMessageBox, QWidget, QTabWidget, QVBoxLayout, QComboBox, QCompleter
+from PySide6.QtWidgets import (
+    QMessageBox,
+    QWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QComboBox,
+    QCompleter,
+    QHBoxLayout,
+    QPushButton,
+    QTableView,
+)
 
 from ..base_module import BaseModule
 
 from ...database.repositories.inventory_repo import InventoryRepo
 from ...utils.product_lookup import DEFAULT_PRODUCT_LOOKUP_LIMIT, product_ids_by_exact_name, search_products
-from .model import TransactionsTableModel
+from .model import LowInventoryTableModel, TransactionsTableModel
 from .view import InventoryView
 from .transactions import TransactionsView
 from .stock_valuation import StockValuationWidget
@@ -20,8 +30,9 @@ class InventoryController(BaseModule):
 
     Tabs:
       1) Stock Valuation       (per-product on-hand snapshot)
-      2) Transactions          (recent list with adjustable LIMIT)
-      3) Adjustments           (legacy entry flow wired into the live shell)
+      2) Low Inventory         (products below min stock)
+      3) Transactions          (recent list with adjustable LIMIT)
+      4) Adjustments           (legacy entry flow wired into the live shell)
     """
 
     def __init__(self, conn: sqlite3.Connection, current_user: dict | None):
@@ -44,11 +55,16 @@ class InventoryController(BaseModule):
         self._valuation_view = StockValuationWidget(conn)
         self.tabs.addTab(self._valuation_view, "Stock Valuation")
 
-        # --- Tab 2: Transactions (read-only recent list with LIMIT) ---
+        # --- Tab 2: Low Inventory ---
+        self._low_inventory_view = self._build_low_inventory_view()
+        self.tabs.addTab(self._low_inventory_view, "Low Inventory")
+        self._reload_low_inventory()
+
+        # --- Tab 3: Transactions (read-only recent list with LIMIT) ---
         self._transactions_view = TransactionsView(conn)
         self.tabs.addTab(self._transactions_view, "Transactions")
 
-        # --- Tab 3: Adjustments (legacy entry flow) ---
+        # --- Tab 4: Adjustments (legacy entry flow) ---
         self._adjustment_view = InventoryView()
         self.tabs.addTab(self._adjustment_view, "Adjustments")
         self._wire_adjustment_view()
@@ -59,11 +75,36 @@ class InventoryController(BaseModule):
         return self._root
 
     def select_tab(self, name: str) -> bool:
-        index = {"valuation": 0, "transactions": 1, "adjustments": 2}.get(name)
+        index = {"valuation": 0, "low_inventory": 1, "transactions": 2, "adjustments": 3}.get(name)
         if index is None:
             return False
         self.tabs.setCurrentIndex(index)
         return True
+
+    def _build_low_inventory_view(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        toolbar = QHBoxLayout()
+        toolbar.addStretch(1)
+        self._low_inventory_refresh = QPushButton("Refresh")
+        self._low_inventory_refresh.clicked.connect(self._reload_low_inventory)
+        toolbar.addWidget(self._low_inventory_refresh)
+        layout.addLayout(toolbar)
+
+        self._low_inventory_table = QTableView()
+        self._low_inventory_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self._low_inventory_table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self._low_inventory_table.setAlternatingRowColors(True)
+        self._low_inventory_table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+        self._low_inventory_table.horizontalHeader().setStretchLastSection(True)
+        self._low_inventory_table.setModel(LowInventoryTableModel([]))
+        layout.addWidget(self._low_inventory_table, 1)
+        return page
+
+    def _reload_low_inventory(self) -> None:
+        rows = self._repo.low_inventory_products()
+        self._low_inventory_table.setModel(LowInventoryTableModel(rows))
 
     # ------------------------------------------------------------------
     # Adjustment wiring
@@ -236,6 +277,7 @@ class InventoryController(BaseModule):
             return
 
         self._reload_adjustment_recent()
+        self._reload_low_inventory()
         self._adjustment_view.reset_inputs()
         QMessageBox.information(
             self._root,

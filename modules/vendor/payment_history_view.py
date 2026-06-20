@@ -22,6 +22,7 @@ try:
         QDialogButtonBox,
         QHBoxLayout,
         QLabel,
+        QHeaderView,
         QTableView,
         QTabWidget,
         QVBoxLayout,

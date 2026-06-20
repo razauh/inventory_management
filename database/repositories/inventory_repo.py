@@ -349,6 +349,31 @@ class InventoryRepo:
         )
         return d
 
+    def low_inventory_products(self) -> List[Dict]:
+        rebuild_dirty_valuations(self.conn)
+        rows = self.conn.execute(
+            """
+            SELECT
+                p.product_id AS product_id,
+                p.name AS product,
+                COALESCE(CAST(v.qty_in_base AS REAL), 0.0) AS available_qty,
+                CAST(p.min_stock_level AS REAL) AS min_stock_level,
+                COALESCE(u.unit_name, '') AS unit_name
+            FROM products p
+            LEFT JOIN v_stock_on_hand v ON v.product_id = p.product_id
+            LEFT JOIN product_uoms pu
+                   ON pu.product_id = p.product_id
+                  AND pu.is_base = 1
+            LEFT JOIN uoms u ON u.uom_id = pu.uom_id
+            WHERE CAST(p.min_stock_level AS REAL) > 0
+              AND COALESCE(CAST(v.qty_in_base AS REAL), 0.0) < CAST(p.min_stock_level AS REAL)
+            ORDER BY
+                (CAST(p.min_stock_level AS REAL) - COALESCE(CAST(v.qty_in_base AS REAL), 0.0)) DESC,
+                p.name COLLATE NOCASE
+            """
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Adjustments
     # ------------------------------------------------------------------

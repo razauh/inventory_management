@@ -173,3 +173,50 @@ class TransactionsTableModel(QAbstractTableModel):
     @property
     def headers(self) -> tuple[str, ...]:
         return tuple(self.HEADERS)
+
+
+class LowInventoryTableModel(QAbstractTableModel):
+    HEADERS: List[str] = ["ID", "Product", "Available", "Min Stock", "UoM"]
+
+    def __init__(self, rows: Optional[List[Dict[str, Any]]] = None) -> None:
+        super().__init__()
+        self._rows: List[Dict[str, Any]] = list(rows or [])
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self.HEADERS)
+
+    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        row = self._rows[index.row()]
+        col = index.column()
+        if role in (Qt.DisplayRole, Qt.EditRole):
+            if col == 0:
+                return row.get("product_id", "")
+            if col == 1:
+                return row.get("product", "")
+            if col == 2:
+                return f"{float(row.get('available_qty') or 0.0):g}"
+            if col == 3:
+                return f"{float(row.get('min_stock_level') or 0.0):g}"
+            if col == 4:
+                return row.get("unit_name", "")
+        if role == Qt.TextAlignmentRole and col in (0, 2, 3):
+            return int(Qt.AlignRight | Qt.AlignVCenter)
+        return None
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole) -> Any:
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            try:
+                return self.HEADERS[section]
+            except IndexError:
+                return ""
+        return super().headerData(section, orientation, role)
+
+    def replace(self, rows: List[Dict[str, Any]]) -> None:
+        self.beginResetModel()
+        self._rows = list(rows or [])
+        self.endResetModel()
