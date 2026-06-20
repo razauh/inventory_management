@@ -207,20 +207,20 @@ class PriceDialog(QDialog):
         f = self._current_factor()
         rtxt = (self.edt_alt_price.text() or "").strip()
         ok_alt, alt_price = try_parse_float(rtxt) if rtxt else (False, None)
-        if f is not None and f >= 1e-9 and ok_alt and alt_price is not None and alt_price >= 0:
+        if f is not None and f >= 1e-9 and ok_alt and alt_price is not None and alt_price > 0:
             return float(alt_price) / f
 
         # 2) Fallback: use base price directly.
         txt = (self.edt_base_price.text() or "").strip()
         ok, base_price = try_parse_float(txt) if txt else (False, None)
-        if not (ok and base_price is not None and base_price >= 0):
+        if not (ok and base_price is not None and base_price > 0):
             return None
         return float(base_price)
 
     def accept(self):
         price = self.result_base_price()
         if price is None:
-            self.lbl_error.setText("Enter a valid non-negative sale price.")
+            self.lbl_error.setText("Enter a valid positive sale price.")
             return
         self.lbl_error.clear()
         super().accept()
