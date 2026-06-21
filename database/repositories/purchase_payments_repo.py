@@ -3,6 +3,7 @@ import sqlite3
 from typing import Optional
 
 from .vendor_advances_repo import VendorAdvancesRepo
+from ...modules.accounting import AccountingService, VendorPaymentMetadata
 
 
 class PurchasePaymentsRepo:
@@ -41,12 +42,8 @@ class PurchasePaymentsRepo:
         """
         if amount <= 0:
             raise ValueError("Vendor purchase payment amount must be greater than zero")
-        if method not in self.METHODS:
-            raise ValueError(f"Invalid vendor purchase payment method: {method}")
 
         state = clearing_state or "cleared"
-        if state != "cleared":
-            raise ValueError("Vendor purchase payments must have clearing_state='cleared'")
         effective_cleared_date = cleared_date or date
 
         purchase_info = self.conn.execute(
@@ -66,39 +63,20 @@ class PurchasePaymentsRepo:
             raise ValueError(f"Purchase not found: {purchase_id}")
 
         vendor_id = int(purchase_info["vendor_id"])
-        if bank_account_id is not None:
-            account = self.conn.execute(
-                """
-                SELECT is_active
-                  FROM company_bank_accounts
-                 WHERE account_id = ?
-                """,
-                (bank_account_id,),
-            ).fetchone()
-            if not account:
-                raise ValueError(f"Company bank account not found: {bank_account_id}")
-            if int(account["is_active"]) != 1:
-                raise ValueError(
-                    "Selected company bank account is inactive and cannot be used for new transactions."
-                )
-
-        if vendor_bank_account_id is not None:
-            account = self.conn.execute(
-                """
-                SELECT vendor_id, is_active
-                  FROM vendor_bank_accounts
-                 WHERE vendor_bank_account_id = ?
-                """,
-                (vendor_bank_account_id,),
-            ).fetchone()
-            if not account:
-                raise ValueError(f"Vendor bank account not found: {vendor_bank_account_id}")
-            if int(account["vendor_id"]) != vendor_id:
-                raise ValueError("Vendor bank account does not belong to the purchase vendor")
-            if int(account["is_active"]) != 1:
-                raise ValueError(
-                    "Selected vendor bank account is inactive and cannot be used for new transactions."
-                )
+        AccountingService(self.conn).validate_vendor_payment_metadata(
+            VendorPaymentMetadata(
+                vendor_id=vendor_id,
+                method=method,
+                bank_account_id=bank_account_id,
+                vendor_bank_account_id=vendor_bank_account_id,
+                instrument_type=instrument_type,
+                instrument_no=instrument_no,
+                clearing_state=state,
+                temp_vendor_bank_name=temp_vendor_bank_name,
+                temp_vendor_bank_number=temp_vendor_bank_number,
+                vendor_label="purchase",
+            )
+        )
 
         if amount > 0:
             total_amount = float(purchase_info["total_calc"] or 0.0)

@@ -2,7 +2,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
-from ...modules.accounting import AccountingService
+from ...modules.accounting import AccountingService, VendorPaymentMetadata
 
 
 # ----------------------------
@@ -434,42 +434,18 @@ class VendorAdvancesRepo:
         instrument_type: Optional[str],
         clearing_state: Optional[str],
     ) -> None:
-        if method is not None and method not in self.METHODS:
-            raise ValueError(f"Invalid vendor advance payment method: {method}")
-        if instrument_type is not None and instrument_type not in self.ITYPES:
-            raise ValueError(f"Invalid vendor advance instrument type: {instrument_type}")
-        if clearing_state is not None and clearing_state != "cleared":
-            raise ValueError("Vendor outgoing payments must have clearing_state='cleared'")
-
-        if bank_account_id is not None:
-            row = self.conn.execute(
-                "SELECT is_active FROM company_bank_accounts WHERE account_id = ?",
-                (bank_account_id,),
-            ).fetchone()
-            if not row:
-                raise ValueError(f"Company bank account not found: {bank_account_id}")
-            if int(row["is_active"]) != 1:
-                raise ValueError(
-                    "Selected company bank account is inactive and cannot be used for new transactions."
-                )
-
-        if vendor_bank_account_id is not None:
-            row = self.conn.execute(
-                """
-                SELECT vendor_id, is_active
-                  FROM vendor_bank_accounts
-                 WHERE vendor_bank_account_id = ?
-                """,
-                (vendor_bank_account_id,),
-            ).fetchone()
-            if not row:
-                raise ValueError(f"Vendor bank account not found: {vendor_bank_account_id}")
-            if int(row["vendor_id"]) != int(vendor_id):
-                raise ValueError("Vendor bank account does not belong to the advance vendor")
-            if int(row["is_active"]) != 1:
-                raise ValueError(
-                    "Selected vendor bank account is inactive and cannot be used for new transactions."
-                )
+        self.accounting.validate_vendor_payment_metadata(
+            VendorPaymentMetadata(
+                vendor_id=vendor_id,
+                method=method,
+                bank_account_id=bank_account_id,
+                vendor_bank_account_id=vendor_bank_account_id,
+                instrument_type=instrument_type,
+                clearing_state=clearing_state,
+                vendor_label="advance",
+                reject_card=True,
+            )
+        )
 
     def _vendor_advances_columns(self) -> set[str]:
         rows = self.conn.execute("PRAGMA table_info(vendor_advances);").fetchall()

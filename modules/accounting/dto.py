@@ -97,6 +97,27 @@ class PurchasePaymentSummary:
 
 
 @dataclass(frozen=True)
+class VendorPaymentMetadata:
+    vendor_id: int
+    method: str | None
+    bank_account_id: int | None = None
+    vendor_bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    clearing_state: str | None = None
+    temp_vendor_bank_name: str | None = None
+    temp_vendor_bank_number: str | None = None
+    vendor_label: str = "purchase"
+    require_method_details: bool = False
+    reject_card: bool = False
+
+
+@dataclass(frozen=True)
+class SupplierRefundMetadata(VendorPaymentMetadata):
+    pass
+
+
+@dataclass(frozen=True)
 class PurchaseFinancials:
     purchase_id: int
     net_total: Decimal

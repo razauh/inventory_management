@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtCore import QEvent, QObject
 from ...database.repositories.vendors_repo import VendorsRepo
-from ..accounting import AccountingService
+from ..accounting import AccountingService, VendorPaymentMetadata
 from ...utils.helpers import today_str
 from ...utils.combo_search import configure_contains_completer
 from .validation import parse_strict_float
@@ -628,6 +628,37 @@ class PaymentForm(QDialog):
                 
                 if rule.get('requires_instr_no', False) and not self.instr_no.text().strip():
                     errors.append(rule['error_msg_instr'])
+
+            if not errors and self.vendors is not None and getattr(self.vendors, "conn", None) is not None and self.vendor_id:
+                instrument_types = {
+                    self.PAYMENT_METHODS['BANK_TRANSFER']: "online",
+                    self.PAYMENT_METHODS['CHEQUE']: "cheque",
+                    self.PAYMENT_METHODS['CROSS_CHEQUE']: "cross_cheque",
+                    self.PAYMENT_METHODS['CASH_DEPOSIT']: "cash_deposit",
+                }
+                vendor_account_id = self.vendor_acct.currentData()
+                if vendor_account_id == self.TEMP_BANK_KEY:
+                    vendor_account_id = None
+                company_account_id = self.company_acct.currentData()
+                if method in (self.PAYMENT_METHODS['CASH'], self.PAYMENT_METHODS['CASH_DEPOSIT']):
+                    company_account_id = None
+                try:
+                    AccountingService(self.vendors.conn).validate_vendor_payment_metadata(
+                        VendorPaymentMetadata(
+                            vendor_id=int(self.vendor_id),
+                            method=method,
+                            bank_account_id=company_account_id,
+                            vendor_bank_account_id=vendor_account_id,
+                            instrument_type=instrument_types.get(method),
+                            instrument_no=self.instr_no.text().strip(),
+                            clearing_state="cleared",
+                            temp_vendor_bank_name=self.temp_bank_name.text().strip(),
+                            temp_vendor_bank_number=self.temp_bank_number.text().strip(),
+                            vendor_label="purchase",
+                        )
+                    )
+                except ValueError as exc:
+                    errors.append(str(exc))
 
         return len(errors) == 0, errors
 

@@ -4,7 +4,7 @@ import sqlite3
 from typing import Iterable, Optional
 
 # For settlements
-from ...modules.accounting import AccountingService
+from ...modules.accounting import AccountingService, SupplierRefundMetadata
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.inventory_repo import rebuild_dirty_valuations
 
@@ -995,6 +995,20 @@ class PurchasesRepo:
                 )
 
             if cash_refund_amount > 1e-9:
+                self.accounting.validate_supplier_refund_metadata(
+                    SupplierRefundMetadata(
+                        vendor_id=vendor_id,
+                        method=settlement.get("method") or "Other" if settlement else "Other",
+                        bank_account_id=settlement.get("bank_account_id") if settlement else None,
+                        vendor_bank_account_id=settlement.get("vendor_bank_account_id") if settlement else None,
+                        instrument_type=settlement.get("instrument_type") if settlement else None,
+                        instrument_no=settlement.get("instrument_no") if settlement else None,
+                        clearing_state="cleared",
+                        temp_vendor_bank_name=settlement.get("temp_vendor_bank_name") if settlement else None,
+                        temp_vendor_bank_number=settlement.get("temp_vendor_bank_number") if settlement else None,
+                        vendor_label="purchase",
+                    )
+                )
                 cur = self.conn.execute(
                     """
                     INSERT INTO purchase_refunds (

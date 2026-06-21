@@ -12,7 +12,9 @@ from modules.accounting import (
     PurchasePaymentSummary,
     PurchaseTotalInputLine,
     PurchaseTotals,
+    SupplierRefundMetadata,
     VendorOpenPurchase,
+    VendorPaymentMetadata,
     VendorPurchaseTotals,
     VendorStatement,
     VendorStatementEntry,
@@ -28,6 +30,8 @@ VENDOR_PURCHASE_METHODS = [
     ("get_purchase_payment_summary", ("purchase_id",)),
     ("get_purchase_payment_history", ("purchase_id",)),
     ("get_purchase_financials", ("purchase_id",)),
+    ("validate_vendor_payment_metadata", ("metadata",)),
+    ("validate_supplier_refund_metadata", ("metadata",)),
     ("get_vendor_advance_balance", ("vendor_id",)),
     ("get_vendor_advance_balances", ("vendor_ids",)),
     ("get_vendor_open_purchases", ("vendor_id",)),
@@ -83,6 +87,8 @@ def test_vendor_purchase_service_contract_methods_exist():
         "overpayment": 2.0,
         "counterparty_label": "Vendor",
     }
+    assert VendorPaymentMetadata(vendor_id=2, method="Cash")
+    assert SupplierRefundMetadata(vendor_id=2, method="Cash")
     assert PurchaseFinancials(
         purchase_id=1,
         net_total=Decimal("9.00"),

@@ -13,7 +13,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
-from ..accounting import AccountingService, PurchaseTotalInputLine
+from ..accounting import AccountingService, PurchaseTotalInputLine, VendorPaymentMetadata
 from ...utils.combo_search import configure_contains_completer
 from ...utils.helpers import today_str, fmt_money
 from .validation import SALE_PRICE_RULE_MESSAGE, parse_strict_float
@@ -1440,6 +1440,42 @@ class PurchaseForm(QDialog):
                 
                 if rule.get('requires_instr_no', False) and not self.ip_instr_no.text().strip():
                     errors.append(rule['error_msg_instr'])
+
+            if (
+                not errors
+                and self.vendors is not None
+                and getattr(self.vendors, "conn", None) is not None
+                and self.cmb_vendor.currentData() is not None
+            ):
+                instrument_types = {
+                    self.PAYMENT_METHODS['BANK_TRANSFER']: "online",
+                    self.PAYMENT_METHODS['CHEQUE']: "cheque",
+                    self.PAYMENT_METHODS['CROSS_CHEQUE']: "cross_cheque",
+                    self.PAYMENT_METHODS['CASH_DEPOSIT']: "cash_deposit",
+                }
+                vendor_account_id = self.ip_vendor_acct.currentData()
+                if vendor_account_id == "TEMP_BANK":
+                    vendor_account_id = None
+                company_account_id = self.ip_company_acct.currentData()
+                if method in (self.PAYMENT_METHODS['CASH'], self.PAYMENT_METHODS['CASH_DEPOSIT']):
+                    company_account_id = None
+                try:
+                    AccountingService(self.vendors.conn).validate_vendor_payment_metadata(
+                        VendorPaymentMetadata(
+                            vendor_id=int(self.cmb_vendor.currentData()),
+                            method=method,
+                            bank_account_id=company_account_id,
+                            vendor_bank_account_id=vendor_account_id,
+                            instrument_type=instrument_types.get(method),
+                            instrument_no=self.ip_instr_no.text().strip(),
+                            clearing_state="cleared",
+                            temp_vendor_bank_name=self.temp_bank_name.text().strip(),
+                            temp_vendor_bank_number=self.temp_bank_number.text().strip(),
+                            vendor_label="purchase",
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    errors.append(str(exc))
             
 
         return len(errors) == 0, errors

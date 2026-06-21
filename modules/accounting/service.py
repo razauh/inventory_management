@@ -14,8 +14,10 @@ from .dto import (
     PurchasePaymentSummary,
     PurchaseTotalInputLine,
     PurchaseTotals,
+    SupplierRefundMetadata,
     VendorBalance,
     VendorOpenPurchase,
+    VendorPaymentMetadata,
     VendorPurchaseTotals,
     VendorStatement,
 )
@@ -37,6 +39,10 @@ from .current_rules.vendor_rules import (
     list_vendor_purchases as list_current_vendor_purchases,
 )
 from .exceptions import AccountingNotImplementedError
+from .validators import (
+    validate_supplier_refund_metadata as validate_current_supplier_refund_metadata,
+    validate_vendor_payment_metadata as validate_current_vendor_payment_metadata,
+)
 
 
 class AccountingService:
@@ -110,6 +116,22 @@ class AccountingService:
 
     def get_purchase_financials(self, purchase_id: int) -> PurchaseFinancials:
         self._not_implemented("get_purchase_financials")
+
+    def validate_vendor_payment_metadata(
+        self,
+        metadata: VendorPaymentMetadata,
+    ) -> None:
+        if self.conn is None:
+            self._not_implemented("validate_vendor_payment_metadata")
+        validate_current_vendor_payment_metadata(self.conn, metadata)
+
+    def validate_supplier_refund_metadata(
+        self,
+        metadata: SupplierRefundMetadata,
+    ) -> None:
+        if self.conn is None:
+            self._not_implemented("validate_supplier_refund_metadata")
+        validate_current_supplier_refund_metadata(self.conn, metadata)
 
     def get_sale_outstanding(self, sale_id: int) -> None:
         self._not_implemented("get_sale_outstanding")
