@@ -7,13 +7,17 @@
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; font-size: 10px; color: #111; }
     .page { width: 210mm; min-height: 297mm; padding: 12mm 12mm; box-sizing: border-box; }
     h1, h2, h3 { margin: 0; padding: 0; }
-    .header { display: grid; grid-template-columns: 65% 35%; gap: 16px; align-items: start; }
+    .header { display: grid; grid-template-columns: 58% 42%; gap: 14px; align-items: start; border-bottom: 2px solid #111; padding-bottom: 9px; }
     .company-block { display: block; }
-    .company-name { font-size: 20px; font-weight: 700; line-height: 1.1; }
-    .company-lines { margin-top: 6px; line-height: 1.35; white-space: pre-wrap; text-align: left; }
+    .company-name { font-size: 19px; font-weight: 700; line-height: 1.15; letter-spacing: 0; }
+    .company-lines { margin-top: 7px; line-height: 1.4; white-space: pre-wrap; text-align: left; color: #333; }
     .meta { text-align: right; }
-    .doc-title { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; }
+    .doc-title { font-size: 17px; font-weight: 700; letter-spacing: 0.4px; }
     .meta small { color: #555; }
+    .meta-line { margin-top: 3px; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .card { border: 1px solid #bbb; border-radius: 4px; padding: 8px; }
+    .card h3 { font-size: 11px; font-weight: 700; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .4px; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; }
     th, td { padding: 3px 4px; border-bottom: 1px solid #eee; vertical-align: top; }
     th { text-align: left; background: #fafafa; font-weight: 700; }
@@ -42,17 +46,39 @@
     <!-- Header -->
     <div class="header">
       <div class="company-block">
-        <div class="company-name">Customer Statement</div>
+        <div class="company-name">{{ company.name or 'Your Company Name' }}</div>
         <div class="company-lines">
-Customer: {{ customer.name or '' }}<br>
-Contact: {{ customer.contact_info or '' }}<br>
-Address: {{ customer.address or '' }}
+          {% for line in company.address_lines or [] %}
+            {{ line }}<br>
+          {% endfor %}
+          {% for line in company.contact_lines or [] %}
+            {{ line }}<br>
+          {% endfor %}
+          {% for line in company.proprietor_lines or [] %}
+            {{ line }}<br>
+          {% endfor %}
         </div>
       </div>
       <div class="meta">
-        <div class="doc-title">Statement</div>
-        <div><small>Customer ID:</small> <strong>{{ customer.id }}</strong></div>
-        <div><small>Last Sale Date:</small> <strong>{{ summary.last_sale_date or '' }}</strong></div>
+        <div class="doc-title">CUSTOMER STATEMENT</div>
+        <div class="meta-line"><small>Customer ID:</small> <strong>{{ customer.id }}</strong></div>
+        <div class="meta-line"><small>Last Sale Date:</small> <strong>{{ summary.last_sale_date or '' }}</strong></div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <h3>Customer</h3>
+        <div><strong>{{ customer.name or '' }}</strong></div>
+        <div class="muted">{{ customer.contact_info or '' }}</div>
+        {% if customer.address %}
+          <div style="white-space: pre-wrap; margin-top: 4px;">{{ customer.address }}</div>
+        {% endif %}
+      </div>
+      <div class="card">
+        <h3>Account Summary</h3>
+        <div>Outstanding Receivables: <strong>{{ '%.2f' % (summary.open_due_sum or 0.0) }}</strong></div>
+        <div>Available Credit: <strong>{{ '%.2f' % (summary.credit_balance or 0.0) }}</strong></div>
       </div>
     </div>
 

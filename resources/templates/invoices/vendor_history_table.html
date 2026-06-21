@@ -20,9 +20,23 @@
       box-sizing: border-box;
     }
     h1 {
-      margin: 0 0 8px 0;
+      margin: 0;
       font-size: 16px;
     }
+    .header {
+      display: grid;
+      grid-template-columns: 58% 42%;
+      gap: 14px;
+      align-items: start;
+      border-bottom: 2px solid #111;
+      padding-bottom: 8px;
+      margin-bottom: 8px;
+    }
+    .company-name { font-size: 17px; font-weight: 700; line-height: 1.15; }
+    .company-lines { margin-top: 6px; line-height: 1.35; color: #333; }
+    .meta { text-align: right; }
+    .doc-title { font-size: 16px; font-weight: 700; letter-spacing: .4px; }
+    .meta-line { margin-top: 3px; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -48,8 +62,24 @@
 </head>
 <body>
   <div class="page">
-    <h1>{{ title }}</h1>
-    <div class="muted">Vendor: {{ vendor_display or vendor_id }}</div>
+    <div class="header">
+      <div>
+        <div class="company-name">{{ company.name or 'Your Company Name' }}</div>
+        <div class="company-lines">
+          {% for line in company.address_lines or [] %}
+            {{ line }}<br>
+          {% endfor %}
+          {% for line in company.contact_lines or [] %}
+            {{ line }}<br>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="meta">
+        <div class="doc-title">{{ title|upper }}</div>
+        <div class="meta-line"><small>Vendor:</small> <strong>{{ vendor_display or vendor_id }}</strong></div>
+        <div class="meta-line"><small>Vendor ID:</small> <strong>{{ vendor_id }}</strong></div>
+      </div>
+    </div>
     <table aria-label="{{ title }} data">
       <thead>
         <tr>

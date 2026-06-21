@@ -529,7 +529,12 @@ class CustomerController(BaseModule):
         events = payload.get("timeline") or []
 
         template = Template(template_content, autoescape=True)
+        company = {}
+        if hasattr(self, "conn"):
+            from ...database.repositories.company_info_repo import get_invoice_company_context
+            company = get_invoice_company_context(self.conn)
         html = template.render(
+            company=company,
             customer=customer_data,
             summary=summary,
             events=events,

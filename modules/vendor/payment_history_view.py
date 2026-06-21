@@ -585,6 +585,7 @@ class _VendorHistoryDialog(QDialog):
 
                 html = template.render(
                     title=f"Vendor History — {self._vendor_display}",
+                    company=self._history.get("company") or {},
                     keys=cols,
                     labels=[_DictTableModel._pretty_key(col) for col in cols],
                     rows=print_rows,

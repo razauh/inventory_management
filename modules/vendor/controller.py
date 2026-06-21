@@ -1027,8 +1027,10 @@ class VendorController(BaseModule):
             elif r["type"] == "Credit Applied":
                 totals["credit_applied"] += abs(float(r["amount"]))
         closing_balance = balance
+        from ...database.repositories.company_info_repo import get_invoice_company_context
         return {
             "vendor_id": vendor_id,
+            "company": get_invoice_company_context(self.conn),
             "period": {"from": date_from, "to": date_to},
             "opening_credit": opening_credit,
             "opening_payable": opening_payable,

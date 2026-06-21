@@ -40,6 +40,23 @@ def _get_customer_history_service(db_path: str | Path):
     return CustomerHistoryService(db_path)
 
 
+def _get_invoice_company_context(db_path: str | Path) -> dict:
+    from inventory_management.database.repositories.company_info_repo import (
+        get_invoice_company_context,
+    )
+
+    if not Path(db_path).exists():
+        return {}
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        return get_invoice_company_context(conn)
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+
 # ======================= Actions: Receive Payment ============================
 
 def receive_payment(
@@ -319,6 +336,7 @@ def open_payment_history(
     try:
         history_service = _get_customer_history_service(db_path)
         history_payload = history_service.full_history(customer_id)
+        history_payload["company"] = _get_invoice_company_context(db_path)
     except sqlite3.Error:
         return ActionResult(success=False, message="Customer history could not be loaded from the database.")
     except Exception:

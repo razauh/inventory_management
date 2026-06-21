@@ -83,3 +83,31 @@ def test_invoice_templates_have_no_placeholder_company_blocks():
         assert "XXXXX" not in text
         assert "Account No: XXXX" not in text
         assert "company.proprietor_lines" in text
+
+
+def test_print_templates_use_monochrome_document_header():
+    root = Path(__file__).resolve().parents[1]
+    names = [
+        "sale_invoice.html",
+        "quotation_invoice.html",
+        "purchase_invoice.html",
+        "customer_history.html",
+        "customer_history_table.html",
+        "vendor_history_table.html",
+    ]
+    forbidden_colors = [
+        "#e7f6ec",
+        "#137333",
+        "#fff7e6",
+        "#b36b00",
+        "#fdeaea",
+        "#b3261e",
+        "#8a6100",
+    ]
+
+    for name in names:
+        text = (root / "resources" / "templates" / "invoices" / name).read_text(encoding="utf-8")
+        assert "border-bottom: 2px solid #111" in text
+        assert "company.name" in text
+        for color in forbidden_colors:
+            assert color not in text

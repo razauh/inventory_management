@@ -284,6 +284,7 @@ class _CustomerHistoryDialog(QDialog):
 
         html = template.render(
             title=title,
+            company=self._history.get("company") or {},
             columns=columns,
             rows=norm_rows,
             customer_id=self._customer_id,
