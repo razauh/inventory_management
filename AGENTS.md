@@ -27,6 +27,16 @@ Operating instructions for AI coding agents working in this repository.
 - Avoid broad refactors unless the user asked for them.
 - If you need to touch database logic, preserve existing data and migration behavior.
 
+## Accounting Module Guardrails
+
+- All future accounting-related calculations must go through `modules/accounting/service.py` or approved accounting service APIs.
+- Do not add new payable, receivable, advance, credit, debit, vendor balance, customer balance, inventory valuation, bank balance, or profit/margin calculations directly inside vendor, purchase, sales, customer, inventory, expense, or UI modules.
+- Existing scattered calculations may remain temporarily during the migration.
+- When touching existing accounting behavior, first add characterization tests that capture current behavior.
+- Do not silently change accounting behavior while scaffolding.
+- Do not introduce external ERP/accounting dependencies without explicit approval.
+- Any future ledger implementation must preserve double-entry invariants and source-document traceability.
+
 ## Required Coding Skills
 
 Agents working in this repository must use both the Ponytail and Karpathy Guidelines skills as default coding discipline. Treat them as always-on unless the user explicitly asks for a different style.
