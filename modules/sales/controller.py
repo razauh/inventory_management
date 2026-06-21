@@ -11,6 +11,7 @@ from .model import SalesTableModel
 from .form import SaleForm
 from .return_form import SaleReturnForm
 from ...database.repositories.sales_repo import SalesRepo, SaleHeader, SaleItem
+from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo
 from ...database.repositories.sales_returns_helpers import get_returnable_quantities
 from ...database.repositories.customers_repo import CustomersRepo
 from ...database.repositories.products_repo import ProductsRepo
@@ -608,6 +609,46 @@ class SalesController(BaseModule):
             f"Apply Credit available: up to {fmt_money(applicable)}.",
         )
 
+    def _confirm_apply_customer_credit(self, sale_id: str, amount: float) -> bool:
+        answer = QMessageBox.question(
+            self.view,
+            "Apply Customer Credit?",
+            (
+                f"Customer credit of {fmt_money(amount)} is available.\n\n"
+                f"Apply it to sale {sale_id}?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def _maybe_apply_customer_credit_to_sale(
+        self,
+        *,
+        sale_id: str,
+        customer_id: int,
+        date: str,
+    ) -> float:
+        if not customer_id:
+            return 0.0
+        remaining = float(self._fetch_sale_financials(sale_id).get("remaining_due") or 0.0)
+        if remaining <= 1e-9:
+            return 0.0
+        credit = float(CustomerAdvancesRepo(self.conn).get_balance(customer_id) or 0.0)
+        amount = min(credit, remaining)
+        if amount <= 1e-9 or not self._confirm_apply_customer_credit(sale_id, amount):
+            return 0.0
+        with self.conn:
+            CustomerAdvancesRepo(self.conn).apply_credit_to_sale(
+                customer_id=customer_id,
+                sale_id=sale_id,
+                amount=amount,
+                date=date,
+                created_by=self._current_user_id(),
+                notes="Applied customer credit from available balance",
+            )
+        return amount
+
     def _build_model(self):
         """
         Build the table model using server-side search (preferred).
@@ -1052,6 +1093,7 @@ class SalesController(BaseModule):
             "sales_repo": self.repo,
             "db_path": self._db_path,
             "bank_accounts": self.bank_accounts,
+            "get_customer_credit": lambda cid: CustomerAdvancesRepo(self.conn).get_balance(cid),
             "can_view_margin": bool(
                 self.user and str(self.user.get("role") or "").lower() == "admin"
             ),
@@ -1072,7 +1114,13 @@ class SalesController(BaseModule):
         except TypeError:
             # Try progressively simpler ctor shapes
             try:
-                kwargs2 = {"customers": self.customers, "products": self.products, "sales_repo": self.repo, "db_path": self._db_path}
+                kwargs2 = {
+                    "customers": self.customers,
+                    "products": self.products,
+                    "sales_repo": self.repo,
+                    "db_path": self._db_path,
+                    "get_customer_credit": lambda cid: CustomerAdvancesRepo(self.conn).get_balance(cid),
+                }
                 if initial is not None:
                     kwargs2["initial"] = initial
                 return SaleForm(self.view, **kwargs2)
@@ -1381,10 +1429,6 @@ class SalesController(BaseModule):
 
         try:
             sid = self.repo.create_sale(h, items, payment_info)
-            if payment_info:
-                info(self.view, "Saved", f"Sale {sid} created and initial payment recorded.")
-            else:
-                info(self.view, "Saved", f"Sale {sid} created.")
         except (ValueError, sqlite3.Error) as e:
             info(self.view, "Error", f"Could not create sale:\n{e}")
             return
@@ -1392,6 +1436,28 @@ class SalesController(BaseModule):
             logging.exception("Unexpected error while creating sale %s", sid)
             info(self.view, "Error", "Could not create sale due to an unexpected error.")
             return
+
+        credit_error = None
+        try:
+            credit_applied = self._maybe_apply_customer_credit_to_sale(
+                sale_id=sid,
+                customer_id=int(p["customer_id"]),
+                date=p["date"],
+            )
+        except Exception as e:
+            logging.exception("Could not apply customer credit to sale %s", sid)
+            credit_error = str(e)
+            credit_applied = 0.0
+
+        if payment_info:
+            message = f"Sale {sid} created and initial payment recorded."
+        else:
+            message = f"Sale {sid} created."
+        if credit_applied > 1e-9:
+            message += f" Applied customer credit of {fmt_money(credit_applied)}."
+        if credit_error:
+            message += f" Customer credit was not applied: {credit_error}"
+        info(self.view, "Saved", message)
 
         # Check if this was called from print button
         should_print_after_save = p.get('_should_print', False)

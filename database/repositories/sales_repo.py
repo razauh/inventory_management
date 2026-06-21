@@ -1047,9 +1047,31 @@ class SalesRepo:
             )
             cogs_reversal_value = float(value_row["cogs_reversal_value"] or 0.0)
 
+            # Fetch prior credit notes for the sale
+            prior_credit_row = self.conn.execute(
+                "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS prior_credit_notes FROM customer_advances WHERE source_type = 'return_credit' AND source_id = ?",
+                (sid,),
+            ).fetchone()
+            prior_credit_notes = float(prior_credit_row["prior_credit_notes"] or 0.0) if prior_credit_row else 0.0
+
+            net_total_before = position_before["net_total_amount"]
+            advance_applied = position_before["advance_payment_applied"]
+            net_advance_applied = max(0.0, advance_applied - prior_credit_notes)
+
+            # Calculate proportional advance to reinstate
+            if net_total_before > 1e-9:
+                prop_adv = (final_return_value / net_total_before) * advance_applied
+                prop_adv = min(prop_adv, net_advance_applied)
+            else:
+                prop_adv = 0.0
+
             settlement_due = max(0.0, final_return_value - remaining_due_before)
             paid_before = float(hdr["paid_amount"] or 0.0)
+            # Cash cap is limited by remaining excess after proportional advance reinstatement
+            max_cash_refund = max(0.0, settlement_due - prop_adv)
             cash_cap = min(settlement_due, paid_before)
+            cash_cap = min(cash_cap, max_cash_refund)
+
             requested_cash = float(settlement_data.get("cash_refund") or 0.0)
             if requested_cash < 0:
                 raise ValueError("Cash refund cannot be negative.")

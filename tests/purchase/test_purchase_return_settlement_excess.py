@@ -202,3 +202,38 @@ def test_sequential_returns_grant_only_incremental_excess(return_settlement_db):
     ).fetchall()
 
     assert [float(row["amount"]) for row in credits] == pytest.approx([20.0, 10.0])
+
+
+def test_vendor_advance_full_reinstatement(return_settlement_db):
+    conn, vendor_id, item_id = return_settlement_db
+    # Initial state: 100 PO. Grant 100 advance, apply 100 advance to the PO.
+    _apply_advance(conn, vendor_id, 100.0)
+    assert VendorAdvancesRepo(conn).get_balance(vendor_id) == 0.0
+
+    # Return the entire purchase
+    _record_return(conn, item_id, 10.0, mode="credit_note")
+
+    # Check that return credit row of 100.0 is created and vendor balance is 100.0
+    credit_notes = conn.execute(
+        "SELECT amount FROM vendor_advances WHERE source_type = 'return_credit' AND source_id = 'PO-RETURN-SETTLEMENT'"
+    ).fetchall()
+    assert len(credit_notes) == 1
+    assert float(credit_notes[0]["amount"]) == 100.0
+    assert VendorAdvancesRepo(conn).get_balance(vendor_id) == 100.0
+
+
+def test_vendor_advance_partial_reinstatement(return_settlement_db):
+    conn, vendor_id, item_id = return_settlement_db
+    # Initial state: 100 PO. Grant 100 advance, apply 100 advance to the PO.
+    _apply_advance(conn, vendor_id, 100.0)
+
+    # Return partial (4 units = 40.0)
+    _record_return(conn, item_id, 4.0, mode="credit_note")
+
+    # Check return credit row of 40.0 is created and vendor balance is 40.0
+    credit_notes = conn.execute(
+        "SELECT amount FROM vendor_advances WHERE source_type = 'return_credit' AND source_id = 'PO-RETURN-SETTLEMENT'"
+    ).fetchall()
+    assert len(credit_notes) == 1
+    assert float(credit_notes[0]["amount"]) == 40.0
+    assert VendorAdvancesRepo(conn).get_balance(vendor_id) == 40.0

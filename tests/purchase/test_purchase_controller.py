@@ -127,6 +127,52 @@ def test_auto_apply_vendor_credit(controller, ids, conn):
     assert remaining_credit == 50.0  # 100 - 50
 
 
+def test_vendor_credit_can_be_skipped_for_new_purchase(controller, ids, conn, monkeypatch):
+    """Available vendor credit is not applied when user skips it."""
+    from PySide6.QtWidgets import QMessageBox
+
+    conn.execute("""
+        INSERT INTO vendor_advances (vendor_id, amount, source_type, notes)
+        VALUES (?, ?, 'deposit', 'Test Credit')
+    """, (ids["vendor_id"], 100.0))
+    monkeypatch.setattr(
+        "inventory_management.modules.purchase.controller.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.No,
+    )
+
+    payload = {
+        "vendor_id": ids["vendor_id"],
+        "date": "2023-01-01",
+        "items": [
+            {
+                "product_id": ids["prod_A"],
+                "uom_id": ids["uom_piece"],
+                "quantity": 5,
+                "purchase_price": 10.0,
+                "sale_price": 15.0,
+                "item_discount": 0.0
+            }
+        ],
+        "total_amount": 50.0,
+        "order_discount": 0.0,
+        "notes": "PO with skipped credit",
+        "initial_payment": None
+    }
+
+    with patch("inventory_management.modules.purchase.controller.PurchaseForm") as MockForm:
+        instance = MockForm.return_value
+        instance.payload.return_value = payload
+
+        controller._add()
+        controller._handle_add_dialog_accept()
+
+    repo = PurchasesRepo(controller.conn)
+    po = repo.list_purchases()[0]
+    assert po["payment_status"] == "unpaid"
+    assert float(po["advance_payment_applied"]) == 0.0
+    assert controller.vadv.get_balance(ids["vendor_id"]) == 100.0
+
+
 def _purchase_row(purchase_id="PO-SEARCH-1", vendor_name="Vendor Search"):
     return {
         "purchase_id": purchase_id,

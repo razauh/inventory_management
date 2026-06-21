@@ -525,10 +525,10 @@ class PurchaseForm(QDialog):
 
                 # Format the display (positive means we have a receivable from vendor, negative means we have a payable to vendor)
                 if advance_balance > 0:
-                    self.lbl_vendor_advance.setText(f"Vendor Balance: {fmt_money(advance_balance)[1:]} (Receivable)")  # Remove $ sign
+                    self.lbl_vendor_advance.setText(f"Vendor Balance: {fmt_money(advance_balance)} (Receivable)")
                     self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #006600;")  # Green
                 elif advance_balance < 0:
-                    self.lbl_vendor_advance.setText(f"Vendor Balance: {fmt_money(abs(advance_balance))[1:]} (Payable)")  # Remove $ sign
+                    self.lbl_vendor_advance.setText(f"Vendor Balance: {fmt_money(abs(advance_balance))} (Payable)")
                     self.lbl_vendor_advance.setStyleSheet("font-weight: bold; color: #cc0000;")  # Red
                 else:
                     self.lbl_vendor_advance.setText("Vendor Balance: 0.00")  # Remove $ sign

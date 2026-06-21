@@ -810,8 +810,19 @@ class PurchasesRepo:
                     f"only {on_hand / factor:.2f} available in stock."
                 )
 
+        # Always run position math if requested_return_value > 0
+        direct_paid = 0.0
+        advance_applied = 0.0
+        funded_amount = 0.0
+        remaining_due = 0.0
+        prior_refunds = 0.0
+        prior_credit_notes = 0.0
+        prior_settlement = 0.0
+        post_return_total = 0.0
         settlement_amount = 0.0
-        if settlement and requested_return_value > 0 and mode in ("refund_now", "credit_note"):
+        prop_adv = 0.0
+
+        if requested_return_value > 0:
             position = self.conn.execute(
                 """
                 SELECT
@@ -842,31 +853,36 @@ class PurchasesRepo:
                 """,
                 (pid,),
             ).fetchone()
-            direct_paid = float(position["direct_paid"] or 0.0)
-            advance_applied = float(position["advance_applied"] or 0.0)
-            funded_amount = direct_paid + advance_applied
-            remaining_due = max(0.0, float(position["net_total"] or 0.0) - funded_amount)
-            prior_refunds = float(position["prior_refunds"] or 0.0)
-            prior_settlement = (
-                float(position["prior_credit_notes"] or 0.0) + prior_refunds
-            )
-            post_return_total = max(
-                0.0,
-                float(position["net_total"] or 0.0) - requested_return_value,
-            )
-            settlement_amount = max(
-                0.0,
-                funded_amount - post_return_total - prior_settlement,
-            )
+            if position:
+                direct_paid = float(position["direct_paid"] or 0.0)
+                advance_applied = float(position["advance_applied"] or 0.0)
+                prior_credit_notes = float(position["prior_credit_notes"] or 0.0)
+                prior_refunds = float(position["prior_refunds"] or 0.0)
+                net_total_before = float(position["net_total"] or 0.0)
 
-            if mode == "refund_now":
+                funded_amount = direct_paid + advance_applied
+                remaining_due = max(0.0, net_total_before - funded_amount)
+                prior_settlement = prior_credit_notes + prior_refunds
+                post_return_total = max(0.0, net_total_before - requested_return_value)
+                settlement_amount = max(0.0, funded_amount - post_return_total - prior_settlement)
+
+                # Calculate proportional advance to reinstate
+                net_advance_applied = max(0.0, advance_applied - prior_credit_notes)
+                if net_total_before > 1e-9:
+                    prop_adv = (requested_return_value / net_total_before) * advance_applied
+                    prop_adv = min(prop_adv, net_advance_applied)
+                else:
+                    prop_adv = 0.0
+
+            if settlement and mode == "refund_now":
                 if remaining_due > 1e-9:
                     raise ValueError(
                         "Refund Now requires a fully settled purchase; "
                         f"remaining due is {remaining_due:.2f}."
                     )
                 refundable_direct_payment = max(0.0, direct_paid - prior_refunds)
-                if settlement_amount > refundable_direct_payment + 1e-9:
+                # Validation check matches split logic
+                if (settlement_amount - prop_adv) > refundable_direct_payment + 1e-9:
                     raise ValueError(
                         "Refund exceeds the remaining refundable direct payment "
                         f"of {refundable_direct_payment:.2f}."
@@ -932,75 +948,88 @@ class PurchasesRepo:
             return_value = 0.0
 
         # Settlement handling (no commit here)
-        if settlement and return_value > 0:
-            if mode in ("refund_now", "credit_note") and settlement_amount > 1e-9:
-                if mode == "credit_note":
-                    vadv = VendorAdvancesRepo(self.conn)
-                    vadv.grant_credit(
-                        vendor_id=vendor_id,
-                        amount=settlement_amount,
-                        date=date,
-                        notes=settlement.get("notes") or notes,
-                        created_by=created_by,
-                        source_id=pid,
-                        source_type="return_credit",
-                        method=settlement.get("method"),
-                        bank_account_id=settlement.get("bank_account_id"),
-                        vendor_bank_account_id=settlement.get("vendor_bank_account_id"),
-                        instrument_type=settlement.get("instrument_type"),
-                        instrument_no=settlement.get("instrument_no"),
-                        instrument_date=settlement.get("instrument_date"),
-                        deposited_date=settlement.get("deposited_date"),
-                        cleared_date=settlement.get("cleared_date"),
-                        clearing_state=settlement.get("clearing_state"),
-                        ref_no=settlement.get("ref_no"),
-                        temp_vendor_bank_name=settlement.get("temp_vendor_bank_name"),
-                        temp_vendor_bank_number=settlement.get("temp_vendor_bank_number"),
-                    )
-                else:
-                    cur = self.conn.execute(
-                        """
-                        INSERT INTO purchase_refunds (
-                            purchase_id, vendor_id, date, amount, method,
-                            bank_account_id, vendor_bank_account_id,
-                            instrument_type, instrument_no, instrument_date,
-                            deposited_date, cleared_date, clearing_state, ref_no,
-                            temp_vendor_bank_name, temp_vendor_bank_number,
-                            notes, created_by
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            pid,
-                            vendor_id,
-                            settlement.get("date") or date,
-                            settlement_amount,
-                            settlement.get("method") or "Other",
-                            settlement.get("bank_account_id"),
-                            settlement.get("vendor_bank_account_id"),
-                            settlement.get("instrument_type"),
-                            settlement.get("instrument_no"),
-                            settlement.get("instrument_date"),
-                            settlement.get("deposited_date"),
-                            settlement.get("cleared_date") or date,
-                            settlement.get("ref_no"),
-                            settlement.get("temp_vendor_bank_name"),
-                            settlement.get("temp_vendor_bank_number"),
-                            settlement.get("notes") or notes,
-                            created_by,
-                        ),
-                    )
-                    refund_id = int(cur.lastrowid)
-                    self.conn.execute(
-                        """
-                        INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
-                        VALUES (?, 'refund', 'purchase_refunds', ?, ?)
-                        """,
-                        (
-                            created_by,
-                            refund_id,
-                            f"Recorded vendor refund of {settlement_amount:g}. Purchase ID: {pid}",
-                        ),
-                    )
+        if return_value > 0 and settlement_amount > 1e-9:
+            mode = settlement.get("mode") if settlement else None
+            if mode == "refund":
+                mode = "refund_now"
+
+            if mode == "refund_now":
+                refundable_direct_payment = max(0.0, direct_paid - prior_refunds)
+                cash_refund_amount = min(max(0.0, settlement_amount - prop_adv), refundable_direct_payment)
+                credit_amount = max(0.0, settlement_amount - cash_refund_amount)
+            else:
+                # Default to credit note if not explicitly refund_now
+                cash_refund_amount = 0.0
+                credit_amount = settlement_amount
+
+            if credit_amount > 1e-9:
+                vadv = VendorAdvancesRepo(self.conn)
+                vadv.grant_credit(
+                    vendor_id=vendor_id,
+                    amount=credit_amount,
+                    date=date,
+                    notes=settlement.get("notes") or notes if settlement else notes,
+                    created_by=created_by,
+                    source_id=pid,
+                    source_type="return_credit",
+                    method=settlement.get("method") if settlement else None,
+                    bank_account_id=settlement.get("bank_account_id") if settlement else None,
+                    vendor_bank_account_id=settlement.get("vendor_bank_account_id") if settlement else None,
+                    instrument_type=settlement.get("instrument_type") if settlement else None,
+                    instrument_no=settlement.get("instrument_no") if settlement else None,
+                    instrument_date=settlement.get("instrument_date") if settlement else None,
+                    deposited_date=settlement.get("deposited_date") if settlement else None,
+                    cleared_date=settlement.get("cleared_date") if settlement else None,
+                    clearing_state=settlement.get("clearing_state") if settlement else None,
+                    ref_no=settlement.get("ref_no") if settlement else None,
+                    temp_vendor_bank_name=settlement.get("temp_vendor_bank_name") if settlement else None,
+                    temp_vendor_bank_number=settlement.get("temp_vendor_bank_number") if settlement else None,
+                )
+
+            if cash_refund_amount > 1e-9:
+                cur = self.conn.execute(
+                    """
+                    INSERT INTO purchase_refunds (
+                        purchase_id, vendor_id, date, amount, method,
+                        bank_account_id, vendor_bank_account_id,
+                        instrument_type, instrument_no, instrument_date,
+                        deposited_date, cleared_date, clearing_state, ref_no,
+                        temp_vendor_bank_name, temp_vendor_bank_number,
+                        notes, created_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pid,
+                        vendor_id,
+                        settlement.get("date") or date if settlement else date,
+                        cash_refund_amount,
+                        settlement.get("method") or "Other" if settlement else "Other",
+                        settlement.get("bank_account_id") if settlement else None,
+                        settlement.get("vendor_bank_account_id") if settlement else None,
+                        settlement.get("instrument_type") if settlement else None,
+                        settlement.get("instrument_no") if settlement else None,
+                        settlement.get("instrument_date") if settlement else None,
+                        settlement.get("deposited_date") if settlement else None,
+                        settlement.get("cleared_date") or date if settlement else date,
+                        settlement.get("ref_no") if settlement else None,
+                        settlement.get("temp_vendor_bank_name") if settlement else None,
+                        settlement.get("temp_vendor_bank_number") if settlement else None,
+                        settlement.get("notes") or notes if settlement else notes,
+                        created_by,
+                    ),
+                )
+                refund_id = int(cur.lastrowid)
+                self.conn.execute(
+                    """
+                    INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
+                    VALUES (?, 'refund', 'purchase_refunds', ?, ?)
+                    """,
+                    (
+                        created_by,
+                        refund_id,
+                        f"Recorded vendor refund of {cash_refund_amount:g}. Purchase ID: {pid}",
+                    ),
+                )
 
         # Audit logging for the return
         self.conn.execute(

@@ -41,6 +41,23 @@ def test_sales_form_layout_structure(qtbot, mock_repos):
     assert form.layout().count() >= 2
     assert form.pay_box.isVisible()
 
+def test_customer_credit_label_updates_on_customer_selection(qtbot, mock_repos):
+    """Customer credit label shows the selected customer's available credit."""
+    customer_id = mock_repos["customers"].create(name="Credit User", contact_info="123", address=None)
+    form = SaleForm(
+        None,
+        customers=mock_repos["customers"],
+        products=mock_repos["products"],
+        bank_accounts=mock_repos["bank_accounts"],
+        get_customer_credit=lambda cid: 25.5 if int(cid) == int(customer_id) else 0.0,
+    )
+    qtbot.addWidget(form)
+    form.show()
+
+    form.cmb_customer.setCurrentIndex(form.cmb_customer.findData(customer_id))
+
+    assert form.lbl_customer_credit.text() == "Customer Credit: 25.50 (Available)"
+
 def test_bank_account_dropdown_population(qtbot, mock_repos):
     """Test that bank account dropdown is populated when Bank Transfer is selected."""
     form = SaleForm(None, customers=mock_repos["customers"], products=mock_repos["products"], bank_accounts=mock_repos["bank_accounts"])

@@ -320,3 +320,57 @@ def test_dashboard_and_sales_financials_use_net_remaining(sale_db):
     controller.conn = conn
     assert controller._fetch_sale_financials("SAL-001")["remaining_due"] == pytest.approx(30.0)
     assert DashboardRepo(conn).open_receivables() == pytest.approx(30.0)
+
+
+def test_customer_advance_full_reinstatement(sale_db):
+    conn, customer_id, _, _ = sale_db
+    repo, item_id = _create_sale(sale_db, advance=0.0)
+
+    # Initial state: 100 Sale. Grant 100 advance, apply 100 advance to the sale.
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) VALUES (?, '2026-06-11', 100.0, 'deposit')",
+        (customer_id,)
+    )
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id) VALUES (?, '2026-06-11', -100.0, 'applied_to_sale', 'SAL-001')",
+        (customer_id,)
+    )
+    row = conn.execute("SELECT COALESCE(SUM(amount), 0.0) AS balance FROM customer_advances WHERE customer_id=?", (customer_id,)).fetchone()
+    assert float(row["balance"]) == 0.0
+
+    _return(repo, item_id, 10.0)  # Return all 10 items (value = 100.0)
+
+    # Check return credit row of 100.0 is created and customer balance is 100.0
+    credits = conn.execute(
+        "SELECT amount FROM customer_advances WHERE source_type = 'return_credit' AND source_id = 'SAL-001'"
+    ).fetchall()
+    assert len(credits) == 1
+    assert float(credits[0]["amount"]) == 100.0
+    row = conn.execute("SELECT COALESCE(SUM(amount), 0.0) AS balance FROM customer_advances WHERE customer_id=?", (customer_id,)).fetchone()
+    assert float(row["balance"]) == 100.0
+
+
+def test_customer_advance_partial_reinstatement(sale_db):
+    conn, customer_id, _, _ = sale_db
+    repo, item_id = _create_sale(sale_db, advance=0.0)
+
+    # Initial state: 100 Sale. Grant 100 advance, apply 100 advance to the sale.
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) VALUES (?, '2026-06-11', 100.0, 'deposit')",
+        (customer_id,)
+    )
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id) VALUES (?, '2026-06-11', -100.0, 'applied_to_sale', 'SAL-001')",
+        (customer_id,)
+    )
+
+    _return(repo, item_id, 4.0)  # Return 4 items (value = 40.0)
+
+    # Check return credit row of 40.0 is created and customer balance is 40.0
+    credits = conn.execute(
+        "SELECT amount FROM customer_advances WHERE source_type = 'return_credit' AND source_id = 'SAL-001'"
+    ).fetchall()
+    assert len(credits) == 1
+    assert float(credits[0]["amount"]) == 40.0
+    row = conn.execute("SELECT COALESCE(SUM(amount), 0.0) AS balance FROM customer_advances WHERE customer_id=?", (customer_id,)).fetchone()
+    assert float(row["balance"]) == 40.0

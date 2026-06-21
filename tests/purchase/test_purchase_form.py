@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QDialogButtonBox
 from inventory_management.modules.purchase.form import PurchaseForm
 from inventory_management.database.repositories.vendors_repo import VendorsRepo
 from inventory_management.database.repositories.products_repo import ProductsRepo
+from inventory_management.database.repositories.vendor_advances_repo import VendorAdvancesRepo
 
 @pytest.fixture
 def purchase_form(qtbot, conn):
@@ -86,6 +87,23 @@ def test_po_ui_vendor_selection(purchase_form, ids):
     assert purchase_form.cmb_vendor.currentData() == vendor_id
     # Check if balance label updated (text contains 'Vendor Balance')
     assert "Vendor Balance" in purchase_form.lbl_vendor_advance.text()
+
+def test_po_vendor_advance_balance_shows_full_amount(qtbot, conn, ids):
+    """Existing vendor credit is shown without dropping the first digit."""
+    VendorAdvancesRepo(conn).grant_credit(
+        ids["vendor_id"],
+        10.0,
+        date="2026-06-21",
+        notes=None,
+        created_by=None,
+    )
+
+    form = PurchaseForm(None, vendors=VendorsRepo(conn), products=ProductsRepo(conn))
+    qtbot.addWidget(form)
+
+    form.cmb_vendor.setCurrentIndex(form.cmb_vendor.findData(ids["vendor_id"]))
+
+    assert form.lbl_vendor_advance.text() == "Vendor Balance: 10.00 (Receivable)"
 
 def test_po_dv_validation_error_no_vendor(purchase_form, monkeypatch):
     """PO-DV-001: Try to save a PO without selecting a vendor."""

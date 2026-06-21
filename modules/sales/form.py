@@ -63,6 +63,7 @@ class SaleForm(QDialog):
         initial=None,
         mode: str = "sale",   # <-- NEW: 'sale' | 'quotation'
         can_view_margin: bool = False,
+        get_customer_credit=None,
     ):
         super().__init__(parent)
         self.mode = "quotation" if str(mode).lower() == "quotation" else "sale"
@@ -73,6 +74,7 @@ class SaleForm(QDialog):
         # Set window flags at the end of initialization like in PurchaseForm
 
         self.customers = customers; self.products = products; self.sales_repo = sales_repo; self.db_path = db_path; self.bank_accounts = bank_accounts
+        self._get_customer_credit = get_customer_credit
         self._product_cache = None
 
         # --- header widgets ---
@@ -81,6 +83,8 @@ class SaleForm(QDialog):
         self.cmb_customer.lineEdit().setPlaceholderText("Type customer name…")
         self.edt_contact = QLineEdit(); self.edt_contact.setPlaceholderText("Contact (phone)")
         self.btn_add_customer = QPushButton("Add Customer"); self.btn_add_customer.setEnabled(False)
+        self.lbl_customer_credit = QLabel("Customer Credit: Select a customer")
+        self.lbl_customer_credit.setStyleSheet("font-weight: bold; color: #666666;")
 
         # populate existing customers + completer + quick lookup by lower(name)
         self._customers_by_name = {}
@@ -108,6 +112,7 @@ class SaleForm(QDialog):
                 if c:
                     self.edt_contact.setText(c.contact_info or "")
         self.cmb_customer.currentIndexChanged.connect(lambda _=None: _fill_contact_from_sel())
+        self.cmb_customer.currentIndexChanged.connect(lambda _=None: self._update_customer_credit_display())
 
         # enable/disable "Add Customer" when new name + contact are provided
         def _update_add_customer_state():
@@ -148,6 +153,7 @@ class SaleForm(QDialog):
             if idx >= 0: self.cmb_customer.setCurrentIndex(idx)
             self.cmb_customer.blockSignals(False)
             self.btn_add_customer.setEnabled(False)
+            self._update_customer_credit_display()
 
         self.btn_add_customer.clicked.connect(_add_customer_now)
 
@@ -366,6 +372,7 @@ class SaleForm(QDialog):
         customer_info_layout = QFormLayout()
         customer_info_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         customer_info_layout.addRow("Customer*", self.cmb_customer)
+        customer_info_layout.addRow("", self.lbl_customer_credit)
         customer_info_layout.addRow("Contact", self.edt_contact)
         customer_info_layout.addRow("", self.btn_add_customer)
         customer_info_layout.addRow("Date*", self.date)
@@ -540,8 +547,37 @@ class SaleForm(QDialog):
                 self._sale_id = None
         else:
             self._sale_id = None
+        self._update_customer_credit_display()
 
     # --- helpers ---
+    def _update_customer_credit_display(self):
+        cid = self.cmb_customer.currentData()
+        if not cid:
+            self.lbl_customer_credit.setText("Customer Credit: Select a customer")
+            self.lbl_customer_credit.setStyleSheet("font-weight: bold; color: #666666;")
+            return
+        if self._get_customer_credit is None:
+            self.lbl_customer_credit.setText("Customer Credit: unavailable")
+            self.lbl_customer_credit.setStyleSheet("font-weight: bold; color: #666666;")
+            return
+        try:
+            balance = float(self._get_customer_credit(cid) or 0.0)
+        except Exception:
+            logging.exception("Error retrieving customer credit balance")
+            self.lbl_customer_credit.setText("Customer Credit: Error retrieving balance")
+            self.lbl_customer_credit.setStyleSheet("font-weight: bold; color: #cc0000;")
+            return
+
+        if balance > 0:
+            self.lbl_customer_credit.setText(f"Customer Credit: {fmt_money(balance)} (Available)")
+            self.lbl_customer_credit.setStyleSheet("font-weight: bold; color: #006600;")
+        elif balance < 0:
+            self.lbl_customer_credit.setText(f"Customer Credit: {fmt_money(abs(balance))} (Invalid)")
+            self.lbl_customer_credit.setStyleSheet("font-weight: bold; color: #cc0000;")
+        else:
+            self.lbl_customer_credit.setText("Customer Credit: 0.00")
+            self.lbl_customer_credit.setStyleSheet("font-weight: bold; color: #006600;")
+
     def _toggle_bank_fields(self, text: str):
         # Only relevant in sale mode
         if self.mode != "sale":

@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QMessageBox
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QTimer, QObject, QEvent
 import sqlite3, datetime, time
 from typing import Optional
@@ -18,7 +18,7 @@ from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...utils.ui_helpers import info
-from ...utils.helpers import today_str
+from ...utils.helpers import today_str, fmt_money
 from ...utils.invoice_preview import show_invoice_preview
 
 try:
@@ -461,6 +461,19 @@ class PurchaseController(BaseModule):
         except Exception:
             return 0.0
 
+    def _confirm_apply_vendor_credit(self, purchase_id: str, amount: float) -> bool:
+        answer = QMessageBox.question(
+            self.view,
+            "Apply Vendor Credit?",
+            (
+                f"Vendor credit of {fmt_money(amount)} is available.\n\n"
+                f"Apply it to purchase {purchase_id}?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
     def _latest_purchase_payment(self, purchase_id: str) -> dict | None:
         row = self.conn.execute(
             """
@@ -712,22 +725,21 @@ class PurchaseController(BaseModule):
             credit_bal = self._vendor_credit_balance(vendor_id)
             auto_apply_amount = min(credit_bal, remaining_after_manual)
             
-            if auto_apply_amount > _EPS:  # Apply if there's a meaningful amount available
+            if auto_apply_amount > _EPS and self._confirm_apply_vendor_credit(pid, auto_apply_amount):
                 try:
                     self.vadv.apply_credit_to_purchase(
                         vendor_id=vendor_id,
                         purchase_id=pid,
                         amount=auto_apply_amount,
                         date=p["date"],
-                        notes=f"Auto-applied vendor advance from available credit",
+                        notes="Applied vendor advance from available credit",
                         created_by=self._current_user_id(),
                     )
-                    _log.info("Auto-applied vendor credit for %s amount=%.4f", pid, auto_apply_amount)
+                    _log.info("Applied vendor credit for %s amount=%.4f", pid, auto_apply_amount)
                     self._recompute_header_totals_from_rows(pid)
                 except Exception as e:
                     if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
-                        _log.warning("Auto-apply skipped: %s", str(e))
-                        # It's okay to skip auto-application if it would exceed limits
+                        _log.warning("Vendor credit apply skipped: %s", str(e))
                     else:
                         raise
 
@@ -1082,20 +1094,24 @@ class PurchaseController(BaseModule):
             remaining = self._remaining_due_header(pid)
             auto_apply_amount = min(credit_bal, remaining)
 
-            if auto_apply_amount > _EPS and initial_manual_credit <= _EPS:
+            if (
+                auto_apply_amount > _EPS
+                and initial_manual_credit <= _EPS
+                and self._confirm_apply_vendor_credit(pid, auto_apply_amount)
+            ):
                 try:
                     self.vadv.apply_credit_to_purchase(
                         vendor_id=vendor_id,
                         purchase_id=pid,
                         amount=auto_apply_amount,
                         date=p["date"],
-                        notes=f"Auto-applied vendor advance from available credit (after edit)",
+                        notes="Applied vendor advance from available credit (after edit)",
                         created_by=self._current_user_id(),
                     )
-                    _log.info("Auto-applied vendor credit after edit for %s amount=%.4f", pid, auto_apply_amount)
+                    _log.info("Applied vendor credit after edit for %s amount=%.4f", pid, auto_apply_amount)
                 except Exception as e:
                     if OverapplyVendorAdvanceError and isinstance(e, OverapplyVendorAdvanceError):
-                        _log.warning("Auto-apply after edit skipped: %s", str(e))
+                        _log.warning("Vendor credit apply after edit skipped: %s", str(e))
                     else:
                         raise
 

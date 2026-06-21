@@ -125,3 +125,33 @@ def test_apply_credit_sale_search_matches_displayed_substrings():
     assert captured[3] == [rows[0]]
     assert captured[4] == [rows[0]]
     assert captured[5] == rows
+
+
+def test_create_sale_customer_credit_skip_does_not_apply(monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from inventory_management.database.repositories.customer_advances_repo import CustomerAdvancesRepo
+
+    controller = sales_controller.SalesController.__new__(sales_controller.SalesController)
+    controller.view = object()
+    controller.conn = object()
+    controller._fetch_sale_financials = lambda sale_id: {"remaining_due": 50.0}
+
+    monkeypatch.setattr(CustomerAdvancesRepo, "get_balance", lambda self, cid: 100.0)
+    monkeypatch.setattr(
+        CustomerAdvancesRepo,
+        "apply_credit_to_sale",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not apply")),
+    )
+    monkeypatch.setattr(
+        sales_controller.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.No,
+    )
+
+    applied = controller._maybe_apply_customer_credit_to_sale(
+        sale_id="SO-1",
+        customer_id=7,
+        date="2026-06-21",
+    )
+
+    assert applied == 0.0
