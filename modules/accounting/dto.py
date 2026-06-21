@@ -83,6 +83,24 @@ class PurchaseReturnTotals:
 
 
 @dataclass(frozen=True)
+class PurchaseReturnPayload:
+    purchase_id: int | str
+    date: str
+    created_by: int | None
+    lines: tuple[dict, ...]
+    notes: str | None = None
+    settlement: dict | None = None
+
+
+@dataclass(frozen=True)
+class PurchaseReturnResult:
+    purchase_id: int | str
+    transaction_ids: tuple[int, ...]
+    return_value: Decimal
+    settlement_amount: Decimal
+
+
+@dataclass(frozen=True)
 class PurchasePaymentStatus:
     purchase_id: int | str
     status: str
@@ -245,6 +263,10 @@ class PurchaseFinancials:
     returned_value: Decimal
     refunded_amount: Decimal
     outstanding: Decimal
+    total_amount: Decimal = Decimal("0")
+    return_credit_amount: Decimal = Decimal("0")
+    is_fully_paid: bool = False
+    remaining_refundable_amount: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)

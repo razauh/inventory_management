@@ -94,7 +94,7 @@ class PurchaseReturnForm(QDialog):
         self.vba_repo = vendor_bank_accounts_repo
         self.cba_repo = company_bank_accounts_repo
         self.purchases_repo = purchases_repo
-        self.accounting = AccountingService()
+        self.accounting = AccountingService(getattr(purchases_repo, "conn", None))
         self.order_discount = max(0.0, float(order_discount or 0.0))
         self._return_value_factor = 1.0
         self._refund_financials_loaded = False
@@ -814,19 +814,15 @@ class PurchaseReturnForm(QDialog):
             return
             
         try:
-            # Use the repository pattern to get purchase financials
-            if self.purchases_repo:
-                financials = self.purchases_repo.fetch_purchase_financials(self.purchase_id)
-                
+            if self.accounting.conn:
+                financials = self.accounting.get_purchase_financials(self.purchase_id)
                 if financials:
-                    total_calc = float(financials.get("calculated_total_amount", 0.0))
-                    paid_amount = float(financials.get("paid_amount", 0.0))
-                    advance_applied = float(financials.get("advance_payment_applied", 0.0))
+                    total_calc = float(financials.net_total)
+                    paid_amount = float(financials.paid_amount)
+                    advance_applied = float(financials.applied_credit)
                     self._refund_financials_loaded = True
-                    self._purchase_fully_paid = bool(financials.get("is_fully_paid", False))
-                    self._remaining_refundable_amount = float(
-                        financials.get("remaining_refundable_amount", 0.0)
-                    )
+                    self._purchase_fully_paid = financials.is_fully_paid
+                    self._remaining_refundable_amount = float(financials.remaining_refundable_amount)
                     
                     current_return_value = self._calculate_return_value()
                     original_remaining = total_calc - paid_amount - advance_applied
@@ -846,7 +842,7 @@ class PurchaseReturnForm(QDialog):
                     self.lbl_remaining.setText("Purchase financials not found")
                     self._refund_financials_loaded = False
             else:
-                self.lbl_remaining.setText("Purchases repository not available")
+                self.lbl_remaining.setText("Accounting service not available")
                 self._refund_financials_loaded = False
             self._refresh_refund_availability()
                 

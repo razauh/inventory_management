@@ -13,7 +13,9 @@ from .dto import (
     PurchasePaymentStatus,
     PurchasePaymentSummary,
     PurchaseReturnEffect,
+    PurchaseReturnPayload,
     PurchaseReturnPreviewPayload,
+    PurchaseReturnResult,
     PurchaseReturnTotals,
     PurchaseReturnValue,
     PurchaseTotalInputLine,
@@ -36,11 +38,13 @@ from .current_rules.purchase_rules import (
     get_purchase_payment_history as get_current_purchase_payment_history,
     get_purchase_payment_summary as get_current_purchase_payment_summary,
     get_purchase_payment_status as get_current_purchase_payment_status,
+    get_purchase_financials as get_current_purchase_financials,
     get_purchase_return_totals as get_current_purchase_return_totals,
     get_purchase_return_values as get_current_purchase_return_values,
     get_purchase_totals as get_current_purchase_totals,
     preview_purchase_return_effect as preview_current_purchase_return_effect,
     preview_purchase_total as preview_current_purchase_total,
+    record_purchase_return_event as record_current_purchase_return_event,
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
 from .current_rules.vendor_rules import (
@@ -156,8 +160,10 @@ class AccountingService:
             self._not_implemented("get_purchase_payment_history")
         return get_current_purchase_payment_history(self.conn, purchase_id)
 
-    def get_purchase_financials(self, purchase_id: int) -> PurchaseFinancials:
-        self._not_implemented("get_purchase_financials")
+    def get_purchase_financials(self, purchase_id: int | str) -> PurchaseFinancials:
+        if self.conn is None:
+            self._not_implemented("get_purchase_financials")
+        return get_current_purchase_financials(self.conn, purchase_id)
 
     def validate_vendor_payment_metadata(
         self,
@@ -317,8 +323,13 @@ class AccountingService:
     def record_customer_receipt_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_customer_receipt_event")
 
-    def record_purchase_return_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_purchase_return_event")
+    def record_purchase_return_event(
+        self,
+        payload: PurchaseReturnPayload,
+    ) -> PurchaseReturnResult:
+        if self.conn is None:
+            self._not_implemented("record_purchase_return_event")
+        return record_current_purchase_return_event(self.conn, payload)
 
     def record_sale_return_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_sale_return_event")

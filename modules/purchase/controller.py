@@ -18,7 +18,7 @@ from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
-from ..accounting import AccountingService, VendorPaymentPayload
+from ..accounting import AccountingService, PurchaseReturnPayload, VendorPaymentPayload
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str, fmt_money
 from ...utils.invoice_preview import show_invoice_preview
@@ -1175,13 +1175,15 @@ class PurchaseController(BaseModule):
         savepoint = "purchase_return_operation"
         try:
             self.conn.execute(f"SAVEPOINT {savepoint}")
-            self.repo.record_return(
-                pid=pid,
-                date=payload["date"],
-                created_by=self._current_user_id(),
-                lines=lines,
-                notes=payload.get("notes"),
-                settlement=settlement,
+            self.accounting.record_purchase_return_event(
+                PurchaseReturnPayload(
+                    purchase_id=pid,
+                    date=payload["date"],
+                    created_by=self._current_user_id(),
+                    lines=tuple(lines),
+                    notes=payload.get("notes"),
+                    settlement=settlement,
+                )
             )
             self._recompute_header_totals_from_rows(pid)
             self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")

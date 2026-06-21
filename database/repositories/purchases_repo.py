@@ -4,7 +4,7 @@ import sqlite3
 from typing import Iterable, Optional
 
 # For settlements
-from ...modules.accounting import AccountingService, SupplierRefundMetadata
+from ...modules.accounting import AccountingService, PurchaseReturnPayload
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.inventory_repo import rebuild_dirty_valuations
 
@@ -667,23 +667,16 @@ class PurchasesRepo:
         notes: Optional[str],
         settlement: Optional[dict] = None,
     ):
-        savepoint = "purchase_return_record"
-        self.conn.execute(f"SAVEPOINT {savepoint}")
-        try:
-            self._record_return(
-                pid=pid,
+        self.accounting.record_purchase_return_event(
+            PurchaseReturnPayload(
+                purchase_id=pid,
                 date=date,
                 created_by=created_by,
-                lines=lines,
+                lines=tuple(lines),
                 notes=notes,
                 settlement=settlement,
             )
-            self.update_header_totals(pid)
-            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-        except Exception:
-            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-            raise
+        )
 
     def _record_return(
         self,
@@ -706,6 +699,18 @@ class PurchasesRepo:
               * {'mode':'refund'/'refund_now', ...} => received vendor refund
               * {'mode':'credit_note'} => excess funded amount as vendor credit
         """
+        self.accounting.record_purchase_return_event(
+            PurchaseReturnPayload(
+                purchase_id=pid,
+                date=date,
+                created_by=created_by,
+                lines=tuple(lines),
+                notes=notes,
+                settlement=settlement,
+            )
+        )
+        return
+
         if not lines:
             return
 
@@ -1176,64 +1181,17 @@ class PurchasesRepo:
         """
         Fetch financial details for a purchase including calculated totals.
         """
-        sql = """
-        SELECT
-          p.total_amount,
-          COALESCE(p.paid_amount, 0.0)              AS paid_amount,
-          COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
-          COALESCE((
-            SELECT SUM(CAST(va.amount AS REAL))
-            FROM vendor_advances va
-            WHERE va.source_id = p.purchase_id
-              AND va.source_type = 'return_credit'
-          ), 0.0) AS return_credit_amount,
-          COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount,
-          COALESCE((
-            SELECT SUM(CAST(pr.amount AS REAL))
-            FROM purchase_refunds pr
-            WHERE pr.purchase_id = p.purchase_id
-              AND pr.clearing_state = 'cleared'
-          ), 0.0) AS prior_refunded_amount,
-          COALESCE((
-            SELECT SUM(CAST(pp.amount AS REAL))
-            FROM purchase_payments pp
-            WHERE pp.purchase_id = p.purchase_id
-              AND pp.clearing_state = 'cleared'
-          ), 0.0) AS cleared_direct_payments
-        FROM purchases p
-        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-        WHERE p.purchase_id = ?;
-        """
-        row = self.conn.execute(sql, (purchase_id,)).fetchone()
-        if not row:
-            return {
-                "total_amount": 0.0,
-                "paid_amount": 0.0,
-                "advance_payment_applied": 0.0,
-                "return_credit_amount": 0.0,
-                "calculated_total_amount": 0.0,
-                "remaining_due": 0.0,
-                "is_fully_paid": False,
-                "prior_refunded_amount": 0.0,
-                "remaining_refundable_amount": 0.0,
-            }
-        calc = float(row["calculated_total_amount"] or 0.0)
-        paid = float(row["paid_amount"] or 0.0)
-        adv = float(row["advance_payment_applied"] or 0.0)
-        return_credit = float(row["return_credit_amount"] or 0.0)
-        prior_refunded = float(row["prior_refunded_amount"] or 0.0)
-        cleared_direct = float(row["cleared_direct_payments"] or 0.0)
-        rem = max(0.0, calc - cleared_direct - adv)
+        financials = self.accounting.get_purchase_financials(purchase_id)
         return {
-            "total_amount": float(row["total_amount"] or 0.0),
-            "paid_amount": paid,
-            "advance_payment_applied": adv,
-            "return_credit_amount": return_credit,
-            "calculated_total_amount": calc,
-            "remaining_due": rem,
-            "is_fully_paid": rem <= 1e-9,
-            "prior_refunded_amount": prior_refunded,
-            "remaining_refundable_amount": max(0.0, cleared_direct - prior_refunded),
+            "total_amount": float(financials.total_amount),
+            "paid_amount": float(financials.paid_amount),
+            "advance_payment_applied": float(financials.applied_credit),
+            "return_credit_amount": float(financials.return_credit_amount),
+            "calculated_total_amount": float(financials.net_total),
+            "remaining_due": float(financials.outstanding),
+            "is_fully_paid": financials.is_fully_paid,
+            "prior_refunded_amount": float(financials.refunded_amount),
+            "remaining_refundable_amount": float(financials.remaining_refundable_amount),
         }
 
     def get_remaining_due_header(self, purchase_id: str) -> float:

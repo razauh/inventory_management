@@ -10,6 +10,7 @@ from modules.accounting import (
     JournalPreview,
     PartyLedgerSummary,
     PurchaseOutstanding,
+    PurchaseReturnPayload,
     SaleOutstanding,
     VendorBalance,
 )
@@ -34,7 +35,17 @@ def test_accounting_package_imports_and_service_instantiates():
         ("record_sale_event", ()),
         ("record_vendor_payment_event", ()),
         ("record_customer_receipt_event", ()),
-        ("record_purchase_return_event", ()),
+        (
+            "record_purchase_return_event",
+            (
+                PurchaseReturnPayload(
+                    purchase_id=1,
+                    date="2026-06-21",
+                    created_by=None,
+                    lines=(),
+                ),
+            ),
+        ),
         ("record_sale_return_event", ()),
         ("record_expense_event", ()),
         ("record_stock_adjustment_event", ()),

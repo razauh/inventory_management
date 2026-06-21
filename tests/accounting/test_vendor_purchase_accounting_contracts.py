@@ -11,8 +11,10 @@ from modules.accounting import (
     PurchasePaymentRow,
     PurchasePaymentSummary,
     PurchaseReturnEffect,
+    PurchaseReturnPayload,
     PurchaseReturnPreviewLine,
     PurchaseReturnPreviewPayload,
+    PurchaseReturnResult,
     PurchaseReturnTotals,
     PurchaseReturnValue,
     PurchaseTotalInputLine,
@@ -44,6 +46,7 @@ VENDOR_PURCHASE_METHODS = [
     ("get_purchase_return_values", ("purchase_id",)),
     ("get_purchase_return_totals", ("purchase_id",)),
     ("get_purchase_financials", ("purchase_id",)),
+    ("record_purchase_return_event", ("payload",)),
     ("validate_vendor_payment_metadata", ("metadata",)),
     ("validate_supplier_refund_metadata", ("metadata",)),
     ("preview_vendor_payment_effect", ("payload",)),
@@ -104,6 +107,20 @@ def test_vendor_purchase_service_contract_methods_exist():
         return_value=Decimal("9.00"),
     )
     assert PurchaseReturnTotals(qty=Decimal("1"), value=Decimal("9.00"))
+    assert PurchaseReturnPayload(
+        purchase_id=1,
+        date="2026-06-21",
+        created_by=None,
+        lines=({"item_id": 4, "qty_return": 1},),
+        notes=None,
+        settlement={"mode": "credit_note"},
+    )
+    assert PurchaseReturnResult(
+        purchase_id=1,
+        transaction_ids=(9,),
+        return_value=Decimal("9.00"),
+        settlement_amount=Decimal("9.00"),
+    )
     assert PurchasePaymentStatus(
         purchase_id=1,
         status="partial",
@@ -216,14 +233,8 @@ def test_vendor_purchase_service_contract_methods_exist():
         assert parameters == ("self", *expected_parameters)
 
 
-@pytest.mark.parametrize(
-    ("method_name", "args"),
-    [
-        ("get_purchase_financials", (1,)),
-    ],
-)
-def test_unmigrated_vendor_purchase_methods_raise_not_implemented(method_name, args):
+def test_unmigrated_vendor_purchase_methods_raise_not_implemented():
     service = AccountingService()
 
     with pytest.raises(AccountingNotImplementedError):
-        getattr(service, method_name)(*args)
+        service.get_purchase_financials(1)
