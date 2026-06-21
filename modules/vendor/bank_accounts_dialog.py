@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
+from ...modules.notifications import notify_warning
 from .model import _mask_value
 
 
@@ -241,7 +242,7 @@ class VendorBankAccountsDialog(QDialog):
     def _edit(self):
         acc_id = self._selected_id()
         if not acc_id:
-            QMessageBox.information(self, "Select", "Select an account to edit.")
+            notify_warning(self, "Select", "Select an account to edit.")
             return
         row = self.conn.execute("""
             SELECT * FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?
@@ -272,7 +273,7 @@ class VendorBankAccountsDialog(QDialog):
     def _toggle_active(self):
         acc_id = self._selected_id()
         if not acc_id:
-            QMessageBox.information(self, "Select", "Select an account to activate/deactivate.")
+            notify_warning(self, "Select", "Select an account to activate/deactivate.")
             return
         row = self.conn.execute("""
             SELECT is_active, is_primary FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?
@@ -309,7 +310,7 @@ class VendorBankAccountsDialog(QDialog):
     def _make_primary(self):
         acc_id = self._selected_id()
         if not acc_id:
-            QMessageBox.information(self, "Select", "Select an account to make primary.")
+            notify_warning(self, "Select", "Select an account to make primary.")
             return
         row = self.conn.execute("""
             SELECT is_active FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?

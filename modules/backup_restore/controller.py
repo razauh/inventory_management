@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 # Lazy imports within methods keep startup light, but we import the Qt types above for typing/usage.
+from ..notifications import notify_info, notify_success
 
 
 # ----------------------------
@@ -409,7 +410,7 @@ class BackupRestoreController(QObject):
         return self._active_job is not None
 
     def _show_active_job_message(self) -> None:
-        QMessageBox.information(
+        notify_info(
             self._widget,
             "Backup & Restore Busy",
             "A backup or restore operation is already running.",
@@ -601,7 +602,7 @@ class BackupRestoreController(QObject):
             if ok:
                 if backup_path:
                     self._save_last_backup_path(Path(backup_path))
-                QMessageBox.information(
+                notify_success(
                     self._widget,
                     "Purge Completed",
                     f"Data purge completed successfully."

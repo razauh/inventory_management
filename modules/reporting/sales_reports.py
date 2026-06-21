@@ -33,6 +33,7 @@ from ...database.repositories.reporting_repo import ReportingRepo
 from .csv_export import safe_csv_row
 from .date_range import validate_date_range
 from .large_results import maybe_resize_columns
+from ...modules.notifications import notify_info
 
 from PySide6.QtCore import QAbstractTableModel
 
@@ -554,7 +555,7 @@ class SalesReportsTab(QWidget):
     def _export_pdf(self) -> None:
         tv = self._active_table()
         if not tv:
-            QMessageBox.information(self, "Export PDF", "No table to export.")
+            notify_info(self, "Export PDF", "No table to export.")
             return
         from PySide6.QtGui import QTextDocument
         from PySide6.QtPrintSupport import QPrinter
@@ -592,7 +593,7 @@ class SalesReportsTab(QWidget):
             return
         tv = self._active_table()
         if not tv:
-            QMessageBox.information(self, "Export CSV", "No table to export.")
+            notify_info(self, "Export CSV", "No table to export.")
             return
         from PySide6.QtWidgets import QFileDialog
         import csv

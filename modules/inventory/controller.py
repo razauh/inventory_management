@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QMessageBox,
     QWidget,
     QTabWidget,
     QVBoxLayout,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
 from ..base_module import BaseModule
 
 from ...database.repositories.inventory_repo import InventoryRepo
+from ...modules.notifications import notify_error, notify_success, notify_warning
 from ...utils.product_lookup import DEFAULT_PRODUCT_LOOKUP_LIMIT, product_ids_by_exact_name, search_products
 from .model import LowInventoryTableModel, TransactionsTableModel
 from .view import InventoryView
@@ -244,23 +244,23 @@ class InventoryController(BaseModule):
         notes = self._adjustment_view.notes_text
 
         if product_id is None:
-            QMessageBox.warning(self._root, "Record Adjustment", "Pick a product first.")
+            notify_warning(self._root, "Record Adjustment", "Pick a product first.")
             return
         if uom_id is None:
-            QMessageBox.warning(self._root, "Record Adjustment", "Pick a UoM first.")
+            notify_warning(self._root, "Record Adjustment", "Pick a UoM first.")
             return
         if not qty_text:
-            QMessageBox.warning(self._root, "Record Adjustment", "Enter an adjustment quantity.")
+            notify_warning(self._root, "Record Adjustment", "Enter an adjustment quantity.")
             return
 
         try:
             quantity = float(qty_text)
         except Exception:
-            QMessageBox.warning(self._root, "Record Adjustment", "Quantity must be numeric.")
+            notify_warning(self._root, "Record Adjustment", "Quantity must be numeric.")
             return
 
         if not date_text:
-            QMessageBox.warning(self._root, "Record Adjustment", "Enter a date.")
+            notify_warning(self._root, "Record Adjustment", "Enter a date.")
             return
 
         try:
@@ -273,13 +273,13 @@ class InventoryController(BaseModule):
                 created_by=self.user.get("user_id") if isinstance(self.user, dict) else None,
             )
         except Exception as e:
-            QMessageBox.warning(self._root, "Record Adjustment", f"Failed to record adjustment:\n{e}")
+            notify_error(self._root, "Record Adjustment", f"Failed to record adjustment:\n{e}")
             return
 
         self._reload_adjustment_recent()
         self._reload_low_inventory()
         self._adjustment_view.reset_inputs()
-        QMessageBox.information(
+        notify_success(
             self._root,
             "Record Adjustment",
             f"Adjustment recorded. Transaction ID: {tx_id}.",

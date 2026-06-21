@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...database.repositories.expenses_repo import DomainError
+from ...modules.notifications import notify_warning
 
 
 class CategoryDialog(QDialog):
@@ -79,7 +80,7 @@ class CategoryDialog(QDialog):
     def _rename(self):
         cat_id = self._selected_id()
         if cat_id is None:
-            QMessageBox.information(self, "Select", "Pick a category row to rename.")
+            notify_warning(self, "Select", "Pick a category row to rename.")
             return
         name = self.edt_name.text().strip()
         if not name:
@@ -103,7 +104,7 @@ class CategoryDialog(QDialog):
     def _delete(self):
         cat_id = self._selected_id()
         if cat_id is None:
-            QMessageBox.information(self, "Select", "Pick a category row to delete.")
+            notify_warning(self, "Select", "Pick a category row to delete.")
             return
         try:
             self.repo.delete_category(cat_id)

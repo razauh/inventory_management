@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from modules.notifications import notify_info
+
 
 class InvoicePreviewDialog(QDialog):
     def __init__(self, pdf_path: str | Path, *, title: str, parent=None):
@@ -79,7 +81,7 @@ class InvoicePreviewDialog(QDialog):
 
     def _open_pdf(self) -> None:
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.pdf_path))):
-            QMessageBox.information(self, "Open PDF", f"PDF saved at:\n{self.pdf_path}")
+            notify_info(self, "Open PDF", f"PDF saved at:\n{self.pdf_path}")
 
     def _print_pdf(self) -> None:
         page_count = self.document.pageCount()

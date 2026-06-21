@@ -29,6 +29,7 @@ except Exception:  # pragma: no cover
 
 # Reporting repo
 from ...database.repositories.reporting_repo import ReportingRepo
+from ...modules.notifications import notify_success
 from .csv_export import safe_csv_row
 from .date_range import validate_date_range
 from .large_results import maybe_resize_columns
@@ -671,7 +672,7 @@ class ComprehensivePaymentReportsTab(QWidget):
                         row.get("notes", "")
                     ]))
             
-            QMessageBox.information(self, "Export Complete", f"Data exported to {fn}")
+            notify_success(self, "Export Complete", f"Data exported to {fn}")
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", f"Could not export data:\n{e}")
 
