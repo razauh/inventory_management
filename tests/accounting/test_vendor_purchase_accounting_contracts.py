@@ -43,6 +43,8 @@ VENDOR_PURCHASE_METHODS = [
     ("update_vendor_payment_state", ("payment_id", "clearing_state", "cleared_date", "notes")),
     ("record_vendor_advance_event", ("payload",)),
     ("get_vendor_credit_ledger", ("vendor_id",)),
+    ("preview_vendor_advance_allocation", ("vendor_id", "amount")),
+    ("record_vendor_advance_with_auto_apply", ("payload",)),
     ("get_vendor_advance_balance", ("vendor_id",)),
     ("get_vendor_advance_balances", ("vendor_ids",)),
     ("get_vendor_open_purchases", ("vendor_id",)),

@@ -377,41 +377,13 @@ class VendorController(BaseModule):
         if is_primary:
             text = f"{text} (Primary)"
         return text
+
     def _build_grant_credit_allocation_preview(self, vendor_id: int, amount: float) -> dict:
-        remaining_credit = max(0.0, float(amount or 0.0))
-        open_purchases = sorted(
-            self._open_purchases_for_vendor(vendor_id),
-            key=lambda purchase: (
-                str(purchase["date"] or ""),
-                str(purchase["purchase_id"] or ""),
-            ),
+        return self.accounting.preview_vendor_advance_allocation(
+            vendor_id,
+            Decimal(str(amount or 0.0)),
         )
-        rows = []
-        for purchase in open_purchases:
-            if remaining_credit <= _EPS:
-                break
-            purchase_id = purchase["purchase_id"]
-            remaining_due = self._remaining_due_for_purchase(purchase_id)
-            if remaining_due <= _EPS:
-                continue
-            amount_to_apply = min(remaining_due, remaining_credit)
-            if amount_to_apply <= _EPS:
-                continue
-            rows.append(
-                {
-                    "purchase_id": purchase_id,
-                    "date": purchase["date"],
-                    "remaining_due": remaining_due,
-                    "amount_to_apply": amount_to_apply,
-                    "remaining_due_after": max(0.0, remaining_due - amount_to_apply),
-                }
-            )
-            remaining_credit -= amount_to_apply
-        return {
-            "total_credit": max(0.0, float(amount or 0.0)),
-            "rows": rows,
-            "remaining_credit": max(0.0, remaining_credit),
-        }
+
     def _grant_credit_and_auto_apply(
         self,
         vendor_id: int,
@@ -419,48 +391,17 @@ class VendorController(BaseModule):
         grant_date: str,
         memo: Optional[str],
     ) -> dict:
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
-            preview = self._build_grant_credit_allocation_preview(vendor_id, amount)
-            result = self.accounting.record_vendor_advance_event(
-                VendorAdvancePayload(
-                    vendor_id=vendor_id,
-                    amount=Decimal(str(amount)),
-                    date=grant_date,
-                    notes=memo,
-                    created_by=None,
-                    source_id=None,
-                )
+        return self.accounting.record_vendor_advance_with_auto_apply(
+            VendorAdvancePayload(
+                vendor_id=vendor_id,
+                amount=Decimal(str(amount)),
+                date=grant_date,
+                notes=memo,
+                created_by=None,
+                source_id=None,
             )
-            tx_id = result.tx_id
+        )
 
-            for row in preview["rows"]:
-                self.vadv.apply_credit_to_purchase(
-                    vendor_id=vendor_id,
-                    purchase_id=row["purchase_id"],
-                    amount=row["amount_to_apply"],
-                    date=grant_date,
-                    notes=f"Auto-applied from vendor advance (Tx #{tx_id})",
-                    created_by=None,
-                )
-                _log.info(
-                    f"Auto-applied {row['amount_to_apply']:.2f} of vendor advance "
-                    f"to purchase {row['purchase_id']}"
-                )
-
-            self.conn.execute("COMMIT")
-            return {
-                "tx_id": tx_id,
-                "applied_amount": amount - preview["remaining_credit"],
-                "remaining_credit": preview["remaining_credit"],
-                "rows": preview["rows"],
-            }
-        except Exception:
-            try:
-                self.conn.execute("ROLLBACK")
-            except Exception:
-                pass
-            raise
     def _current_vendor_id(self):
         try:
             vid = self._selected_id()

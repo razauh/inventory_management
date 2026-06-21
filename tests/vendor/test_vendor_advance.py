@@ -1,6 +1,7 @@
 import sqlite3
+from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -33,18 +34,6 @@ def make_controller():
     controller._reload = MagicMock()
     controller.accounting = MagicMock()
     return controller
-
-
-def open_purchase(purchase_id: str, date: str, balance: float = 0.0):
-    return SimpleNamespace(
-        purchase_id=purchase_id,
-        purchase_date=date,
-        calculated_total_amount=balance,
-        total_amount=balance,
-        paid_amount=0.0,
-        advance_payment_applied=0.0,
-        outstanding=balance,
-    )
 
 
 @pytest.fixture()
@@ -436,100 +425,108 @@ def test_apply_advance_rolls_back_when_credit_cannot_be_recorded():
 
 def test_grant_credit_preview_uses_fifo_purchase_date_then_purchase_id():
     controller = make_controller()
-    controller.accounting.get_vendor_open_purchases.return_value = [
-        open_purchase("P-103", "2026-01-10"),
-        open_purchase("P-102", "2026-01-05"),
-        open_purchase("P-101", "2026-01-01"),
-        open_purchase("P-100", "2026-01-01"),
-    ]
-    dues = {
-        "P-100": 100.0,
-        "P-101": 300.0,
-        "P-102": 500.0,
-        "P-103": 400.0,
+    expected = {
+        "total_credit": 700.0,
+        "rows": [
+            {"purchase_id": "P-100", "amount_to_apply": 100.0},
+            {"purchase_id": "P-101", "amount_to_apply": 300.0},
+            {"purchase_id": "P-102", "amount_to_apply": 300.0},
+        ],
+        "remaining_credit": 0.0,
     }
-    controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
+    controller.accounting.preview_vendor_advance_allocation.return_value = expected
 
     preview = controller._build_grant_credit_allocation_preview(7, 700.0)
 
-    assert [row["purchase_id"] for row in preview["rows"]] == ["P-100", "P-101", "P-102"]
-    assert [row["amount_to_apply"] for row in preview["rows"]] == pytest.approx([100.0, 300.0, 300.0])
+    assert preview == expected
+    controller.accounting.preview_vendor_advance_allocation.assert_called_once_with(
+        7,
+        Decimal("700.0"),
+    )
+    assert [row["purchase_id"] for row in preview["rows"]] == [
+        "P-100",
+        "P-101",
+        "P-102",
+    ]
+    assert [row["amount_to_apply"] for row in preview["rows"]] == pytest.approx(
+        [100.0, 300.0, 300.0]
+    )
     assert preview["remaining_credit"] == pytest.approx(0.0)
 
 
 def test_grant_credit_preview_leaves_excess_credit_available():
     controller = make_controller()
-    controller.accounting.get_vendor_open_purchases.return_value = [
-        open_purchase("P-101", "2026-01-01"),
-        open_purchase("P-102", "2026-01-05"),
-    ]
-    dues = {"P-101": 300.0, "P-102": 500.0}
-    controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
+    expected = {
+        "total_credit": 1000.0,
+        "rows": [
+            {"purchase_id": "P-101", "amount_to_apply": 300.0},
+            {"purchase_id": "P-102", "amount_to_apply": 500.0},
+        ],
+        "remaining_credit": 200.0,
+    }
+    controller.accounting.preview_vendor_advance_allocation.return_value = expected
 
     preview = controller._build_grant_credit_allocation_preview(7, 1000.0)
 
-    assert [row["amount_to_apply"] for row in preview["rows"]] == pytest.approx([300.0, 500.0])
+    assert preview == expected
+    controller.accounting.preview_vendor_advance_allocation.assert_called_once_with(
+        7,
+        Decimal("1000.0"),
+    )
+    assert [row["amount_to_apply"] for row in preview["rows"]] == pytest.approx(
+        [300.0, 500.0]
+    )
     assert preview["remaining_credit"] == pytest.approx(200.0)
 
 
 def test_grant_credit_and_auto_apply_saves_in_preview_order_atomically():
     controller = make_controller()
-    controller.accounting.get_vendor_open_purchases.return_value = [
-        open_purchase("P-102", "2026-01-05"),
-        open_purchase("P-101", "2026-01-01"),
-    ]
-    dues = {"P-101": 300.0, "P-102": 500.0}
-    controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
-    controller.accounting.record_vendor_advance_event.return_value = SimpleNamespace(tx_id=42)
+    expected = {
+        "tx_id": 42,
+        "applied_amount": 700.0,
+        "remaining_credit": 0.0,
+        "rows": [
+            {"purchase_id": "P-101", "amount_to_apply": 300.0},
+            {"purchase_id": "P-102", "amount_to_apply": 400.0},
+        ],
+    }
+    controller.accounting.record_vendor_advance_with_auto_apply.return_value = expected
 
-    result = controller._grant_credit_and_auto_apply(7, 700.0, "2026-06-09", "Credit memo")
+    result = controller._grant_credit_and_auto_apply(
+        7,
+        700.0,
+        "2026-06-09",
+        "Credit memo",
+    )
 
-    assert [statement for statement, _ in controller.conn.statements] == [
-        "BEGIN IMMEDIATE",
-        "COMMIT",
-    ]
-    controller.accounting.record_vendor_advance_event.assert_called_once()
-    event_payload = controller.accounting.record_vendor_advance_event.call_args.args[0]
+    assert result == expected
+    controller.accounting.record_vendor_advance_with_auto_apply.assert_called_once()
+    event_payload = (
+        controller.accounting.record_vendor_advance_with_auto_apply.call_args.args[0]
+    )
     assert event_payload.vendor_id == 7
     assert float(event_payload.amount) == pytest.approx(700.0)
     assert event_payload.date == "2026-06-09"
     assert event_payload.notes == "Credit memo"
     assert event_payload.source_id is None
-    assert controller.vadv.method_calls == [
-        call.apply_credit_to_purchase(
-            vendor_id=7,
-            purchase_id="P-101",
-            amount=300.0,
-            date="2026-06-09",
-            notes="Auto-applied from vendor advance (Tx #42)",
-            created_by=None,
-        ),
-        call.apply_credit_to_purchase(
-            vendor_id=7,
-            purchase_id="P-102",
-            amount=400.0,
-            date="2026-06-09",
-            notes="Auto-applied from vendor advance (Tx #42)",
-            created_by=None,
-        ),
-    ]
     assert result["applied_amount"] == pytest.approx(700.0)
     assert result["remaining_credit"] == pytest.approx(0.0)
 
 
 def test_grant_credit_and_auto_apply_rolls_back_when_application_fails():
     controller = make_controller()
-    controller.accounting.get_vendor_open_purchases.return_value = [
-        open_purchase("P-101", "2026-01-01"),
-    ]
-    controller._remaining_due_for_purchase = MagicMock(return_value=300.0)
-    controller.accounting.record_vendor_advance_event.return_value = SimpleNamespace(tx_id=42)
-    controller.vadv.apply_credit_to_purchase.side_effect = ValueError("cannot apply")
+    controller.accounting.record_vendor_advance_with_auto_apply.side_effect = ValueError(
+        "cannot apply"
+    )
 
     with pytest.raises(ValueError, match="cannot apply"):
         controller._grant_credit_and_auto_apply(7, 100.0, "2026-06-09", None)
 
-    assert [statement for statement, _ in controller.conn.statements] == [
-        "BEGIN IMMEDIATE",
-        "ROLLBACK",
-    ]
+    controller.accounting.record_vendor_advance_with_auto_apply.assert_called_once()
+    event_payload = (
+        controller.accounting.record_vendor_advance_with_auto_apply.call_args.args[0]
+    )
+    assert event_payload.vendor_id == 7
+    assert float(event_payload.amount) == pytest.approx(100.0)
+    assert event_payload.date == "2026-06-09"
+    assert event_payload.notes is None

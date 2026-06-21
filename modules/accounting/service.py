@@ -44,7 +44,9 @@ from .current_rules.vendor_rules import (
     get_vendor_purchase_totals as get_current_vendor_purchase_totals,
     get_vendor_statement as get_current_vendor_statement,
     list_vendor_purchases as list_current_vendor_purchases,
+    preview_vendor_advance_allocation as preview_current_vendor_advance_allocation,
     preview_vendor_payment_effect as preview_current_vendor_payment_effect,
+    record_vendor_advance_with_auto_apply as record_current_vendor_advance_with_auto_apply,
     record_vendor_payment_event as record_current_vendor_payment_event,
     record_vendor_advance_event as record_current_vendor_advance_event,
     update_vendor_payment_state as update_current_vendor_payment_state,
@@ -265,6 +267,23 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("get_vendor_credit_ledger")
         return get_current_vendor_credit_ledger(self.conn, vendor_id)
+
+    def preview_vendor_advance_allocation(
+        self,
+        vendor_id: int,
+        amount: Decimal,
+    ) -> dict:
+        if self.conn is None:
+            self._not_implemented("preview_vendor_advance_allocation")
+        return preview_current_vendor_advance_allocation(self.conn, vendor_id, amount)
+
+    def record_vendor_advance_with_auto_apply(
+        self,
+        payload: VendorAdvancePayload,
+    ) -> dict:
+        if self.conn is None:
+            self._not_implemented("record_vendor_advance_with_auto_apply")
+        return record_current_vendor_advance_with_auto_apply(self.conn, payload)
 
     def record_customer_receipt_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_customer_receipt_event")

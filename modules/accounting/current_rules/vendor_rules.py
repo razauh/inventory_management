@@ -942,3 +942,108 @@ def get_vendor_credit_ledger(
         )
         for row in rows
     )
+
+
+def preview_vendor_advance_allocation(
+    conn: Connection,
+    vendor_id: int,
+    amount: Decimal,
+) -> dict:
+    remaining_credit = max(Decimal("0"), amount)
+    open_purchases = sorted(
+        get_vendor_open_purchases(conn, vendor_id),
+        key=lambda purchase: (
+            str(purchase.purchase_date or ""),
+            str(purchase.purchase_id or ""),
+        ),
+    )
+    rows: list[dict] = []
+    for purchase in open_purchases:
+        if remaining_credit <= Decimal("0.000000001"):
+            break
+        remaining_due = max(Decimal("0"), purchase.outstanding)
+        if remaining_due <= Decimal("0.000000001"):
+            continue
+        amount_to_apply = min(remaining_due, remaining_credit)
+        if amount_to_apply <= Decimal("0.000000001"):
+            continue
+        rows.append(
+            {
+                "purchase_id": purchase.purchase_id,
+                "date": purchase.purchase_date,
+                "remaining_due": float(remaining_due),
+                "amount_to_apply": float(amount_to_apply),
+                "remaining_due_after": float(
+                    max(Decimal("0"), remaining_due - amount_to_apply)
+                ),
+            }
+        )
+        remaining_credit -= amount_to_apply
+    return {
+        "total_credit": float(max(Decimal("0"), amount)),
+        "rows": rows,
+        "remaining_credit": float(max(Decimal("0"), remaining_credit)),
+    }
+
+
+def _apply_vendor_credit_to_purchase(
+    conn: Connection,
+    *,
+    vendor_id: int,
+    purchase_id: int | str,
+    amount: float,
+    date: str,
+    notes: str | None,
+    created_by: int | None,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO vendor_advances (
+            vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+        )
+        VALUES (?, ?, ?, 'applied_to_purchase', ?, ?, ?)
+        """,
+        (vendor_id, date, -abs(float(amount)), purchase_id, notes, created_by),
+    )
+    return int(cur.lastrowid)
+
+
+def record_vendor_advance_with_auto_apply(
+    conn: Connection,
+    payload: VendorAdvancePayload,
+) -> dict:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        preview = preview_vendor_advance_allocation(
+            conn,
+            payload.vendor_id,
+            payload.amount,
+        )
+        result = record_vendor_advance_event(conn, payload)
+        for row in preview["rows"]:
+            _apply_vendor_credit_to_purchase(
+                conn,
+                vendor_id=payload.vendor_id,
+                purchase_id=row["purchase_id"],
+                amount=row["amount_to_apply"],
+                date=payload.date,
+                notes=f"Auto-applied from vendor advance (Tx #{result.tx_id})",
+                created_by=payload.created_by,
+            )
+            _log.info(
+                f"Auto-applied {row['amount_to_apply']:.2f} of vendor advance "
+                f"to purchase {row['purchase_id']}"
+            )
+        conn.execute("COMMIT")
+        return {
+            "tx_id": result.tx_id,
+            "applied_amount": float(payload.amount) - preview["remaining_credit"],
+            "remaining_credit": preview["remaining_credit"],
+            "rows": preview["rows"],
+        }
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
