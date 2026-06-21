@@ -26,6 +26,64 @@ class PurchaseOutstanding:
 
 
 @dataclass(frozen=True)
+class PurchaseTotals:
+    purchase_id: int
+    gross_total: Decimal
+    order_discount: Decimal
+    returned_value: Decimal
+    net_total: Decimal
+
+
+@dataclass(frozen=True)
+class PurchasePaymentStatus:
+    purchase_id: int
+    status: str
+    paid_amount: Decimal
+    applied_credit: Decimal
+    remaining_due: Decimal
+
+
+@dataclass(frozen=True)
+class PurchaseFinancials:
+    purchase_id: int
+    net_total: Decimal
+    paid_amount: Decimal
+    applied_credit: Decimal
+    returned_value: Decimal
+    refunded_amount: Decimal
+    outstanding: Decimal
+
+
+@dataclass(frozen=True)
+class VendorOpenPurchase:
+    purchase_id: int
+    vendor_id: int
+    purchase_date: str | None
+    reference: str | None
+    net_total: Decimal
+    outstanding: Decimal
+
+
+@dataclass(frozen=True)
+class VendorStatementEntry:
+    entry_date: str | None
+    description: str
+    debit: Decimal
+    credit: Decimal
+    balance: Decimal
+
+
+@dataclass(frozen=True)
+class VendorStatement:
+    vendor_id: int
+    start_date: str | None
+    end_date: str | None
+    opening_balance: Decimal
+    closing_balance: Decimal
+    entries: tuple[VendorStatementEntry, ...] = ()
+
+
+@dataclass(frozen=True)
 class SaleOutstanding:
     sale_id: int
     outstanding: Decimal
