@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...utils.validators import non_empty
+from ...utils import ui_helpers as uih
 
 
 class CustomerForm(QDialog):
@@ -125,7 +126,7 @@ class CustomerForm(QDialog):
             current_id = self._initial.get("customer_id")
             try:
                 if self._dup_check(name, current_id):
-                    QMessageBox.warning(
+                    uih.info(
                         self,
                         "Possible Duplicate",
                         (

@@ -12,6 +12,7 @@ from jinja2 import Template
 from weasyprint import HTML
 from importlib import resources as importlib_resources
 from ...utils.invoice_preview import show_invoice_preview
+from ...utils.ui_helpers import info
 
 try:
     # Per project standard: PySide6
@@ -24,7 +25,6 @@ try:
         QDialogButtonBox,
         QHeaderView,
         QLabel,
-        QMessageBox,
         QTabWidget,
         QTableView,
         QVBoxLayout,
@@ -229,7 +229,7 @@ class _CustomerHistoryDialog(QDialog):
             ).joinpath("customer_history_table.html").read_text(encoding="utf-8")
         except (FileNotFoundError, OSError, ModuleNotFoundError) as e:
             _log.error("Failed to load customer history template: %s", e, exc_info=True)
-            QMessageBox.warning(self, _t("Cannot Print"), _t("The customer history print template could not be loaded."))
+            info(self, _t("Cannot Print"), _t("The customer history print template could not be loaded."))
             return
 
         template = Template(tpl_str, autoescape=True)
@@ -324,14 +324,14 @@ class _CustomerHistoryDialog(QDialog):
             common = ""
         if common != real_pdf_dir:
             _log.error("Refusing to open customer history PDF outside temp dir: %s", real_file_path)
-            QMessageBox.warning(self, _t("Cannot Print"), _t("The customer history output path was rejected."))
+            info(self, _t("Cannot Print"), _t("The customer history output path was rejected."))
             return
 
         try:
             HTML(string=html).write_pdf(file_path)
         except Exception as e:
             _log.error("Failed to render customer history PDF to %s: %s", file_path, e, exc_info=True)
-            QMessageBox.warning(self, _t("Cannot Print"), _t("The customer history PDF could not be created."))
+            info(self, _t("Cannot Print"), _t("The customer history PDF could not be created."))
             return
 
         show_invoice_preview(self, real_file_path, f"Customer History {self._customer_id}")

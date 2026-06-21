@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...modules.notifications import notify_warning
+from ...utils import ui_helpers as uih
 from .model import _mask_value
 
 
@@ -248,7 +249,7 @@ class VendorBankAccountsDialog(QDialog):
             SELECT * FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?
         """, (acc_id, self.vendor_id)).fetchone()
         if not row:
-            QMessageBox.warning(self, "Not found", "Account not found.")
+            uih.info(self, "Not found", "Account not found.")
             return
 
         init = {
@@ -316,7 +317,7 @@ class VendorBankAccountsDialog(QDialog):
             SELECT is_active FROM vendor_bank_accounts WHERE vendor_bank_account_id=? AND vendor_id=?
         """, (acc_id, self.vendor_id)).fetchone()
         if not row:
-            QMessageBox.warning(self, "Not found", "Account not found.")
+            uih.info(self, "Not found", "Account not found.")
             return
         if not int(row["is_active"]):
             QMessageBox.warning(self, "Inactive", "Activate this account before making it primary.")

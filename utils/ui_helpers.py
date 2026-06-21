@@ -36,12 +36,13 @@ _TOAST_WARNING_TITLES = {
     "No selection",
     "Nothing to export",
     "Nothing to pay",
+    "Possible Duplicate",
     "Print",
     "Select",
     "Unavailable",
 }
 _TOAST_INFO_TITLES = {"Info"}
-_TOAST_ERROR_TITLES = {"Error"}
+_TOAST_ERROR_TITLES = {"Cannot Print", "Error"}
 
 
 def info(parent: QWidget, title: str, text: str):
