@@ -28,21 +28,25 @@ _SUCCESS_TITLES = {
 }
 _TOAST_WARNING_TITLES = {
     "Ambiguous product",
+    "Apply Credit UI not available",
     "Duplicate product names",
     "History unavailable",
     "Invalid date range",
     "Not available",
+    "Not a quotation",
     "Not found",
     "No selection",
     "Nothing to export",
     "Nothing to pay",
     "Possible Duplicate",
     "Print",
+    "Return unavailable",
     "Select",
     "Unavailable",
+    "WeasyPrint Not Available",
 }
 _TOAST_INFO_TITLES = {"Info"}
-_TOAST_ERROR_TITLES = {"Cannot Print", "Error"}
+_TOAST_ERROR_TITLES = {"Cannot Print", "Error", "Totals"}
 
 
 def info(parent: QWidget, title: str, text: str):
