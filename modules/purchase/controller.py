@@ -19,6 +19,7 @@ from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str
+from ...utils.invoice_preview import show_invoice_preview
 
 try:
     from ...database.repositories.vendor_advances_repo import OverapplyVendorAdvanceError
@@ -769,8 +770,6 @@ class PurchaseController(BaseModule):
         try:
             import os
             import tempfile
-            import subprocess
-            import sys
             import getpass
             from weasyprint import HTML, CSS
 
@@ -817,22 +816,11 @@ class PurchaseController(BaseModule):
             html_doc = HTML(string=html_content)
             html_doc.write_pdf(file_path, stylesheets=[custom_css])
 
-            # Open the PDF in default PDF viewer (user can print or save)
+            # Show the user a preview with explicit Print and Save PDF actions.
             if not os.path.exists(file_path):
                 info(self.view, "Print", f"PDF could not be found at: {file_path}")
                 return
-            try:
-                if sys.platform.startswith("win"):
-                    # Use os.startfile on Windows for robust handling of spaces
-                    os.startfile(file_path)  # type: ignore[attr-defined]
-                elif sys.platform.startswith("darwin"):  # macOS
-                    subprocess.run(["open", file_path], timeout=10)
-                else:  # Linux and others
-                    subprocess.run(["xdg-open", file_path], timeout=10)
-            except subprocess.TimeoutExpired:
-                info(self.view, "Print", f"PDF saved to: {file_path}. Please open it to print.")
-            except Exception:
-                info(self.view, "Print", f"PDF saved to: {file_path}. Please open it to print.")
+            show_invoice_preview(self.view, file_path, f"Purchase Invoice {purchase_id}")
 
         except ImportError:
             info(self.view, "WeasyPrint Not Available", "Please install WeasyPrint: pip install weasyprint")
@@ -886,7 +874,9 @@ class PurchaseController(BaseModule):
                 quantity = float(item_dict.get('quantity', 0.0))
                 purchase_price = float(item_dict.get('purchase_price', 0.0))
                 line_total = quantity * purchase_price
+                item_dict['unit_price'] = purchase_price
                 item_dict['line_total'] = line_total
+                item_dict['uom_name'] = item_dict.get('unit_name') or 'N/A'
                 
                 # Calculate idx (row number)
                 item_dict['idx'] = len(items) + 1

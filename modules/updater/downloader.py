@@ -18,7 +18,7 @@ def download_asset(
     asset: ReleaseAsset,
     *,
     dest_dir: Path | None = None,
-    timeout: float = 30.0,
+    timeout: float = 1800.0,
     progress_callback: Callable[[int, int | None], None] | None = None,
 ) -> Path:
     if not asset.download_url.startswith("https://"):
@@ -51,7 +51,7 @@ def download_asset(
     return target
 
 
-def download_text(asset: ReleaseAsset, *, timeout: float = 15.0) -> str:
+def download_text(asset: ReleaseAsset, *, timeout: float = 1800.0) -> str:
     if not asset.download_url.startswith("https://"):
         raise DownloadError("Only HTTPS downloads are allowed.")
     request = urllib.request.Request(asset.download_url, headers={"User-Agent": APP_UPDATER_USER_AGENT})

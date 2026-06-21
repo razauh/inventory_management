@@ -16,6 +16,7 @@ from ...database.repositories.customers_repo import CustomersRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str, fmt_money
+from ...utils.invoice_preview import show_invoice_preview
 import os
 import tempfile
 import datetime
@@ -2391,9 +2392,6 @@ class SalesController(BaseModule):
 
             import tempfile
             import time
-            import subprocess
-            import sys
-
             # Temp directory dedicated to sale invoices
             temp_root = tempfile.gettempdir()
             pdf_dir = os.path.join(temp_root, "inventory_sales")
@@ -2424,16 +2422,7 @@ class SalesController(BaseModule):
             html_doc = HTML(string=html_content)
             html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
 
-            # Open the PDF in default PDF viewer (to allow printing or saving)
-            try:
-                if sys.platform.startswith('win'):
-                    os.startfile(temp_pdf_path)
-                elif sys.platform.startswith('darwin'):  # macOS
-                    subprocess.run(['open', temp_pdf_path])
-                else:  # Linux and other Unix-like
-                    subprocess.run(['xdg-open', temp_pdf_path])
-            except Exception:
-                info(self.view, "Print", f"PDF saved to: {temp_pdf_path}. Please open it to print.")
+            show_invoice_preview(self.view, temp_pdf_path, f"Sale Invoice {sale_id}")
 
         except Exception as e:
             info(self.view, "Error", f"Could not print invoice: {e}")
@@ -2453,9 +2442,6 @@ class SalesController(BaseModule):
 
             import tempfile
             import time
-            import subprocess
-            import sys
-
             temp_root = tempfile.gettempdir()
             pdf_dir = os.path.join(temp_root, "inventory_quotations")
             os.makedirs(pdf_dir, exist_ok=True)
@@ -2481,15 +2467,7 @@ class SalesController(BaseModule):
             html_doc = HTML(string=html_content)
             html_doc.write_pdf(temp_pdf_path, stylesheets=[custom_css])
 
-            try:
-                if sys.platform.startswith("win"):
-                    os.startfile(temp_pdf_path)
-                elif sys.platform.startswith("darwin"):
-                    subprocess.run(["open", temp_pdf_path])
-                else:
-                    subprocess.run(["xdg-open", temp_pdf_path])
-            except Exception:
-                info(self.view, "Print", f"PDF saved to: {temp_pdf_path}. Please open it to print.")
+            show_invoice_preview(self.view, temp_pdf_path, f"Quotation {quotation_id}")
 
         except Exception as e:
             info(self.view, "Error", f"Could not print quotation: {e}")

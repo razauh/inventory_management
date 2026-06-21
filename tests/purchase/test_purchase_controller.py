@@ -1,6 +1,9 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import sqlite3
+import sys
+from pathlib import Path
+from types import ModuleType
 from inventory_management.modules.purchase.controller import PurchaseController
 from inventory_management.database.repositories.purchases_repo import PurchasesRepo
 
@@ -210,3 +213,72 @@ def test_sync_details_uses_snapshot_once_per_selected_purchase(controller):
 
     controller.repo.get_purchase_detail_snapshot.assert_called_once_with("PO-SNAPSHOT-1")
     assert controller.view.details.lab_id.text() == "PO-SNAPSHOT-1"
+
+
+def test_purchase_invoice_render_maps_purchase_price_to_template_fields(controller):
+    controller.repo.get_header_with_vendor = MagicMock(return_value={
+        "purchase_id": "PO-PRINT-1",
+        "date": "2026-06-21",
+        "vendor_name": "Vendor Print",
+        "vendor_contact_info": "vendor@example.test",
+        "vendor_address": "Vendor Road",
+        "order_discount": 0.0,
+        "total_amount": 190.0,
+        "paid_amount": 0.0,
+        "advance_payment_applied": 0.0,
+        "payment_status": "unpaid",
+    })
+    controller.repo.list_items = MagicMock(return_value=[
+        {
+            "item_id": 1,
+            "purchase_id": "PO-PRINT-1",
+            "product_id": 2,
+            "product_name": "Widget",
+            "quantity": 2.0,
+            "unit_name": "Piece",
+            "uom_id": 1,
+            "purchase_price": 95.0,
+            "sale_price": 120.0,
+            "item_discount": 0.0,
+        }
+    ])
+    controller.payments.list_payments = MagicMock(return_value=[])
+
+    html = controller._generate_invoice_html_content("PO-PRINT-1")
+
+    assert "PO-PRINT-1" in html
+    assert "Widget" in html
+    assert "Piece" in html
+    assert "95.00" in html
+    assert "190.00" in html
+
+
+def test_print_purchase_invoice_opens_preview(monkeypatch, controller):
+    class FakeHTML:
+        def __init__(self, *, string):
+            self.string = string
+
+        def write_pdf(self, path, stylesheets=None):
+            Path(path).write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    class FakeCSS:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    fake_weasyprint = ModuleType("weasyprint")
+    fake_weasyprint.HTML = FakeHTML
+    fake_weasyprint.CSS = FakeCSS
+    monkeypatch.setitem(sys.modules, "weasyprint", fake_weasyprint)
+
+    shown = {}
+    monkeypatch.setattr(
+        "inventory_management.modules.purchase.controller.show_invoice_preview",
+        lambda parent, path, title: shown.update({"path": path, "title": title}),
+    )
+    controller._generate_invoice_html_content = MagicMock(return_value="<html>PO</html>")
+
+    controller._print_purchase_invoice("PO-PREVIEW-1")
+
+    assert shown["title"] == "Purchase Invoice PO-PREVIEW-1"
+    assert Path(shown["path"]).exists()
+    assert Path(shown["path"]).name == "PO-PREVIEW-1.pdf"

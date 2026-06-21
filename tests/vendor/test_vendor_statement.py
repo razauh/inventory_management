@@ -1,4 +1,7 @@
 import sqlite3
+import sys
+from pathlib import Path
+from types import ModuleType
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -373,3 +376,49 @@ def test_fallback_history_includes_vendor_advance_payment_metadata():
     assert row["instrument_no"] == "SLIP-1"
     assert row["temp_vendor_bank_name"] == "Walk-in Bank"
     assert row["temp_vendor_bank_number"] == "TEMP-123"
+
+
+def test_vendor_statement_print_opens_preview(monkeypatch, qtbot):
+    class FakeHTML:
+        def __init__(self, *, string):
+            self.string = string
+
+        def write_pdf(self, path):
+            Path(path).write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    fake_weasyprint = ModuleType("weasyprint")
+    fake_weasyprint.HTML = FakeHTML
+    monkeypatch.setitem(sys.modules, "weasyprint", fake_weasyprint)
+
+    shown = {}
+    monkeypatch.setattr(
+        "inventory_management.modules.vendor.payment_history_view.show_invoice_preview",
+        lambda parent, path, title: shown.update({"path": path, "title": title}),
+    )
+
+    dialog = _VendorHistoryDialog(
+        vendor_id=9,
+        vendor_display="Vendor A",
+        history={
+            "rows": [
+                {
+                    "date": "2026-06-21",
+                    "type": "Purchase",
+                    "doc_id": "PO-1",
+                    "amount_effect": 10.0,
+                    "balance_after": 10.0,
+                }
+            ],
+            "opening_payable": 0.0,
+            "opening_credit": 0.0,
+            "closing_balance": 10.0,
+        },
+    )
+    qtbot.addWidget(dialog)
+
+    dialog._on_print()
+
+    qtbot.waitUntil(lambda: bool(shown), timeout=3000)
+    assert shown["title"] == "Vendor Statement Vendor A"
+    assert Path(shown["path"]).exists()
+    assert Path(shown["path"]).name == "vendor_9.pdf"

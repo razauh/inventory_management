@@ -18,7 +18,7 @@ class UpdateCheckError(RuntimeError):
     pass
 
 
-def has_internet(timeout: float = 3.0) -> bool:
+def has_internet(timeout: float = 1800.0) -> bool:
     try:
         with socket.create_connection(("api.github.com", 443), timeout=timeout):
             return True
@@ -26,7 +26,7 @@ def has_internet(timeout: float = 3.0) -> bool:
         return False
 
 
-def fetch_releases(owner: str, repo: str, *, timeout: float = 8.0) -> tuple[ReleaseInfo, ...]:
+def fetch_releases(owner: str, repo: str, *, timeout: float = 1800.0) -> tuple[ReleaseInfo, ...]:
     url = f"{GITHUB_API_ROOT}/repos/{owner}/{repo}/releases"
     request = urllib.request.Request(
         url,

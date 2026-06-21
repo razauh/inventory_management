@@ -5,13 +5,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import logging
 import os
-import subprocess
-import sys
 import tempfile
 import time
 import threading
 
 from jinja2 import Template
+from ...utils.invoice_preview import show_invoice_preview
 
 try:
     # Project-standard UI stack
@@ -189,8 +188,8 @@ class _VendorHistoryDialog(QDialog):
             else:
                 period_txt = _t(f"{p_from} to {p_to}")
 
-        opening_payable = self._safe_float(self._history.get("opening_payable"))
-        opening_credit = self._safe_float(self._history.get("opening_credit"))
+        opening_payable = self._safe_float(self._history.get("opening_payable"), 0.0) or 0.0
+        opening_credit = self._safe_float(self._history.get("opening_credit"), 0.0) or 0.0
         closing_balance = self._safe_float(self._history.get("closing_balance"))
 
         lbl_period = QLabel(_t(f"Period: {period_txt}"))
@@ -628,25 +627,16 @@ class _VendorHistoryDialog(QDialog):
                     )
                     return
 
-                try:
-                    if sys.platform.startswith("win"):
-                        subprocess.run(
-                            ["cmd", "/c", "start", "", file_path],
-                            shell=False,
-                            timeout=5,
-                        )
-                    elif sys.platform.startswith("darwin"):
-                        subprocess.run(["open", file_path], timeout=5)
-                    else:
-                        subprocess.run(["xdg-open", file_path], timeout=5)
-                except subprocess.TimeoutExpired:
-                    _log.warning(
-                        "Timed out while trying to open vendor history PDF: %s",
-                        file_path,
-                    )
-                except Exception as e:
-                    _log.warning(
-                        "Failed to open vendor history PDF %s: %s", file_path, e
+                app_for_preview = QApplication.instance()
+                if app_for_preview is not None:
+                    QTimer.singleShot(
+                        0,
+                        self,
+                        lambda path=file_path: show_invoice_preview(
+                            self,
+                            path,
+                            f"Vendor Statement {self._vendor_display}",
+                        ),
                     )
             finally:
                 finish()

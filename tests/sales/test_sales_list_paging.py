@@ -1,5 +1,7 @@
 import sqlite3
-from types import SimpleNamespace
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 from inventory_management.database.schema import SQL
 from inventory_management.database.repositories.sales_repo import SalesRepo
@@ -411,3 +413,101 @@ def test_sales_sync_details_uses_single_snapshot():
     assert detail_payloads[0]["remaining_due"] == 13.0
     assert controller.view.btn_return.enabled is True
     assert controller.view.btn_apply_credit.enabled is True
+
+
+def test_sale_invoice_render_has_template_item_fields(monkeypatch):
+    conn = _sales_db()
+
+    class RepoStub:
+        def get_header_with_customer(self, sale_id):
+            return {
+                "sale_id": sale_id,
+                "date": "2026-06-21",
+                "customer_name": "Alpha Customer",
+                "customer_contact_info": "alpha@example.test",
+                "customer_address": "Customer Road",
+                "order_discount": 0.0,
+                "payment_status": "unpaid",
+            }
+
+        def list_items(self, sale_id):
+            return [
+                {
+                    "item_id": 1,
+                    "sale_id": sale_id,
+                    "product_id": 1,
+                    "product_name": "Widget",
+                    "quantity": 2.0,
+                    "uom_id": 1,
+                    "unit_name": "Piece",
+                    "unit_price": 10.0,
+                    "item_discount": 0.0,
+                }
+            ]
+
+        def get_receivable_position(self, sale_id):
+            return {
+                "paid_amount": 0.0,
+                "advance_payment_applied": 0.0,
+                "remaining_due": 20.0,
+                "returned_value": 0.0,
+                "net_total_amount": 20.0,
+            }
+
+    class PaymentsRepoStub:
+        def __init__(self, db_path):
+            pass
+
+        def list_by_sale(self, sale_id):
+            return []
+
+    import inventory_management.database.repositories.sale_payments_repo as payments_module
+
+    monkeypatch.setattr(payments_module, "SalePaymentsRepo", PaymentsRepoStub)
+
+    controller = SalesController.__new__(SalesController)
+    controller.repo = RepoStub()
+    controller.conn = conn
+    controller._db_path = ":memory:"
+
+    html = controller._generate_invoice_html_content("SO-PRINT-1")
+
+    assert "SO-PRINT-1" in html
+    assert "Widget" in html
+    assert "Piece" in html
+    assert "10.00" in html
+    assert "20.00" in html
+
+
+def test_print_sale_invoice_opens_preview(monkeypatch):
+    class FakeHTML:
+        def __init__(self, *, string):
+            self.string = string
+
+        def write_pdf(self, path, stylesheets=None):
+            Path(path).write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    class FakeCSS:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    fake_weasyprint = ModuleType("weasyprint")
+    fake_weasyprint.HTML = FakeHTML
+    fake_weasyprint.CSS = FakeCSS
+    monkeypatch.setitem(sys.modules, "weasyprint", fake_weasyprint)
+
+    shown = {}
+    monkeypatch.setattr(
+        "inventory_management.modules.sales.controller.show_invoice_preview",
+        lambda parent, path, title: shown.update({"path": path, "title": title}),
+    )
+
+    controller = SalesController.__new__(SalesController)
+    controller.view = SimpleNamespace()
+    controller._generate_invoice_html_content = lambda sale_id: "<html>SO</html>"
+
+    controller._print_sale_invoice("SO-PREVIEW-1")
+
+    assert shown["title"] == "Sale Invoice SO-PREVIEW-1"
+    assert Path(shown["path"]).exists()
+    assert Path(shown["path"]).name == "SO-PREVIEW-1.pdf"

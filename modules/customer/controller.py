@@ -13,6 +13,7 @@ from .form import CustomerForm
 from .model import CustomersTableModel
 from ...database.repositories.customers_repo import CustomersRepo
 from ...utils.ui_helpers import info
+from ...utils.invoice_preview import show_invoice_preview
 
 
 CUSTOMER_SEARCH_DELAY_MS = 150
@@ -496,8 +497,6 @@ class CustomerController(BaseModule):
         import os
         import tempfile
         import time
-        import subprocess
-        import sys
         from weasyprint import HTML, CSS
 
         try:
@@ -565,17 +564,7 @@ class CustomerController(BaseModule):
             info(self.view, "Error", f"Could not generate statement PDF:\n{e}")
             return
 
-        try:
-            if sys.platform.startswith("win"):
-                os.startfile(file_path)  # type: ignore[attr-defined]
-            elif sys.platform.startswith("darwin"):
-                subprocess.run(["open", file_path], timeout=5)
-            else:
-                subprocess.run(["xdg-open", file_path], timeout=5)
-        except subprocess.TimeoutExpired:
-            info(self.view, "Print", f"Statement PDF saved to: {file_path} (viewer timed out).")
-        except Exception:
-            info(self.view, "Print", f"Statement PDF saved to: {file_path}")
+        show_invoice_preview(self.view, file_path, f"Customer Statement {cid}")
 
     def sale_belongs_to_customer_and_is_sale(self, sale_id: int, customer_id: int) -> bool:
         try:

@@ -5,14 +5,13 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import logging
 import os
-import subprocess
-import sys
 import tempfile
 import time
 
 from jinja2 import Template
 from weasyprint import HTML
 from importlib import resources as importlib_resources
+from ...utils.invoice_preview import show_invoice_preview
 
 try:
     # Per project standard: PySide6
@@ -334,27 +333,7 @@ class _CustomerHistoryDialog(QDialog):
             QMessageBox.warning(self, _t("Cannot Print"), _t("The customer history PDF could not be created."))
             return
 
-        try:
-            if sys.platform.startswith("win"):
-                os.startfile(real_file_path)  # type: ignore[attr-defined]
-                return
-            elif sys.platform.startswith("darwin"):
-                cp = subprocess.run(["open", real_file_path], check=False, timeout=5)
-            else:
-                cp = subprocess.run(["xdg-open", real_file_path], check=False, timeout=5)
-            if cp.returncode != 0:
-                _log.warning(
-                    "PDF viewer returned non-zero exit code %s for %s",
-                    cp.returncode,
-                    real_file_path,
-                )
-                QMessageBox.information(self, _t("PDF Saved"), _t(f"The PDF was saved to:\n{real_file_path}"))
-        except subprocess.TimeoutExpired:
-            _log.warning("Timed out while trying to open customer history PDF: %s", real_file_path)
-            QMessageBox.information(self, _t("PDF Saved"), _t(f"The PDF was saved to:\n{real_file_path}"))
-        except Exception as e:
-            _log.warning("Failed to open customer history PDF %s: %s", real_file_path, e)
-            QMessageBox.information(self, _t("PDF Saved"), _t(f"The PDF was saved to:\n{real_file_path}"))
+        show_invoice_preview(self, real_file_path, f"Customer History {self._customer_id}")
 
     def _build_history_view(self, outer: QVBoxLayout) -> None:
         """
