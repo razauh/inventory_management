@@ -9,7 +9,9 @@ from typing import Any
 from .dto import (
     PurchaseFinancials,
     PurchaseOutstanding,
+    PurchasePaymentRow,
     PurchasePaymentStatus,
+    PurchasePaymentSummary,
     PurchaseTotalInputLine,
     PurchaseTotals,
     VendorBalance,
@@ -19,6 +21,8 @@ from .dto import (
 )
 from .current_rules.purchase_rules import (
     get_purchase_outstanding as get_current_purchase_outstanding,
+    get_purchase_payment_history as get_current_purchase_payment_history,
+    get_purchase_payment_summary as get_current_purchase_payment_summary,
     get_purchase_payment_status as get_current_purchase_payment_status,
     get_purchase_totals as get_current_purchase_totals,
     preview_purchase_total as preview_current_purchase_total,
@@ -89,6 +93,20 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("recalculate_purchase_payment_status")
         return recalculate_current_purchase_payment_status(self.conn, purchase_id)
+
+    def get_purchase_payment_summary(
+        self, purchase_id: int | str
+    ) -> PurchasePaymentSummary:
+        if self.conn is None:
+            self._not_implemented("get_purchase_payment_summary")
+        return get_current_purchase_payment_summary(self.conn, purchase_id)
+
+    def get_purchase_payment_history(
+        self, purchase_id: int | str
+    ) -> tuple[PurchasePaymentRow, ...]:
+        if self.conn is None:
+            self._not_implemented("get_purchase_payment_history")
+        return get_current_purchase_payment_history(self.conn, purchase_id)
 
     def get_purchase_financials(self, purchase_id: int) -> PurchaseFinancials:
         self._not_implemented("get_purchase_financials")

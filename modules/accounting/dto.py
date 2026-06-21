@@ -52,6 +52,51 @@ class PurchasePaymentStatus:
 
 
 @dataclass(frozen=True)
+class PurchasePaymentRow:
+    payment_id: int
+    purchase_id: int | str
+    date: str | None
+    amount: Decimal
+    method: str | None
+    bank_account_id: int | None = None
+    vendor_bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    instrument_date: str | None = None
+    deposited_date: str | None = None
+    cleared_date: str | None = None
+    clearing_state: str | None = None
+    ref_no: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+    bank_account_label: str | None = None
+    vendor_bank_account_label: str | None = None
+
+
+@dataclass(frozen=True)
+class PurchasePaymentSummary:
+    purchase_id: int | str
+    latest_payment: PurchasePaymentRow | None
+    paid_amount: Decimal
+    applied_credit: Decimal
+    remaining_due: Decimal
+    status: str
+    overpayment_credited: Decimal
+    counterparty_label: str = "Vendor"
+
+    def to_detail_payload(self) -> dict | None:
+        if self.latest_payment is None:
+            return None
+        return {
+            "method": self.latest_payment.method,
+            "amount": float(self.latest_payment.amount),
+            "status": self.latest_payment.clearing_state or "posted",
+            "overpayment": float(self.overpayment_credited),
+            "counterparty_label": self.counterparty_label,
+        }
+
+
+@dataclass(frozen=True)
 class PurchaseFinancials:
     purchase_id: int
     net_total: Decimal

@@ -7,7 +7,9 @@ from sqlite3 import Connection
 
 from ..dto import (
     PurchaseOutstanding,
+    PurchasePaymentRow,
     PurchasePaymentStatus,
+    PurchasePaymentSummary,
     PurchaseTotalInputLine,
     PurchaseTotals,
 )
@@ -155,3 +157,118 @@ def recalculate_purchase_payment_status(
         (float(status.paid_amount), status.status, purchase_id),
     )
     return status
+
+
+def _payment_row(row: object) -> PurchasePaymentRow:
+    return PurchasePaymentRow(
+        payment_id=int(row["payment_id"]),
+        purchase_id=row["purchase_id"],
+        date=row["date"],
+        amount=_decimal(row["amount"]),
+        method=row["method"],
+        bank_account_id=row["bank_account_id"],
+        vendor_bank_account_id=row["vendor_bank_account_id"],
+        instrument_type=row["instrument_type"],
+        instrument_no=row["instrument_no"],
+        instrument_date=row["instrument_date"],
+        deposited_date=row["deposited_date"],
+        cleared_date=row["cleared_date"],
+        clearing_state=row["clearing_state"],
+        ref_no=row["ref_no"],
+        notes=row["notes"],
+        created_by=row["created_by"],
+        bank_account_label=row["bank_account_label"],
+        vendor_bank_account_label=row["vendor_bank_account_label"],
+    )
+
+
+def get_purchase_payment_history(
+    conn: Connection,
+    purchase_id: int | str,
+) -> tuple[PurchasePaymentRow, ...]:
+    rows = conn.execute(
+        """
+        SELECT
+          pp.payment_id,
+          pp.purchase_id,
+          pp.date,
+          CAST(pp.amount AS REAL) AS amount,
+          pp.method,
+          pp.bank_account_id,
+          pp.vendor_bank_account_id,
+          pp.instrument_type,
+          pp.instrument_no,
+          pp.instrument_date,
+          pp.deposited_date,
+          pp.cleared_date,
+          pp.clearing_state,
+          pp.ref_no,
+          pp.notes,
+          pp.created_by,
+          ca.label AS bank_account_label,
+          va.label AS vendor_bank_account_label
+        FROM purchase_payments pp
+        LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
+        LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
+        WHERE pp.purchase_id = ?
+        ORDER BY DATE(pp.date) ASC, pp.payment_id ASC
+        """,
+        (purchase_id,),
+    ).fetchall()
+    return tuple(_payment_row(row) for row in rows)
+
+
+def get_purchase_payment_summary(
+    conn: Connection,
+    purchase_id: int | str,
+) -> PurchasePaymentSummary:
+    status = get_purchase_payment_status(conn, purchase_id)
+    latest = conn.execute(
+        """
+        SELECT
+          pp.payment_id,
+          pp.purchase_id,
+          pp.date,
+          CAST(pp.amount AS REAL) AS amount,
+          pp.method,
+          pp.bank_account_id,
+          pp.vendor_bank_account_id,
+          pp.instrument_type,
+          pp.instrument_no,
+          pp.instrument_date,
+          pp.deposited_date,
+          pp.cleared_date,
+          pp.clearing_state,
+          pp.ref_no,
+          pp.notes,
+          pp.created_by,
+          ca.label AS bank_account_label,
+          va.label AS vendor_bank_account_label
+        FROM purchase_payments pp
+        LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
+        LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
+        WHERE pp.purchase_id = ?
+        ORDER BY DATE(pp.date) DESC, pp.payment_id DESC
+        LIMIT 1
+        """,
+        (purchase_id,),
+    ).fetchone()
+    overpayment = conn.execute(
+        """
+        SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS overpay
+        FROM vendor_advances
+        WHERE source_type='deposit'
+          AND source_id=?
+          AND notes LIKE 'Excess payment converted to vendor credit%'
+        """,
+        (purchase_id,),
+    ).fetchone()
+    return PurchasePaymentSummary(
+        purchase_id=status.purchase_id,
+        latest_payment=_payment_row(latest) if latest else None,
+        paid_amount=status.paid_amount,
+        applied_credit=status.applied_credit,
+        remaining_due=status.remaining_due,
+        status=status.status,
+        overpayment_credited=_decimal(overpayment["overpay"] if overpayment else 0),
+    )

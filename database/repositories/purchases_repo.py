@@ -256,17 +256,7 @@ class PurchasesRepo:
                   COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
                   - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
                   - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
-              ) AS remaining_due,
-              lp.method AS latest_payment_method,
-              COALESCE(CAST(lp.amount AS REAL), 0.0) AS latest_payment_amount,
-              lp.clearing_state AS latest_payment_status,
-              COALESCE((
-                SELECT SUM(CAST(amount AS REAL))
-                FROM vendor_advances
-                WHERE source_type='deposit'
-                  AND source_id=?
-                  AND notes LIKE 'Excess payment converted to vendor credit%'
-              ), 0.0) AS overpayment_credited
+              ) AS remaining_due
             FROM purchases p
             JOIN vendors v ON v.vendor_id = p.vendor_id
             LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
@@ -277,33 +267,22 @@ class PurchasesRepo:
                 FROM purchase_return_valuations
                 GROUP BY purchase_id
             ) pr ON pr.purchase_id = p.purchase_id
-            LEFT JOIN purchase_payments lp
-              ON lp.payment_id = (
-                  SELECT payment_id
-                  FROM purchase_payments
-                  WHERE purchase_id = p.purchase_id
-                  ORDER BY date DESC, payment_id DESC
-                  LIMIT 1
-              )
             WHERE p.purchase_id = ?
             """,
-            (purchase_id, purchase_id),
+            (purchase_id,),
         ).fetchone()
         if not header:
             return {}
 
         header_row = self._with_purchase_totals(header)
+        payment_summary = self.accounting.get_purchase_payment_summary(
+            purchase_id
+        ).to_detail_payload()
 
         return {
             "row": header_row,
             "items": [dict(row) for row in self.list_items(purchase_id)],
-            "payment_summary": {
-                "method": header_row["latest_payment_method"],
-                "amount": float(header_row["latest_payment_amount"] or 0.0),
-                "status": header_row["latest_payment_status"] or "posted",
-                "overpayment": float(header_row["overpayment_credited"] or 0.0),
-                "counterparty_label": "Vendor",
-            } if header_row["latest_payment_method"] or float(header_row["latest_payment_amount"] or 0.0) > 0 else None,
+            "payment_summary": payment_summary,
         }
 
     def get_returnable_for_items(self, purchase_id: str) -> list[dict]:

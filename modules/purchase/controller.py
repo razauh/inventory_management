@@ -477,34 +477,25 @@ class PurchaseController(BaseModule):
         return answer == QMessageBox.Yes
 
     def _latest_purchase_payment(self, purchase_id: str) -> dict | None:
-        row = self.conn.execute(
-            """
-            SELECT payment_id,
-                   date,
-                   method,
-                   CAST(amount AS REAL) AS amount,
-                   clearing_state AS status
-              FROM purchase_payments
-             WHERE purchase_id=?
-             ORDER BY date DESC, payment_id DESC
-             LIMIT 1
-            """,
-            (purchase_id,),
-        ).fetchone()
-        return dict(row) if row else None
+        latest = self.accounting.get_purchase_payment_summary(
+            purchase_id
+        ).latest_payment
+        if latest is None:
+            return None
+        return {
+            "payment_id": latest.payment_id,
+            "date": latest.date,
+            "method": latest.method,
+            "amount": float(latest.amount),
+            "status": latest.clearing_state,
+        }
 
     def _overpayment_credited(self, purchase_id: str) -> float:
-        row = self.conn.execute(
-            """
-            SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS overpay
-              FROM vendor_advances
-             WHERE source_type='deposit'
-               AND source_id=?
-               AND notes LIKE 'Excess payment converted to vendor credit%'
-            """,
-            (purchase_id,),
-        ).fetchone()
-        return float(row["overpay"] or 0.0) if row else 0.0
+        return float(
+            self.accounting.get_purchase_payment_summary(
+                purchase_id
+            ).overpayment_credited
+        )
 
     def _refresh_payment_summary(self, purchase_id: Optional[str]) -> None:
         if not purchase_id:
@@ -513,20 +504,15 @@ class PurchaseController(BaseModule):
             except Exception:
                 pass
             return
-        last = self._latest_purchase_payment(purchase_id)
-        if not last:
+        payload = self.accounting.get_purchase_payment_summary(
+            purchase_id
+        ).to_detail_payload()
+        if not payload:
             try:
                 self.view.details.clear_payment_summary()
             except Exception:
                 pass
             return
-        payload = {
-            "method": last.get("method"),
-            "amount": float(last.get("amount") or 0.0),
-            "status": last.get("status") or "posted",
-            "overpayment": self._overpayment_credited(purchase_id),
-            "counterparty_label": "Vendor",
-        }
         try:
             self.view.details.set_payment_summary(payload)
         except Exception:

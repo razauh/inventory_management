@@ -285,29 +285,26 @@ class PurchasePaymentsRepo:
         """
         Get the latest payment details for a specific purchase.
         """
-        sql = """
-        SELECT 
-            pp.amount,
-            pp.method,
-            pp.date,
-            pp.bank_account_id,
-            pp.vendor_bank_account_id,
-            pp.instrument_type,
-            pp.instrument_no,
-            pp.instrument_date,
-            pp.deposited_date,
-            pp.cleared_date,
-            pp.ref_no,
-            pp.notes,
-            pp.clearing_state,
-            ca.label AS bank_account_label,
-            va.label AS vendor_bank_account_label
-        FROM purchase_payments pp
-        LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
-        LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
-        WHERE pp.purchase_id = ?
-        ORDER BY pp.payment_id DESC
-        LIMIT 1
-        """
-        row = self.conn.execute(sql, (purchase_id,)).fetchone()
-        return dict(row) if row else None
+        from ...modules.accounting import AccountingService
+
+        payments = AccountingService(self.conn).get_purchase_payment_history(purchase_id)
+        latest = max(payments, key=lambda payment: payment.payment_id, default=None)
+        if latest is None:
+            return None
+        return {
+            "amount": float(latest.amount),
+            "method": latest.method,
+            "date": latest.date,
+            "bank_account_id": latest.bank_account_id,
+            "vendor_bank_account_id": latest.vendor_bank_account_id,
+            "instrument_type": latest.instrument_type,
+            "instrument_no": latest.instrument_no,
+            "instrument_date": latest.instrument_date,
+            "deposited_date": latest.deposited_date,
+            "cleared_date": latest.cleared_date,
+            "ref_no": latest.ref_no,
+            "notes": latest.notes,
+            "clearing_state": latest.clearing_state,
+            "bank_account_label": latest.bank_account_label,
+            "vendor_bank_account_label": latest.vendor_bank_account_label,
+        }

@@ -8,6 +8,8 @@ from modules.accounting import (
     AccountingService,
     PurchaseFinancials,
     PurchasePaymentStatus,
+    PurchasePaymentRow,
+    PurchasePaymentSummary,
     PurchaseTotalInputLine,
     PurchaseTotals,
     VendorOpenPurchase,
@@ -23,6 +25,8 @@ VENDOR_PURCHASE_METHODS = [
     ("get_purchase_remaining_due_header", ("purchase_id",)),
     ("get_purchase_payment_status", ("purchase_id",)),
     ("recalculate_purchase_payment_status", ("purchase_id",)),
+    ("get_purchase_payment_summary", ("purchase_id",)),
+    ("get_purchase_payment_history", ("purchase_id",)),
     ("get_purchase_financials", ("purchase_id",)),
     ("get_vendor_advance_balance", ("vendor_id",)),
     ("get_vendor_advance_balances", ("vendor_ids",)),
@@ -55,6 +59,30 @@ def test_vendor_purchase_service_contract_methods_exist():
         applied_credit=Decimal("1.00"),
         remaining_due=Decimal("3.00"),
     )
+    payment_row = PurchasePaymentRow(
+        payment_id=4,
+        purchase_id=1,
+        date="2026-06-21",
+        amount=Decimal("5.00"),
+        method="Cash",
+        clearing_state="cleared",
+    )
+    assert payment_row
+    assert PurchasePaymentSummary(
+        purchase_id=1,
+        latest_payment=payment_row,
+        paid_amount=Decimal("5.00"),
+        applied_credit=Decimal("1.00"),
+        remaining_due=Decimal("3.00"),
+        status="partial",
+        overpayment_credited=Decimal("2.00"),
+    ).to_detail_payload() == {
+        "method": "Cash",
+        "amount": 5.0,
+        "status": "cleared",
+        "overpayment": 2.0,
+        "counterparty_label": "Vendor",
+    }
     assert PurchaseFinancials(
         purchase_id=1,
         net_total=Decimal("9.00"),
