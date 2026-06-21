@@ -1,9 +1,9 @@
 from __future__ import annotations
 import sqlite3
+from decimal import Decimal
 from typing import Optional
 
-from .vendor_advances_repo import VendorAdvancesRepo
-from ...modules.accounting import AccountingService, VendorPaymentMetadata
+from ...modules.accounting import AccountingService, VendorPaymentPayload
 
 
 class PurchasePaymentsRepo:
@@ -40,128 +40,29 @@ class PurchasePaymentsRepo:
         Only 'cleared' rows roll into header totals via DB triggers.
         If a positive payment exceeds amount due, convert the excess to vendor credit.
         """
-        if amount <= 0:
-            raise ValueError("Vendor purchase payment amount must be greater than zero")
-
-        state = clearing_state or "cleared"
-        effective_cleared_date = cleared_date or date
-
-        purchase_info = self.conn.execute(
-            """
-            SELECT 
-                COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-                COALESCE(p.paid_amount, 0.0)              AS paid_amount,
-                COALESCE(p.advance_payment_applied, 0.0)  AS advance_payment_applied,
-                p.vendor_id
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            WHERE p.purchase_id = ?
-            """,
-            (purchase_id,),
-        ).fetchone()
-        if not purchase_info:
-            raise ValueError(f"Purchase not found: {purchase_id}")
-
-        vendor_id = int(purchase_info["vendor_id"])
-        AccountingService(self.conn).validate_vendor_payment_metadata(
-            VendorPaymentMetadata(
-                vendor_id=vendor_id,
+        result = AccountingService(self.conn).record_vendor_payment_event(
+            VendorPaymentPayload(
+                purchase_id=purchase_id,
+                amount=Decimal(str(amount)),
                 method=method,
                 bank_account_id=bank_account_id,
                 vendor_bank_account_id=vendor_bank_account_id,
                 instrument_type=instrument_type,
                 instrument_no=instrument_no,
-                clearing_state=state,
+                instrument_date=instrument_date,
+                deposited_date=deposited_date,
+                cleared_date=cleared_date,
+                clearing_state=clearing_state,
+                ref_no=ref_no,
+                notes=notes,
+                date=date,
+                created_by=created_by,
                 temp_vendor_bank_name=temp_vendor_bank_name,
                 temp_vendor_bank_number=temp_vendor_bank_number,
-                vendor_label="purchase",
             )
-        )
-
-        if amount > 0:
-            total_amount = float(purchase_info["total_calc"] or 0.0)
-            current_paid = float(purchase_info["paid_amount"] or 0.0)
-            current_advance = float(purchase_info["advance_payment_applied"] or 0.0)
-            amount_due = max(0.0, total_amount - current_paid - current_advance)
-
-            if amount > amount_due + 1e-9:
-                excess_amount = amount - amount_due
-                adjusted_amount = amount_due
-                if excess_amount > 1e-9:
-                    vadv = VendorAdvancesRepo(self.conn)
-                    credit_tx_id = vadv.grant_credit(
-                        vendor_id=vendor_id,
-                        amount=excess_amount,
-                        date=date,
-                        notes=f"Excess payment converted to vendor credit on {purchase_id}",
-                        created_by=created_by,
-                        source_id=purchase_id,
-                        source_type="deposit",
-                    )
-                amount = adjusted_amount
-                if amount <= 1e-9:
-                    return int(credit_tx_id)
-
-        cur = self.conn.execute(
-            """
-            INSERT INTO purchase_payments (
-                purchase_id,
-                date,
-                amount,
-                method,
-                bank_account_id,
-                vendor_bank_account_id,
-                instrument_type,
-                instrument_no,
-                instrument_date,
-                deposited_date,
-                cleared_date,
-                clearing_state,
-                ref_no,
-                notes,
-                created_by,
-                temp_vendor_bank_name,
-                temp_vendor_bank_number
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                purchase_id,
-                date,
-                amount,
-                method,
-                bank_account_id,
-                vendor_bank_account_id,
-                instrument_type,
-                instrument_no,
-                instrument_date,
-                deposited_date,
-                effective_cleared_date,
-                state,
-                ref_no,
-                notes,
-                created_by,
-                temp_vendor_bank_name,
-                temp_vendor_bank_number,
-            ),
-        )
-        payment_id = int(cur.lastrowid)
-
-        self.conn.execute(
-            """
-            INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                created_by,
-                "payment",
-                "purchase_payments",
-                payment_id,
-                f"Recorded payment of {amount:g} using {method}. Purchase ID: {purchase_id}",
-            ),
         )
         # Note: This method does not commit; caller is responsible for transaction management
-        return payment_id
+        return int(result.payment_id or result.credit_tx_id)
 
     def update_clearing_state(
         self,
@@ -172,20 +73,12 @@ class PurchasePaymentsRepo:
         notes: Optional[str] = None,
     ) -> int:
         """Update clearing status for a payment. This method does not commit."""
-        if clearing_state != "cleared":
-            raise ValueError("Vendor purchase payments must remain cleared")
-        sets = ["clearing_state = ?"]
-        params: list[object] = [clearing_state]
-        if cleared_date is not None:
-            sets.append("cleared_date = ?")
-            params.append(cleared_date)
-        if notes is not None:
-            sets.append("notes = ?")
-            params.append(notes)
-        params.append(payment_id)
-        sql = f"UPDATE purchase_payments SET {', '.join(sets)} WHERE payment_id = ?"
-        cur = self.conn.execute(sql, params)
-        return cur.rowcount
+        return AccountingService(self.conn).update_vendor_payment_state(
+            payment_id,
+            clearing_state=clearing_state,
+            cleared_date=cleared_date,
+            notes=notes,
+        )
 
     def list_payments(self, purchase_id: str) -> list[dict]:
         """List all cash movements (payments and refunds) for a purchase, ordered by date then id."""

@@ -15,6 +15,9 @@ from modules.accounting import (
     SupplierRefundMetadata,
     VendorOpenPurchase,
     VendorPaymentMetadata,
+    VendorPaymentPayload,
+    VendorPaymentEffect,
+    VendorPaymentResult,
     VendorPurchaseTotals,
     VendorStatement,
     VendorStatementEntry,
@@ -32,6 +35,9 @@ VENDOR_PURCHASE_METHODS = [
     ("get_purchase_financials", ("purchase_id",)),
     ("validate_vendor_payment_metadata", ("metadata",)),
     ("validate_supplier_refund_metadata", ("metadata",)),
+    ("preview_vendor_payment_effect", ("payload",)),
+    ("record_vendor_payment_event", ("payload",)),
+    ("update_vendor_payment_state", ("payment_id", "clearing_state", "cleared_date", "notes")),
     ("get_vendor_advance_balance", ("vendor_id",)),
     ("get_vendor_advance_balances", ("vendor_ids",)),
     ("get_vendor_open_purchases", ("vendor_id",)),
@@ -89,6 +95,20 @@ def test_vendor_purchase_service_contract_methods_exist():
     }
     assert VendorPaymentMetadata(vendor_id=2, method="Cash")
     assert SupplierRefundMetadata(vendor_id=2, method="Cash")
+    effect = VendorPaymentEffect(
+        purchase_id=1,
+        vendor_id=2,
+        amount_due=Decimal("10.00"),
+        payment_amount=Decimal("8.00"),
+        overpayment_credit=Decimal("0.00"),
+    )
+    assert VendorPaymentPayload(
+        purchase_id=1,
+        amount=Decimal("8.00"),
+        method="Cash",
+        date="2026-06-21",
+    )
+    assert VendorPaymentResult(payment_id=3, credit_tx_id=None, effect=effect)
     assert PurchaseFinancials(
         purchase_id=1,
         net_total=Decimal("9.00"),

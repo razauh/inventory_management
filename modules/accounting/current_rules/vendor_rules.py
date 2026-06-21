@@ -10,7 +10,16 @@ import sqlite3
 from decimal import Decimal
 from sqlite3 import Connection
 
-from ..dto import VendorBalance, VendorOpenPurchase, VendorPurchaseTotals
+from ..dto import (
+    VendorBalance,
+    VendorOpenPurchase,
+    VendorPaymentEffect,
+    VendorPaymentMetadata,
+    VendorPaymentPayload,
+    VendorPaymentResult,
+    VendorPurchaseTotals,
+)
+from ..validators import validate_vendor_payment_metadata
 
 _log = logging.getLogger(__name__)
 
@@ -620,3 +629,209 @@ def get_vendor_statement(
         "totals": totals,
         "closing_balance": balance,
     }
+
+
+def _purchase_payment_position(
+    conn: Connection,
+    purchase_id: int | str,
+) -> tuple[int, Decimal, Decimal, Decimal]:
+    row = conn.execute(
+        """
+        SELECT
+            COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+            COALESCE(p.paid_amount, 0.0) AS paid_amount,
+            COALESCE(p.advance_payment_applied, 0.0) AS advance_payment_applied,
+            p.vendor_id
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = ?
+        """,
+        (purchase_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Purchase not found: {purchase_id}")
+    return (
+        int(row["vendor_id"]),
+        _decimal(row["total_calc"]),
+        _decimal(row["paid_amount"]),
+        _decimal(row["advance_payment_applied"]),
+    )
+
+
+def preview_vendor_payment_effect(
+    conn: Connection,
+    payload: VendorPaymentPayload,
+) -> VendorPaymentEffect:
+    if payload.amount <= 0:
+        raise ValueError("Vendor purchase payment amount must be greater than zero")
+    state = payload.clearing_state or "cleared"
+    vendor_id, total_amount, current_paid, current_advance = _purchase_payment_position(
+        conn,
+        payload.purchase_id,
+    )
+    validate_vendor_payment_metadata(
+        conn,
+        VendorPaymentMetadata(
+            vendor_id=vendor_id,
+            method=payload.method,
+            bank_account_id=payload.bank_account_id,
+            vendor_bank_account_id=payload.vendor_bank_account_id,
+            instrument_type=payload.instrument_type,
+            instrument_no=payload.instrument_no,
+            clearing_state=state,
+            temp_vendor_bank_name=payload.temp_vendor_bank_name,
+            temp_vendor_bank_number=payload.temp_vendor_bank_number,
+            vendor_label="purchase",
+        ),
+    )
+    amount_due = max(Decimal("0"), total_amount - current_paid - current_advance)
+    payment_amount = payload.amount
+    overpayment_credit = Decimal("0")
+    if payload.amount > amount_due + Decimal("0.000000001"):
+        overpayment_credit = payload.amount - amount_due
+        payment_amount = amount_due
+    return VendorPaymentEffect(
+        purchase_id=payload.purchase_id,
+        vendor_id=vendor_id,
+        amount_due=amount_due,
+        payment_amount=payment_amount,
+        overpayment_credit=overpayment_credit,
+    )
+
+
+def _record_vendor_deposit_credit(
+    conn: Connection,
+    *,
+    vendor_id: int,
+    amount: Decimal,
+    date: str,
+    notes: str,
+    created_by: int | None,
+    source_id: int | str,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO vendor_advances (
+            vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+        )
+        VALUES (?, ?, ?, 'deposit', ?, ?, ?)
+        """,
+        (vendor_id, date, float(amount), source_id, notes, created_by),
+    )
+    return int(cur.lastrowid)
+
+
+def record_vendor_payment_event(
+    conn: Connection,
+    payload: VendorPaymentPayload,
+) -> VendorPaymentResult:
+    effect = preview_vendor_payment_effect(conn, payload)
+    state = payload.clearing_state or "cleared"
+    cleared_date = payload.cleared_date or payload.date
+    credit_tx_id: int | None = None
+
+    if effect.overpayment_credit > Decimal("0.000000001"):
+        credit_tx_id = _record_vendor_deposit_credit(
+            conn,
+            vendor_id=effect.vendor_id,
+            amount=effect.overpayment_credit,
+            date=payload.date,
+            notes=f"Excess payment converted to vendor credit on {payload.purchase_id}",
+            created_by=payload.created_by,
+            source_id=payload.purchase_id,
+        )
+        if effect.payment_amount <= Decimal("0.000000001"):
+            return VendorPaymentResult(
+                payment_id=None,
+                credit_tx_id=credit_tx_id,
+                effect=effect,
+            )
+
+    cur = conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id,
+            date,
+            amount,
+            method,
+            bank_account_id,
+            vendor_bank_account_id,
+            instrument_type,
+            instrument_no,
+            instrument_date,
+            deposited_date,
+            cleared_date,
+            clearing_state,
+            ref_no,
+            notes,
+            created_by,
+            temp_vendor_bank_name,
+            temp_vendor_bank_number
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload.purchase_id,
+            payload.date,
+            float(effect.payment_amount),
+            payload.method,
+            payload.bank_account_id,
+            payload.vendor_bank_account_id,
+            payload.instrument_type,
+            payload.instrument_no,
+            payload.instrument_date,
+            payload.deposited_date,
+            cleared_date,
+            state,
+            payload.ref_no,
+            payload.notes,
+            payload.created_by,
+            payload.temp_vendor_bank_name,
+            payload.temp_vendor_bank_number,
+        ),
+    )
+    payment_id = int(cur.lastrowid)
+    conn.execute(
+        """
+        INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            payload.created_by,
+            "payment",
+            "purchase_payments",
+            payment_id,
+            f"Recorded payment of {float(effect.payment_amount):g} using {payload.method}. Purchase ID: {payload.purchase_id}",
+        ),
+    )
+    return VendorPaymentResult(
+        payment_id=payment_id,
+        credit_tx_id=credit_tx_id,
+        effect=effect,
+    )
+
+
+def update_vendor_payment_state(
+    conn: Connection,
+    payment_id: int,
+    *,
+    clearing_state: str,
+    cleared_date: str | None = None,
+    notes: str | None = None,
+) -> int:
+    if clearing_state != "cleared":
+        raise ValueError("Vendor purchase payments must remain cleared")
+    sets = ["clearing_state = ?"]
+    params: list[object] = [clearing_state]
+    if cleared_date is not None:
+        sets.append("cleared_date = ?")
+        params.append(cleared_date)
+    if notes is not None:
+        sets.append("notes = ?")
+        params.append(notes)
+    params.append(payment_id)
+    cur = conn.execute(
+        f"UPDATE purchase_payments SET {', '.join(sets)} WHERE payment_id = ?",
+        params,
+    )
+    return cur.rowcount

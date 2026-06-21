@@ -17,7 +17,10 @@ from .dto import (
     SupplierRefundMetadata,
     VendorBalance,
     VendorOpenPurchase,
+    VendorPaymentEffect,
     VendorPaymentMetadata,
+    VendorPaymentPayload,
+    VendorPaymentResult,
     VendorPurchaseTotals,
     VendorStatement,
 )
@@ -37,6 +40,9 @@ from .current_rules.vendor_rules import (
     get_vendor_purchase_totals as get_current_vendor_purchase_totals,
     get_vendor_statement as get_current_vendor_statement,
     list_vendor_purchases as list_current_vendor_purchases,
+    preview_vendor_payment_effect as preview_current_vendor_payment_effect,
+    record_vendor_payment_event as record_current_vendor_payment_event,
+    update_vendor_payment_state as update_current_vendor_payment_state,
 )
 from .exceptions import AccountingNotImplementedError
 from .validators import (
@@ -205,8 +211,39 @@ class AccountingService:
     def record_sale_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_sale_event")
 
-    def record_vendor_payment_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_vendor_payment_event")
+    def preview_vendor_payment_effect(
+        self,
+        payload: VendorPaymentPayload,
+    ) -> VendorPaymentEffect:
+        if self.conn is None:
+            self._not_implemented("preview_vendor_payment_effect")
+        return preview_current_vendor_payment_effect(self.conn, payload)
+
+    def record_vendor_payment_event(
+        self,
+        payload: VendorPaymentPayload | None = None,
+    ) -> VendorPaymentResult:
+        if self.conn is None or payload is None:
+            self._not_implemented("record_vendor_payment_event")
+        return record_current_vendor_payment_event(self.conn, payload)
+
+    def update_vendor_payment_state(
+        self,
+        payment_id: int,
+        *,
+        clearing_state: str,
+        cleared_date: str | None = None,
+        notes: str | None = None,
+    ) -> int:
+        if self.conn is None:
+            self._not_implemented("update_vendor_payment_state")
+        return update_current_vendor_payment_state(
+            self.conn,
+            payment_id,
+            clearing_state=clearing_state,
+            cleared_date=cleared_date,
+            notes=notes,
+        )
 
     def record_customer_receipt_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_customer_receipt_event")

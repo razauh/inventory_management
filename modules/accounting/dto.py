@@ -118,6 +118,43 @@ class SupplierRefundMetadata(VendorPaymentMetadata):
 
 
 @dataclass(frozen=True)
+class VendorPaymentPayload:
+    purchase_id: int | str
+    amount: Decimal
+    method: str
+    date: str
+    bank_account_id: int | None = None
+    vendor_bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    instrument_date: str | None = None
+    deposited_date: str | None = None
+    cleared_date: str | None = None
+    clearing_state: str | None = None
+    ref_no: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+    temp_vendor_bank_name: str | None = None
+    temp_vendor_bank_number: str | None = None
+
+
+@dataclass(frozen=True)
+class VendorPaymentEffect:
+    purchase_id: int | str
+    vendor_id: int
+    amount_due: Decimal
+    payment_amount: Decimal
+    overpayment_credit: Decimal
+
+
+@dataclass(frozen=True)
+class VendorPaymentResult:
+    payment_id: int | None
+    credit_tx_id: int | None
+    effect: VendorPaymentEffect
+
+
+@dataclass(frozen=True)
 class PurchaseFinancials:
     purchase_id: int
     net_total: Decimal

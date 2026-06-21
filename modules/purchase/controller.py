@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import QWidget, QMessageBox
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QTimer, QObject, QEvent
 import sqlite3, datetime, time
+from decimal import Decimal
 from typing import Optional
 import logging
 import re
@@ -17,7 +18,7 @@ from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
-from ..accounting import AccountingService
+from ..accounting import AccountingService, VendorPaymentPayload
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str, fmt_money
 from ...utils.invoice_preview import show_invoice_preview
@@ -604,24 +605,26 @@ class PurchaseController(BaseModule):
                         # For consistency with cash, all payment methods are now cleared by default
                         clearing_state = "cleared"
                         cleared_date = ip.get("date") or p["date"]
-                    self.payments.record_payment(
-                        purchase_id=pid,
-                        amount=amt,
-                        method=method,
-                        bank_account_id=ip.get("bank_account_id"),
-                        vendor_bank_account_id=ip.get("vendor_bank_account_id"),
-                        instrument_type=ip.get("instrument_type"),
-                        instrument_no=ip.get("instrument_no"),
-                        instrument_date=ip.get("instrument_date"),
-                        deposited_date=ip.get("deposited_date"),
-                        cleared_date=cleared_date,
-                        clearing_state=clearing_state,
-                        ref_no=ip.get("ref_no"),
-                        notes=ip.get("notes") or "Initial payment",
-                        date=ip.get("date") or p["date"],
-                        created_by=self._current_user_id(),
-                        temp_vendor_bank_name=ip.get("temp_vendor_bank_name"),
-                        temp_vendor_bank_number=ip.get("temp_vendor_bank_number"),
+                    self.accounting.record_vendor_payment_event(
+                        VendorPaymentPayload(
+                            purchase_id=pid,
+                            amount=Decimal(str(amt)),
+                            method=method,
+                            bank_account_id=ip.get("bank_account_id"),
+                            vendor_bank_account_id=ip.get("vendor_bank_account_id"),
+                            instrument_type=ip.get("instrument_type"),
+                            instrument_no=ip.get("instrument_no"),
+                            instrument_date=ip.get("instrument_date"),
+                            deposited_date=ip.get("deposited_date"),
+                            cleared_date=cleared_date,
+                            clearing_state=clearing_state,
+                            ref_no=ip.get("ref_no"),
+                            notes=ip.get("notes") or "Initial payment",
+                            date=ip.get("date") or p["date"],
+                            created_by=self._current_user_id(),
+                            temp_vendor_bank_name=ip.get("temp_vendor_bank_name"),
+                            temp_vendor_bank_number=ip.get("temp_vendor_bank_number"),
+                        )
                     )
 
                     if clearing_state == "cleared":
@@ -661,24 +664,26 @@ class PurchaseController(BaseModule):
                         clearing_state = "cleared"
                         cleared_date = p.get("date")
 
-                    self.payments.record_payment(
-                        purchase_id=pid,
-                        amount=initial_paid,
-                        method=method,
-                        bank_account_id=bank_account_id,
-                        vendor_bank_account_id=vendor_bank_account_id if method in ("Bank Transfer", "Cheque", "Cash Deposit") else None,
-                        instrument_type=instrument_type,
-                        instrument_no=instrument_no,
-                        instrument_date=instrument_date,
-                        deposited_date=deposited_date,
-                        cleared_date=cleared_date,
-                        clearing_state=clearing_state,
-                        ref_no=ref_no,
-                        notes=pay_notes,
-                        date=p["date"],
-                        created_by=self._current_user_id(),
-                        temp_vendor_bank_name=p.get("temp_vendor_bank_name"),
-                        temp_vendor_bank_number=p.get("temp_vendor_bank_number"),
+                    self.accounting.record_vendor_payment_event(
+                        VendorPaymentPayload(
+                            purchase_id=pid,
+                            amount=Decimal(str(initial_paid)),
+                            method=method,
+                            bank_account_id=bank_account_id,
+                            vendor_bank_account_id=vendor_bank_account_id if method in ("Bank Transfer", "Cheque", "Cash Deposit") else None,
+                            instrument_type=instrument_type,
+                            instrument_no=instrument_no,
+                            instrument_date=instrument_date,
+                            deposited_date=deposited_date,
+                            cleared_date=cleared_date,
+                            clearing_state=clearing_state,
+                            ref_no=ref_no,
+                            notes=pay_notes,
+                            date=p["date"],
+                            created_by=self._current_user_id(),
+                            temp_vendor_bank_name=p.get("temp_vendor_bank_name"),
+                            temp_vendor_bank_number=p.get("temp_vendor_bank_number"),
+                        )
                     )
                     _log.info(
                         "Inserted initial payment (legacy) for %s amount=%.4f method=%s state=%s",
@@ -1273,24 +1278,26 @@ class PurchaseController(BaseModule):
                 try:
                     self.conn.execute("BEGIN")
                     
-                    self.payments.record_payment(
-                        purchase_id=payload["purchase_id"],
-                        amount=payload["amount"],
-                        method=payload["method"],
-                        bank_account_id=payload["bank_account_id"],
-                        vendor_bank_account_id=payload["vendor_bank_account_id"],
-                        instrument_type=payload["instrument_type"],
-                        instrument_no=payload["instrument_no"],
-                        instrument_date=payload["instrument_date"],
-                        deposited_date=payload["deposited_date"],
-                        cleared_date=payload["cleared_date"],
-                        clearing_state=payload["clearing_state"],
-                        ref_no=payload["ref_no"],
-                        notes=payload["notes"],
-                        date=payload["date"],
-                        created_by=self._current_user_id(),
-                        temp_vendor_bank_name=payload["temp_vendor_bank_name"],
-                        temp_vendor_bank_number=payload["temp_vendor_bank_number"],
+                    self.accounting.record_vendor_payment_event(
+                        VendorPaymentPayload(
+                            purchase_id=payload["purchase_id"],
+                            amount=Decimal(str(payload["amount"])),
+                            method=payload["method"],
+                            bank_account_id=payload["bank_account_id"],
+                            vendor_bank_account_id=payload["vendor_bank_account_id"],
+                            instrument_type=payload["instrument_type"],
+                            instrument_no=payload["instrument_no"],
+                            instrument_date=payload["instrument_date"],
+                            deposited_date=payload["deposited_date"],
+                            cleared_date=payload["cleared_date"],
+                            clearing_state=payload["clearing_state"],
+                            ref_no=payload["ref_no"],
+                            notes=payload["notes"],
+                            date=payload["date"],
+                            created_by=self._current_user_id(),
+                            temp_vendor_bank_name=payload["temp_vendor_bank_name"],
+                            temp_vendor_bank_number=payload["temp_vendor_bank_number"],
+                        )
                     )
                     
                     # Update the purchase header totals to reflect the new payment
