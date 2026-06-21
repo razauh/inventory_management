@@ -5,7 +5,12 @@ from __future__ import annotations
 from decimal import Decimal
 from sqlite3 import Connection
 
-from ..dto import PurchaseOutstanding, PurchaseTotalInputLine, PurchaseTotals
+from ..dto import (
+    PurchaseOutstanding,
+    PurchasePaymentStatus,
+    PurchaseTotalInputLine,
+    PurchaseTotals,
+)
 
 
 def _decimal(value: object) -> Decimal:
@@ -95,3 +100,58 @@ def get_purchase_outstanding(
     if clamp:
         outstanding = max(Decimal("0"), outstanding)
     return PurchaseOutstanding(purchase_id=row["purchase_id"], outstanding=outstanding)
+
+
+def get_purchase_payment_status(
+    conn: Connection,
+    purchase_id: int | str,
+) -> PurchasePaymentStatus:
+    row = conn.execute(
+        """
+        SELECT
+          p.purchase_id,
+          COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+          COALESCE((
+            SELECT SUM(CAST(amount AS REAL))
+            FROM purchase_payments
+            WHERE purchase_id = p.purchase_id
+              AND COALESCE(clearing_state, 'posted') = 'cleared'
+          ), 0.0) AS cleared_paid,
+          COALESCE(p.advance_payment_applied, 0.0) AS advance_payment_applied
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = ?
+        """,
+        (purchase_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown purchase_id: {purchase_id}")
+
+    paid = max(Decimal("0"), _decimal(row["cleared_paid"]))
+    applied_credit = _decimal(row["advance_payment_applied"])
+    remaining_due = _decimal(row["total_calc"]) - paid - applied_credit
+    if remaining_due <= Decimal("0.000000001"):
+        status = "paid"
+    elif paid > Decimal("0.000000001") or applied_credit > Decimal("0.000000001"):
+        status = "partial"
+    else:
+        status = "unpaid"
+    return PurchasePaymentStatus(
+        purchase_id=row["purchase_id"],
+        status=status,
+        paid_amount=paid,
+        applied_credit=applied_credit,
+        remaining_due=remaining_due,
+    )
+
+
+def recalculate_purchase_payment_status(
+    conn: Connection,
+    purchase_id: int | str,
+) -> PurchasePaymentStatus:
+    status = get_purchase_payment_status(conn, purchase_id)
+    conn.execute(
+        "UPDATE purchases SET paid_amount = ?, payment_status = ? WHERE purchase_id = ?",
+        (float(status.paid_amount), status.status, purchase_id),
+    )
+    return status

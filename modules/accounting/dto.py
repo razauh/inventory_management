@@ -44,7 +44,7 @@ class PurchaseTotalInputLine:
 
 @dataclass(frozen=True)
 class PurchasePaymentStatus:
-    purchase_id: int
+    purchase_id: int | str
     status: str
     paid_amount: Decimal
     applied_credit: Decimal

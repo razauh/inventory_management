@@ -18,8 +18,10 @@ from .dto import (
 )
 from .current_rules.purchase_rules import (
     get_purchase_outstanding as get_current_purchase_outstanding,
+    get_purchase_payment_status as get_current_purchase_payment_status,
     get_purchase_totals as get_current_purchase_totals,
     preview_purchase_total as preview_current_purchase_total,
+    recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
 from .exceptions import AccountingNotImplementedError
 
@@ -65,8 +67,19 @@ class AccountingService:
             self._not_implemented("get_purchase_remaining_due_header")
         return get_current_purchase_outstanding(self.conn, purchase_id, clamp=True)
 
-    def get_purchase_payment_status(self, purchase_id: int) -> PurchasePaymentStatus:
-        self._not_implemented("get_purchase_payment_status")
+    def get_purchase_payment_status(
+        self, purchase_id: int | str
+    ) -> PurchasePaymentStatus:
+        if self.conn is None:
+            self._not_implemented("get_purchase_payment_status")
+        return get_current_purchase_payment_status(self.conn, purchase_id)
+
+    def recalculate_purchase_payment_status(
+        self, purchase_id: int | str
+    ) -> PurchasePaymentStatus:
+        if self.conn is None:
+            self._not_implemented("recalculate_purchase_payment_status")
+        return recalculate_current_purchase_payment_status(self.conn, purchase_id)
 
     def get_purchase_financials(self, purchase_id: int) -> PurchaseFinancials:
         self._not_implemented("get_purchase_financials")

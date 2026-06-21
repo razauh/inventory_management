@@ -69,6 +69,11 @@ class PurchasesRepo:
                     data["purchase_id"]
                 ).outstanding
             )
+        if "payment_status" in data or "paid_amount" in data:
+            status = self.accounting.get_purchase_payment_status(data["purchase_id"])
+            data["payment_status"] = status.status
+            data["paid_amount"] = float(status.paid_amount)
+            data["advance_payment_applied"] = float(status.applied_credit)
         return data
 
     # ---------- Query ----------
@@ -1318,45 +1323,7 @@ class PurchasesRepo:
         Recompute and update the header totals (paid_amount and payment_status) for a purchase
         based on cleared payments.
         """
-        # Calculate the cleared paid amount (clamped ≥ 0.0 to mirror DB triggers)
-        r_pay = self.conn.execute(
-            """
-            SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS cleared_paid
-            FROM purchase_payments
-            WHERE purchase_id = ?
-              AND COALESCE(clearing_state, 'posted') = 'cleared'
-            """,
-            (purchase_id,),
-        ).fetchone()
-        cleared_paid = max(0.0, float(r_pay["cleared_paid"] if r_pay and "cleared_paid" in r_pay.keys() else 0.0))
-
-        # Get the calculated total and advance applied
-        row = self.conn.execute(
-            """
-            SELECT
-              COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-              COALESCE(p.advance_payment_applied, 0.0) AS adv_applied
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            WHERE p.purchase_id = ?
-            """,
-            (purchase_id,),
-        ).fetchone()
-        total_calc = float(row["total_calc"] if row and "total_calc" in row.keys() else 0.0)
-        adv_applied = float(row["adv_applied"] if row and "adv_applied" in row.keys() else 0.0)
-
-        remaining = total_calc - cleared_paid - adv_applied
-        if remaining <= 1e-9:
-            payment_status = "paid"
-        elif cleared_paid > 1e-9 or adv_applied > 1e-9:
-            payment_status = "partial"
-        else:
-            payment_status = "unpaid"
-
-        self.conn.execute(
-            "UPDATE purchases SET paid_amount = ?, payment_status = ? WHERE purchase_id = ?;",
-            (cleared_paid, payment_status, purchase_id),
-        )
+        self.accounting.recalculate_purchase_payment_status(purchase_id)
 
     def get_open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
         """
