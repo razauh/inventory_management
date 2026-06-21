@@ -105,7 +105,6 @@ def test_vendor_purchase_service_contract_methods_exist():
     ("method_name", "args"),
     [
         ("get_purchase_financials", (1,)),
-        ("get_vendor_statement", (1,)),
     ],
 )
 def test_unmigrated_vendor_purchase_methods_raise_not_implemented(method_name, args):

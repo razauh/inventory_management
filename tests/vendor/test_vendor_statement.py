@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 from types import ModuleType
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,7 +10,7 @@ from inventory_management.database.repositories.purchases_repo import PurchasesR
 from inventory_management.database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from inventory_management.database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from inventory_management.database.schema import SQL
-from inventory_management.modules.vendor import controller as controller_module
+from inventory_management.modules.accounting import AccountingService
 from inventory_management.modules.vendor.controller import VendorController
 from inventory_management.modules.vendor.payment_history_view import _VendorHistoryDialog
 
@@ -55,32 +54,122 @@ def _build_statement(
 ):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
-        CREATE TABLE vendor_advances (
-            vendor_id INTEGER,
-            tx_date TEXT,
-            amount REAL,
-            source_type TEXT
-        )
-        """
-    )
-    conn.executemany(
-        "INSERT INTO vendor_advances VALUES (1, ?, ?, ?)",
-        list(opening_advances),
-    )
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SQL)
+    conn.execute("DROP TRIGGER IF EXISTS trg_pp_method_checks_ins")
+    conn.execute("DROP TRIGGER IF EXISTS trg_vendor_advances_no_overdraw")
+    conn.execute("DROP TRIGGER IF EXISTS trg_vendor_advances_not_exceed_remaining_due")
+    conn.execute("DROP TRIGGER IF EXISTS trg_vadv_vendor_account_vendor_match_ins")
+    conn.execute("DROP TRIGGER IF EXISTS trg_vadv_active_accounts_ins")
 
-    purchase_repo = MagicMock()
-    purchase_repo.list_purchases_by_vendor.return_value = list(purchases)
-    monkeypatch.setattr(controller_module, "PurchasesRepo", lambda _conn: purchase_repo)
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Product')").lastrowid
+    conn.execute(
+        "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+        (product_id, uom_id),
+    )
+    conn.execute(
+        "INSERT INTO vendors (vendor_id, name, contact_info) VALUES (1, 'Vendor', 'Contact')"
+    )
+    conn.execute(
+        "INSERT INTO company_info (company_id, company_name) VALUES (1, 'Company')"
+    )
+    conn.execute(
+        "INSERT INTO company_bank_accounts (account_id, company_id, label) VALUES (10, 1, 'Bank')"
+    )
+    conn.execute(
+        "INSERT INTO vendor_bank_accounts (vendor_bank_account_id, vendor_id, label) VALUES (20, 1, 'Vendor Bank')"
+    )
+    for purchase in purchases:
+        conn.execute(
+            """
+            INSERT INTO purchases (
+                purchase_id, vendor_id, date, total_amount, payment_status
+            ) VALUES (?, 1, ?, ?, 'unpaid')
+            """,
+            (
+                purchase["purchase_id"],
+                purchase["date"],
+                purchase.get("total_amount", purchase["net_total_amount"]),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO purchase_items (
+                purchase_id, product_id, quantity, uom_id,
+                purchase_price, sale_price, item_discount
+            ) VALUES (?, ?, 1, ?, ?, ?, 0)
+            """,
+            (
+                purchase["purchase_id"],
+                product_id,
+                uom_id,
+                purchase["net_total_amount"],
+                purchase["net_total_amount"] + 1,
+            ),
+        )
+    for payment in payments:
+        conn.execute(
+            """
+            INSERT INTO purchase_payments (
+                payment_id, purchase_id, date, amount, method, instrument_no,
+                instrument_type, bank_account_id, vendor_bank_account_id,
+                ref_no, clearing_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payment["payment_id"],
+                payment["purchase_id"],
+                payment["date"],
+                payment["amount"],
+                payment["method"],
+                payment["instrument_no"],
+                payment["instrument_type"],
+                payment["bank_account_id"],
+                payment["vendor_bank_account_id"],
+                payment["ref_no"],
+                payment["clearing_state"],
+            ),
+        )
+    for tx_date, amount, source_type in opening_advances:
+        conn.execute(
+            """
+            INSERT INTO vendor_advances (vendor_id, tx_date, amount, source_type)
+            VALUES (1, ?, ?, ?)
+            """,
+            (tx_date, amount, source_type),
+        )
+    advance_columns = (
+        "tx_id",
+        "tx_date",
+        "amount",
+        "source_type",
+        "source_id",
+        "method",
+        "bank_account_id",
+        "vendor_bank_account_id",
+        "instrument_type",
+        "instrument_no",
+        "instrument_date",
+        "clearing_state",
+        "ref_no",
+        "temp_vendor_bank_name",
+        "temp_vendor_bank_number",
+    )
+    for advance in advances:
+        values = [advance.get(column) for column in advance_columns]
+        conn.execute(
+            f"""
+            INSERT INTO vendor_advances (
+                vendor_id, {", ".join(advance_columns)}
+            ) VALUES (1, {", ".join("?" for _ in advance_columns)})
+            """,
+            values,
+        )
 
     controller = VendorController.__new__(VendorController)
     controller.conn = conn
-    controller.ppay = MagicMock()
-    controller.ppay.list_payments_for_vendor.return_value = list(payments)
-    controller.vadv = MagicMock()
-    controller.vadv.list_ledger.return_value = list(advances)
-
+    controller.accounting = AccountingService(conn)
     statement = controller.build_vendor_statement(1, date_from=date_from)
     return conn, statement
 

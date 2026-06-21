@@ -29,6 +29,7 @@ from .current_rules.vendor_rules import (
     get_vendor_advance_balances as get_current_vendor_advance_balances,
     get_vendor_open_purchases as get_current_vendor_open_purchases,
     get_vendor_purchase_totals as get_current_vendor_purchase_totals,
+    get_vendor_statement as get_current_vendor_statement,
     list_vendor_purchases as list_current_vendor_purchases,
 )
 from .exceptions import AccountingNotImplementedError
@@ -145,7 +146,9 @@ class AccountingService:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> VendorStatement:
-        self._not_implemented("get_vendor_statement")
+        if self.conn is None:
+            self._not_implemented("get_vendor_statement")
+        return get_current_vendor_statement(self.conn, vendor_id, start_date, end_date)
 
     def get_customer_credit_balance(self, customer_id: int) -> None:
         self._not_implemented("get_customer_credit_balance")
