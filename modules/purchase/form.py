@@ -1,3 +1,7 @@
+import datetime
+import logging
+from decimal import Decimal
+
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QComboBox,
     QDateEdit, QLineEdit, QPushButton, QLabel, QGroupBox, QTableWidget, QTableWidgetItem,
@@ -10,11 +14,10 @@ from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
+from ..accounting import AccountingService, PurchaseTotalInputLine
 from ...utils.combo_search import configure_contains_completer
 from ...utils.helpers import today_str, fmt_money
 from .validation import SALE_PRICE_RULE_MESSAGE, parse_strict_float
-import datetime
-import logging
 
 
 class TableEventFilter(QObject):
@@ -109,6 +112,7 @@ class PurchaseForm(QDialog):
         self._allow_initial_payment = allow_initial_payment
         self.vendors = vendors
         self.products = products
+        self.accounting = AccountingService()
         self._payload = None
         # Create reverse mapping from display values to keys for payment methods
         self._method_display_to_key = {v: k for k, v in self.PAYMENT_METHODS.items()}
@@ -1124,21 +1128,35 @@ class PurchaseForm(QDialog):
         mark(3, bad_buy)
         mark(4, bad_sale or bad_buy)
 
-        line_total = max(0.0, qty * buy)
+        line_total = self.accounting.preview_purchase_total(
+            (
+                PurchaseTotalInputLine(
+                    quantity=Decimal("1"),
+                    purchase_price=Decimal(str(max(0.0, qty * buy))),
+                ),
+            ),
+            Decimal("0"),
+        ).net_total
         lt_item = self.tbl.item(r, 5)
         if lt_item:
-            lt_item.setText(fmt_money(line_total))
+            lt_item.setText(fmt_money(float(line_total)))
 
     def _calc_subtotal(self) -> float:
-        s = 0.0
+        lines = []
         for r in range(self.tbl.rowCount()):
             try:
                 qty = self._to_float_safe(self.tbl.item(r, 2).text() or "0")
                 buy = self._to_float_safe(self.tbl.item(r, 3).text() or "0")
             except Exception:
                 continue
-            s += max(0.0, qty * buy)
-        return s
+            lines.append(
+                PurchaseTotalInputLine(
+                    quantity=Decimal("1"),
+                    purchase_price=Decimal(str(max(0.0, qty * buy))),
+                )
+            )
+        totals = self.accounting.preview_purchase_total(tuple(lines), Decimal("0"))
+        return float(totals.net_total)
 
     def _refresh_totals(self):
         sub = self._calc_subtotal()

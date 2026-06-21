@@ -27,11 +27,19 @@ class PurchaseOutstanding:
 
 @dataclass(frozen=True)
 class PurchaseTotals:
-    purchase_id: int
-    gross_total: Decimal
+    purchase_id: int | str | None
+    subtotal_before_order_discount: Decimal
     order_discount: Decimal
     returned_value: Decimal
     net_total: Decimal
+    stored_total: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class PurchaseTotalInputLine:
+    quantity: Decimal
+    purchase_price: Decimal
+    item_discount: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ import sqlite3
 from typing import Iterable, Optional
 
 # For settlements
+from ...modules.accounting import AccountingService
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.inventory_repo import rebuild_dirty_valuations
 
@@ -53,6 +54,16 @@ class PurchasesRepo:
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
         self.conn = conn
+        self.accounting = AccountingService(conn)
+
+    def _with_purchase_totals(self, row: sqlite3.Row | dict) -> dict:
+        data = dict(row)
+        totals = self.accounting.get_purchase_totals(data["purchase_id"])
+        data["total_amount"] = float(totals.stored_total or 0.0)
+        data["order_discount"] = float(totals.order_discount)
+        data["returned_value"] = float(totals.returned_value)
+        data["calculated_total_amount"] = float(totals.net_total)
+        return data
 
     # ---------- Query ----------
     def _purchase_list_select_sql(self) -> str:
@@ -97,7 +108,10 @@ class PurchasesRepo:
         if limit and limit > 0:
             sql += " LIMIT ?"
             params.append(int(limit))
-        return self.conn.execute(sql, params).fetchall()
+        return [
+            self._with_purchase_totals(row)
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
 
     def search_purchases(
         self,
@@ -157,7 +171,10 @@ class PurchasesRepo:
         if limit and limit > 0:
             sql += " LIMIT ?"
             params.append(int(limit))
-        return self.conn.execute(sql, params).fetchall()
+        return [
+            self._with_purchase_totals(row)
+            for row in self.conn.execute(sql, params).fetchall()
+        ]
 
     def get_header(self, pid: str) -> dict | None:
         return self.conn.execute("SELECT * FROM purchases WHERE purchase_id=?", (pid,)).fetchone()
@@ -264,16 +281,18 @@ class PurchasesRepo:
         if not header:
             return {}
 
+        header_row = self._with_purchase_totals(header)
+
         return {
-            "row": dict(header),
+            "row": header_row,
             "items": [dict(row) for row in self.list_items(purchase_id)],
             "payment_summary": {
-                "method": header["latest_payment_method"],
-                "amount": float(header["latest_payment_amount"] or 0.0),
-                "status": header["latest_payment_status"] or "posted",
-                "overpayment": float(header["overpayment_credited"] or 0.0),
+                "method": header_row["latest_payment_method"],
+                "amount": float(header_row["latest_payment_amount"] or 0.0),
+                "status": header_row["latest_payment_status"] or "posted",
+                "overpayment": float(header_row["overpayment_credited"] or 0.0),
                 "counterparty_label": "Vendor",
-            } if header["latest_payment_method"] or float(header["latest_payment_amount"] or 0.0) > 0 else None,
+            } if header_row["latest_payment_method"] or float(header_row["latest_payment_amount"] or 0.0) > 0 else None,
         }
 
     def get_returnable_for_items(self, purchase_id: str) -> list[dict]:

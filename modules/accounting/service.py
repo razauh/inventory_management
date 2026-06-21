@@ -2,22 +2,32 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+from sqlite3 import Connection
 from typing import Any
 
 from .dto import (
     PurchaseFinancials,
     PurchaseOutstanding,
     PurchasePaymentStatus,
+    PurchaseTotalInputLine,
     PurchaseTotals,
     VendorBalance,
     VendorOpenPurchase,
     VendorStatement,
+)
+from .current_rules.purchase_rules import (
+    get_purchase_totals as get_current_purchase_totals,
+    preview_purchase_total as preview_current_purchase_total,
 )
 from .exceptions import AccountingNotImplementedError
 
 
 class AccountingService:
     """Future single entry point for accounting calculations and postings."""
+
+    def __init__(self, conn: Connection | None = None):
+        self.conn = conn
 
     def _not_implemented(self, operation: str) -> None:
         raise AccountingNotImplementedError(
@@ -30,8 +40,17 @@ class AccountingService:
     def get_customer_balance(self, customer_id: int) -> None:
         self._not_implemented("get_customer_balance")
 
-    def get_purchase_totals(self, purchase_id: int) -> PurchaseTotals:
-        self._not_implemented("get_purchase_totals")
+    def get_purchase_totals(self, purchase_id: int | str) -> PurchaseTotals:
+        if self.conn is None:
+            self._not_implemented("get_purchase_totals")
+        return get_current_purchase_totals(self.conn, purchase_id)
+
+    def preview_purchase_total(
+        self,
+        items: tuple[PurchaseTotalInputLine, ...],
+        order_discount: Decimal,
+    ) -> PurchaseTotals:
+        return preview_current_purchase_total(items, order_discount)
 
     def get_purchase_outstanding(self, purchase_id: int) -> PurchaseOutstanding:
         self._not_implemented("get_purchase_outstanding")
