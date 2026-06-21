@@ -63,6 +63,12 @@ class PurchasesRepo:
         data["order_discount"] = float(totals.order_discount)
         data["returned_value"] = float(totals.returned_value)
         data["calculated_total_amount"] = float(totals.net_total)
+        if "remaining_due" in data:
+            data["remaining_due"] = float(
+                self.accounting.get_purchase_remaining_due_header(
+                    data["purchase_id"]
+                ).outstanding
+            )
         return data
 
     # ---------- Query ----------
@@ -900,8 +906,7 @@ class PurchasesRepo:
                         f"remaining due is {remaining_due:.2f}."
                     )
                 refundable_direct_payment = max(0.0, direct_paid - prior_refunds)
-                # Validation check matches split logic
-                if (settlement_amount - prop_adv) > refundable_direct_payment + 1e-9:
+                if settlement_amount > refundable_direct_payment + 1e-9:
                     raise ValueError(
                         "Refund exceeds the remaining refundable direct payment "
                         f"of {refundable_direct_payment:.2f}."
@@ -1302,23 +1307,11 @@ class PurchasesRepo:
         Uses calculated_total_amount from purchase_detailed_totals view if available, 
         falling back to purchases.total_amount otherwise.
         """
-        sql = """
-        SELECT
-            COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-            COALESCE(p.paid_amount, 0.0) AS paid_amount,
-            COALESCE(p.advance_payment_applied, 0.0) AS advance_payment_applied
-        FROM purchases p
-        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-        WHERE p.purchase_id = ?
-        """
-        row = self.conn.execute(sql, (purchase_id,)).fetchone()
-        if not row:
+        try:
+            outstanding = self.accounting.get_purchase_remaining_due_header(purchase_id)
+        except ValueError:
             return 0.0
-        total = float(row["total_calc"] or 0.0)
-        paid = float(row["paid_amount"] or 0.0)
-        applied = float(row["advance_payment_applied"] or 0.0)
-        remaining = total - paid - applied
-        return max(0.0, remaining)
+        return float(outstanding.outstanding)
 
     def update_header_totals(self, purchase_id: str) -> None:
         """
@@ -1406,7 +1399,14 @@ class PurchasesRepo:
         LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
         WHERE p.purchase_id = ?
         """
-        return self.conn.execute(sql, (purchase_id,)).fetchone()
+        row = self.conn.execute(sql, (purchase_id,)).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["remaining_due"] = float(
+            self.accounting.get_purchase_outstanding(purchase_id).outstanding
+        )
+        return data
 
     def get_header_with_vendor(self, purchase_id: str) -> dict | None:
         """

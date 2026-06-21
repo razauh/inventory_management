@@ -17,6 +17,7 @@ from .dto import (
     VendorStatement,
 )
 from .current_rules.purchase_rules import (
+    get_purchase_outstanding as get_current_purchase_outstanding,
     get_purchase_totals as get_current_purchase_totals,
     preview_purchase_total as preview_current_purchase_total,
 )
@@ -52,8 +53,17 @@ class AccountingService:
     ) -> PurchaseTotals:
         return preview_current_purchase_total(items, order_discount)
 
-    def get_purchase_outstanding(self, purchase_id: int) -> PurchaseOutstanding:
-        self._not_implemented("get_purchase_outstanding")
+    def get_purchase_outstanding(self, purchase_id: int | str) -> PurchaseOutstanding:
+        if self.conn is None:
+            self._not_implemented("get_purchase_outstanding")
+        return get_current_purchase_outstanding(self.conn, purchase_id)
+
+    def get_purchase_remaining_due_header(
+        self, purchase_id: int | str
+    ) -> PurchaseOutstanding:
+        if self.conn is None:
+            self._not_implemented("get_purchase_remaining_due_header")
+        return get_current_purchase_outstanding(self.conn, purchase_id, clamp=True)
 
     def get_purchase_payment_status(self, purchase_id: int) -> PurchasePaymentStatus:
         self._not_implemented("get_purchase_payment_status")

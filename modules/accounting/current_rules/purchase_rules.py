@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from sqlite3 import Connection
 
-from ..dto import PurchaseTotalInputLine, PurchaseTotals
+from ..dto import PurchaseOutstanding, PurchaseTotalInputLine, PurchaseTotals
 
 
 def _decimal(value: object) -> Decimal:
@@ -63,3 +63,35 @@ def get_purchase_totals(conn: Connection, purchase_id: int | str) -> PurchaseTot
         net_total=_decimal(row["net_total"]),
         stored_total=_decimal(row["stored_total"]),
     )
+
+
+def get_purchase_outstanding(
+    conn: Connection,
+    purchase_id: int | str,
+    *,
+    clamp: bool = False,
+) -> PurchaseOutstanding:
+    row = conn.execute(
+        """
+        SELECT
+          p.purchase_id,
+          COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
+          COALESCE(p.paid_amount, 0.0) AS paid_amount,
+          COALESCE(p.advance_payment_applied, 0.0) AS advance_payment_applied
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.purchase_id = ?
+        """,
+        (purchase_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown purchase_id: {purchase_id}")
+
+    outstanding = (
+        _decimal(row["total_calc"])
+        - _decimal(row["paid_amount"])
+        - _decimal(row["advance_payment_applied"])
+    )
+    if clamp:
+        outstanding = max(Decimal("0"), outstanding)
+    return PurchaseOutstanding(purchase_id=row["purchase_id"], outstanding=outstanding)

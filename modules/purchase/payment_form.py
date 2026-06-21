@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtCore import QEvent, QObject
 from ...database.repositories.vendors_repo import VendorsRepo
+from ..accounting import AccountingService
 from ...utils.helpers import today_str
 from ...utils.combo_search import configure_contains_completer
 from .validation import parse_strict_float
@@ -252,29 +253,14 @@ class PaymentForm(QDialog):
             return
             
         try:
-            # Fetch purchase header data to get total amount
-            row = self.vendors.conn.execute(
-                """
-                SELECT 
-                    COALESCE(pdt.calculated_total_amount, p.total_amount) AS total_calc,
-                    COALESCE(p.paid_amount, 0.0) AS paid_amount,
-                    COALESCE(p.advance_payment_applied, 0.0) AS advance_applied
-                FROM purchases p
-                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-                WHERE p.purchase_id = ?
-                """,
-                (self.purchase_id,)
-            ).fetchone()
-            
-            if row:
-                total_calc = float(row["total_calc"] or 0.0)
-                paid_amount = float(row["paid_amount"] or 0.0)
-                advance_applied = float(row["advance_applied"] or 0.0)
-                
-                remaining = total_calc - paid_amount - advance_applied
-                self.lbl_remaining.setText(f"Remaining: {remaining:.2f}")
-            else:
+            try:
+                remaining = AccountingService(
+                    self.vendors.conn
+                ).get_purchase_outstanding(self.purchase_id)
+            except ValueError:
                 self.lbl_remaining.setText("Purchase not found")
+            else:
+                self.lbl_remaining.setText(f"Remaining: {remaining.outstanding:.2f}")
                 
         except Exception as e:
             logging.error(f"Error calculating remaining amount: {e}")

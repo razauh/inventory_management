@@ -2,6 +2,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
+from ...modules.accounting import AccountingService
+
 
 # ----------------------------
 # Domain errors (friendly)
@@ -38,6 +40,7 @@ class VendorAdvancesRepo:
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
         self.conn = conn
+        self.accounting = AccountingService(conn)
         # small epsilon to mirror SQL triggers' tolerance
         self._eps = 1e-9
 
@@ -483,23 +486,14 @@ class VendorAdvancesRepo:
         or None if the purchase is missing or belongs to another vendor.
         """
         row = self.conn.execute(
-            """
-            SELECT
-              CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS REAL) AS total_amount,
-              CAST(p.paid_amount AS REAL)             AS paid_amount,
-              CAST(p.advance_payment_applied AS REAL) AS advance_applied
-            FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            WHERE p.purchase_id = ? AND p.vendor_id = ?
-            """,
+            "SELECT 1 FROM purchases WHERE purchase_id = ? AND vendor_id = ?",
             (purchase_id, vendor_id),
         ).fetchone()
         if not row:
             return None
-        total = float(row["total_amount"])
-        paid = float(row["paid_amount"])
-        adv  = float(row["advance_applied"])
-        return max(0.0, total - paid - adv)
+        return float(
+            self.accounting.get_purchase_remaining_due_header(purchase_id).outstanding
+        )
 
     def _raise_mapped_error(self, e: sqlite3.Error) -> None:
         """

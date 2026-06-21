@@ -21,7 +21,7 @@ class CustomerBalance:
 
 @dataclass(frozen=True)
 class PurchaseOutstanding:
-    purchase_id: int
+    purchase_id: int | str
     outstanding: Decimal
 
 

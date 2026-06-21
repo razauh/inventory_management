@@ -19,6 +19,7 @@ from modules.accounting import (
 VENDOR_PURCHASE_METHODS = [
     ("get_purchase_totals", ("purchase_id",)),
     ("get_purchase_outstanding", ("purchase_id",)),
+    ("get_purchase_remaining_due_header", ("purchase_id",)),
     ("get_purchase_payment_status", ("purchase_id",)),
     ("get_purchase_financials", ("purchase_id",)),
     ("get_vendor_advance_balance", ("vendor_id",)),
@@ -92,7 +93,6 @@ def test_vendor_purchase_service_contract_methods_exist():
 @pytest.mark.parametrize(
     ("method_name", "args"),
     [
-        ("get_purchase_outstanding", (1,)),
         ("get_purchase_payment_status", (1,)),
         ("get_purchase_financials", (1,)),
         ("get_vendor_advance_balance", (1,)),
