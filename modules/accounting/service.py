@@ -23,6 +23,10 @@ from .current_rules.purchase_rules import (
     preview_purchase_total as preview_current_purchase_total,
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
+from .current_rules.vendor_rules import (
+    get_vendor_advance_balance as get_current_vendor_advance_balance,
+    get_vendor_advance_balances as get_current_vendor_advance_balances,
+)
 from .exceptions import AccountingNotImplementedError
 
 
@@ -88,7 +92,16 @@ class AccountingService:
         self._not_implemented("get_sale_outstanding")
 
     def get_vendor_advance_balance(self, vendor_id: int) -> VendorBalance:
-        self._not_implemented("get_vendor_advance_balance")
+        if self.conn is None:
+            self._not_implemented("get_vendor_advance_balance")
+        return get_current_vendor_advance_balance(self.conn, vendor_id)
+
+    def get_vendor_advance_balances(
+        self, vendor_ids: tuple[int, ...]
+    ) -> dict[int, VendorBalance]:
+        if self.conn is None:
+            self._not_implemented("get_vendor_advance_balances")
+        return get_current_vendor_advance_balances(self.conn, vendor_ids)
 
     def get_vendor_open_purchases(
         self, vendor_id: int

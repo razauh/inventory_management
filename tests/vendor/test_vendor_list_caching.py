@@ -242,7 +242,10 @@ def test_build_model_loads_one_page_and_batches_balances():
     controller.repo = SimpleNamespace(
         count_vendors=lambda search: 120,
         list_vendors=lambda search, limit, offset: list_calls.append((search, limit, offset)) or rows,
-        vendor_balances=lambda ids: balances.append(ids) or {3: 12.5},
+    )
+    controller.accounting = SimpleNamespace(
+        get_vendor_advance_balances=lambda ids: balances.append(list(ids))
+        or {3: SimpleNamespace(balance=12.5)}
     )
     controller.base_model = VendorsTableModel([])
     controller.proxy = SimpleNamespace(rowCount=lambda: controller.base_model.rowCount())

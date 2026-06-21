@@ -17,6 +17,7 @@ from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.purchases_repo import PurchasesRepo
+from ..accounting import AccountingService
 from ...utils import ui_helpers as uih
 from ...utils.helpers import today_str
 try:
@@ -37,6 +38,7 @@ class VendorController(BaseModule):
         self.vadv = VendorAdvancesRepo(conn)
         self.vbank = VendorBankAccountsRepo(conn)
         self.ppay = PurchasePaymentsRepo(conn)
+        self.accounting = AccountingService(conn)
         self.view = VendorView()
         from .model import VendorBankAccountsTableModel
         self.base_model = VendorsTableModel([])
@@ -183,7 +185,12 @@ class VendorController(BaseModule):
     def _hydrate_visible_balances(self, token: int):
         if token != self._balance_token:
             return
-        balances = self.repo.vendor_balances(self.base_model.vendor_ids())
+        balances = {
+            vendor_id: float(balance.balance)
+            for vendor_id, balance in self.accounting.get_vendor_advance_balances(
+                tuple(self.base_model.vendor_ids())
+            ).items()
+        }
         if token != self._balance_token:
             return
         self.base_model.apply_balances(balances)
@@ -230,8 +237,8 @@ class VendorController(BaseModule):
             if row and row.get("balance") is not None:
                 credit = float(row.get("balance") or 0.0)
             elif vid:
-                raw = self.vadv.get_balance(int(vid))
-                credit = float(raw) if raw is not None else 0.0
+                balance = self.accounting.get_vendor_advance_balance(int(vid))
+                credit = float(balance.balance)
         except Exception as e:
             _log.exception("Failed to load vendor credit balance for vendor_id=%s", vid)
             credit_error = f"Available advance could not be loaded: {e}"
@@ -331,7 +338,7 @@ class VendorController(BaseModule):
             return max(0.0, total - paid - applied)
     def _vendor_credit_balance(self, vendor_id: int) -> float:
         try:
-            return float(self.vadv.get_balance(vendor_id))
+            return float(self.accounting.get_vendor_advance_balance(vendor_id).balance)
         except Exception as e:
             _log.exception("Failed to load vendor credit balance for vendor_id=%s", vendor_id)
             info(self.view, "Data unavailable", f"Vendor credit balance could not be loaded:\n{e}")

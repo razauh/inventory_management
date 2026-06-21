@@ -24,6 +24,7 @@ VENDOR_PURCHASE_METHODS = [
     ("recalculate_purchase_payment_status", ("purchase_id",)),
     ("get_purchase_financials", ("purchase_id",)),
     ("get_vendor_advance_balance", ("vendor_id",)),
+    ("get_vendor_advance_balances", ("vendor_ids",)),
     ("get_vendor_open_purchases", ("vendor_id",)),
     ("get_vendor_statement", ("vendor_id", "start_date", "end_date")),
     ("preview_purchase_total", ("items", "order_discount")),
@@ -95,7 +96,6 @@ def test_vendor_purchase_service_contract_methods_exist():
     ("method_name", "args"),
     [
         ("get_purchase_financials", (1,)),
-        ("get_vendor_advance_balance", (1,)),
         ("get_vendor_open_purchases", (1,)),
         ("get_vendor_statement", (1,)),
     ],

@@ -251,13 +251,9 @@ class VendorAdvancesRepo:
         +ve = you hold credit from the vendor; 0 = none.
         (Negative shouldn't occur under triggers.)
         """
-        row = self.conn.execute(
-            "SELECT balance FROM v_vendor_advance_balance WHERE vendor_id = ?",
-            (vendor_id,),
-        ).fetchone()
-        if not row:
-            return 0.0
-        return float(row["balance"] if isinstance(row, sqlite3.Row) else row[0])
+        return float(
+            AccountingService(self.conn).get_vendor_advance_balance(vendor_id).balance
+        )
 
     # Alias per spec
     def balance(self, vendor_id: int) -> float:

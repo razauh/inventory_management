@@ -17,6 +17,7 @@ from ...database.repositories.products_repo import ProductsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
+from ..accounting import AccountingService
 from ...utils.ui_helpers import info
 from ...utils.helpers import today_str, fmt_money
 from ...utils.invoice_preview import show_invoice_preview
@@ -84,6 +85,7 @@ class PurchaseController(BaseModule):
         self.payments = PurchasePaymentsRepo(conn)
         self.vadv = VendorAdvancesRepo(conn)
         self.vbank = VendorBankAccountsRepo(conn)
+        self.accounting = AccountingService(conn)
         self.vendors = VendorsRepo(conn)
         self.products = ProductsRepo(conn)
         self._table_initialized = False
@@ -457,7 +459,7 @@ class PurchaseController(BaseModule):
 
     def _vendor_credit_balance(self, vendor_id: int) -> float:
         try:
-            return float(self.vadv.get_balance(vendor_id))
+            return float(self.accounting.get_vendor_advance_balance(vendor_id).balance)
         except Exception:
             return 0.0
 

@@ -13,7 +13,6 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
-from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ..accounting import AccountingService, PurchaseTotalInputLine
 from ...utils.combo_search import configure_contains_completer
 from ...utils.helpers import today_str, fmt_money
@@ -516,9 +515,10 @@ class PurchaseForm(QDialog):
         vendor_id = self.cmb_vendor.currentData()
         if vendor_id:
             try:
-                # Create a vendor advances repo instance using the vendors' connection
-                vadv_repo = VendorAdvancesRepo(self.vendors.conn)
-                advance_balance = vadv_repo.get_balance(vendor_id)
+                balance = AccountingService(
+                    self.vendors.conn
+                ).get_vendor_advance_balance(vendor_id)
+                advance_balance = float(balance.balance)
 
                 # Check if balance retrieval returned None
                 if advance_balance is None:

@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 import sqlite3
 
+from ...modules.accounting import AccountingService
+
 
 class DomainError(Exception):
     pass
@@ -85,17 +87,11 @@ class VendorsRepo:
         ids = [int(vendor_id) for vendor_id in vendor_ids if vendor_id is not None]
         if not ids:
             return {}
-        placeholders = ", ".join("?" for _ in ids)
-        rows = self.conn.execute(
-            f"""
-            SELECT v.vendor_id, COALESCE(b.balance, 0.0) AS balance
-            FROM vendors v
-            LEFT JOIN v_vendor_advance_balance b ON b.vendor_id = v.vendor_id
-            WHERE v.vendor_id IN ({placeholders})
-            """,
-            ids,
-        ).fetchall()
-        return {int(row["vendor_id"]): float(row["balance"] or 0.0) for row in rows}
+        balances = AccountingService(self.conn).get_vendor_advance_balances(tuple(ids))
+        return {
+            vendor_id: float(balance.balance)
+            for vendor_id, balance in balances.items()
+        }
 
     def get(self, vendor_id: int) -> Vendor | None:
         r = self.conn.execute(
