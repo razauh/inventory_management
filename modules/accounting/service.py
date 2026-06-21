@@ -14,6 +14,7 @@ from .dto import (
     PurchaseTotals,
     VendorBalance,
     VendorOpenPurchase,
+    VendorPurchaseTotals,
     VendorStatement,
 )
 from .current_rules.purchase_rules import (
@@ -26,6 +27,9 @@ from .current_rules.purchase_rules import (
 from .current_rules.vendor_rules import (
     get_vendor_advance_balance as get_current_vendor_advance_balance,
     get_vendor_advance_balances as get_current_vendor_advance_balances,
+    get_vendor_open_purchases as get_current_vendor_open_purchases,
+    get_vendor_purchase_totals as get_current_vendor_purchase_totals,
+    list_vendor_purchases as list_current_vendor_purchases,
 )
 from .exceptions import AccountingNotImplementedError
 
@@ -106,7 +110,34 @@ class AccountingService:
     def get_vendor_open_purchases(
         self, vendor_id: int
     ) -> tuple[VendorOpenPurchase, ...]:
-        self._not_implemented("get_vendor_open_purchases")
+        if self.conn is None:
+            self._not_implemented("get_vendor_open_purchases")
+        return get_current_vendor_open_purchases(self.conn, vendor_id)
+
+    def get_vendor_purchase_totals(
+        self,
+        vendor_id: int,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> VendorPurchaseTotals:
+        if self.conn is None:
+            self._not_implemented("get_vendor_purchase_totals")
+        return get_current_vendor_purchase_totals(
+            self.conn,
+            vendor_id,
+            date_from,
+            date_to,
+        )
+
+    def list_vendor_purchases(
+        self,
+        vendor_id: int,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> tuple[dict, ...]:
+        if self.conn is None:
+            self._not_implemented("list_vendor_purchases")
+        return list_current_vendor_purchases(self.conn, vendor_id, date_from, date_to)
 
     def get_vendor_statement(
         self,

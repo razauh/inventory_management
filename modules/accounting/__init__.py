@@ -13,6 +13,7 @@ from .dto import (
     SaleOutstanding,
     VendorBalance,
     VendorOpenPurchase,
+    VendorPurchaseTotals,
     VendorStatement,
     VendorStatementEntry,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "SaleOutstanding",
     "VendorBalance",
     "VendorOpenPurchase",
+    "VendorPurchaseTotals",
     "VendorStatement",
     "VendorStatementEntry",
 ]

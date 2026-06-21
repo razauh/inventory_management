@@ -298,7 +298,18 @@ class VendorController(BaseModule):
             info(self.view, "Data unavailable", f"Vendor bank accounts could not be loaded:\n{e}")
             return []
     def _open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
-        return self.repo.get_open_purchases_for_vendor(vendor_id)
+        return [
+            {
+                "purchase_id": row.purchase_id,
+                "date": row.purchase_date,
+                "calculated_total_amount": float(row.calculated_total_amount),
+                "total_amount": float(row.total_amount),
+                "paid_amount": float(row.paid_amount),
+                "advance_payment_applied": float(row.advance_payment_applied),
+                "balance": float(row.outstanding),
+            }
+            for row in self.accounting.get_vendor_open_purchases(vendor_id)
+        ]
     def _list_open_purchases_for_vendor(self, vendor_id: int) -> List[Dict[str, Any]]:
         try:
             rows = self._open_purchases_for_vendor(vendor_id)
@@ -368,7 +379,7 @@ class VendorController(BaseModule):
     def _build_grant_credit_allocation_preview(self, vendor_id: int, amount: float) -> dict:
         remaining_credit = max(0.0, float(amount or 0.0))
         open_purchases = sorted(
-            self.repo.get_open_purchases_for_vendor(vendor_id),
+            self._open_purchases_for_vendor(vendor_id),
             key=lambda purchase: (
                 str(purchase["date"] or ""),
                 str(purchase["purchase_id"] or ""),

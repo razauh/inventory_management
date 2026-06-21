@@ -1098,43 +1098,9 @@ class PurchasesRepo:
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> list[dict]:
-        sql = [
-            """
-            SELECT
-              p.purchase_id,
-              p.date,
-              CAST(p.total_amount AS REAL) AS total_amount,
-              CAST(COALESCE(pdt.calculated_total_amount, p.total_amount) AS REAL) AS net_total_amount
-            """,
-            "FROM purchases p",
-            "LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id",
-            "WHERE p.vendor_id = ?",
-        ]
-        params: list[object] = [vendor_id]
-        if date_from:
-            sql.append("AND DATE(p.date) >= DATE(?)")
-            params.append(date_from)
-        if date_to:
-            sql.append("AND DATE(p.date) <= DATE(?)")
-            params.append(date_to)
-        sql.append("ORDER BY DATE(p.date) ASC, p.purchase_id ASC")
-
-        cur = self.conn.execute("\n".join(sql), params)
-        rows = cur.fetchall()
-        out: list[dict] = []
-        for r in rows:
-            if isinstance(r, sqlite3.Row):
-                out.append(dict(r))
-            else:
-                out.append(
-                    {
-                        "purchase_id": r[0],
-                        "date": r[1],
-                        "total_amount": float(r[2]),
-                        "net_total_amount": float(r[3]),
-                    }
-                )
-        return out
+        return list(
+            self.accounting.list_vendor_purchases(vendor_id, date_from, date_to)
+        )
 
     def get_purchase_totals_for_vendor(
         self,
@@ -1142,28 +1108,15 @@ class PurchasesRepo:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> dict:
-        row = self.conn.execute(
-            "\n".join(
-                [
-                    """
-                    SELECT
-                      COALESCE(SUM(CAST(p.total_amount AS REAL)), 0.0)           AS purchases_total,
-                      COALESCE(SUM(CAST(p.paid_amount AS REAL)), 0.0)             AS paid_total,
-                      COALESCE(SUM(CAST(p.advance_payment_applied AS REAL)), 0.0) AS advance_applied_total
-                    FROM purchases p
-                    WHERE p.vendor_id = ?
-                    """,
-                    "AND DATE(p.date) >= DATE(?)" if date_from else "",
-                    "AND DATE(p.date) <= DATE(?)" if date_to else "",
-                ]
-            ),
-            ([vendor_id] + ([date_from] if date_from else []) + ([date_to] if date_to else [])),
-        ).fetchone()
-
+        totals = self.accounting.get_vendor_purchase_totals(
+            vendor_id,
+            date_from,
+            date_to,
+        )
         return {
-            "purchases_total": float(row["purchases_total"] if isinstance(row, sqlite3.Row) else row[0]),
-            "paid_total": float(row["paid_total"] if isinstance(row, sqlite3.Row) else row[1]),
-            "advance_applied_total": float(row["advance_applied_total"] if isinstance(row, sqlite3.Row) else row[2]),
+            "purchases_total": float(totals.purchases_total),
+            "paid_total": float(totals.paid_total),
+            "advance_applied_total": float(totals.advance_applied_total),
         }
 
     def list_return_values_by_purchase(self, purchase_id: str) -> list[dict]:
@@ -1329,22 +1282,18 @@ class PurchasesRepo:
         """
         Get open purchases (purchases with remaining balance) for a vendor.
         """
-        sql = """
-        SELECT
-            p.purchase_id,
-            p.date,
-            COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount,
-            CAST(p.total_amount AS REAL)    AS total_amount,
-            CAST(p.paid_amount AS REAL)     AS paid_amount,
-            CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
-            (COALESCE(pdt.calculated_total_amount, p.total_amount) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS balance
-        FROM purchases p
-        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-        WHERE p.vendor_id = ?
-          AND (COALESCE(pdt.calculated_total_amount, p.total_amount) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) > 1e-9
-        ORDER BY DATE(p.date) DESC, p.purchase_id DESC
-        """
-        return self.conn.execute(sql, (vendor_id,)).fetchall()
+        return [
+            {
+                "purchase_id": row.purchase_id,
+                "date": row.purchase_date,
+                "calculated_total_amount": float(row.calculated_total_amount),
+                "total_amount": float(row.total_amount),
+                "paid_amount": float(row.paid_amount),
+                "advance_payment_applied": float(row.advance_payment_applied),
+                "balance": float(row.outstanding),
+            }
+            for row in self.accounting.get_vendor_open_purchases(vendor_id)
+        ]
 
     def get_vendor_id_for_purchase(self, purchase_id: str) -> dict | None:
         """

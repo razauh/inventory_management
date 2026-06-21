@@ -11,6 +11,7 @@ from modules.accounting import (
     PurchaseTotalInputLine,
     PurchaseTotals,
     VendorOpenPurchase,
+    VendorPurchaseTotals,
     VendorStatement,
     VendorStatementEntry,
 )
@@ -26,6 +27,8 @@ VENDOR_PURCHASE_METHODS = [
     ("get_vendor_advance_balance", ("vendor_id",)),
     ("get_vendor_advance_balances", ("vendor_ids",)),
     ("get_vendor_open_purchases", ("vendor_id",)),
+    ("get_vendor_purchase_totals", ("vendor_id", "date_from", "date_to")),
+    ("list_vendor_purchases", ("vendor_id", "date_from", "date_to")),
     ("get_vendor_statement", ("vendor_id", "start_date", "end_date")),
     ("preview_purchase_total", ("items", "order_discount")),
 ]
@@ -69,6 +72,12 @@ def test_vendor_purchase_service_contract_methods_exist():
         net_total=Decimal("9.00"),
         outstanding=Decimal("3.00"),
     )
+    assert VendorPurchaseTotals(
+        vendor_id=2,
+        purchases_total=Decimal("12.00"),
+        paid_total=Decimal("5.00"),
+        advance_applied_total=Decimal("1.00"),
+    )
     assert VendorStatement(
         vendor_id=2,
         start_date=None,
@@ -96,7 +105,6 @@ def test_vendor_purchase_service_contract_methods_exist():
     ("method_name", "args"),
     [
         ("get_purchase_financials", (1,)),
-        ("get_vendor_open_purchases", (1,)),
         ("get_vendor_statement", (1,)),
     ],
 )

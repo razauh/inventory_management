@@ -31,7 +31,20 @@ def make_controller():
     controller._list_company_bank_accounts = MagicMock(return_value=[])
     controller._list_vendor_bank_accounts = MagicMock(return_value=[])
     controller._reload = MagicMock()
+    controller.accounting = MagicMock()
     return controller
+
+
+def open_purchase(purchase_id: str, date: str, balance: float = 0.0):
+    return SimpleNamespace(
+        purchase_id=purchase_id,
+        purchase_date=date,
+        calculated_total_amount=balance,
+        total_amount=balance,
+        paid_amount=0.0,
+        advance_payment_applied=0.0,
+        outstanding=balance,
+    )
 
 
 @pytest.fixture()
@@ -424,11 +437,11 @@ def test_apply_advance_rolls_back_when_credit_cannot_be_recorded():
 
 def test_grant_credit_preview_uses_fifo_purchase_date_then_purchase_id():
     controller = make_controller()
-    controller.repo.get_open_purchases_for_vendor.return_value = [
-        {"purchase_id": "P-103", "date": "2026-01-10"},
-        {"purchase_id": "P-102", "date": "2026-01-05"},
-        {"purchase_id": "P-101", "date": "2026-01-01"},
-        {"purchase_id": "P-100", "date": "2026-01-01"},
+    controller.accounting.get_vendor_open_purchases.return_value = [
+        open_purchase("P-103", "2026-01-10"),
+        open_purchase("P-102", "2026-01-05"),
+        open_purchase("P-101", "2026-01-01"),
+        open_purchase("P-100", "2026-01-01"),
     ]
     dues = {
         "P-100": 100.0,
@@ -447,9 +460,9 @@ def test_grant_credit_preview_uses_fifo_purchase_date_then_purchase_id():
 
 def test_grant_credit_preview_leaves_excess_credit_available():
     controller = make_controller()
-    controller.repo.get_open_purchases_for_vendor.return_value = [
-        {"purchase_id": "P-101", "date": "2026-01-01"},
-        {"purchase_id": "P-102", "date": "2026-01-05"},
+    controller.accounting.get_vendor_open_purchases.return_value = [
+        open_purchase("P-101", "2026-01-01"),
+        open_purchase("P-102", "2026-01-05"),
     ]
     dues = {"P-101": 300.0, "P-102": 500.0}
     controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
@@ -462,9 +475,9 @@ def test_grant_credit_preview_leaves_excess_credit_available():
 
 def test_grant_credit_and_auto_apply_saves_in_preview_order_atomically():
     controller = make_controller()
-    controller.repo.get_open_purchases_for_vendor.return_value = [
-        {"purchase_id": "P-102", "date": "2026-01-05"},
-        {"purchase_id": "P-101", "date": "2026-01-01"},
+    controller.accounting.get_vendor_open_purchases.return_value = [
+        open_purchase("P-102", "2026-01-05"),
+        open_purchase("P-101", "2026-01-01"),
     ]
     dues = {"P-101": 300.0, "P-102": 500.0}
     controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
@@ -508,8 +521,8 @@ def test_grant_credit_and_auto_apply_saves_in_preview_order_atomically():
 
 def test_grant_credit_and_auto_apply_rolls_back_when_application_fails():
     controller = make_controller()
-    controller.repo.get_open_purchases_for_vendor.return_value = [
-        {"purchase_id": "P-101", "date": "2026-01-01"},
+    controller.accounting.get_vendor_open_purchases.return_value = [
+        open_purchase("P-101", "2026-01-01"),
     ]
     controller._remaining_due_for_purchase = MagicMock(return_value=300.0)
     controller.vadv.grant_credit.return_value = 42

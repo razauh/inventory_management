@@ -63,13 +63,25 @@ class PurchaseFinancials:
 
 
 @dataclass(frozen=True)
+class VendorPurchaseTotals:
+    vendor_id: int
+    purchases_total: Decimal
+    paid_total: Decimal
+    advance_applied_total: Decimal
+
+
+@dataclass(frozen=True)
 class VendorOpenPurchase:
-    purchase_id: int
+    purchase_id: int | str
     vendor_id: int
     purchase_date: str | None
     reference: str | None
     net_total: Decimal
     outstanding: Decimal
+    total_amount: Decimal = Decimal("0")
+    paid_amount: Decimal = Decimal("0")
+    advance_payment_applied: Decimal = Decimal("0")
+    calculated_total_amount: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)
