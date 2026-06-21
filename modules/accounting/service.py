@@ -12,6 +12,10 @@ from .dto import (
     PurchasePaymentRow,
     PurchasePaymentStatus,
     PurchasePaymentSummary,
+    PurchaseReturnEffect,
+    PurchaseReturnPreviewPayload,
+    PurchaseReturnTotals,
+    PurchaseReturnValue,
     PurchaseTotalInputLine,
     PurchaseTotals,
     SupplierRefundMetadata,
@@ -32,7 +36,10 @@ from .current_rules.purchase_rules import (
     get_purchase_payment_history as get_current_purchase_payment_history,
     get_purchase_payment_summary as get_current_purchase_payment_summary,
     get_purchase_payment_status as get_current_purchase_payment_status,
+    get_purchase_return_totals as get_current_purchase_return_totals,
+    get_purchase_return_values as get_current_purchase_return_values,
     get_purchase_totals as get_current_purchase_totals,
+    preview_purchase_return_effect as preview_current_purchase_return_effect,
     preview_purchase_total as preview_current_purchase_total,
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
@@ -86,6 +93,28 @@ class AccountingService:
         order_discount: Decimal,
     ) -> PurchaseTotals:
         return preview_current_purchase_total(items, order_discount)
+
+    def preview_purchase_return_effect(
+        self,
+        payload: PurchaseReturnPreviewPayload,
+    ) -> PurchaseReturnEffect:
+        return preview_current_purchase_return_effect(payload)
+
+    def get_purchase_return_values(
+        self,
+        purchase_id: int | str,
+    ) -> tuple[PurchaseReturnValue, ...]:
+        if self.conn is None:
+            self._not_implemented("get_purchase_return_values")
+        return get_current_purchase_return_values(self.conn, purchase_id)
+
+    def get_purchase_return_totals(
+        self,
+        purchase_id: int | str,
+    ) -> PurchaseReturnTotals:
+        if self.conn is None:
+            self._not_implemented("get_purchase_return_totals")
+        return get_current_purchase_return_totals(self.conn, purchase_id)
 
     def get_purchase_outstanding(self, purchase_id: int | str) -> PurchaseOutstanding:
         if self.conn is None:

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidget, QTableWidgetItem,
     QAbstractItemView, QDialogButtonBox, QLineEdit, QFormLayout, QLabel, QComboBox, QDateEdit,
@@ -7,6 +9,11 @@ from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6.QtGui import QBrush, QColor
 from ...utils.combo_search import configure_contains_completer
 from ...utils.helpers import today_str, fmt_money
+from ..accounting import (
+    AccountingService,
+    PurchaseReturnPreviewLine,
+    PurchaseReturnPreviewPayload,
+)
 from .validation import parse_strict_float
 
 # Constants
@@ -87,6 +94,7 @@ class PurchaseReturnForm(QDialog):
         self.vba_repo = vendor_bank_accounts_repo
         self.cba_repo = company_bank_accounts_repo
         self.purchases_repo = purchases_repo
+        self.accounting = AccountingService()
         self.order_discount = max(0.0, float(order_discount or 0.0))
         self._return_value_factor = 1.0
         self._refund_financials_loaded = False
@@ -380,21 +388,24 @@ class PurchaseReturnForm(QDialog):
         """
         self.tbl.blockSignals(True)
         self.tbl.setRowCount(len(items))
-        subtotal = 0.0
-        for it in items:
-            qty_purchased = float(_first_key(it, "quantity", "qty", "qty_purchased", default=0.0))
-            buy = float(_first_key(
-                it, "purchase_price", "buy_price", "buy",
-                "unit_purchase_price", "unit_price", "price",
-                "unit_cost", "cost_price", default=0.0
-            ))
-            disc = float(_first_key(it, "item_discount", "discount", "disc", "unit_discount", default=0.0))
-            subtotal += qty_purchased * max(0.0, buy - disc)
-        if subtotal > 0.0:
-            effective_order_discount = min(self.order_discount, subtotal)
-            self._return_value_factor = (subtotal - effective_order_discount) / subtotal
-        else:
-            self._return_value_factor = 0.0
+        effect = self.accounting.preview_purchase_return_effect(
+            PurchaseReturnPreviewPayload(
+                lines=tuple(
+                    PurchaseReturnPreviewLine(
+                        quantity=Decimal(str(float(_first_key(it, "quantity", "qty", "qty_purchased", default=0.0)))),
+                        purchase_price=Decimal(str(float(_first_key(
+                            it, "purchase_price", "buy_price", "buy",
+                            "unit_purchase_price", "unit_price", "price",
+                            "unit_cost", "cost_price", default=0.0
+                        )))),
+                        item_discount=Decimal(str(float(_first_key(it, "item_discount", "discount", "disc", "unit_discount", default=0.0)))),
+                    )
+                    for it in items
+                ),
+                order_discount=Decimal(str(self.order_discount)),
+            )
+        )
+        self._return_value_factor = float(effect.value_factor)
         for r, it in enumerate(items):
             item_id = int(_first_key(it, "item_id", default=-1))
             product = str(_first_key(it, "product_name", "name", "product", default=f"#{item_id}"))
@@ -430,6 +441,7 @@ class PurchaseReturnForm(QDialog):
                 "purchase_price": buy,
                 "item_discount": disc,
                 "net_unit": net_unit,
+                "qty_purchased": qty_purchased,
                 "max_returnable": max_returnable,
             })
             self.tbl.setItem(r, self.COL_ITEM_ID, id_item)
@@ -554,8 +566,7 @@ class PurchaseReturnForm(QDialog):
         self._recalc_all()
 
     def _refresh_totals(self):
-        qty_total = 0.0
-        val_total = 0.0
+        lines = []
         for r in range(self.tbl.rowCount()):
             it = self.tbl.item(r, self.COL_QTY_RETURN)
             try:
@@ -563,8 +574,22 @@ class PurchaseReturnForm(QDialog):
             except Exception:
                 q = 0.0
             meta = self._meta_for_row(r)
-            qty_total += q
-            val_total += max(0.0, q * float(meta.get("net_unit") or 0.0))
+            lines.append(
+                PurchaseReturnPreviewLine(
+                    quantity=Decimal(str(float(meta.get("qty_purchased") or 0.0))),
+                    purchase_price=Decimal(str(float(meta.get("purchase_price") or 0.0))),
+                    item_discount=Decimal(str(float(meta.get("item_discount") or 0.0))),
+                    return_qty=Decimal(str(q)),
+                )
+            )
+        effect = self.accounting.preview_purchase_return_effect(
+            PurchaseReturnPreviewPayload(
+                lines=tuple(lines),
+                order_discount=Decimal(str(self.order_discount)),
+            )
+        )
+        qty_total = float(effect.total_qty)
+        val_total = float(effect.total_value)
         self.lab_qty_total.setText(f"{qty_total:g}")
         self.lab_val_total.setText(f"Total Return Value: {fmt_money(val_total)}")
         

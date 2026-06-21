@@ -10,6 +10,11 @@ from modules.accounting import (
     PurchasePaymentStatus,
     PurchasePaymentRow,
     PurchasePaymentSummary,
+    PurchaseReturnEffect,
+    PurchaseReturnPreviewLine,
+    PurchaseReturnPreviewPayload,
+    PurchaseReturnTotals,
+    PurchaseReturnValue,
     PurchaseTotalInputLine,
     PurchaseTotals,
     SupplierRefundMetadata,
@@ -35,6 +40,9 @@ VENDOR_PURCHASE_METHODS = [
     ("recalculate_purchase_payment_status", ("purchase_id",)),
     ("get_purchase_payment_summary", ("purchase_id",)),
     ("get_purchase_payment_history", ("purchase_id",)),
+    ("preview_purchase_return_effect", ("payload",)),
+    ("get_purchase_return_values", ("purchase_id",)),
+    ("get_purchase_return_totals", ("purchase_id",)),
     ("get_purchase_financials", ("purchase_id",)),
     ("validate_vendor_payment_metadata", ("metadata",)),
     ("validate_supplier_refund_metadata", ("metadata",)),
@@ -69,6 +77,33 @@ def test_vendor_purchase_service_contract_methods_exist():
         purchase_price=Decimal("10.00"),
         item_discount=Decimal("1.00"),
     )
+    return_line = PurchaseReturnPreviewLine(
+        quantity=Decimal("2"),
+        purchase_price=Decimal("10.00"),
+        item_discount=Decimal("1.00"),
+        return_qty=Decimal("1"),
+    )
+    assert PurchaseReturnPreviewPayload(
+        lines=(return_line,),
+        order_discount=Decimal("2.00"),
+    )
+    assert PurchaseReturnEffect(
+        value_factor=Decimal("0.8"),
+        total_qty=Decimal("1"),
+        total_value=Decimal("7.2"),
+        line_values=(Decimal("7.2"),),
+    )
+    assert PurchaseReturnValue(
+        transaction_id=3,
+        item_id=4,
+        qty_returned=Decimal("1"),
+        unit_buy_price=Decimal("10.00"),
+        unit_discount=Decimal("1.00"),
+        return_date="2026-06-21",
+        valuation_status="resolved",
+        return_value=Decimal("9.00"),
+    )
+    assert PurchaseReturnTotals(qty=Decimal("1"), value=Decimal("9.00"))
     assert PurchasePaymentStatus(
         purchase_id=1,
         status="partial",

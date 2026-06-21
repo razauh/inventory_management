@@ -1113,23 +1113,21 @@ class PurchasesRepo:
         }
 
     def list_return_values_by_purchase(self, purchase_id: str) -> list[dict]:
-        sql = """
-        SELECT
-          transaction_id,
-          item_id,
-          CAST(qty_returned  AS REAL) AS qty_returned,
-          CAST(unit_buy_price AS REAL) AS unit_buy_price,
-          CAST(unit_discount  AS REAL) AS unit_discount,
-          return_date,
-          valuation_status,
-          CAST(return_value   AS REAL) AS return_value,
-          CAST(return_value   AS REAL) AS line_value,   -- alias for tests
-          CAST(return_value   AS REAL) AS value         -- alias for tests
-        FROM purchase_return_valuations
-        WHERE purchase_id = ?
-        ORDER BY transaction_id
-        """
-        return self.conn.execute(sql, (purchase_id,)).fetchall()
+        return [
+            {
+                "transaction_id": value.transaction_id,
+                "item_id": value.item_id,
+                "qty_returned": float(value.qty_returned),
+                "unit_buy_price": float(value.unit_buy_price),
+                "unit_discount": float(value.unit_discount),
+                "return_date": value.return_date,
+                "valuation_status": value.valuation_status,
+                "return_value": float(value.return_value),
+                "line_value": float(value.return_value),
+                "value": float(value.return_value),
+            }
+            for value in self.accounting.get_purchase_return_values(purchase_id)
+        ]
 
     def get_returnable_map(self, purchase_id: str) -> dict[int, float]:
         """
@@ -1160,22 +1158,8 @@ class PurchasesRepo:
         Uses the purchase_return_valuations view to stay consistent with how
         monetary return value is computed in record_return.
         """
-        row = self.conn.execute(
-            """
-            SELECT
-              COALESCE(SUM(CAST(qty_returned AS REAL)), 0.0)  AS qty_returned,
-              COALESCE(SUM(CAST(return_value  AS REAL)), 0.0) AS value_returned
-            FROM purchase_return_valuations
-            WHERE purchase_id = ?
-            """,
-            (purchase_id,),
-        ).fetchone()
-        if not row:
-            return {"qty": 0.0, "value": 0.0}
-        return {
-            "qty": float(row["qty_returned"] or 0.0),
-            "value": float(row["value_returned"] or 0.0),
-        }
+        totals = self.accounting.get_purchase_return_totals(purchase_id)
+        return {"qty": float(totals.qty), "value": float(totals.value)}
 
     def get_payment(self, payment_id: int, purchase_id: str) -> dict | None:
         """

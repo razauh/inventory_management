@@ -43,6 +43,46 @@ class PurchaseTotalInputLine:
 
 
 @dataclass(frozen=True)
+class PurchaseReturnPreviewLine:
+    quantity: Decimal
+    purchase_price: Decimal
+    item_discount: Decimal = Decimal("0")
+    return_qty: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class PurchaseReturnPreviewPayload:
+    lines: tuple[PurchaseReturnPreviewLine, ...]
+    order_discount: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class PurchaseReturnEffect:
+    value_factor: Decimal
+    total_qty: Decimal
+    total_value: Decimal
+    line_values: tuple[Decimal, ...] = ()
+
+
+@dataclass(frozen=True)
+class PurchaseReturnValue:
+    transaction_id: int
+    item_id: int | None
+    qty_returned: Decimal
+    unit_buy_price: Decimal
+    unit_discount: Decimal
+    return_date: str | None
+    valuation_status: str
+    return_value: Decimal
+
+
+@dataclass(frozen=True)
+class PurchaseReturnTotals:
+    qty: Decimal
+    value: Decimal
+
+
+@dataclass(frozen=True)
 class PurchasePaymentStatus:
     purchase_id: int | str
     status: str

@@ -10,6 +10,10 @@ from ..dto import (
     PurchasePaymentRow,
     PurchasePaymentStatus,
     PurchasePaymentSummary,
+    PurchaseReturnEffect,
+    PurchaseReturnPreviewPayload,
+    PurchaseReturnTotals,
+    PurchaseReturnValue,
     PurchaseTotalInputLine,
     PurchaseTotals,
 )
@@ -34,6 +38,83 @@ def preview_purchase_total(
         order_discount=order_discount,
         returned_value=Decimal("0"),
         net_total=net_total,
+    )
+
+
+def preview_purchase_return_effect(
+    payload: PurchaseReturnPreviewPayload,
+) -> PurchaseReturnEffect:
+    subtotal = sum(
+        line.quantity * max(Decimal("0"), line.purchase_price - line.item_discount)
+        for line in payload.lines
+    )
+    order_discount = max(Decimal("0"), payload.order_discount)
+    if subtotal > Decimal("0"):
+        order_discount = min(order_discount, subtotal)
+        value_factor = (subtotal - order_discount) / subtotal
+    else:
+        value_factor = Decimal("0")
+    line_values = tuple(
+        max(
+            Decimal("0"),
+            line.return_qty
+            * max(Decimal("0"), line.purchase_price - line.item_discount)
+            * value_factor,
+        )
+        for line in payload.lines
+    )
+    return PurchaseReturnEffect(
+        value_factor=value_factor,
+        total_qty=sum((line.return_qty for line in payload.lines), Decimal("0")),
+        total_value=sum(line_values, Decimal("0")),
+        line_values=line_values,
+    )
+
+
+def get_purchase_return_values(
+    conn: Connection,
+    purchase_id: int | str,
+) -> tuple[PurchaseReturnValue, ...]:
+    rows = conn.execute(
+        """
+        SELECT
+          transaction_id,
+          item_id,
+          CAST(qty_returned  AS REAL) AS qty_returned,
+          CAST(unit_buy_price AS REAL) AS unit_buy_price,
+          CAST(unit_discount  AS REAL) AS unit_discount,
+          return_date,
+          valuation_status,
+          CAST(return_value   AS REAL) AS return_value
+        FROM purchase_return_valuations
+        WHERE purchase_id = ?
+        ORDER BY transaction_id
+        """,
+        (purchase_id,),
+    ).fetchall()
+    return tuple(
+        PurchaseReturnValue(
+            transaction_id=int(row["transaction_id"]),
+            item_id=row["item_id"],
+            qty_returned=_decimal(row["qty_returned"]),
+            unit_buy_price=_decimal(row["unit_buy_price"]),
+            unit_discount=_decimal(row["unit_discount"]),
+            return_date=row["return_date"],
+            valuation_status=row["valuation_status"],
+            return_value=_decimal(row["return_value"]),
+        )
+        for row in rows
+    )
+
+
+def get_purchase_return_totals(
+    conn: Connection,
+    purchase_id: int | str,
+) -> PurchaseReturnTotals:
+    values = get_purchase_return_values(conn, purchase_id)
+    return PurchaseReturnTotals(
+        qty=sum((value.qty_returned for value in values), Decimal("0")),
+        value=sum((value.return_value for value in values), Decimal("0")),
     )
 
 
