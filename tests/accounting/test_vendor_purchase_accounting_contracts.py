@@ -13,7 +13,10 @@ from modules.accounting import (
     PurchaseTotalInputLine,
     PurchaseTotals,
     SupplierRefundMetadata,
+    VendorAdvancePayload,
+    VendorAdvanceResult,
     VendorOpenPurchase,
+    VendorCreditLedgerRow,
     VendorPaymentMetadata,
     VendorPaymentPayload,
     VendorPaymentEffect,
@@ -38,6 +41,8 @@ VENDOR_PURCHASE_METHODS = [
     ("preview_vendor_payment_effect", ("payload",)),
     ("record_vendor_payment_event", ("payload",)),
     ("update_vendor_payment_state", ("payment_id", "clearing_state", "cleared_date", "notes")),
+    ("record_vendor_advance_event", ("payload",)),
+    ("get_vendor_credit_ledger", ("vendor_id",)),
     ("get_vendor_advance_balance", ("vendor_id",)),
     ("get_vendor_advance_balances", ("vendor_ids",)),
     ("get_vendor_open_purchases", ("vendor_id",)),
@@ -109,6 +114,25 @@ def test_vendor_purchase_service_contract_methods_exist():
         date="2026-06-21",
     )
     assert VendorPaymentResult(payment_id=3, credit_tx_id=None, effect=effect)
+    assert VendorAdvancePayload(
+        vendor_id=2,
+        amount=Decimal("12.00"),
+        date="2026-06-21",
+    )
+    assert VendorAdvanceResult(
+        tx_id=4,
+        vendor_id=2,
+        amount=Decimal("12.00"),
+        source_type="deposit",
+    )
+    assert VendorCreditLedgerRow(
+        tx_id=4,
+        vendor_id=2,
+        tx_date="2026-06-21",
+        amount=Decimal("12.00"),
+        source_type="deposit",
+        source_id=None,
+    )
     assert PurchaseFinancials(
         purchase_id=1,
         net_total=Decimal("9.00"),

@@ -2,7 +2,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
-from ...modules.accounting import AccountingService, VendorPaymentMetadata
+from decimal import Decimal
+
+from ...modules.accounting import AccountingService, VendorAdvancePayload, VendorPaymentMetadata
 
 
 # ----------------------------
@@ -154,66 +156,31 @@ class VendorAdvancesRepo:
           - This method does not commit; caller controls the transaction.
           - 'applied_to_purchase' is handled by apply_credit_to_purchase(...).
         """
-        if amount <= 0:
-            raise ValueError("amount must be positive when granting credit")
-
-        allowed_types = {"deposit", "return_credit"}
-        st = (source_type or "deposit").lower()
-        if st not in allowed_types:
-            raise ValueError(f"source_type must be one of {allowed_types}, got {source_type!r}")
-        self._validate_payment_metadata(
-            vendor_id=vendor_id,
-            method=method,
-            bank_account_id=bank_account_id,
-            vendor_bank_account_id=vendor_bank_account_id,
-            instrument_type=instrument_type,
-            clearing_state=clearing_state,
-        )
-
-        metadata_values = {
-            "method": method,
-            "bank_account_id": bank_account_id,
-            "vendor_bank_account_id": vendor_bank_account_id,
-            "instrument_type": instrument_type,
-            "instrument_no": instrument_no,
-            "instrument_date": instrument_date,
-            "deposited_date": deposited_date,
-            "cleared_date": cleared_date,
-            "clearing_state": clearing_state,
-            "ref_no": ref_no,
-            "temp_vendor_bank_name": temp_vendor_bank_name,
-            "temp_vendor_bank_number": temp_vendor_bank_number,
-        }
-        existing_cols = self._vendor_advances_columns()
-        metadata_cols = [col for col, value in metadata_values.items() if value is not None]
-        missing_cols = [col for col in metadata_cols if col not in existing_cols]
-        if missing_cols:
-            raise ValueError(
-                "Vendor advance payment metadata columns are missing: "
-                + ", ".join(sorted(missing_cols))
-            )
-
         try:
-            columns = ["vendor_id", "tx_date", "amount", "source_type", "source_id"]
-            values: list[object] = [vendor_id, date, float(amount), st, source_id]
-            for col, value in metadata_values.items():
-                if col in existing_cols:
-                    columns.append(col)
-                    values.append(value)
-            columns.extend(["notes", "created_by"])
-            values.extend([notes, created_by])
-
-            placeholders = ", ".join("?" for _ in columns)
-            cur = self.conn.execute(
-                f"""
-                INSERT INTO vendor_advances (
-                    {", ".join(columns)}
+            result = self.accounting.record_vendor_advance_event(
+                VendorAdvancePayload(
+                    vendor_id=vendor_id,
+                    amount=Decimal(str(amount)),
+                    date=date,
+                    notes=notes,
+                    created_by=created_by,
+                    source_id=source_id,
+                    source_type=source_type,
+                    method=method,
+                    bank_account_id=bank_account_id,
+                    vendor_bank_account_id=vendor_bank_account_id,
+                    instrument_type=instrument_type,
+                    instrument_no=instrument_no,
+                    instrument_date=instrument_date,
+                    deposited_date=deposited_date,
+                    cleared_date=cleared_date,
+                    clearing_state=clearing_state,
+                    ref_no=ref_no,
+                    temp_vendor_bank_name=temp_vendor_bank_name,
+                    temp_vendor_bank_number=temp_vendor_bank_number,
                 )
-                VALUES ({placeholders})
-                """,
-                values,
             )
-            return int(cur.lastrowid)
+            return result.tx_id
         except sqlite3.IntegrityError as e:
             # Defensive: map any constraint violations
             self._raise_mapped_error(e)

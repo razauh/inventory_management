@@ -155,6 +155,48 @@ class VendorPaymentResult:
 
 
 @dataclass(frozen=True)
+class VendorAdvancePayload:
+    vendor_id: int
+    amount: Decimal
+    date: str
+    notes: str | None = None
+    created_by: int | None = None
+    source_id: int | str | None = None
+    source_type: str = "deposit"
+    method: str | None = None
+    bank_account_id: int | None = None
+    vendor_bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    instrument_date: str | None = None
+    deposited_date: str | None = None
+    cleared_date: str | None = None
+    clearing_state: str | None = None
+    ref_no: str | None = None
+    temp_vendor_bank_name: str | None = None
+    temp_vendor_bank_number: str | None = None
+
+
+@dataclass(frozen=True)
+class VendorAdvanceResult:
+    tx_id: int
+    vendor_id: int
+    amount: Decimal
+    source_type: str
+
+
+@dataclass(frozen=True)
+class VendorCreditLedgerRow:
+    tx_id: int
+    vendor_id: int
+    tx_date: str | None
+    amount: Decimal
+    source_type: str
+    source_id: str | None
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
 class PurchaseFinancials:
     purchase_id: int
     net_total: Decimal

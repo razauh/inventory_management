@@ -15,7 +15,10 @@ from .dto import (
     PurchaseTotalInputLine,
     PurchaseTotals,
     SupplierRefundMetadata,
+    VendorAdvancePayload,
+    VendorAdvanceResult,
     VendorBalance,
+    VendorCreditLedgerRow,
     VendorOpenPurchase,
     VendorPaymentEffect,
     VendorPaymentMetadata,
@@ -36,12 +39,14 @@ from .current_rules.purchase_rules import (
 from .current_rules.vendor_rules import (
     get_vendor_advance_balance as get_current_vendor_advance_balance,
     get_vendor_advance_balances as get_current_vendor_advance_balances,
+    get_vendor_credit_ledger as get_current_vendor_credit_ledger,
     get_vendor_open_purchases as get_current_vendor_open_purchases,
     get_vendor_purchase_totals as get_current_vendor_purchase_totals,
     get_vendor_statement as get_current_vendor_statement,
     list_vendor_purchases as list_current_vendor_purchases,
     preview_vendor_payment_effect as preview_current_vendor_payment_effect,
     record_vendor_payment_event as record_current_vendor_payment_event,
+    record_vendor_advance_event as record_current_vendor_advance_event,
     update_vendor_payment_state as update_current_vendor_payment_state,
 )
 from .exceptions import AccountingNotImplementedError
@@ -244,6 +249,22 @@ class AccountingService:
             cleared_date=cleared_date,
             notes=notes,
         )
+
+    def record_vendor_advance_event(
+        self,
+        payload: VendorAdvancePayload,
+    ) -> VendorAdvanceResult:
+        if self.conn is None:
+            self._not_implemented("record_vendor_advance_event")
+        return record_current_vendor_advance_event(self.conn, payload)
+
+    def get_vendor_credit_ledger(
+        self,
+        vendor_id: int,
+    ) -> tuple[VendorCreditLedgerRow, ...]:
+        if self.conn is None:
+            self._not_implemented("get_vendor_credit_ledger")
+        return get_current_vendor_credit_ledger(self.conn, vendor_id)
 
     def record_customer_receipt_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_customer_receipt_event")

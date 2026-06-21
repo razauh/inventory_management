@@ -12,6 +12,9 @@ from sqlite3 import Connection
 
 from ..dto import (
     VendorBalance,
+    VendorAdvancePayload,
+    VendorAdvanceResult,
+    VendorCreditLedgerRow,
     VendorOpenPurchase,
     VendorPaymentEffect,
     VendorPaymentMetadata,
@@ -835,3 +838,107 @@ def update_vendor_payment_state(
         params,
     )
     return cur.rowcount
+
+
+def record_vendor_advance_event(
+    conn: Connection,
+    payload: VendorAdvancePayload,
+) -> VendorAdvanceResult:
+    if payload.amount <= 0:
+        raise ValueError("amount must be positive when granting credit")
+    allowed_types = {"deposit", "return_credit"}
+    source_type = (payload.source_type or "deposit").lower()
+    if source_type not in allowed_types:
+        raise ValueError(
+            f"source_type must be one of {allowed_types}, got {payload.source_type!r}"
+        )
+    validate_vendor_payment_metadata(
+        conn,
+        VendorPaymentMetadata(
+            vendor_id=payload.vendor_id,
+            method=payload.method,
+            bank_account_id=payload.bank_account_id,
+            vendor_bank_account_id=payload.vendor_bank_account_id,
+            instrument_type=payload.instrument_type,
+            clearing_state=payload.clearing_state,
+            vendor_label="advance",
+            reject_card=True,
+        ),
+    )
+
+    metadata_values = {
+        "method": payload.method,
+        "bank_account_id": payload.bank_account_id,
+        "vendor_bank_account_id": payload.vendor_bank_account_id,
+        "instrument_type": payload.instrument_type,
+        "instrument_no": payload.instrument_no,
+        "instrument_date": payload.instrument_date,
+        "deposited_date": payload.deposited_date,
+        "cleared_date": payload.cleared_date,
+        "clearing_state": payload.clearing_state,
+        "ref_no": payload.ref_no,
+        "temp_vendor_bank_name": payload.temp_vendor_bank_name,
+        "temp_vendor_bank_number": payload.temp_vendor_bank_number,
+    }
+    existing_cols = {
+        str(row["name"] if hasattr(row, "keys") else row[1])
+        for row in conn.execute("PRAGMA table_info(vendor_advances);").fetchall()
+    }
+    metadata_cols = [col for col, value in metadata_values.items() if value is not None]
+    missing_cols = [col for col in metadata_cols if col not in existing_cols]
+    if missing_cols:
+        raise ValueError(
+            "Vendor advance payment metadata columns are missing: "
+            + ", ".join(sorted(missing_cols))
+        )
+
+    columns = ["vendor_id", "tx_date", "amount", "source_type", "source_id"]
+    values: list[object] = [
+        payload.vendor_id,
+        payload.date,
+        float(payload.amount),
+        source_type,
+        payload.source_id,
+    ]
+    for col, value in metadata_values.items():
+        if col in existing_cols:
+            columns.append(col)
+            values.append(value)
+    columns.extend(["notes", "created_by"])
+    values.extend([payload.notes, payload.created_by])
+
+    placeholders = ", ".join("?" for _ in columns)
+    cur = conn.execute(
+        f"""
+        INSERT INTO vendor_advances (
+            {", ".join(columns)}
+        )
+        VALUES ({placeholders})
+        """,
+        values,
+    )
+    return VendorAdvanceResult(
+        tx_id=int(cur.lastrowid),
+        vendor_id=payload.vendor_id,
+        amount=payload.amount,
+        source_type=source_type,
+    )
+
+
+def get_vendor_credit_ledger(
+    conn: Connection,
+    vendor_id: int,
+) -> tuple[VendorCreditLedgerRow, ...]:
+    rows = _list_vendor_advances(conn, vendor_id, None, None)
+    return tuple(
+        VendorCreditLedgerRow(
+            tx_id=int(row["tx_id"]),
+            vendor_id=int(vendor_id),
+            tx_date=row["tx_date"],
+            amount=_decimal(row["amount"]),
+            source_type=row["source_type"],
+            source_id=row["source_id"],
+            notes=row.get("notes"),
+        )
+        for row in rows
+    )

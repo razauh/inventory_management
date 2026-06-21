@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QFileDialog, QWidget, QHeaderView
 from PySide6.QtCore import Qt, QSortFilterProxyModel, QItemSelectionModel, QTimer
 import sqlite3
 import logging
+from decimal import Decimal
 from typing import Optional, Any, Dict, List
 
 _log = logging.getLogger(__name__)
@@ -17,7 +18,7 @@ from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
 from ...database.repositories.vendor_bank_accounts_repo import VendorBankAccountsRepo
 from ...database.repositories.purchase_payments_repo import PurchasePaymentsRepo
 from ...database.repositories.purchases_repo import PurchasesRepo
-from ..accounting import AccountingService
+from ..accounting import AccountingService, VendorAdvancePayload
 from ...utils import ui_helpers as uih
 from ...utils.helpers import today_str
 try:
@@ -421,14 +422,17 @@ class VendorController(BaseModule):
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             preview = self._build_grant_credit_allocation_preview(vendor_id, amount)
-            tx_id = self.vadv.grant_credit(
-                vendor_id=vendor_id,
-                amount=amount,
-                date=grant_date,
-                notes=memo,
-                created_by=None,
-                source_id=None,
+            result = self.accounting.record_vendor_advance_event(
+                VendorAdvancePayload(
+                    vendor_id=vendor_id,
+                    amount=Decimal(str(amount)),
+                    date=grant_date,
+                    notes=memo,
+                    created_by=None,
+                    source_id=None,
+                )
             )
+            tx_id = result.tx_id
 
             for row in preview["rows"]:
                 self.vadv.apply_credit_to_purchase(
@@ -822,27 +826,30 @@ class VendorController(BaseModule):
 
         try:
             self.conn.execute("SAVEPOINT apply_advance")
-            tx_id = self.vadv.grant_credit(
-                vendor_id=payload["vendor_id"],
-                amount=payload["amount"],
-                date=payload["date"],
-                notes=payload.get("notes"),
-                created_by=payload.get("created_by"),
-                source_id=None,
-                source_type="deposit",
-                method=payload.get("method"),
-                bank_account_id=payload.get("bank_account_id"),
-                vendor_bank_account_id=payload.get("vendor_bank_account_id"),
-                instrument_type=payload.get("instrument_type"),
-                instrument_no=payload.get("instrument_no"),
-                instrument_date=payload.get("instrument_date"),
-                deposited_date=payload.get("deposited_date"),
-                cleared_date=payload.get("cleared_date"),
-                clearing_state=payload.get("clearing_state"),
-                ref_no=payload.get("ref_no"),
-                temp_vendor_bank_name=payload.get("temp_vendor_bank_name"),
-                temp_vendor_bank_number=payload.get("temp_vendor_bank_number"),
+            result = self.accounting.record_vendor_advance_event(
+                VendorAdvancePayload(
+                    vendor_id=payload["vendor_id"],
+                    amount=Decimal(str(payload["amount"])),
+                    date=payload["date"],
+                    notes=payload.get("notes"),
+                    created_by=payload.get("created_by"),
+                    source_id=None,
+                    source_type="deposit",
+                    method=payload.get("method"),
+                    bank_account_id=payload.get("bank_account_id"),
+                    vendor_bank_account_id=payload.get("vendor_bank_account_id"),
+                    instrument_type=payload.get("instrument_type"),
+                    instrument_no=payload.get("instrument_no"),
+                    instrument_date=payload.get("instrument_date"),
+                    deposited_date=payload.get("deposited_date"),
+                    cleared_date=payload.get("cleared_date"),
+                    clearing_state=payload.get("clearing_state"),
+                    ref_no=payload.get("ref_no"),
+                    temp_vendor_bank_name=payload.get("temp_vendor_bank_name"),
+                    temp_vendor_bank_number=payload.get("temp_vendor_bank_number"),
+                )
             )
+            tx_id = result.tx_id
             self.conn.execute("RELEASE apply_advance")
 
             info(self.view, "Recorded", f"Advance payment of {amount:,.2f} recorded successfully (Tx #{tx_id}).")

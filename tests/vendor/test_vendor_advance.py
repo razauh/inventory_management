@@ -356,7 +356,7 @@ def test_apply_advance_records_credit_once_after_dialog_accepts():
         "temp_vendor_bank_number": None,
     }
     controller = make_controller()
-    controller.vadv.grant_credit.return_value = 42
+    controller.accounting.record_vendor_advance_event.return_value = SimpleNamespace(tx_id=42)
 
     with (
         patch(
@@ -369,27 +369,26 @@ def test_apply_advance_records_credit_once_after_dialog_accepts():
 
     defaults = open_form.call_args.kwargs["defaults"]
     assert "submit_advance" not in defaults
-    controller.vadv.grant_credit.assert_called_once_with(
-        vendor_id=7,
-        amount=125.0,
-        date="2026-06-09",
-        notes="Advance",
-        created_by=None,
-        source_id=None,
-        source_type="deposit",
-        method="Bank Transfer",
-        bank_account_id=3,
-        vendor_bank_account_id=4,
-        instrument_type="online",
-        instrument_no="TRX-100",
-        instrument_date="2026-06-09",
-        deposited_date=None,
-        cleared_date=None,
-        clearing_state="cleared",
-        ref_no=None,
-        temp_vendor_bank_name=None,
-        temp_vendor_bank_number=None,
-    )
+    controller.accounting.record_vendor_advance_event.assert_called_once()
+    event_payload = controller.accounting.record_vendor_advance_event.call_args.args[0]
+    assert event_payload.vendor_id == 7
+    assert float(event_payload.amount) == pytest.approx(125.0)
+    assert event_payload.date == "2026-06-09"
+    assert event_payload.notes == "Advance"
+    assert event_payload.source_id is None
+    assert event_payload.source_type == "deposit"
+    assert event_payload.method == "Bank Transfer"
+    assert event_payload.bank_account_id == 3
+    assert event_payload.vendor_bank_account_id == 4
+    assert event_payload.instrument_type == "online"
+    assert event_payload.instrument_no == "TRX-100"
+    assert event_payload.instrument_date == "2026-06-09"
+    assert event_payload.deposited_date is None
+    assert event_payload.cleared_date is None
+    assert event_payload.clearing_state == "cleared"
+    assert event_payload.ref_no is None
+    assert event_payload.temp_vendor_bank_name is None
+    assert event_payload.temp_vendor_bank_number is None
     assert [statement for statement, _ in controller.conn.statements] == [
         "SAVEPOINT apply_advance",
         "RELEASE apply_advance",
@@ -410,7 +409,7 @@ def test_apply_advance_rolls_back_when_credit_cannot_be_recorded():
         "notes": "Advance",
     }
     controller = make_controller()
-    controller.vadv.grant_credit.side_effect = ValueError("credit rejected")
+    controller.accounting.record_vendor_advance_event.side_effect = ValueError("credit rejected")
 
     with (
         patch(
@@ -421,7 +420,7 @@ def test_apply_advance_rolls_back_when_credit_cannot_be_recorded():
     ):
         controller._on_apply_advance_dialog()
 
-    controller.vadv.grant_credit.assert_called_once()
+    controller.accounting.record_vendor_advance_event.assert_called_once()
     assert [statement for statement, _ in controller.conn.statements] == [
         "SAVEPOINT apply_advance",
         "ROLLBACK TO apply_advance",
@@ -481,7 +480,7 @@ def test_grant_credit_and_auto_apply_saves_in_preview_order_atomically():
     ]
     dues = {"P-101": 300.0, "P-102": 500.0}
     controller._remaining_due_for_purchase = MagicMock(side_effect=lambda purchase_id: dues[purchase_id])
-    controller.vadv.grant_credit.return_value = 42
+    controller.accounting.record_vendor_advance_event.return_value = SimpleNamespace(tx_id=42)
 
     result = controller._grant_credit_and_auto_apply(7, 700.0, "2026-06-09", "Credit memo")
 
@@ -489,15 +488,14 @@ def test_grant_credit_and_auto_apply_saves_in_preview_order_atomically():
         "BEGIN IMMEDIATE",
         "COMMIT",
     ]
+    controller.accounting.record_vendor_advance_event.assert_called_once()
+    event_payload = controller.accounting.record_vendor_advance_event.call_args.args[0]
+    assert event_payload.vendor_id == 7
+    assert float(event_payload.amount) == pytest.approx(700.0)
+    assert event_payload.date == "2026-06-09"
+    assert event_payload.notes == "Credit memo"
+    assert event_payload.source_id is None
     assert controller.vadv.method_calls == [
-        call.grant_credit(
-            vendor_id=7,
-            amount=700.0,
-            date="2026-06-09",
-            notes="Credit memo",
-            created_by=None,
-            source_id=None,
-        ),
         call.apply_credit_to_purchase(
             vendor_id=7,
             purchase_id="P-101",
@@ -525,7 +523,7 @@ def test_grant_credit_and_auto_apply_rolls_back_when_application_fails():
         open_purchase("P-101", "2026-01-01"),
     ]
     controller._remaining_due_for_purchase = MagicMock(return_value=300.0)
-    controller.vadv.grant_credit.return_value = 42
+    controller.accounting.record_vendor_advance_event.return_value = SimpleNamespace(tx_id=42)
     controller.vadv.apply_credit_to_purchase.side_effect = ValueError("cannot apply")
 
     with pytest.raises(ValueError, match="cannot apply"):
