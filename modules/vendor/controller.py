@@ -442,7 +442,10 @@ class VendorController(BaseModule):
     def _current_vendor_id(self):
         try:
             vid = self._selected_id()
-            return int(vid) if vid else None
+            if vid:
+                return int(vid)
+            loaded_vid = getattr(self, "_accounts_loaded_vendor_id", None)
+            return int(loaded_vid) if loaded_vid else None
         except Exception:
             return None
     def _current_selected_account(self):

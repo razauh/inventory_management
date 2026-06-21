@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPlainTextEdit, QDialogButtonBox, QVBoxLayout,
     QHBoxLayout, QPushButton, QLabel
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from ...utils.validators import non_empty
 
 # ⚠️ VENDOR MODULE ONLY: safe signal (dis)connect; do not touch other modules
@@ -68,6 +68,8 @@ class VendorForm(QDialog):
 
         # OK/Cancel buttons
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        for button in self.buttons.buttons():
+            button.setFocusPolicy(Qt.NoFocus)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         lay.addWidget(self.buttons)

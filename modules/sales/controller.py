@@ -789,10 +789,13 @@ class SalesController(BaseModule):
         if not proxy_index.isValid():
             return False
         self.view.tbl.selectRow(proxy_index.row())
-        self.view.payments_tbl.selectRow(proxy_index.row())
+        payments_tbl = getattr(self.view, "payments_tbl", None)
+        if payments_tbl is not None:
+            payments_tbl.selectRow(proxy_index.row())
         try:
             self.view.tbl.scrollTo(proxy_index)
-            self.view.payments_tbl.scrollTo(proxy_index)
+            if payments_tbl is not None:
+                payments_tbl.scrollTo(proxy_index)
         except (AttributeError, RuntimeError):
             pass
         except Exception:
