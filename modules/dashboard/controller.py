@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QWidget
 from ..base_module import BaseModule
 
 # Repo (implemented in database/repositories/dashboard_repo.py)
+from modules.accounting import AccountingService
 from ...database.repositories.dashboard_repo import DashboardRepo
 
 # View & composite widgets (these are standard QWidget subclasses)
@@ -47,6 +48,7 @@ class DashboardController(BaseModule):
         super().__init__()
         self.conn = conn
         self.repo = DashboardRepo(conn)
+        self.accounting = AccountingService(conn)
         self._refresh_gen = 0
 
         # View is a QWidget; the app should embed it where appropriate.
@@ -127,17 +129,23 @@ class DashboardController(BaseModule):
         self._refresh_gen += 1
         gen = self._refresh_gen
 
-        summary = self.safe_repo_call(lambda: self.repo.summary_metrics(df, dt), None)
-        if not summary:
+        try:
+            metrics = self.accounting.get_sales_dashboard_metrics(df, dt)
             summary = {
-                "total_sales": 0.0,
-                "total_cogs": 0.0,
-                "total_expenses": 0.0,
-                "receipts_cleared": 0.0,
-                "vendor_payments_cleared": 0.0,
-                "open_receivables": 0.0,
-                "open_payables": 0.0,
-                "low_stock_count": 0,
+                "total_sales": float(metrics.total_sales),
+                "total_cogs": float(metrics.total_cogs),
+                "total_expenses": float(metrics.total_expenses),
+                "receipts_cleared": float(metrics.receipts_cleared),
+                "vendor_payments_cleared": float(metrics.vendor_payments_cleared),
+                "open_receivables": float(metrics.open_receivables),
+                "open_payables": float(metrics.open_payables),
+                "low_stock_count": self.repo.low_stock_count(),
+            }
+        except Exception:
+            summary = {
+                "total_sales": 0.0, "total_cogs": 0.0, "total_expenses": 0.0,
+                "receipts_cleared": 0.0, "vendor_payments_cleared": 0.0,
+                "open_receivables": 0.0, "open_payables": 0.0, "low_stock_count": 0,
             }
 
         total_sales = float(summary.get("total_sales") or 0.0)

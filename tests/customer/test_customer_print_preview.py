@@ -7,7 +7,7 @@ from inventory_management.modules.customer.controller import CustomerController
 
 def test_customer_statement_print_opens_preview(monkeypatch):
     class FakeHistoryService:
-        def __init__(self, db_path):
+        def __init__(self, db_path, *args, **kwargs):
             pass
 
         def full_history(self, customer_id):
@@ -43,6 +43,7 @@ def test_customer_statement_print_opens_preview(monkeypatch):
     )
 
     controller = CustomerController.__new__(CustomerController)
+    controller.accounting = None
     controller.view = SimpleNamespace()
     controller._preflight = lambda require_file_db=True: (7, "/tmp/test.db")
     controller.repo = SimpleNamespace(

@@ -53,7 +53,7 @@ def test_accounting_package_imports_and_service_instantiates():
         ("record_purchase_event", ()),
         ("record_sale_event", ()),
         ("record_vendor_payment_event", ()),
-        ("record_customer_receipt_event", ()),
+        ("record_customer_payment_event", (None,)),
         (
             "record_purchase_return_event",
             (

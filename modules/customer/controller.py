@@ -410,60 +410,21 @@ class CustomerController(BaseModule):
         return [dict(r) for r in rows]
 
     def _list_sales_for_customer(self, customer_id: int) -> List[Dict[str, Any]]:
-        # ponytail: bulk read queries sale_receivable_totals directly
-        # (same view the service wraps); per-sale callers use self.accounting.
-        rows = self.conn.execute(
-            """
-            SELECT
-              s.sale_id,
-              s.doc_no,
-              s.date,
-              srt.canonical_total_amount AS total,
-              srt.paid_amount AS paid,
-              srt.advance_payment_applied AS advance_payment_applied,
-              srt.remaining_due AS remaining_due
-            FROM sales s
-            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-            WHERE s.customer_id = ? AND s.doc_type = 'sale'
-            ORDER BY s.date DESC, s.sale_id DESC;
-            """,
-            (customer_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        return list(self.accounting.list_customer_sale_summaries(customer_id))
 
     def _eligible_sales_for_application(self, customer_id: int) -> List[Dict[str, Any]]:
-        # ponytail: bulk read queries sale_receivable_totals directly
-        rows = self.conn.execute(
-            """
-            SELECT
-              s.sale_id,
-              s.date,
-              srt.canonical_total_amount AS total_calc,
-              srt.paid_amount AS paid_amount,
-              srt.advance_payment_applied AS advance_payment_applied,
-              srt.remaining_due AS remaining_due
-            FROM sales s
-            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-            WHERE s.customer_id = ? AND s.doc_type = 'sale'
-            ORDER BY s.date DESC, s.sale_id DESC;
-            """,
-            (customer_id,),
-        ).fetchall()
-
         out: List[Dict[str, Any]] = []
-        for r in rows:
+        for r in self.accounting.list_customer_sale_summaries(customer_id):
             remaining = float(r["remaining_due"] or 0.0)
             if remaining > 0:
-                out.append(
-                    {
-                        "sale_id": r["sale_id"],
-                        "date": r["date"],
-                        "remaining_due": remaining,
-                        "total": float(r["total_calc"] or 0.0),
-                        "paid": float(r["paid_amount"] or 0.0),
-                        "advance_payment_applied": float(r["advance_payment_applied"] or 0.0),
-                    }
-                )
+                out.append({
+                    "sale_id": r["sale_id"],
+                    "date": r["date"],
+                    "remaining_due": remaining,
+                    "total": float(r["total"] or 0.0),
+                    "paid": float(r["paid"] or 0.0),
+                    "advance_payment_applied": float(r["advance_payment_applied"] or 0.0),
+                })
         return out
 
     # ------------------------------------------------------------------ #

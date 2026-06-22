@@ -642,6 +642,39 @@ class AccountingEvent:
 
 
 @dataclass(frozen=True)
+class CustomerPaymentPayload:
+    sale_id: str
+    customer_id: int
+    amount: Decimal
+    method: str
+    date: str | None = None
+    bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    instrument_date: str | None = None
+    deposited_date: str | None = None
+    cleared_date: str | None = None
+    clearing_state: str = "posted"
+    ref_no: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
+class CustomerPaymentEffect:
+    sale_id: str
+    customer_id: int
+    amount: Decimal
+    clearing_state: str
+
+
+@dataclass(frozen=True)
+class CustomerPaymentResult:
+    payment_id: int
+    effect: CustomerPaymentEffect
+
+
+@dataclass(frozen=True)
 class JournalPreview:
     source_type: str
     source_id: int

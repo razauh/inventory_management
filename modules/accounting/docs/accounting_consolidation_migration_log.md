@@ -145,7 +145,7 @@ It records where legacy/current behavior moved and which application call sites 
   - `database/repositories/sales_repo.py::get_sale_totals` — via `self.accounting.get_sale_totals()`
   - `modules/sales/controller.py::_fetch_sale_financials` — via `self.accounting.get_sale_financial_summary()`
   - `database/repositories/customer_advances_repo.py::apply_credit_to_sale` — remaining_due validation via `AccountingService(con).get_sale_outstanding()`
-  - `modules/customer/controller.py` — added `self.accounting`; bulk listing methods (ponytail: direct view query for N+1 avoidance)
+  - `modules/customer/controller.py` — added `self.accounting`; `_list_sales_for_customer` and `_eligible_sales_for_application` rewired via `self.accounting.list_customer_sale_summaries()`
 - Tests added/updated:
   - `tests/accounting/test_customer_sales_sale_outstanding.py` (new)
     - `test_sale_outstanding_matches_receivable_view`
@@ -155,7 +155,7 @@ It records where legacy/current behavior moved and which application call sites 
 - Behavior change:
   - None intended. Values match `sale_receivable_totals` view output.
 - Notes / unresolved correctness questions:
-  - Customer controller bulk listing methods (`_list_sales_for_customer`, `_eligible_sales_for_application`) still query the view directly to avoid N+1; `AccountingService` is available for per-sale reads.
+  - Customer controller bulk listing methods (`_list_sales_for_customer`, `_eligible_sales_for_application`) now route through `self.accounting.list_customer_sale_summaries()`.
   - `customer_advances_repo.apply_credit_to_sale` now validates via `AccountingService` within the same transaction.
 
 ## CS-ACC-005: Consolidate sale payment status rollups
@@ -220,7 +220,8 @@ It records where legacy/current behavior moved and which application call sites 
 - Behavior change:
   - None intended. Dict shapes, timeline order, and event kinds match `CustomerHistoryService` output exactly.
 - Notes / unresolved correctness questions:
-  - `CustomerHistoryService` still works standalone when `accounting` is not passed (old SQL path).
+  - `CustomerHistoryService` still works standalone when `accounting` is not passed (old SQL fallback path).
+  - All individual methods (`sales_with_items`, `sale_payments`, `sale_returns`, `advances_ledger`, `timeline`, `overview`) delegate through `self._accounting` when set.
   - `get_customer_statement` builds a simple running balance from the advance ledger; the full timeline-based statement is available via `get_customer_history`.
 
 ## CS-ACC-008: Rewire sales and customer display panels
@@ -313,9 +314,9 @@ It records where legacy/current behavior moved and which application call sites 
   - None intended. Dashboard metrics match existing `DashboardRepo.summary_metrics` SQL.
 - Notes / unresolved correctness questions:
   - `ReportingRepo` already has `self.accounting` (pre-existing). Customer aging, sales reports, and export financial reads already route through `ReportingRepo` → `AccountingService`.
-  - Full customer aging service method not implemented — `ReportingRepo.customer_headers_as_of_batch` has complex cutoff logic that must be preserved exactly; defer to later card if needed.
-  - Dashboard `summary_metrics` remains in `DashboardRepo` (SQL matches service method exactly). Service method exists for future controller rewiring.
-  - Report UI widgets (`CustomerAgingReports`, etc.) use `ReportingRepo` directly and continue working unchanged.
+  - `get_customer_aging(conn, cutoff_date)` implemented in customer_rules — uses `ReportingRepo.customer_headers_as_of_batch` via lazy import.
+  - Dashboard controller `_refresh_metrics` now routes through `self.accounting.get_sales_dashboard_metrics()` with `low_stock_count` fallback via `self.repo.low_stock_count()`.
+  - Report UI widgets (`CustomerAgingReports`, etc.) continue working unchanged.
 
 ## CS-ACC-011: Consolidate customer payment history read model
 
@@ -353,3 +354,42 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - `SalePaymentsRepo` read methods now convert `SalePaymentRow` DTOs to plain dicts (callers use `dict()` and key access, which both work on dicts).
   - Payment write methods (`record_payment`, `record_payment_with_conn`) remain untouched.
+
+## CS-ACC-012: Consolidate customer payment write and clearing behavior
+
+- Migrated behavior:
+  - Customer payment insert (sale_payments row, overpayment-to-credit)
+  - Clearing state update (transition validation + overpayment reconciliation)
+  - Clearing state reopen (admin-authorized reversal + credit reversal)
+- Original location(s):
+  - `database/repositories/sale_payments_repo.py::record_payment_with_conn` (inline SQL + overpayment logic)
+  - `database/repositories/sale_payments_repo.py::update_clearing_state` (transition validation + overpayment)
+  - `database/repositories/sale_payments_repo.py::reopen_clearing_state` (admin check + credit reversal)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `record_customer_payment_event(conn, payload) -> CustomerPaymentResult`
+    - `update_customer_payment_state(conn, payment_id, *, clearing_state, ...) -> int`
+    - `reopen_customer_payment_state(conn, payment_id, *, reason) -> int`
+    - `_handle_overpayment(conn, ...)` — internal helper
+  - `modules/accounting/dto.py` (new `CustomerPaymentPayload`, `CustomerPaymentEffect`, `CustomerPaymentResult`)
+  - `modules/accounting/service.py` — all three methods delegated to current_rules
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `record_customer_payment_event(payload: CustomerPaymentPayload) -> CustomerPaymentResult`
+  - `update_customer_payment_state(payment_id, *, clearing_state, cleared_date, notes) -> int`
+  - `reopen_customer_payment_state(payment_id, *, reason) -> int`
+- Rewired call site(s):
+  - `database/repositories/sale_payments_repo.py::record_payment_with_conn` — validates via `_normalize_and_validate`, then delegates INSERT + overpayment to `AccountingService(con).record_customer_payment_event()`
+  - `database/repositories/sale_payments_repo.py::update_clearing_state` — validates transitions, then delegates core UPDATE + overpayment to `AccountingService`
+  - `database/repositories/sale_payments_repo.py::reopen_clearing_state` — validates admin, handles credit reversal, then delegates core UPDATE to `AccountingService`
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_payment_event.py` (new)
+    - `test_record_customer_payment_preserves_sale_payment_row`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Added new DTO imports
+- Behavior change:
+  - None intended. Inserted rows, overpayment credit rows, and clearing lifecycle match original behavior.
+- Notes / unresolved correctness questions:
+  - Validation logic (`_normalize_and_validate`, `NORMAL_CLEARING_TRANSITIONS`) stays in `SalePaymentsRepo` for compatibility; the service does minimal validation.
+  - `reopen_clearing_state` admin check and credit balance verification remain in the repo (business rule).
+  - DB triggers for header rollups remain the integrity layer — the service does not duplicate trigger logic.

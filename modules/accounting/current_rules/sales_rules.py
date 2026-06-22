@@ -8,6 +8,9 @@ from sqlite3 import Connection
 from typing import Any
 
 from ..dto import (
+    CustomerPaymentEffect,
+    CustomerPaymentPayload,
+    CustomerPaymentResult,
     QuotationFinancials,
     SaleFinancialSummary,
     SaleInvoiceFinancials,
@@ -345,3 +348,217 @@ def get_latest_sale_payment(
         created_by=d.get("created_by"),
         bank_account_label=d.get("bank_account_label"),
     )
+
+
+def record_customer_payment_event(
+    conn: Connection, payload: CustomerPaymentPayload
+) -> CustomerPaymentResult:
+    from datetime import date as dt_date
+
+    cs = payload.clearing_state or "posted"
+    cleared_date = payload.cleared_date
+    if cs == "cleared" and not cleared_date:
+        cleared_date = (payload.date or dt_date.today().isoformat())
+
+    cur = conn.execute(
+        """
+        INSERT INTO sale_payments (sale_id, date, amount, method,
+            bank_account_id, instrument_type, instrument_no,
+            instrument_date, deposited_date, cleared_date,
+            clearing_state, ref_no, notes, created_by,
+            overpayment_converted, converted_to_credit)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+        """,
+        (payload.sale_id, payload.date, float(payload.amount), payload.method,
+         payload.bank_account_id, payload.instrument_type, payload.instrument_no,
+         payload.instrument_date, payload.deposited_date, cleared_date,
+         cs, payload.ref_no, payload.notes, payload.created_by),
+    )
+    payment_id = int(cur.lastrowid)
+
+    if cs == "cleared":
+        _handle_overpayment(conn, payload.sale_id, payload.customer_id,
+                            cleared_date, payment_id, str(payment_id))
+
+    return CustomerPaymentResult(
+        payment_id=payment_id,
+        effect=CustomerPaymentEffect(
+            sale_id=payload.sale_id,
+            customer_id=payload.customer_id,
+            amount=payload.amount,
+            clearing_state=cs,
+        ),
+    )
+
+
+def _handle_overpayment(
+    conn: Connection, sale_id: str, customer_id: int,
+    date: str | None, payment_id: int, source_id: str,
+) -> None:
+    info = conn.execute(
+        "SELECT COALESCE(canonical_total_amount, 0.0) AS total, "
+        "COALESCE(advance_payment_applied, 0.0) AS adv "
+        "FROM sale_receivable_totals WHERE sale_id = ?",
+        (sale_id,),
+    ).fetchone()
+    if not info:
+        return
+    total_amount = float(info["total"])
+    current_advance = float(info["adv"]) if info["adv"] else 0.0
+    total_owed = total_amount - current_advance
+
+    total_cleared = conn.execute(
+        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS t "
+        "FROM sale_payments WHERE sale_id = ? AND clearing_state = 'cleared'",
+        (sale_id,),
+    ).fetchone()["t"]
+
+    already_conv = conn.execute(
+        "SELECT COALESCE(SUM(CAST(converted_to_credit AS REAL)), 0.0) AS t "
+        "FROM sale_payments WHERE sale_id = ? AND payment_id != ?",
+        (sale_id, payment_id),
+    ).fetchone()["t"]
+
+    excess = max(0.0, total_cleared - total_owed)
+    excess_amt = max(0.0, excess - already_conv)
+    if excess_amt > 1e-9:
+        conn.execute(
+            "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id, notes, created_by) "
+            "VALUES (?, ?, ?, 'deposit', ?, ?, ?)",
+            (customer_id, date, excess_amt, source_id,
+             f"Excess payment converted to credit on {sale_id}", None),
+        )
+        conn.execute(
+            "UPDATE sale_payments SET overpayment_converted = 1, converted_to_credit = ? WHERE payment_id = ?",
+            (excess_amt, payment_id),
+        )
+
+
+def update_customer_payment_state(
+    conn: Connection,
+    payment_id: int,
+    *,
+    clearing_state: str,
+    cleared_date: str | None = None,
+    notes: str | None = None,
+) -> int:
+    if clearing_state not in {"posted", "pending", "cleared", "bounced"}:
+        raise ValueError(f"Invalid clearing_state: {clearing_state}")
+    if clearing_state == "cleared" and not cleared_date:
+        from datetime import date as dt_date
+        cleared_date = dt_date.today().isoformat()
+
+    orig = conn.execute(
+        "SELECT sale_id, clearing_state, converted_to_credit FROM sale_payments WHERE payment_id = ?",
+        (payment_id,),
+    ).fetchone()
+    if not orig:
+        raise ValueError(f"Payment not found: {payment_id}")
+    old = str(orig["clearing_state"])
+    if old == clearing_state:
+        return 1
+    if old not in ("posted", "pending"):
+        raise ValueError(f"Cannot transition from {old} to {clearing_state}")
+
+    conn.execute(
+        "UPDATE sale_payments SET clearing_state = ?, cleared_date = ?, notes = COALESCE(?, notes) "
+        "WHERE payment_id = ? AND clearing_state = ?",
+        (clearing_state, cleared_date, notes, payment_id, old),
+    )
+
+    # Overpayment reconciliation when transitioning TO cleared
+    if clearing_state == "cleared" and old != "cleared":
+        _reconcile_overpayment_on_clear(conn, orig["sale_id"], payment_id, cleared_date)
+
+    return 1
+
+
+def _reconcile_overpayment_on_clear(
+    conn: Connection, sale_id: str, payment_id: int, cleared_date: str | None
+) -> None:
+    info = conn.execute(
+        "SELECT COALESCE(canonical_total_amount, 0.0) AS total, "
+        "COALESCE(advance_payment_applied, 0.0) AS adv, c.customer_id "
+        "FROM sales s JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id "
+        "JOIN customers c ON c.customer_id = s.customer_id WHERE s.sale_id = ?",
+        (sale_id,),
+    ).fetchone()
+    if not info:
+        return
+    owed = float(info["total"]) - float(info["adv"])
+    cleared = conn.execute(
+        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS t "
+        "FROM sale_payments WHERE sale_id = ? AND clearing_state = 'cleared'",
+        (sale_id,),
+    ).fetchone()["t"]
+    already = conn.execute(
+        "SELECT COALESCE(SUM(CAST(converted_to_credit AS REAL)), 0.0) AS t "
+        "FROM sale_payments WHERE sale_id = ? AND payment_id != ?",
+        (sale_id, payment_id),
+    ).fetchone()["t"]
+    excess = max(0.0, max(0.0, cleared - owed) - already)
+    if excess > 1e-9:
+        conn.execute(
+            "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id, notes, created_by) "
+            "VALUES (?, ?, ?, 'deposit', ?, ?, ?)",
+            (int(info["customer_id"]), cleared_date, excess, str(payment_id),
+             f"Excess from cleared payment #{payment_id} on {sale_id}", None),
+        )
+        conn.execute(
+            "UPDATE sale_payments SET overpayment_converted = 1, converted_to_credit = ? WHERE payment_id = ?",
+            (excess, payment_id),
+        )
+
+
+def reopen_customer_payment_state(
+    conn: Connection,
+    payment_id: int,
+    *,
+    reason: str | None = None,
+) -> int:
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("A reversal reason is required")
+
+    payment = conn.execute(
+        "SELECT sale_id, clearing_state, converted_to_credit FROM sale_payments WHERE payment_id = ?",
+        (payment_id,),
+    ).fetchone()
+    if not payment:
+        raise ValueError(f"Payment not found: {payment_id}")
+    old_state = str(payment["clearing_state"])
+    if old_state not in {"cleared", "bounced"}:
+        raise ValueError(f"Only cleared or bounced payments can be reopened; current state is {old_state}")
+
+    # Reverse any overpayment-to-credit that was granted
+    converted_amount = float(payment["converted_to_credit"] or 0.0)
+    if converted_amount > 1e-9:
+        sr = conn.execute(
+            "SELECT customer_id FROM sales WHERE sale_id = ?", (payment["sale_id"],)
+        ).fetchone()
+        cid = int(sr["customer_id"])
+        bal = float(conn.execute(
+            "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS b FROM customer_advances WHERE customer_id = ?",
+            (cid,),
+        ).fetchone()["b"])
+        if bal < converted_amount - 1e-9:
+            raise ValueError(
+                f"Cannot reopen: customer credit of {converted_amount:g} consumed. Balance: {bal:g}."
+            )
+        conn.execute(
+            "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id, notes, created_by) "
+            "VALUES (?, CURRENT_DATE, ?, 'deposit', ?, ?, ?)",
+            (cid, -converted_amount, str(payment_id),
+             f"Reversal of excess credit from payment #{payment_id}", None),
+        )
+        conn.execute(
+            "UPDATE sale_payments SET overpayment_converted = 0, converted_to_credit = 0 WHERE payment_id = ?",
+            (payment_id,),
+        )
+
+    conn.execute(
+        "UPDATE sale_payments SET clearing_state = 'pending', cleared_date = NULL "
+        "WHERE payment_id = ? AND clearing_state = ?",
+        (payment_id, old_state),
+    )
+    return 1

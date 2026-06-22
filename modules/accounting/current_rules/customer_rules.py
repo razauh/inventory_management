@@ -29,7 +29,7 @@ def _collect_headers(rows: list[dict]) -> list[str]:
     return headers
 
 
-def _sales_with_items(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
+def get_customer_sales_with_items(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
     sales = conn.execute(
         """
         SELECT
@@ -151,7 +151,7 @@ def _advances_ledger(conn: Connection, customer_id: int) -> dict[str, Any]:
 
 
 def _timeline(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
-    sales = _sales_with_items(conn, customer_id)
+    sales = get_customer_sales_with_items(conn, customer_id)
     returns = _sale_returns(conn, customer_id)
     payments = _sale_payments(conn, customer_id)
     advances = _advances_ledger(conn, customer_id)
@@ -234,7 +234,7 @@ def _timeline(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
 
 
 def _overview(conn: Connection, customer_id: int) -> dict[str, Any]:
-    sales = _sales_with_items(conn, customer_id)
+    sales = get_customer_sales_with_items(conn, customer_id)
     advances = _advances_ledger(conn, customer_id)
     payments = _sale_payments(conn, customer_id)
 
@@ -265,7 +265,7 @@ def _overview(conn: Connection, customer_id: int) -> dict[str, Any]:
 
 
 def get_customer_history(conn: Connection, customer_id: int) -> dict[str, Any]:
-    sales = _sales_with_items(conn, customer_id)
+    sales = get_customer_sales_with_items(conn, customer_id)
     payments = _sale_payments(conn, customer_id)
     advances = _advances_ledger(conn, customer_id)
     timeline = _timeline(conn, customer_id)
@@ -322,6 +322,23 @@ def get_customer_statement(
         opening_balance=Decimal("0"),
         closing_balance=closing_balance,
         entries=tuple(entries),
+    )
+
+
+def get_customer_aging(
+    conn: Connection, cutoff_date: str
+) -> CustomerAgingReport:
+    from database.repositories.reporting_repo import ReportingRepo
+
+    repo = ReportingRepo(conn)
+    customers = conn.execute(
+        "SELECT customer_id FROM customers ORDER BY name"
+    ).fetchall()
+    cids = [r["customer_id"] for r in customers]
+    rows = repo.customer_headers_as_of_batch(cids, cutoff_date)
+    return CustomerAgingReport(
+        as_of=cutoff_date,
+        rows=tuple(dict(r) for r in rows),
     )
 
 
@@ -396,3 +413,23 @@ def get_customer_payment_history(
             )
         )
     return tuple(res)
+
+
+def list_customer_sale_summaries(
+    conn: Connection, customer_id: int
+) -> tuple[dict[str, Any], ...]:
+    rows = conn.execute(
+        """
+        SELECT s.sale_id, s.date, s.doc_no,
+               srt.canonical_total_amount AS total,
+               srt.paid_amount AS paid,
+               srt.advance_payment_applied AS advance_payment_applied,
+               srt.remaining_due AS remaining_due
+        FROM sales s
+        JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+        WHERE s.customer_id = ? AND s.doc_type = 'sale'
+        ORDER BY s.date DESC, s.sale_id DESC
+        """,
+        (customer_id,),
+    ).fetchall()
+    return tuple(dict(r) for r in rows)

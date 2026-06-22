@@ -11,6 +11,9 @@ from .dto import (
     BankLedgerRow,
     CustomerBalance,
     CustomerOpenSale,
+    CustomerPaymentEffect,
+    CustomerPaymentPayload,
+    CustomerPaymentResult,
     CustomerReceivableSummary,
     CustomerStatement,
     InventoryAccountingEvent,
@@ -94,10 +97,13 @@ from .current_rules.purchase_rules import (
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
 from .current_rules.customer_rules import (
+    get_customer_aging as get_current_customer_aging,
     get_customer_history as get_current_customer_history,
     get_customer_payment_history as get_current_customer_payment_history,
     get_customer_receivable_summary as get_current_customer_receivable_summary,
+    get_customer_sales_with_items as get_current_customer_sales_with_items,
     get_customer_statement as get_current_customer_statement,
+    list_customer_sale_summaries as list_current_customer_sale_summaries,
 )
 from .current_rules.sales_rules import (
     get_latest_sale_payment as get_current_latest_sale_payment,
@@ -111,6 +117,9 @@ from .current_rules.sales_rules import (
     get_sale_totals as get_current_sale_totals,
     preview_sale_total as preview_current_sale_total,
     recalculate_sale_payment_status as recalculate_current_sale_payment_status,
+    record_customer_payment_event as record_current_customer_payment_event,
+    update_customer_payment_state as update_current_customer_payment_state,
+    reopen_customer_payment_state as reopen_current_customer_payment_state,
 )
 from .current_rules.vendor_rules import (
     get_vendor_advance_balance as get_current_vendor_advance_balance,
@@ -448,12 +457,29 @@ class AccountingService:
             self._not_implemented("get_customer_history")
         return get_current_customer_history(self.conn, customer_id)
 
+    def get_customer_sales_with_items(self, customer_id: int) -> list[dict[str, Any]]:
+        if self.conn is None:
+            self._not_implemented("get_customer_sales_with_items")
+        return get_current_customer_sales_with_items(self.conn, customer_id)
+
+    def get_customer_aging(self, cutoff_date: str) -> CustomerAgingReport:
+        if self.conn is None:
+            self._not_implemented("get_customer_aging")
+        return get_current_customer_aging(self.conn, cutoff_date)
+
     def get_customer_receivable_summary(
         self, customer_id: int
     ) -> CustomerReceivableSummary:
         if self.conn is None:
             self._not_implemented("get_customer_receivable_summary")
         return get_current_customer_receivable_summary(self.conn, customer_id)
+
+    def list_customer_sale_summaries(
+        self, customer_id: int
+    ) -> tuple[dict[str, Any], ...]:
+        if self.conn is None:
+            self._not_implemented("list_customer_sale_summaries")
+        return list_current_customer_sale_summaries(self.conn, customer_id)
 
     def get_sale_invoice_financials(
         self, sale_id: int | str
@@ -607,8 +633,41 @@ class AccountingService:
             self._not_implemented("record_vendor_advance_with_auto_apply")
         return record_current_vendor_advance_with_auto_apply(self.conn, payload)
 
-    def record_customer_receipt_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_customer_receipt_event")
+    def record_customer_payment_event(
+        self, payload: CustomerPaymentPayload
+    ) -> CustomerPaymentResult:
+        if self.conn is None:
+            self._not_implemented("record_customer_payment_event")
+        return record_current_customer_payment_event(self.conn, payload)
+
+    def update_customer_payment_state(
+        self,
+        payment_id: int,
+        *,
+        clearing_state: str,
+        cleared_date: str | None = None,
+        notes: str | None = None,
+    ) -> int:
+        if self.conn is None:
+            self._not_implemented("update_customer_payment_state")
+        return update_current_customer_payment_state(
+            self.conn, payment_id,
+            clearing_state=clearing_state,
+            cleared_date=cleared_date,
+            notes=notes,
+        )
+
+    def reopen_customer_payment_state(
+        self,
+        payment_id: int,
+        *,
+        reason: str | None = None,
+    ) -> int:
+        if self.conn is None:
+            self._not_implemented("reopen_customer_payment_state")
+        return reopen_current_customer_payment_state(
+            self.conn, payment_id, reason=reason,
+        )
 
     def record_purchase_return_event(
         self,
