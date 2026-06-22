@@ -433,4 +433,34 @@ It records where legacy/current behavior moved and which application call sites 
   - None intended. Inserted rows, source types, and balance effects match original repo behavior.
 - Notes / unresolved correctness questions:
   - Method/bank validation rules stay in `grant_credit()` (compatibility layer); `record_customer_credit_event` does minimal validation.
-  - `apply_credit_to_sale` remains in repo (credit consumption, out of scope for this card — see CS-ACC-014).
+  - `apply_credit_to_sale` delegated in CS-ACC-014 (see entry below).
+
+## CS-ACC-014: Consolidate customer credit application behavior
+
+- Migrated behavior:
+  - Customer credit application to sale (INSERT negative customer_advances row with due cap)
+- Original location(s):
+  - `database/repositories/customer_advances_repo.py::apply_credit_to_sale` (validation + INSERT)
+- New accounting location(s):
+  - `modules/accounting/current_rules/customer_rules.py`
+    - `record_customer_credit_application_event(conn, payload) -> CustomerCreditApplicationResult`
+  - `modules/accounting/dto.py` (new `CustomerCreditApplicationPayload`, `CustomerCreditApplicationResult`)
+  - `modules/accounting/service.py` — method delegated to current_rules
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `record_customer_credit_application_event(payload: CustomerCreditApplicationPayload) -> CustomerCreditApplicationResult`
+- Rewired call site(s):
+  - `database/repositories/customer_advances_repo.py::apply_credit_to_sale` — validates, then delegates to `AccountingService(con).record_customer_credit_application_event()`
+  - `apply_to_sale` (deprecated wrapper) — indirect
+  - All callers (customer controller `_on_apply_advance`, `actions.apply_customer_advance`, sales controller `_maybe_apply_customer_credit_to_sale`) — through the repo
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_credit_application.py` (new)
+    - `test_customer_credit_application_matches_repo`
+    - `test_customer_credit_application_preserves_due_cap`
+    - `test_customer_credit_application_rejects_bad_sale`
+- Behavior change:
+  - None intended. Inserted rows (negative amount, applied_to_sale source_type) and exception messages match original behavior.
+- Notes / unresolved correctness questions:
+  - DB triggers `trg_advances_no_overdraw`, `trg_customer_advances_not_exceed_remaining_due` remain the integrity layer.
+  - Sale header rollup (`payment_status`, `advance_payment_applied`) is handled by DB triggers, not the service.
+  - `preview_customer_credit_allocation` and `validate_customer_credit_application` not implemented — validation is inlined in the record method.

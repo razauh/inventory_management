@@ -11,6 +11,8 @@ from typing import Any
 
 from ..dto import (
     CustomerAgingReport,
+    CustomerCreditApplicationPayload,
+    CustomerCreditApplicationResult,
     CustomerCreditLedgerRow,
     CustomerCreditPayload,
     CustomerCreditResult,
@@ -505,3 +507,42 @@ def list_customer_credit_ledger(
             )
         )
     return tuple(res)
+
+
+def record_customer_credit_application_event(
+    conn: Connection, payload: CustomerCreditApplicationPayload
+) -> CustomerCreditApplicationResult:
+    if payload.amount <= Decimal("0"):
+        raise ValueError("Apply amount must be positive.")
+    row = conn.execute(
+        "SELECT customer_id, doc_type FROM sales WHERE sale_id = ?",
+        (payload.sale_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Sale '{payload.sale_id}' does not exist.")
+    if row["doc_type"] != "sale":
+        raise ValueError("Cannot apply credit to a quotation.")
+    if int(row["customer_id"]) != payload.customer_id:
+        raise ValueError("Sale does not belong to the specified customer.")
+
+    from .sales_rules import get_sale_financial_summary
+    remaining = get_sale_financial_summary(conn, payload.sale_id).outstanding
+    if payload.amount > remaining:
+        raise ValueError(
+            f"Cannot apply {float(payload.amount):.2f}; "
+            f"remaining due on sale is {float(remaining):.2f}."
+        )
+
+    cur = conn.execute(
+        """INSERT INTO customer_advances
+           (customer_id, tx_date, amount, source_type, source_id, notes, created_by)
+           VALUES (?, COALESCE(?, CURRENT_DATE), ?, 'applied_to_sale', ?, ?, ?)""",
+        (payload.customer_id, payload.date, -float(payload.amount),
+         payload.sale_id, payload.notes, payload.created_by),
+    )
+    return CustomerCreditApplicationResult(
+        tx_id=int(cur.lastrowid),
+        customer_id=payload.customer_id,
+        sale_id=payload.sale_id,
+        amount=payload.amount,
+    )

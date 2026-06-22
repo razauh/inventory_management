@@ -7,7 +7,7 @@ from typing import Optional
 
 from decimal import Decimal
 
-from modules.accounting import AccountingService, CustomerCreditPayload
+from modules.accounting import AccountingService, CustomerCreditApplicationPayload, CustomerCreditPayload
 
 
 class CustomerAdvancesRepo:
@@ -120,70 +120,24 @@ class CustomerAdvancesRepo:
         *,
         customer_id: int,
         sale_id: str,
-        amount: float,                        # positive here; will be written as negative
+        amount: float,
         date: Optional[str] = None,
         created_by: Optional[int] = None,
         notes: Optional[str] = None,
     ) -> int:
-        """
-        Apply existing customer credit to a sale (consumes credit).
-        Writes a NEGATIVE amount. Final over-application prevention is enforced by DB triggers.
-
-        Soft checks (for clearer messages before the DB enforces):
-          - amount must be positive.
-          - sale must exist, be doc_type='sale', and belong to the customer.
-          - will not apply more than the canonical sale remaining due.
-        Returns the new tx_id.
-        """
         if not sale_id:
             raise ValueError("sale_id is required to apply credit.")
         if amount is None or float(amount) <= 0:
             raise ValueError("Apply amount must be a positive number.")
-
         with self._connect() as con:
-            # Validate sale exists, is a real sale, and belongs to the customer
-            row = con.execute(
-                """
-                SELECT s.customer_id, s.doc_type
-                  FROM sales s
-                 WHERE s.sale_id = ?;
-                """,
-                (sale_id,),
-            ).fetchone()
-
-            if row is None:
-                raise ValueError(f"Sale '{sale_id}' does not exist.")
-            if row["doc_type"] != "sale":
-                raise ValueError("Cannot apply credit to a quotation; only real sales are allowed.")
-            if int(row["customer_id"]) != int(customer_id):
-                raise ValueError("Sale does not belong to the specified customer.")
-
-            remaining_due = float(AccountingService(con).get_sale_outstanding(sale_id).outstanding)
-
-            if float(amount) > (remaining_due + 1e-9):
-                raise ValueError(
-                    f"Cannot apply {float(amount):.2f}; remaining due on sale is {remaining_due:.2f}."
+            result = AccountingService(con).record_customer_credit_application_event(
+                CustomerCreditApplicationPayload(
+                    customer_id=customer_id, sale_id=sale_id,
+                    amount=Decimal(str(amount)),
+                    date=date, notes=notes, created_by=created_by,
                 )
-
-            # Insert application (negative amount). DB trigger ensures overall balance suffices.
-            cur = con.execute(
-                """
-                INSERT INTO customer_advances
-                    (customer_id, tx_date, amount, source_type, source_id, notes, created_by)
-                VALUES
-                    (:customer_id, COALESCE(:tx_date, CURRENT_DATE), :neg_amount,
-                     'applied_to_sale', :source_id, :notes, :created_by)
-                """,
-                {
-                    "customer_id": customer_id,
-                    "tx_date": date,
-                    "neg_amount": -abs(float(amount)),
-                    "source_id": sale_id,
-                    "notes": notes,
-                    "created_by": created_by,
-                },
             )
-            return int(cur.lastrowid)
+            return result.tx_id
 
     def get_balance(self, customer_id: int) -> float:
         with self._connect() as con:

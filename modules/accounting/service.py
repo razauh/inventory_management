@@ -105,6 +105,7 @@ from .current_rules.customer_rules import (
     get_customer_statement as get_current_customer_statement,
     list_customer_credit_ledger as list_current_customer_credit_ledger,
     list_customer_sale_summaries as list_current_customer_sale_summaries,
+    record_customer_credit_application_event as record_current_customer_credit_application_event,
     record_customer_credit_event as record_current_customer_credit_event,
 )
 from .current_rules.sales_rules import (
@@ -491,6 +492,13 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("list_customer_credit_ledger")
         return list_current_customer_credit_ledger(self.conn, customer_id)
+
+    def record_customer_credit_application_event(
+        self, payload: CustomerCreditApplicationPayload
+    ) -> CustomerCreditApplicationResult:
+        if self.conn is None:
+            self._not_implemented("record_customer_credit_application_event")
+        return record_current_customer_credit_application_event(self.conn, payload)
 
     def get_customer_receivable_summary(
         self, customer_id: int

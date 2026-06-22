@@ -691,6 +691,24 @@ class CustomerCreditResult:
 
 
 @dataclass(frozen=True)
+class CustomerCreditApplicationPayload:
+    customer_id: int
+    sale_id: str
+    amount: Decimal
+    date: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
+class CustomerCreditApplicationResult:
+    tx_id: int
+    customer_id: int
+    sale_id: str
+    amount: Decimal
+
+
+@dataclass(frozen=True)
 class CustomerCreditLedgerRow:
     tx_id: int
     customer_id: int
