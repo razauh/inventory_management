@@ -13,6 +13,7 @@ from ..dto import (
     PurchasePaymentStatus,
     PurchasePaymentSummary,
     PurchaseReturnEffect,
+    PurchaseReturnInventoryPayload,
     PurchaseReturnPayload,
     PurchaseReturnPreviewPayload,
     PurchaseReturnResult,
@@ -22,6 +23,10 @@ from ..dto import (
     PurchaseTotals,
     SupplierRefundPayload,
     VendorAdvancePayload,
+)
+from .inventory_rules import (
+    get_purchase_returnable_quantities,
+    record_purchase_return_inventory_event,
 )
 from .vendor_rules import record_supplier_refund_event, record_vendor_advance_event
 
@@ -268,34 +273,24 @@ def _record_purchase_return_event(
         else 0.0
     )
     requested_return_value = 0.0
+    returnable_by_item = get_purchase_returnable_quantities(conn, pid)
 
     for item_id, batch_qty in requested_per_item.items():
         row = conn.execute(
             """
             SELECT
-              CAST(pi.quantity AS REAL) AS purchased_qty,
-              COALESCE((
-                SELECT SUM(CAST(it.quantity AS REAL))
-                FROM inventory_transactions it
-                WHERE it.transaction_type = 'purchase_return'
-                  AND it.reference_table = 'purchases'
-                  AND it.reference_id = ?
-                  AND it.reference_item_id = pi.item_id
-              ), 0.0) AS returned_so_far,
               pi.product_id, pi.uom_id,
               CAST(pi.purchase_price AS REAL) AS purchase_price,
               CAST(pi.item_discount AS REAL) AS item_discount
             FROM purchase_items pi
             WHERE pi.item_id = ? AND pi.purchase_id = ?
             """,
-            (pid, item_id, pid),
+            (item_id, pid),
         ).fetchone()
         if not row:
             raise ValueError(f"Invalid purchase item: {item_id} for purchase {pid}")
 
-        purchased_qty = float(row["purchased_qty"])
-        returned_so_far = float(row["returned_so_far"])
-        remaining = purchased_qty - returned_so_far
+        remaining = float(returnable_by_item.get(item_id, Decimal("0")))
         if batch_qty > remaining + 1e-9:
             raise ValueError(
                 f"Return qty exceeds remaining for item {item_id}: requested {batch_qty:g}, remaining {remaining:g}"
@@ -407,50 +402,17 @@ def _record_purchase_return_event(
                     f"of {refundable_direct_payment:.2f}."
                 )
 
-    row = conn.execute(
-        "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
-        (date,),
-    ).fetchone()
-    start_seq = int(row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) + 10
-    if start_seq < 100:
-        start_seq = 100
-    seq = start_seq
-
-    inserted_txn_ids: list[int] = []
-    for line in lines:
-        chk = conn.execute(
-            "SELECT product_id, uom_id FROM purchase_items WHERE item_id=? AND purchase_id=?",
-            (line["item_id"], pid),
-        ).fetchone()
-        if not chk:
-            raise ValueError(f"Purchase item mismatch for item_id {line['item_id']}")
-
-        prod_id = int(chk["product_id"] if isinstance(chk, sqlite3.Row) else chk[0])
-        uom_id = int(chk["uom_id"] if isinstance(chk, sqlite3.Row) else chk[1])
-        cur = conn.execute(
-            """
-            INSERT INTO inventory_transactions(
-                product_id, quantity, uom_id, transaction_type,
-                reference_table, reference_id, reference_item_id,
-                date, txn_seq, notes, created_by
-            )
-            VALUES (?, ?, ?, 'purchase_return', 'purchases', ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                prod_id,
-                float(line["qty_return"]),
-                uom_id,
-                pid,
-                int(line["item_id"]),
-                date,
-                seq,
-                notes,
-                created_by,
-            ),
-        )
-        inserted_txn_ids.append(int(cur.lastrowid))
-        seq += 10
-    rebuild_dirty_valuations(conn)
+    inventory_result = record_purchase_return_inventory_event(
+        conn,
+        PurchaseReturnInventoryPayload(
+            purchase_id=pid,
+            date=date,
+            created_by=created_by,
+            lines=tuple(lines),
+            notes=notes,
+        ),
+    )
+    inserted_txn_ids = list(inventory_result.transaction_ids)
 
     if inserted_txn_ids:
         placeholders = ",".join("?" for _ in inserted_txn_ids)

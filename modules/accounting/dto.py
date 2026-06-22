@@ -101,6 +101,62 @@ class PurchaseReturnResult:
 
 
 @dataclass(frozen=True)
+class PurchaseInventoryLine:
+    item_id: int
+    product_id: int
+    quantity: Decimal
+    uom_id: int
+
+
+@dataclass(frozen=True)
+class PurchaseInventoryPayload:
+    purchase_id: int | str
+    date: str | None
+    created_by: int | None
+    lines: tuple[PurchaseInventoryLine, ...] = ()
+    notes: str | None = None
+    replace_existing: bool = False
+    delete_transaction_types: tuple[str, ...] | None = ("purchase",)
+
+
+@dataclass(frozen=True)
+class PurchaseInventoryResult:
+    purchase_id: int | str
+    transaction_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class PurchaseReturnInventoryPayload:
+    purchase_id: int | str
+    date: str
+    created_by: int | None
+    lines: tuple[dict, ...]
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class PurchaseReturnInventoryResult:
+    purchase_id: int | str
+    transaction_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class InventoryAccountingEvent:
+    transaction_id: int
+    product_id: int
+    quantity: Decimal
+    uom_id: int | None
+    transaction_type: str
+    source_type: str | None
+    source_id: int | str | None
+    source_item_id: int | None
+    date: str | None
+    txn_seq: int | None
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
 class PurchasePaymentStatus:
     purchase_id: int | str
     status: str

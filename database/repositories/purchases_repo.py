@@ -1,12 +1,16 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from decimal import Decimal
 import sqlite3
 from typing import Iterable, Optional
 
 # For settlements
-from ...modules.accounting import AccountingService, PurchaseReturnPayload
-from ...database.repositories.vendor_advances_repo import VendorAdvancesRepo
-from ...database.repositories.inventory_repo import rebuild_dirty_valuations
+from ...modules.accounting import (
+    AccountingService,
+    PurchaseInventoryLine,
+    PurchaseInventoryPayload,
+    PurchaseReturnPayload,
+)
 
 
 PURCHASE_ITEM_PRICE_RULE_MESSAGE = "Sale price must be greater than purchase price."
@@ -352,22 +356,6 @@ class PurchasesRepo:
         )
         return int(cur.lastrowid)
 
-    def _insert_inventory_purchase(
-        self, *, item_id: int, product_id: int, uom_id: int, qty: float,
-        pid: str, date: str, created_by: int | None, notes: str | None,
-    ):
-        # Legacy helper (unused by the deterministic seq flow)
-        self.conn.execute(
-            """
-            INSERT INTO inventory_transactions(
-                product_id, quantity, uom_id, transaction_type,
-                reference_table, reference_id, reference_item_id, date, notes, created_by
-            )
-            VALUES (?, ?, ?, 'purchase', 'purchases', ?, ?, ?, ?, ?)
-            """,
-            (product_id, qty, uom_id, pid, item_id, date, notes, created_by),
-        )
-
     # ---------- Create / Update ----------
     def create_purchase(self, header: PurchaseHeader, items: Iterable[PurchaseItem]):
         """
@@ -399,15 +387,7 @@ class PurchasesRepo:
             (header.purchase_id, header.vendor_id, header.date, total_amount, order_disc, header.notes, header.created_by),
         )
 
-        # 3) Next txn_seq for this date
-        row = self.conn.execute(
-            "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
-            (header.date,),
-        ).fetchone()
-        max_seq = (row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) or 0
-        next_seq = int(max_seq) + 10
-
-        # 4) Items + inventory rows
+        inventory_lines: list[PurchaseInventoryLine] = []
         for it in items_list:
             it.purchase_id = header.purchase_id
             cur = self.conn.execute(
@@ -420,24 +400,23 @@ class PurchasesRepo:
             )
             item_id = int(cur.lastrowid)
 
-            self.conn.execute(
-                """
-                INSERT INTO inventory_transactions (
-                    product_id, quantity, uom_id, transaction_type,
-                    reference_table, reference_id, reference_item_id,
-                    date, txn_seq, notes, created_by
+            inventory_lines.append(
+                PurchaseInventoryLine(
+                    item_id=item_id,
+                    product_id=it.product_id,
+                    quantity=Decimal(str(it.quantity)),
+                    uom_id=it.uom_id,
                 )
-                VALUES (?, ?, ?, 'purchase', 'purchases', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    it.product_id, it.quantity, it.uom_id,
-                    header.purchase_id, item_id,
-                    header.date, next_seq,
-                    header.notes, header.created_by,
-                ),
             )
-            next_seq += 10
-        rebuild_dirty_valuations(self.conn)
+        self.accounting.record_purchase_inventory_event(
+            PurchaseInventoryPayload(
+                purchase_id=header.purchase_id,
+                date=header.date,
+                created_by=header.created_by,
+                lines=tuple(inventory_lines),
+                notes=header.notes,
+            )
+        )
 
     def update_purchase(self, header: PurchaseHeader, items: Iterable[PurchaseItem]):
         """
@@ -464,20 +443,16 @@ class PurchasesRepo:
               pi.item_id,
               pi.product_id,
               pi.uom_id,
-              COALESCE((
-                SELECT SUM(CAST(it.quantity AS REAL))
-                FROM inventory_transactions it
-                WHERE it.transaction_type='purchase_return'
-                  AND it.reference_table='purchases'
-                  AND it.reference_id=pi.purchase_id
-                  AND it.reference_item_id=pi.item_id
-              ), 0.0) AS returned_qty
+              CAST(pi.quantity AS REAL) AS quantity
             FROM purchase_items pi
             WHERE pi.purchase_id=?
             """,
             (header.purchase_id,),
         ).fetchall()
         existing = {int(row["item_id"]): row for row in existing_rows}
+        returnable = self.accounting.get_purchase_returnable_quantities(
+            header.purchase_id
+        )
         retained_ids: set[int] = set()
 
         for it in items_list:
@@ -491,7 +466,7 @@ class PurchasesRepo:
                 raise ValueError(f"Invalid purchase item: {item_id} for purchase {header.purchase_id}")
             retained_ids.add(item_id)
 
-            returned_qty = float(row["returned_qty"])
+            returned_qty = float(row["quantity"]) - float(returnable.get(item_id, 0))
             if float(it.quantity) + 1e-9 < returned_qty:
                 raise ValueError(
                     f"Purchase item {item_id} quantity cannot be below already returned quantity {returned_qty:g}"
@@ -503,7 +478,8 @@ class PurchasesRepo:
                 raise ValueError(f"Cannot change product or UoM for returned purchase item {item_id}")
 
         for item_id, row in existing.items():
-            if item_id not in retained_ids and float(row["returned_qty"]) > 1e-9:
+            returned_qty = float(row["quantity"]) - float(returnable.get(item_id, 0))
+            if item_id not in retained_ids and returned_qty > 1e-9:
                 raise ValueError(f"Cannot remove returned purchase item {item_id}")
 
         # Totals
@@ -584,31 +560,14 @@ class PurchasesRepo:
             (header.vendor_id, header.date, order_disc, header.notes, total_amount, header.purchase_id),
         )
 
-        # Rebuild purchase inventory rows while preserving purchase item identity.
-        self.conn.execute(
-            """
-            DELETE FROM inventory_transactions
-             WHERE reference_table='purchases'
-               AND reference_id=?
-               AND transaction_type='purchase'
-            """,
-            (header.purchase_id,),
-        )
-
         for item_id in set(existing) - retained_ids:
             self.conn.execute(
                 "DELETE FROM purchase_items WHERE item_id=? AND purchase_id=?",
                 (item_id, header.purchase_id),
             )
 
-        # 4) Next txn_seq for the (possibly new) date
-        row = self.conn.execute(
-            "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
-            (header.date,),
-        ).fetchone()
-        next_seq = int(row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) + 10
-
         # Update retained items and insert new items, then rebuild purchase inventory rows.
+        inventory_lines: list[PurchaseInventoryLine] = []
         for it in items_list:
             it.purchase_id = header.purchase_id
             if it.item_id is None:
@@ -635,26 +594,26 @@ class PurchasesRepo:
                     ),
                 )
 
-            self.conn.execute(
-                """
-                INSERT INTO inventory_transactions (
-                    product_id, quantity, uom_id, transaction_type,
-                    reference_table, reference_id, reference_item_id,
-                    date, txn_seq, notes, created_by
+            inventory_lines.append(
+                PurchaseInventoryLine(
+                    item_id=item_id,
+                    product_id=it.product_id,
+                    quantity=Decimal(str(it.quantity)),
+                    uom_id=it.uom_id,
                 )
-                VALUES (?, ?, ?, 'purchase', 'purchases', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    it.product_id, it.quantity, it.uom_id,
-                    header.purchase_id, item_id,
-                    header.date, next_seq,
-                    header.notes, header.created_by,
-                ),
             )
-            next_seq += 10
 
         self.update_header_totals(header.purchase_id)
-        rebuild_dirty_valuations(self.conn)
+        self.accounting.record_purchase_inventory_event(
+            PurchaseInventoryPayload(
+                purchase_id=header.purchase_id,
+                date=header.date,
+                created_by=header.created_by,
+                lines=tuple(inventory_lines),
+                notes=header.notes,
+                replace_existing=True,
+            )
+        )
 
     # ---------- Returns ----------
     def record_return(
@@ -689,15 +648,9 @@ class PurchasesRepo:
         settlement: Optional[dict] = None,
     ):
         """
-        Enhanced returns (no implicit commit):
-          - Validates qty_return per line: qty_return <= (purchased - returned_so_far).
-          - Inserts inventory_transactions with transaction_type='purchase_return' using a high txn_seq bucket
-            (100, 110, ... for that date).
-          - Verifies immutable valuation snapshots were captured for every inserted transaction.
-          - Computes monetary return value exclusively from those snapshots.
-          - Settlement:
-              * {'mode':'refund'/'refund_now', ...} => received vendor refund
-              * {'mode':'credit_note'} => excess funded amount as vendor credit
+        Backward-compatible return entry point.
+
+        No commit here; caller controls the transaction boundary.
         """
         self.accounting.record_purchase_return_event(
             PurchaseReturnPayload(
@@ -709,377 +662,18 @@ class PurchasesRepo:
                 settlement=settlement,
             )
         )
-        return
-
-        if not lines:
-            return
-
-        # Header for vendor_id
-        hdr = self.conn.execute("SELECT vendor_id FROM purchases WHERE purchase_id=?", (pid,)).fetchone()
-        if not hdr:
-            raise ValueError(f"Unknown purchase_id: {pid}")
-        vendor_id = int(hdr["vendor_id"] if isinstance(hdr, sqlite3.Row) else hdr[0])
-
-        mode = (settlement.get("mode") or "").lower() if settlement else ""
-        if mode == "refund":
-            mode = "refund_now"
-
-        # Group requested returns per item to validate batch totals
-        requested_per_item: dict[int, float] = {}
-        for ln in lines:
-            iid = int(ln["item_id"])
-            requested_per_item[iid] = requested_per_item.get(iid, 0.0) + float(ln["qty_return"])
-
-        totals_row = self.conn.execute(
-            """
-            SELECT
-              COALESCE(SUM(
-                CAST(pi.quantity AS REAL) *
-                MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
-              ), 0.0) AS subtotal,
-              COALESCE(CAST(p.order_discount AS REAL), 0.0) AS order_discount
-            FROM purchases p
-            LEFT JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-            WHERE p.purchase_id = ?
-            GROUP BY p.purchase_id
-            """,
-            (pid,),
-        ).fetchone()
-        purchase_subtotal = float(totals_row["subtotal"] or 0.0) if totals_row else 0.0
-        order_discount = float(totals_row["order_discount"] or 0.0) if totals_row else 0.0
-        effective_order_discount = min(max(0.0, order_discount), purchase_subtotal)
-        return_value_factor = (
-            (purchase_subtotal - effective_order_discount) / purchase_subtotal
-            if purchase_subtotal > 0.0
-            else 0.0
-        )
-        requested_return_value = 0.0
-
-        # Validate against purchased - already returned
-        for item_id, batch_qty in requested_per_item.items():
-            row = self.conn.execute(
-                """
-                SELECT
-                  CAST(pi.quantity AS REAL) AS purchased_qty,
-                  COALESCE((
-                    SELECT SUM(CAST(it.quantity AS REAL))
-                    FROM inventory_transactions it
-                    WHERE it.transaction_type = 'purchase_return'
-                      AND it.reference_table = 'purchases'
-                      AND it.reference_id = ?
-                      AND it.reference_item_id = pi.item_id
-                  ), 0.0) AS returned_so_far,
-                  pi.product_id, pi.uom_id,
-                  CAST(pi.purchase_price AS REAL) AS purchase_price,
-                  CAST(pi.item_discount AS REAL) AS item_discount
-                FROM purchase_items pi
-                WHERE pi.item_id = ? AND pi.purchase_id = ?
-                """,
-                (pid, item_id, pid),
-            ).fetchone()
-            if not row:
-                raise ValueError(f"Invalid purchase item: {item_id} for purchase {pid}")
-
-            purchased_qty = float(row["purchased_qty"])
-            returned_so_far = float(row["returned_so_far"])
-            remaining = purchased_qty - returned_so_far
-            if batch_qty > remaining + 1e-9:
-                raise ValueError(
-                    f"Return qty exceeds remaining for item {item_id}: requested {batch_qty:g}, remaining {remaining:g}"
-                )
-
-            requested_return_value += batch_qty * return_value_factor * max(
-                0.0,
-                float(row["purchase_price"] or 0.0)
-                - float(row["item_discount"] or 0.0),
-            )
-
-            # Additional stock check: ensure return doesn't exceed current on-hand stock
-            product_id = int(row["product_id"])
-            uom_id = int(row["uom_id"])
-
-            # Get the factor to convert to base units
-            factor_row = self.conn.execute(
-                """
-                SELECT COALESCE(CAST(factor_to_base AS REAL), 1.0) AS factor
-                FROM product_uoms
-                WHERE product_id=? AND uom_id=?
-                """,
-                (product_id, uom_id),
-            ).fetchone()
-            factor = float(factor_row["factor"] if factor_row else 1.0)
-            return_qty_base = batch_qty * factor
-
-            rebuild_dirty_valuations(self.conn, product_id)
-            stock_row = self.conn.execute(
-                "SELECT qty_in_base FROM v_stock_on_hand WHERE product_id=?",
-                (product_id,),
-            ).fetchone()
-            on_hand = float(stock_row["qty_in_base"] if stock_row else 0.0)
-
-            # Check if return would make on-hand stock negative
-            if return_qty_base > on_hand + 1e-9:
-                raise ValueError(
-                    f"Cannot return {batch_qty:g} units for product {product_id}: "
-                    f"only {on_hand / factor:.2f} available in stock."
-                )
-
-        # Always run position math if requested_return_value > 0
-        direct_paid = 0.0
-        advance_applied = 0.0
-        funded_amount = 0.0
-        remaining_due = 0.0
-        prior_refunds = 0.0
-        prior_credit_notes = 0.0
-        prior_settlement = 0.0
-        post_return_total = 0.0
-        settlement_amount = 0.0
-        prop_adv = 0.0
-
-        if requested_return_value > 0:
-            position = self.conn.execute(
-                """
-                SELECT
-                  COALESCE(pdt.calculated_total_amount, p.total_amount, 0.0) AS net_total,
-                  COALESCE((
-                    SELECT SUM(CAST(pp.amount AS REAL))
-                    FROM purchase_payments pp
-                    WHERE pp.purchase_id = p.purchase_id
-                      AND pp.clearing_state = 'cleared'
-                  ), 0.0) AS direct_paid,
-                  COALESCE(p.advance_payment_applied, 0.0) AS advance_applied,
-                  COALESCE((
-                    SELECT SUM(CAST(va.amount AS REAL))
-                    FROM vendor_advances va
-                    WHERE va.source_type = 'return_credit'
-                      AND va.source_id = p.purchase_id
-                  ), 0.0) AS prior_credit_notes,
-                  COALESCE((
-                    SELECT SUM(CAST(pr.amount AS REAL))
-                    FROM purchase_refunds pr
-                    WHERE pr.purchase_id = p.purchase_id
-                      AND pr.clearing_state = 'cleared'
-                  ), 0.0) AS prior_refunds
-                FROM purchases p
-                LEFT JOIN purchase_detailed_totals pdt
-                  ON pdt.purchase_id = p.purchase_id
-                WHERE p.purchase_id = ?
-                """,
-                (pid,),
-            ).fetchone()
-            if position:
-                direct_paid = float(position["direct_paid"] or 0.0)
-                advance_applied = float(position["advance_applied"] or 0.0)
-                prior_credit_notes = float(position["prior_credit_notes"] or 0.0)
-                prior_refunds = float(position["prior_refunds"] or 0.0)
-                net_total_before = float(position["net_total"] or 0.0)
-
-                funded_amount = direct_paid + advance_applied
-                remaining_due = max(0.0, net_total_before - funded_amount)
-                prior_settlement = prior_credit_notes + prior_refunds
-                post_return_total = max(0.0, net_total_before - requested_return_value)
-                settlement_amount = max(0.0, funded_amount - post_return_total - prior_settlement)
-
-                # Calculate proportional advance to reinstate
-                net_advance_applied = max(0.0, advance_applied - prior_credit_notes)
-                if net_total_before > 1e-9:
-                    prop_adv = (requested_return_value / net_total_before) * advance_applied
-                    prop_adv = min(prop_adv, net_advance_applied)
-                else:
-                    prop_adv = 0.0
-
-            if settlement and mode == "refund_now":
-                if remaining_due > 1e-9:
-                    raise ValueError(
-                        "Refund Now requires a fully settled purchase; "
-                        f"remaining due is {remaining_due:.2f}."
-                    )
-                refundable_direct_payment = max(0.0, direct_paid - prior_refunds)
-                if settlement_amount > refundable_direct_payment + 1e-9:
-                    raise ValueError(
-                        "Refund exceeds the remaining refundable direct payment "
-                        f"of {refundable_direct_payment:.2f}."
-                    )
-
-        # Determine starting txn_seq for the date; bump to at least 100
-        row = self.conn.execute(
-            "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
-            (date,),
-        ).fetchone()
-        start_seq = int(row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) + 10
-        if start_seq < 100:
-            start_seq = 100
-        seq = start_seq
-
-        # Insert return rows
-        inserted_txn_ids: list[int] = []
-        for ln in lines:
-            chk = self.conn.execute(
-                "SELECT product_id, uom_id FROM purchase_items WHERE item_id=? AND purchase_id=?",
-                (ln["item_id"], pid),
-            ).fetchone()
-            if not chk:
-                raise ValueError(f"Purchase item mismatch for item_id {ln['item_id']}")
-
-            prod_id = int(chk["product_id"] if isinstance(chk, sqlite3.Row) else chk[0])
-            uom_id = int(chk["uom_id"] if isinstance(chk, sqlite3.Row) else chk[1])
-
-            cur = self.conn.execute(
-                """
-                INSERT INTO inventory_transactions(
-                    product_id, quantity, uom_id, transaction_type,
-                    reference_table, reference_id, reference_item_id,
-                    date, txn_seq, notes, created_by
-                )
-                VALUES (?, ?, ?, 'purchase_return', 'purchases', ?, ?, ?, ?, ?, ?)
-                """,
-                (prod_id, float(ln["qty_return"]), uom_id, pid, int(ln["item_id"]), date, seq, notes, created_by),
-            )
-            inserted_txn_ids.append(int(cur.lastrowid))
-            seq += 10
-        rebuild_dirty_valuations(self.conn)
-
-        # Snapshot capture is trigger-driven so direct SQL inserts receive the same protection.
-        if inserted_txn_ids:
-            placeholders = ",".join("?" for _ in inserted_txn_ids)
-            val_row = self.conn.execute(
-                f"""
-                SELECT COUNT(*) AS snapshot_count,
-                       COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS return_value
-                FROM purchase_return_snapshots
-                WHERE transaction_id IN ({placeholders})
-                """,
-                inserted_txn_ids,
-            ).fetchone()
-            snapshot_count = int(val_row["snapshot_count"] if val_row else 0)
-            if snapshot_count != len(inserted_txn_ids):
-                raise sqlite3.IntegrityError(
-                    "Purchase return valuation snapshot capture failed"
-                )
-            return_value = float(val_row["return_value"] if val_row else 0.0)
-        else:
-            return_value = 0.0
-
-        # Settlement handling (no commit here)
-        if return_value > 0 and settlement_amount > 1e-9:
-            mode = settlement.get("mode") if settlement else None
-            if mode == "refund":
-                mode = "refund_now"
-
-            if mode == "refund_now":
-                refundable_direct_payment = max(0.0, direct_paid - prior_refunds)
-                cash_refund_amount = min(max(0.0, settlement_amount - prop_adv), refundable_direct_payment)
-                credit_amount = max(0.0, settlement_amount - cash_refund_amount)
-            else:
-                # Default to credit note if not explicitly refund_now
-                cash_refund_amount = 0.0
-                credit_amount = settlement_amount
-
-            if credit_amount > 1e-9:
-                vadv = VendorAdvancesRepo(self.conn)
-                vadv.grant_credit(
-                    vendor_id=vendor_id,
-                    amount=credit_amount,
-                    date=date,
-                    notes=settlement.get("notes") or notes if settlement else notes,
-                    created_by=created_by,
-                    source_id=pid,
-                    source_type="return_credit",
-                    method=settlement.get("method") if settlement else None,
-                    bank_account_id=settlement.get("bank_account_id") if settlement else None,
-                    vendor_bank_account_id=settlement.get("vendor_bank_account_id") if settlement else None,
-                    instrument_type=settlement.get("instrument_type") if settlement else None,
-                    instrument_no=settlement.get("instrument_no") if settlement else None,
-                    instrument_date=settlement.get("instrument_date") if settlement else None,
-                    deposited_date=settlement.get("deposited_date") if settlement else None,
-                    cleared_date=settlement.get("cleared_date") if settlement else None,
-                    clearing_state=settlement.get("clearing_state") if settlement else None,
-                    ref_no=settlement.get("ref_no") if settlement else None,
-                    temp_vendor_bank_name=settlement.get("temp_vendor_bank_name") if settlement else None,
-                    temp_vendor_bank_number=settlement.get("temp_vendor_bank_number") if settlement else None,
-                )
-
-            if cash_refund_amount > 1e-9:
-                self.accounting.validate_supplier_refund_metadata(
-                    SupplierRefundMetadata(
-                        vendor_id=vendor_id,
-                        method=settlement.get("method") or "Other" if settlement else "Other",
-                        bank_account_id=settlement.get("bank_account_id") if settlement else None,
-                        vendor_bank_account_id=settlement.get("vendor_bank_account_id") if settlement else None,
-                        instrument_type=settlement.get("instrument_type") if settlement else None,
-                        instrument_no=settlement.get("instrument_no") if settlement else None,
-                        clearing_state="cleared",
-                        temp_vendor_bank_name=settlement.get("temp_vendor_bank_name") if settlement else None,
-                        temp_vendor_bank_number=settlement.get("temp_vendor_bank_number") if settlement else None,
-                        vendor_label="purchase",
-                    )
-                )
-                cur = self.conn.execute(
-                    """
-                    INSERT INTO purchase_refunds (
-                        purchase_id, vendor_id, date, amount, method,
-                        bank_account_id, vendor_bank_account_id,
-                        instrument_type, instrument_no, instrument_date,
-                        deposited_date, cleared_date, clearing_state, ref_no,
-                        temp_vendor_bank_name, temp_vendor_bank_number,
-                        notes, created_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        pid,
-                        vendor_id,
-                        settlement.get("date") or date if settlement else date,
-                        cash_refund_amount,
-                        settlement.get("method") or "Other" if settlement else "Other",
-                        settlement.get("bank_account_id") if settlement else None,
-                        settlement.get("vendor_bank_account_id") if settlement else None,
-                        settlement.get("instrument_type") if settlement else None,
-                        settlement.get("instrument_no") if settlement else None,
-                        settlement.get("instrument_date") if settlement else None,
-                        settlement.get("deposited_date") if settlement else None,
-                        settlement.get("cleared_date") or date if settlement else date,
-                        settlement.get("ref_no") if settlement else None,
-                        settlement.get("temp_vendor_bank_name") if settlement else None,
-                        settlement.get("temp_vendor_bank_number") if settlement else None,
-                        settlement.get("notes") or notes if settlement else notes,
-                        created_by,
-                    ),
-                )
-                refund_id = int(cur.lastrowid)
-                self.conn.execute(
-                    """
-                    INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
-                    VALUES (?, 'refund', 'purchase_refunds', ?, ?)
-                    """,
-                    (
-                        created_by,
-                        refund_id,
-                        f"Recorded vendor refund of {cash_refund_amount:g}. Purchase ID: {pid}",
-                    ),
-                )
-
-        # Audit logging for the return
-        self.conn.execute(
-            """
-            INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                created_by,
-                "return",
-                "purchases",
-                pid,
-                f"Returned items with total value of {return_value:g}. "
-                f"Settlement amount: {settlement_amount:g}. Lines: {len(lines)}",
-            ),
-        )
 
     # ---------- Hard delete ----------
     def _delete_purchase_content(self, pid: str):
         # remove inventory rows first (FK safety)
-        self.conn.execute(
-            "DELETE FROM inventory_transactions WHERE reference_table='purchases' AND reference_id=?",
-            (pid,),
+        self.accounting.record_purchase_inventory_event(
+            PurchaseInventoryPayload(
+                purchase_id=pid,
+                date=None,
+                created_by=None,
+                replace_existing=True,
+                delete_transaction_types=None,
+            )
         )
         self.conn.execute("DELETE FROM purchase_items WHERE purchase_id=?", (pid,))
 
@@ -1087,7 +681,6 @@ class PurchasesRepo:
         # no implicit commit; caller controls transaction
         self._delete_purchase_content(pid)
         self.conn.execute("DELETE FROM purchases WHERE purchase_id=?", (pid,))
-        rebuild_dirty_valuations(self.conn)
 
     # ---------- Vendor-scoped listings & summaries ----------
     def list_purchases_by_vendor(
@@ -1138,23 +731,12 @@ class PurchasesRepo:
         """
         Get the returnable quantity for each item in a purchase.
         """
-        sql = """
-        SELECT
-          pi.item_id,
-          CAST(pi.quantity AS REAL) -
-          COALESCE((
-            SELECT SUM(CAST(it.quantity AS REAL))
-            FROM inventory_transactions it
-            WHERE it.transaction_type='purchase_return'
-              AND it.reference_table='purchases'
-              AND it.reference_id = pi.purchase_id
-              AND it.reference_item_id = pi.item_id
-          ), 0.0) AS returnable
-        FROM purchase_items pi
-        WHERE pi.purchase_id=?
-        """
-        rows = self.conn.execute(sql, (purchase_id,)).fetchall()
-        return {int(r["item_id"]): float(r["returnable"]) for r in rows}
+        return {
+            item_id: float(qty)
+            for item_id, qty in self.accounting.get_purchase_returnable_quantities(
+                purchase_id
+            ).items()
+        }
 
     def purchase_return_totals(self, purchase_id: str) -> dict:
         """

@@ -8,12 +8,17 @@ from typing import Any
 
 from .dto import (
     BankLedgerRow,
+    InventoryAccountingEvent,
     PurchaseFinancials,
+    PurchaseInventoryPayload,
+    PurchaseInventoryResult,
     PurchaseOutstanding,
     PurchasePaymentRow,
     PurchasePaymentStatus,
     PurchasePaymentSummary,
     PurchaseReturnEffect,
+    PurchaseReturnInventoryPayload,
+    PurchaseReturnInventoryResult,
     PurchaseReturnPayload,
     PurchaseReturnPreviewPayload,
     PurchaseReturnResult,
@@ -37,6 +42,12 @@ from .dto import (
     VendorPaymentResult,
     VendorPurchaseTotals,
     VendorStatement,
+)
+from .current_rules.inventory_rules import (
+    get_inventory_accounting_events as get_current_inventory_accounting_events,
+    get_purchase_returnable_quantities as get_current_purchase_returnable_quantities,
+    record_purchase_inventory_event as record_current_purchase_inventory_event,
+    record_purchase_return_inventory_event as record_current_purchase_return_inventory_event,
 )
 from .current_rules.bank_rules import (
     get_bank_ledger as get_current_bank_ledger,
@@ -295,6 +306,39 @@ class AccountingService:
 
     def record_purchase_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_purchase_event")
+
+    def record_purchase_inventory_event(
+        self,
+        payload: PurchaseInventoryPayload,
+    ) -> PurchaseInventoryResult:
+        if self.conn is None:
+            self._not_implemented("record_purchase_inventory_event")
+        return record_current_purchase_inventory_event(self.conn, payload)
+
+    def record_purchase_return_inventory_event(
+        self,
+        payload: PurchaseReturnInventoryPayload,
+    ) -> PurchaseReturnInventoryResult:
+        if self.conn is None:
+            self._not_implemented("record_purchase_return_inventory_event")
+        return record_current_purchase_return_inventory_event(self.conn, payload)
+
+    def get_purchase_returnable_quantities(
+        self,
+        purchase_id: int | str,
+    ) -> dict[int, Decimal]:
+        if self.conn is None:
+            self._not_implemented("get_purchase_returnable_quantities")
+        return get_current_purchase_returnable_quantities(self.conn, purchase_id)
+
+    def get_inventory_accounting_events(
+        self,
+        source_type: str | None = None,
+        source_id: int | str | None = None,
+    ) -> tuple[InventoryAccountingEvent, ...]:
+        if self.conn is None:
+            self._not_implemented("get_inventory_accounting_events")
+        return get_current_inventory_accounting_events(self.conn, source_type, source_id)
 
     def record_sale_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_sale_event")
