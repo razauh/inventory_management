@@ -610,3 +610,37 @@ It records where legacy/current behavior moved and which application call sites 
   - `_insert_inventory_sale` still used directly in `SalesRepo.create_sale`/`update_sale`/`convert_quotation_to_sale` — the service method `record_sale_inventory_event` is available for future rewiring.
   - `record_return` inventory INSERT already rewired via CS-ACC-015; `record_sale_return_inventory_event` mirrors the same logic.
   - Both `sale_item_cogs` (average) and `sale_item_fifo_cogs` (FIFO) views exist — `get_sale_cogs` queries `sale_item_cogs`.
+
+## CS-ACC-019: Consolidate quotation totals, status, and conversion behavior
+
+- Migrated behavior:
+  - Quotation conversion validation (status check: draft/sent only)
+  - Quotation conversion event (mark quotation as accepted)
+- Original location(s):
+  - `database/repositories/sales_repo.py::convert_quotation_to_sale` (validation + status update inline)
+  - `database/repositories/sales_repo.py::create_quotation` (status handling)
+  - `database/repositories/sales_repo.py::update_quotation` (status handling)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `validate_quotation_conversion(conn, quotation_id) -> None`
+    - `record_quotation_conversion_event(conn, payload) -> QuotationConversionResult`
+  - `modules/accounting/dto.py` (new `QuotationConversionPayload`, `QuotationConversionResult`)
+  - `modules/accounting/service.py` — methods delegated to current_rules
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `get_quotation_financials(quotation_id: int | str) -> QuotationFinancials` (pre-existing)
+  - `validate_quotation_conversion(quotation_id: int | str) -> None`
+  - `record_quotation_conversion_event(payload: QuotationConversionPayload) -> QuotationConversionResult`
+- Rewired call site(s):
+  - Service methods available for `SalesRepo.convert_quotation_to_sale` validation step.
+  - `get_quotation_financials` already used by controller invoice generation (CS-ACC-009).
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_quotation_behavior.py` (new)
+    - `test_quotation_financials_match_current_controller_context`
+    - `test_quotation_conversion_matches_current_sales_repo`
+    - `test_quotation_payment_blocking_is_preserved`
+- Behavior change:
+  - None intended. Status validation and update match original `convert_quotation_to_sale` behavior.
+- Notes / unresolved correctness questions:
+  - Full quotation-to-sale conversion (sale header copy, item copy, inventory posting, stock check) remains in `SalesRepo` — tightly coupled with sale creation and `_validate_financials`/`_check_stock_availability`.
+  - Service handles only the validation and status update slice; the broader conversion includes inventory and sale creation side effects that need the repo's helper methods.

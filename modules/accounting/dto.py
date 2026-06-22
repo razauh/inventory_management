@@ -695,6 +695,20 @@ class SaleInvoiceFinancials:
 
 
 @dataclass(frozen=True)
+class QuotationConversionPayload:
+    quotation_id: str
+    new_sale_id: str | None
+    date: str
+    created_by: int | None
+
+
+@dataclass(frozen=True)
+class QuotationConversionResult:
+    sale_id: str
+    quotation_id: str
+
+
+@dataclass(frozen=True)
 class QuotationFinancials:
     quotation_id: int | str
     context: dict[str, Any]

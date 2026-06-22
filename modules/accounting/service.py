@@ -39,6 +39,8 @@ from .dto import (
     PurchaseTotalInputLine,
     PurchaseTotals,
     PurchaseReportBundle,
+    QuotationConversionPayload,
+    QuotationConversionResult,
     QuotationFinancials,
     SaleCogsSummary,
     SaleFinancialSummary,
@@ -123,6 +125,7 @@ from .current_rules.sales_rules import (
     get_latest_sale_payment as get_current_latest_sale_payment,
     get_quotation_financials as get_current_quotation_financials,
     get_sale_cogs as get_current_sale_cogs,
+    record_quotation_conversion_event as record_current_quotation_conversion_event,
     get_sale_financial_summary as get_current_sale_financial_summary,
     get_sale_invoice_financials as get_current_sale_invoice_financials,
     get_sale_outstanding as get_current_sale_outstanding,
@@ -554,6 +557,20 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("get_quotation_financials")
         return get_current_quotation_financials(self.conn, quotation_id)
+
+    def validate_quotation_conversion(self, quotation_id: int | str) -> None:
+        """Raise ValueError if the quotation is not convertible."""
+        if self.conn is None:
+            self._not_implemented("validate_quotation_conversion")
+        from .current_rules.sales_rules import validate_quotation_conversion as _vqc
+        _vqc(self.conn, quotation_id)
+
+    def record_quotation_conversion_event(
+        self, payload: QuotationConversionPayload
+    ) -> QuotationConversionResult:
+        if self.conn is None:
+            self._not_implemented("record_quotation_conversion_event")
+        return record_current_quotation_conversion_event(self.conn, payload)
 
     def get_sales_dashboard_metrics(
         self, date_from: str, date_to: str

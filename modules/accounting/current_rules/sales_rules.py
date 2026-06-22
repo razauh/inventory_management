@@ -12,6 +12,8 @@ from ..dto import (
     CustomerPaymentPayload,
     CustomerPaymentResult,
     CustomerRefundRow,
+    QuotationConversionPayload,
+    QuotationConversionResult,
     QuotationFinancials,
     SaleFinancialSummary,
     SaleInvoiceFinancials,
@@ -759,4 +761,31 @@ def get_sales_profit_summary(
         total_revenue=rev,
         total_cogs=cogs,
         gross_profit=rev - cogs,
+    )
+
+
+def validate_quotation_conversion(conn: Connection, quotation_id: int | str) -> None:
+    row = conn.execute(
+        "SELECT quotation_status FROM sales WHERE sale_id = ? AND doc_type = 'quotation'",
+        (quotation_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Quotation not found: {quotation_id}")
+    if row["quotation_status"] not in ("draft", "sent"):
+        raise ValueError(
+            f"Quotation {quotation_id} has status '{row['quotation_status']}' and cannot be converted."
+        )
+
+
+def record_quotation_conversion_event(
+    conn: Connection, payload: QuotationConversionPayload
+) -> QuotationConversionResult:
+    validate_quotation_conversion(conn, payload.quotation_id)
+    conn.execute(
+        "UPDATE sales SET quotation_status = 'accepted' WHERE sale_id = ? AND doc_type = 'quotation'",
+        (payload.quotation_id,),
+    )
+    return QuotationConversionResult(
+        sale_id=payload.new_sale_id or payload.quotation_id,
+        quotation_id=payload.quotation_id,
     )
