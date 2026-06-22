@@ -393,3 +393,44 @@ It records where legacy/current behavior moved and which application call sites 
   - Validation logic (`_normalize_and_validate`, `NORMAL_CLEARING_TRANSITIONS`) stays in `SalePaymentsRepo` for compatibility; the service does minimal validation.
   - `reopen_clearing_state` admin check and credit balance verification remain in the repo (business rule).
   - DB triggers for header rollups remain the integrity layer — the service does not duplicate trigger logic.
+
+## CS-ACC-013: Consolidate customer advance and credit grant behavior
+
+- Migrated behavior:
+  - Customer deposit/credit grant (INSERT into customer_advances with validation)
+  - Return-credit creation
+  - Credit ledger reads, balance reads
+- Original location(s):
+  - `database/repositories/customer_advances_repo.py::grant_credit` (inline SQL + method/bank validation)
+  - `database/repositories/customer_advances_repo.py::add_return_credit` (inline SQL)
+  - `database/repositories/customer_advances_repo.py::get_balance` (SQL on v_customer_advance_balance)
+  - `database/repositories/customer_advances_repo.py::list_ledger` (SQL on customer_advances)
+- New accounting location(s):
+  - `modules/accounting/current_rules/customer_rules.py`
+    - `record_customer_credit_event(conn, payload) -> CustomerCreditResult`
+    - `list_customer_credit_ledger(conn, customer_id) -> tuple[CustomerCreditLedgerRow, ...]`
+  - `modules/accounting/dto.py` (new `CustomerCreditPayload`, `CustomerCreditResult`, `CustomerCreditLedgerRow`)
+  - `modules/accounting/service.py` — all three methods delegated to current_rules
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `record_customer_credit_event(payload: CustomerCreditPayload) -> CustomerCreditResult`
+  - `list_customer_credit_ledger(customer_id: int) -> tuple[CustomerCreditLedgerRow, ...]`
+  - `get_customer_credit_balance(customer_id: int) -> CustomerBalance` (pre-existing, now implemented)
+- Rewired call site(s):
+  - `database/repositories/customer_advances_repo.py::grant_credit` — validates business rules, then delegates to `AccountingService(con).record_customer_credit_event()`
+  - `database/repositories/customer_advances_repo.py::add_return_credit` — validates amount, then delegates
+  - `database/repositories/customer_advances_repo.py::get_balance` — delegates to `AccountingService(con).get_customer_credit_balance()`
+  - `database/repositories/customer_advances_repo.py::list_ledger` — delegates to `AccountingService(con).list_customer_credit_ledger()`
+  - All indirect callers (controller credit displays, actions, history) — through the repo
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_customer_credit_event.py` (new)
+    - `test_customer_deposit_event_matches_repo`
+    - `test_customer_return_credit_event_matches_repo`
+    - `test_customer_credit_ledger_matches_repo`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Added new DTO imports and construction assertions
+- Behavior change:
+  - None intended. Inserted rows, source types, and balance effects match original repo behavior.
+- Notes / unresolved correctness questions:
+  - Method/bank validation rules stay in `grant_credit()` (compatibility layer); `record_customer_credit_event` does minimal validation.
+  - `apply_credit_to_sale` remains in repo (credit consumption, out of scope for this card — see CS-ACC-014).

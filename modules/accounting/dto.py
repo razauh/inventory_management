@@ -669,6 +669,43 @@ class CustomerPaymentEffect:
 
 
 @dataclass(frozen=True)
+class CustomerCreditPayload:
+    customer_id: int
+    amount: Decimal
+    source_type: str = "deposit"
+    source_id: str | None = None
+    date: str | None = None
+    method: str | None = None
+    bank_account_id: int | None = None
+    reference_no: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
+class CustomerCreditResult:
+    tx_id: int
+    customer_id: int
+    amount: Decimal
+    source_type: str
+
+
+@dataclass(frozen=True)
+class CustomerCreditLedgerRow:
+    tx_id: int
+    customer_id: int
+    tx_date: str | None
+    amount: Decimal
+    source_type: str
+    source_id: str | None = None
+    method: str | None = None
+    bank_account_id: int | None = None
+    reference_no: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
 class CustomerPaymentResult:
     payment_id: int
     effect: CustomerPaymentEffect

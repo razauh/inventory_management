@@ -11,6 +11,9 @@ from typing import Any
 
 from ..dto import (
     CustomerAgingReport,
+    CustomerCreditLedgerRow,
+    CustomerCreditPayload,
+    CustomerCreditResult,
     CustomerReceivableSummary,
     CustomerStatement,
     CustomerStatementEntry,
@@ -433,3 +436,72 @@ def list_customer_sale_summaries(
         (customer_id,),
     ).fetchall()
     return tuple(dict(r) for r in rows)
+
+
+def record_customer_credit_event(
+    conn: Connection, payload: CustomerCreditPayload
+) -> CustomerCreditResult:
+    if payload.amount <= Decimal("0"):
+        raise ValueError("Credit amount must be positive.")
+    if payload.source_type not in ("deposit", "return_credit"):
+        raise ValueError(f"Invalid source_type: {payload.source_type}")
+    if payload.method and payload.method not in {"Cash", "Bank Transfer", "Card", "Cheque", "Other"}:
+        raise ValueError("Select a valid customer credit method.")
+    if payload.bank_account_id is not None:
+        acct = conn.execute(
+            "SELECT is_active FROM company_bank_accounts WHERE account_id = ?",
+            (payload.bank_account_id,),
+        ).fetchone()
+        if not acct or int(acct["is_active"] or 0) != 1:
+            raise ValueError("Select an active company bank account.")
+
+    cur = conn.execute(
+        """INSERT INTO customer_advances
+           (customer_id, tx_date, amount, source_type, source_id,
+            method, bank_account_id, reference_no, notes, created_by)
+           VALUES (?, COALESCE(?, CURRENT_DATE), ?, ?, ?,
+                   ?, ?, ?, ?, ?)""",
+        (payload.customer_id, payload.date, float(payload.amount),
+         payload.source_type, payload.source_id,
+         payload.method, payload.bank_account_id,
+         (payload.reference_no or "").strip() or None,
+         payload.notes, payload.created_by),
+    )
+    return CustomerCreditResult(
+        tx_id=int(cur.lastrowid),
+        customer_id=payload.customer_id,
+        amount=payload.amount,
+        source_type=payload.source_type,
+    )
+
+
+def list_customer_credit_ledger(
+    conn: Connection, customer_id: int
+) -> tuple[CustomerCreditLedgerRow, ...]:
+    rows = conn.execute(
+        """SELECT tx_id, customer_id, tx_date, amount, source_type, source_id,
+                  method, bank_account_id, reference_no, notes, created_by
+           FROM customer_advances
+           WHERE customer_id = ?
+           ORDER BY tx_date ASC, tx_id ASC""",
+        (customer_id,),
+    ).fetchall()
+    res = []
+    for r in rows:
+        d = dict(r)
+        res.append(
+            CustomerCreditLedgerRow(
+                tx_id=d["tx_id"],
+                customer_id=d["customer_id"],
+                tx_date=d["tx_date"],
+                amount=Decimal(str(d["amount"] or 0)),
+                source_type=d["source_type"],
+                source_id=d.get("source_id"),
+                method=d.get("method"),
+                bank_account_id=d.get("bank_account_id"),
+                reference_no=d.get("reference_no"),
+                notes=d.get("notes"),
+                created_by=d.get("created_by"),
+            )
+        )
+    return tuple(res)

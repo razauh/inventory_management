@@ -103,7 +103,9 @@ from .current_rules.customer_rules import (
     get_customer_receivable_summary as get_current_customer_receivable_summary,
     get_customer_sales_with_items as get_current_customer_sales_with_items,
     get_customer_statement as get_current_customer_statement,
+    list_customer_credit_ledger as list_current_customer_credit_ledger,
     list_customer_sale_summaries as list_current_customer_sale_summaries,
+    record_customer_credit_event as record_current_customer_credit_event,
 )
 from .current_rules.sales_rules import (
     get_latest_sale_payment as get_current_latest_sale_payment,
@@ -385,7 +387,16 @@ class AccountingService:
         )
 
     def get_customer_credit_balance(self, customer_id: int) -> CustomerBalance:
-        self._not_implemented("get_customer_credit_balance")
+        if self.conn is None:
+            self._not_implemented("get_customer_credit_balance")
+        row = self.conn.execute(
+            "SELECT COALESCE(balance, 0.0) FROM v_customer_advance_balance WHERE customer_id = ?",
+            (customer_id,),
+        ).fetchone()
+        return CustomerBalance(
+            customer_id=customer_id,
+            balance=Decimal(str(row[0])) if row else Decimal("0"),
+        )
 
     def get_sale_totals(self, sale_id: int | str) -> SaleTotals:
         if self.conn is None:
@@ -466,6 +477,20 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("get_customer_aging")
         return get_current_customer_aging(self.conn, cutoff_date)
+
+    def record_customer_credit_event(
+        self, payload: CustomerCreditPayload
+    ) -> CustomerCreditResult:
+        if self.conn is None:
+            self._not_implemented("record_customer_credit_event")
+        return record_current_customer_credit_event(self.conn, payload)
+
+    def list_customer_credit_ledger(
+        self, customer_id: int
+    ) -> tuple[CustomerCreditLedgerRow, ...]:
+        if self.conn is None:
+            self._not_implemented("list_customer_credit_ledger")
+        return list_current_customer_credit_ledger(self.conn, customer_id)
 
     def get_customer_receivable_summary(
         self, customer_id: int

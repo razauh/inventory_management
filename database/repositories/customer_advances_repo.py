@@ -5,7 +5,9 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from modules.accounting import AccountingService
+from decimal import Decimal
+
+from modules.accounting import AccountingService, CustomerCreditPayload
 
 
 class CustomerAdvancesRepo:
@@ -63,24 +65,17 @@ class CustomerAdvancesRepo:
         *,
         customer_id: int,
         amount: float,
-        date: Optional[str] = None,          # 'YYYY-MM-DD' (defaults to CURRENT_DATE)
+        date: Optional[str] = None,
         method: Optional[str] = None,
         bank_account_id: Optional[int] = None,
         reference_no: Optional[str] = None,
         notes: Optional[str] = None,
         created_by: Optional[int] = None,
     ) -> int:
-        """
-        Grant customer credit via a direct deposit (positive amount).
-        Returns the new tx_id.
-        """
-        if amount is None or float(amount) <= 0:
-            raise ValueError("Deposit amount must be a positive number.")
         if method is None:
             method = "Other"
             reference_no = reference_no or "Legacy API credit"
-        allowed_methods = {"Cash", "Bank Transfer", "Card", "Cheque", "Other"}
-        if method not in allowed_methods:
+        if method not in {"Cash", "Bank Transfer", "Card", "Cheque", "Other"}:
             raise ValueError("Select a valid customer credit method.")
         if method in {"Bank Transfer", "Card", "Cheque"} and bank_account_id is None:
             raise ValueError("A company bank account is required for this method.")
@@ -88,71 +83,37 @@ class CustomerAdvancesRepo:
             raise ValueError("A reference is required for non-cash customer credit.")
 
         with self._connect() as con:
-            if bank_account_id is not None:
-                account = con.execute(
-                    "SELECT is_active FROM company_bank_accounts WHERE account_id = ?",
-                    (bank_account_id,),
-                ).fetchone()
-                if account is None or int(account["is_active"] or 0) != 1:
-                    raise ValueError("Select an active company bank account.")
-            cur = con.execute(
-                """
-                INSERT INTO customer_advances
-                    (customer_id, tx_date, amount, source_type, source_id,
-                     method, bank_account_id, reference_no, notes, created_by)
-                VALUES
-                    (:customer_id, COALESCE(:tx_date, CURRENT_DATE), :amount, 'deposit', NULL,
-                     :method, :bank_account_id, :reference_no, :notes, :created_by)
-                """,
-                {
-                    "customer_id": customer_id,
-                    "tx_date": date,
-                    "amount": float(amount),
-                    "method": method,
-                    "bank_account_id": bank_account_id,
-                    "reference_no": (reference_no or "").strip() or None,
-                    "notes": notes,
-                    "created_by": created_by,
-                },
+            result = AccountingService(con).record_customer_credit_event(
+                CustomerCreditPayload(
+                    customer_id=customer_id, amount=Decimal(str(amount)),
+                    source_type="deposit", date=date,
+                    method=method, bank_account_id=bank_account_id,
+                    reference_no=reference_no, notes=notes, created_by=created_by,
+                )
             )
-            return int(cur.lastrowid)
+            return result.tx_id
 
     def add_return_credit(
         self,
         *,
         customer_id: int,
         amount: float,
-        sale_id: Optional[str] = None,       # SO id that originated the credit (optional tag)
+        sale_id: Optional[str] = None,
         date: Optional[str] = None,
         notes: Optional[str] = None,
         created_by: Optional[int] = None,
     ) -> int:
-        """
-        Add customer credit resulting from a return (positive amount).
-        Optionally tags the entry with the originating sale_id in source_id.
-        Returns the new tx_id.
-        """
         if amount is None or float(amount) <= 0:
             raise ValueError("Return credit amount must be a positive number.")
-
         with self._connect() as con:
-            cur = con.execute(
-                """
-                INSERT INTO customer_advances
-                    (customer_id, tx_date, amount, source_type, source_id, notes, created_by)
-                VALUES
-                    (:customer_id, COALESCE(:tx_date, CURRENT_DATE), :amount, 'return_credit', :source_id, :notes, :created_by)
-                """,
-                {
-                    "customer_id": customer_id,
-                    "tx_date": date,
-                    "amount": float(amount),
-                    "source_id": sale_id,
-                    "notes": notes,
-                    "created_by": created_by,
-                },
+            result = AccountingService(con).record_customer_credit_event(
+                CustomerCreditPayload(
+                    customer_id=customer_id, amount=Decimal(str(amount)),
+                    source_type="return_credit", source_id=sale_id,
+                    date=date, notes=notes, created_by=created_by,
+                )
             )
-            return int(cur.lastrowid)
+            return result.tx_id
 
     def apply_credit_to_sale(
         self,
@@ -225,30 +186,20 @@ class CustomerAdvancesRepo:
             return int(cur.lastrowid)
 
     def get_balance(self, customer_id: int) -> float:
-        """
-        Fetch the current credit balance for a customer from v_customer_advance_balance.
-        Returns 0.0 when no rows exist.
-        """
         with self._connect() as con:
-            row = con.execute(
-                "SELECT balance FROM v_customer_advance_balance WHERE customer_id = ?",
-                (customer_id,),
-            ).fetchone()
-            return float(row["balance"]) if row and row["balance"] is not None else 0.0
+            bal = AccountingService(con).get_customer_credit_balance(customer_id)
+            return float(bal.balance)
 
-    # (Optional) helpful for UIs / history
     def list_ledger(self, customer_id: int) -> list[sqlite3.Row]:
         with self._connect() as con:
-            cur = con.execute(
-                """
-                SELECT *
-                  FROM customer_advances
-                 WHERE customer_id = ?
-                 ORDER BY tx_date ASC, tx_id ASC;
-                """,
-                (customer_id,),
-            )
-            return cur.fetchall()
+            rows = AccountingService(con).list_customer_credit_ledger(customer_id)
+            return [dict(
+                tx_id=r.tx_id, customer_id=r.customer_id, tx_date=r.tx_date,
+                amount=float(r.amount), source_type=r.source_type,
+                source_id=r.source_id, method=r.method,
+                bank_account_id=r.bank_account_id, reference_no=r.reference_no,
+                notes=r.notes, created_by=r.created_by,
+            ) for r in rows]
 
     # ---- Backward-compatible wrappers (do not remove without updating callers) ----
 
@@ -261,15 +212,10 @@ class CustomerAdvancesRepo:
         notes: Optional[str] = None,
         created_by: Optional[int] = None,
     ) -> int:
-        """Deprecated wrapper. Use grant_credit()."""
         return self.grant_credit(
-            customer_id=customer_id,
-            amount=amount,
-            date=date,
-            method="Other",
-            reference_no="Legacy API credit",
-            notes=notes,
-            created_by=created_by,
+            customer_id=customer_id, amount=amount, date=date,
+            method="Other", reference_no="Legacy API credit",
+            notes=notes, created_by=created_by,
         )
 
     def apply_to_sale(
