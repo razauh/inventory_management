@@ -531,3 +531,39 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - No separate `record_customer_refund_event` method — refunds are negative payments handled by `record_customer_payment_event`.
   - `CustomerRefundRow.amount` stores the absolute (positive) refund value for display convenience.
+
+## CS-ACC-017: Consolidate bank/cash movements from customer and sales flows
+
+- Migrated behavior:
+  - Customer cash movements (cleared sale payments receipts/refunds + customer advances deposits/credits)
+  - Customer payment metadata validation (method, bank account, instrument type checks)
+- Original location(s):
+  - `database/repositories/sale_payments_repo.py::_normalize_and_validate` (scattered method/bank validation)
+  - `database/repositories/customer_advances_repo.py` (scattered metadata validation)
+  - `modules/reporting/payment_reports.py` (direct bank/cash queries)
+  - `database/repositories/dashboard_repo.py` (direct bank/cash queries)
+- New accounting location(s):
+  - `modules/accounting/current_rules/bank_rules.py`
+    - `get_customer_cash_movements(conn, start_date, end_date) -> tuple[CustomerCashMovement, ...]`
+  - `modules/accounting/validators.py`
+    - `validate_customer_payment_metadata(conn, metadata) -> None`
+    - `_validate_customer_method_requirements(metadata) -> None`
+  - `modules/accounting/dto.py` (new `CustomerCashMovement`, `CustomerPaymentMetadata`)
+  - `modules/accounting/service.py` — methods delegated to current_rules
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `get_customer_cash_movements(start_date, end_date) -> tuple[CustomerCashMovement, ...]`
+  - `validate_customer_payment_metadata(metadata: CustomerPaymentMetadata) -> None`
+- Rewired call site(s):
+  - Service methods available for report/dashboard/validation call sites.
+  - Existing `get_vendor_cash_movements` (line 558) used by `ReportingRepo` — customer equivalent now available.
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_cash_movements.py` (new)
+    - `test_customer_cash_movements_match_bank_ledger_view`
+    - `test_customer_payment_metadata_validation_matches_repo`
+- Behavior change:
+  - None intended. Cash movement types (Receipt/Refund/Customer Credit), directions, and amounts match source `sale_payments` and `customer_advances` rows.
+- Notes / unresolved correctness questions:
+  - `get_customer_cash_movements` UNIONs cleared sale_payments (Receipt/Refund) and deposits/return_credits from customer_advances (Customer Credit).
+  - Customer payment validator covers the same methods as `VendorPaymentMetadata` but without vendor-bank fields.
+  - `validate_company_bank_account_active` from bank_rules is shared between vendor and customer validators.

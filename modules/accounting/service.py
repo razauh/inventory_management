@@ -12,6 +12,7 @@ from .dto import (
     CustomerBalance,
     CustomerOpenSale,
     CustomerPaymentEffect,
+    CustomerPaymentMetadata,
     CustomerPaymentPayload,
     CustomerPaymentResult,
     CustomerReceivableSummary,
@@ -80,6 +81,7 @@ from .current_rules.inventory_rules import (
 )
 from .current_rules.bank_rules import (
     get_bank_ledger as get_current_bank_ledger,
+    get_customer_cash_movements as get_current_customer_cash_movements,
     get_vendor_cash_movements as get_current_vendor_cash_movements,
 )
 from .current_rules.purchase_rules import (
@@ -149,6 +151,7 @@ from .current_rules.vendor_rules import (
 )
 from .exceptions import AccountingNotImplementedError
 from .validators import (
+    validate_customer_payment_metadata as validate_current_customer_payment_metadata,
     validate_supplier_refund_metadata as validate_current_supplier_refund_metadata,
     validate_vendor_payment_metadata as validate_current_vendor_payment_metadata,
 )
@@ -283,13 +286,12 @@ class AccountingService:
             self._not_implemented("validate_supplier_refund_metadata")
         validate_current_supplier_refund_metadata(self.conn, metadata)
 
-    def record_supplier_refund_event(
-        self,
-        payload: SupplierRefundPayload,
-    ) -> SupplierRefundResult:
+    def validate_customer_payment_metadata(
+        self, metadata: CustomerPaymentMetadata
+    ) -> None:
         if self.conn is None:
-            self._not_implemented("record_supplier_refund_event")
-        return record_current_supplier_refund_event(self.conn, payload)
+            self._not_implemented("validate_customer_payment_metadata")
+        validate_current_customer_payment_metadata(self.conn, metadata)
 
     def get_supplier_refunds_for_purchase(
         self,
@@ -553,6 +555,15 @@ class AccountingService:
 
     def get_bank_balance(self, bank_account_id: int) -> None:
         self._not_implemented("get_bank_balance")
+
+    def get_customer_cash_movements(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> tuple[CustomerCashMovement, ...]:
+        if self.conn is None:
+            self._not_implemented("get_customer_cash_movements")
+        return get_current_customer_cash_movements(self.conn, start_date, end_date)
 
     def get_vendor_cash_movements(
         self,

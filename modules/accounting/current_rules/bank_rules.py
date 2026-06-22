@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from sqlite3 import Connection
 
-from ..dto import BankLedgerRow, VendorCashMovement
+from ..dto import BankLedgerRow, CustomerCashMovement, VendorCashMovement
 
 
 def _decimal(value: object) -> Decimal:
@@ -123,6 +123,59 @@ def get_vendor_cash_movements(
     ).fetchall()
     return tuple(
         VendorCashMovement(
+            date=row["movement_date"],
+            type=row["movement_type"],
+            amount=_decimal(row["amount"]),
+            direction=row["direction"],
+            method=row["method"],
+            status=row["status"],
+            doc_id=row["doc_id"],
+            notes=row["notes"],
+        )
+        for row in rows
+    )
+
+
+def get_customer_cash_movements(
+    conn: Connection,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[CustomerCashMovement, ...]:
+    date_where = ""
+    params: list[object] = []
+    if start_date is not None:
+        date_where += " AND movement_date >= ?"
+        params.append(start_date)
+    if end_date is not None:
+        date_where += " AND movement_date <= ?"
+        params.append(end_date)
+    rows = conn.execute(
+        f"""
+        WITH movements AS (
+          SELECT sp.cleared_date AS movement_date,
+                 CASE WHEN CAST(sp.amount AS REAL) > 0 THEN 'Receipt' ELSE 'Refund' END AS movement_type,
+                 ABS(CAST(sp.amount AS REAL)) AS amount,
+                 CASE WHEN CAST(sp.amount AS REAL) > 0 THEN 'inflow' ELSE 'outflow' END AS direction,
+                 sp.method, sp.clearing_state AS status, sp.sale_id AS doc_id, sp.notes
+          FROM sale_payments sp
+          WHERE sp.clearing_state = 'cleared' AND sp.cleared_date IS NOT NULL
+          UNION ALL
+          SELECT ca.tx_date AS movement_date,
+                 'Customer Credit' AS movement_type,
+                 CAST(ca.amount AS REAL) AS amount,
+                 CASE WHEN CAST(ca.amount AS REAL) > 0 THEN 'inflow' ELSE 'outflow' END AS direction,
+                 ca.method, 'cleared' AS status, ca.source_id AS doc_id, ca.notes
+          FROM customer_advances ca
+          WHERE ca.source_type IN ('deposit', 'return_credit')
+            AND CAST(ca.amount AS REAL) > 0
+        )
+        SELECT * FROM movements WHERE 1 = 1 {date_where}
+        ORDER BY movement_date, movement_type, doc_id
+        """,
+        params,
+    ).fetchall()
+    return tuple(
+        CustomerCashMovement(
             date=row["movement_date"],
             type=row["movement_type"],
             amount=_decimal(row["amount"]),

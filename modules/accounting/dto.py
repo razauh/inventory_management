@@ -341,6 +341,29 @@ class SupplierRefundRow:
 
 
 @dataclass(frozen=True)
+class CustomerPaymentMetadata:
+    customer_id: int
+    method: str | None
+    bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    clearing_state: str | None = None
+    require_method_details: bool = False
+
+
+@dataclass(frozen=True)
+class CustomerCashMovement:
+    date: str
+    type: str
+    amount: Decimal
+    direction: str
+    method: str | None
+    status: str | None
+    doc_id: int | str | None
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
 class VendorCashMovement:
     date: str
     type: str

@@ -9,7 +9,7 @@ from .current_rules.bank_rules import (
     validate_company_bank_account_active,
     validate_vendor_bank_account,
 )
-from .dto import SupplierRefundMetadata, VendorPaymentMetadata
+from .dto import CustomerPaymentMetadata, SupplierRefundMetadata, VendorPaymentMetadata
 from .exceptions import AccountingNotImplementedError
 
 
@@ -46,6 +46,44 @@ def validate_vendor_payment_metadata(
     )
     if metadata.require_method_details:
         _validate_method_requirements(metadata)
+
+
+def validate_customer_payment_metadata(
+    conn: Connection, metadata: CustomerPaymentMetadata
+) -> None:
+    if metadata.method is not None and metadata.method not in METHODS:
+        raise ValueError(f"Invalid customer payment method: {metadata.method}")
+    if (
+        metadata.instrument_type is not None
+        and metadata.instrument_type not in INSTRUMENT_TYPES
+    ):
+        raise ValueError(f"Invalid customer instrument type: {metadata.instrument_type}")
+    if metadata.clearing_state is not None and metadata.clearing_state not in (
+        "posted", "pending", "cleared", "bounced"
+    ):
+        raise ValueError(f"Invalid clearing state: {metadata.clearing_state}")
+    validate_company_bank_account_active(conn, metadata.bank_account_id)
+    if metadata.require_method_details:
+        _validate_customer_method_requirements(metadata)
+
+
+def _validate_customer_method_requirements(metadata: CustomerPaymentMetadata) -> None:
+    method = metadata.method
+    instr_no = (metadata.instrument_no or "").strip()
+    if method == "Bank Transfer":
+        if metadata.bank_account_id is None or not instr_no:
+            raise ValueError("Bank Transfer requires company account and transaction #")
+    elif method in ("Cheque", "Cross Cheque"):
+        if metadata.bank_account_id is None or not instr_no:
+            raise ValueError(f"{method} requires company account and cheque #")
+    elif method == "Cash Deposit":
+        if not instr_no:
+            raise ValueError("Cash Deposit requires deposit slip #")
+    elif method == "Cash":
+        if metadata.bank_account_id is not None:
+            raise ValueError("Cash payment cannot reference bank account")
+    elif method == "Card":
+        pass
 
 
 def validate_supplier_refund_metadata(
