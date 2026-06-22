@@ -109,6 +109,58 @@ class PurchaseInventoryLine:
 
 
 @dataclass(frozen=True)
+class SaleInventoryLine:
+    item_id: int
+    product_id: int
+    quantity: Decimal
+    uom_id: int
+
+
+@dataclass(frozen=True)
+class SaleInventoryPayload:
+    sale_id: int | str
+    date: str | None
+    created_by: int | None
+    lines: tuple[SaleInventoryLine, ...] = ()
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class SaleInventoryResult:
+    sale_id: int | str
+    transaction_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SaleReturnInventoryPayload:
+    sale_id: int | str
+    date: str
+    created_by: int | None
+    lines: tuple[dict, ...]
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class SaleReturnInventoryResult:
+    sale_id: int | str
+    transaction_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SaleCogsSummary:
+    sale_id: int | str
+    cogs_total: Decimal
+    cogs_method: str = "average"
+
+
+@dataclass(frozen=True)
+class SalesProfitSummary:
+    total_revenue: Decimal
+    total_cogs: Decimal
+    gross_profit: Decimal
+
+
+@dataclass(frozen=True)
 class PurchaseInventoryPayload:
     purchase_id: int | str
     date: str | None

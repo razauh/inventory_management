@@ -40,7 +40,11 @@ from .dto import (
     PurchaseTotals,
     PurchaseReportBundle,
     QuotationFinancials,
+    SaleCogsSummary,
     SaleFinancialSummary,
+    SaleInventoryLine,
+    SaleInventoryPayload,
+    SaleInventoryResult,
     SaleInvoiceFinancials,
     SaleOutstanding,
     SalePaymentRow,
@@ -76,8 +80,11 @@ from .reports.party_ledger import (
 from .current_rules.inventory_rules import (
     get_inventory_accounting_events as get_current_inventory_accounting_events,
     get_purchase_returnable_quantities as get_current_purchase_returnable_quantities,
+    get_sale_returnable_quantities as get_current_sale_returnable_quantities,
     record_purchase_inventory_event as record_current_purchase_inventory_event,
     record_purchase_return_inventory_event as record_current_purchase_return_inventory_event,
+    record_sale_inventory_event as record_current_sale_inventory_event,
+    record_sale_return_inventory_event as record_current_sale_return_inventory_event,
 )
 from .current_rules.bank_rules import (
     get_bank_ledger as get_current_bank_ledger,
@@ -115,6 +122,7 @@ from .current_rules.customer_rules import (
 from .current_rules.sales_rules import (
     get_latest_sale_payment as get_current_latest_sale_payment,
     get_quotation_financials as get_current_quotation_financials,
+    get_sale_cogs as get_current_sale_cogs,
     get_sale_financial_summary as get_current_sale_financial_summary,
     get_sale_invoice_financials as get_current_sale_invoice_financials,
     get_sale_outstanding as get_current_sale_outstanding,
@@ -124,6 +132,7 @@ from .current_rules.sales_rules import (
     get_sale_return_totals as get_current_sale_return_totals,
     get_sale_return_values as get_current_sale_return_values,
     get_sales_dashboard_metrics as get_current_sales_dashboard_metrics,
+    get_sales_profit_summary as get_current_sales_profit_summary,
     get_sale_totals as get_current_sale_totals,
     preview_sale_total as preview_current_sale_total,
     recalculate_sale_payment_status as recalculate_current_sale_payment_status,
@@ -754,6 +763,41 @@ class AccountingService:
 
     def record_expense_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_expense_event")
+
+    def record_sale_inventory_event(
+        self, payload: SaleInventoryPayload
+    ) -> SaleInventoryResult:
+        if self.conn is None:
+            self._not_implemented("record_sale_inventory_event")
+        return record_current_sale_inventory_event(self.conn, payload)
+
+    def get_sale_returnable_quantities(
+        self, sale_id: int | str
+    ) -> dict[int, Decimal]:
+        if self.conn is None:
+            self._not_implemented("get_sale_returnable_quantities")
+        return get_current_sale_returnable_quantities(self.conn, sale_id)
+
+    def record_sale_return_inventory_event(
+        self, payload: SaleReturnInventoryPayload
+    ) -> SaleReturnInventoryResult:
+        if self.conn is None:
+            self._not_implemented("record_sale_return_inventory_event")
+        return record_current_sale_return_inventory_event(self.conn, payload)
+
+    def get_sale_cogs(self, sale_id: int | str) -> SaleCogsSummary:
+        if self.conn is None:
+            self._not_implemented("get_sale_cogs")
+        return get_current_sale_cogs(self.conn, sale_id)
+
+    def get_sales_profit_summary(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> SalesProfitSummary:
+        if self.conn is None:
+            self._not_implemented("get_sales_profit_summary")
+        return get_current_sales_profit_summary(self.conn, start_date, end_date)
 
     def record_stock_adjustment_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_stock_adjustment_event")

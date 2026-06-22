@@ -18,11 +18,13 @@ from ..dto import (
     SaleOutstanding,
     SalePaymentRow,
     SalePaymentStatus,
+    SaleCogsSummary,
     SaleReturnEffect,
     SaleReturnPayload,
     SaleReturnResult,
     SaleReturnTotals,
     SaleReturnValue,
+    SalesProfitSummary,
     SalesDashboardMetrics,
     SaleTotalInputLine,
     SaleTotals,
@@ -716,3 +718,45 @@ def get_sale_refunds(conn: Connection, sale_id: int | str) -> tuple[CustomerRefu
             )
         )
     return tuple(res)
+
+
+def get_sale_cogs(conn: Connection, sale_id: int | str) -> SaleCogsSummary:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS total "
+        "FROM sale_item_cogs WHERE sale_id = ?",
+        (sale_id,),
+    ).fetchone()
+    return SaleCogsSummary(
+        sale_id=sale_id,
+        cogs_total=Decimal(str(row["total"] or 0)),
+    )
+
+
+def get_sales_profit_summary(
+    conn: Connection,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> SalesProfitSummary:
+    where = ""
+    params: list[object] = []
+    if start_date is not None:
+        where += " AND event_date >= ?"
+        params.append(start_date)
+    if end_date is not None:
+        where += " AND event_date <= ?"
+        params.append(end_date)
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(CAST(revenue AS REAL)), 0.0) AS rev,
+               COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS cogs
+        FROM sale_financial_events WHERE 1=1 {where}
+        """,
+        params,
+    ).fetchone()
+    rev = Decimal(str(row["rev"] or 0))
+    cogs = Decimal(str(row["cogs"] or 0))
+    return SalesProfitSummary(
+        total_revenue=rev,
+        total_cogs=cogs,
+        gross_profit=rev - cogs,
+    )

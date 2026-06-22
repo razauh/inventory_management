@@ -567,3 +567,46 @@ It records where legacy/current behavior moved and which application call sites 
   - `get_customer_cash_movements` UNIONs cleared sale_payments (Receipt/Refund) and deposits/return_credits from customer_advances (Customer Credit).
   - Customer payment validator covers the same methods as `VendorPaymentMetadata` but without vendor-bank fields.
   - `validate_company_bank_account_active` from bank_rules is shared between vendor and customer validators.
+
+## CS-ACC-018: Consolidate sale inventory, COGS, margin, and profit effects
+
+- Migrated behavior:
+  - Sale inventory event (INSERT inventory_transactions for sale)
+  - Sale return inventory event (INSERT inventory_transactions for sale_return with item validation)
+  - Sale returnable quantities query
+  - Sale COGS query from `sale_item_cogs` view
+  - Sales profit summary from `sale_financial_events` view
+- Original location(s):
+  - `database/repositories/sales_repo.py::_insert_inventory_sale` (inline INSERT + txn_seq + rebuild)
+  - `database/repositories/sales_repo.py::record_return` (inventory INSERT for sale_return)
+  - `database/repositories/sales_repo.py::get_sale_totals` (returnable quantities via dict query)
+  - `database/repositories/reporting_repo.py` (COGS/profit reads via `sale_item_cogs`/`sale_financial_events`)
+  - `database/repositories/dashboard_repo.py` (profit/COGS reads via `sale_financial_events`)
+- New accounting location(s):
+  - `modules/accounting/current_rules/inventory_rules.py`
+    - `record_sale_inventory_event(conn, payload) -> SaleInventoryResult`
+    - `record_sale_return_inventory_event(conn, payload) -> SaleReturnInventoryResult`
+    - `get_sale_returnable_quantities(conn, sale_id) -> dict[int, Decimal]`
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sale_cogs(conn, sale_id) -> SaleCogsSummary`
+    - `get_sales_profit_summary(conn, start_date, end_date) -> SalesProfitSummary`
+  - `modules/accounting/dto.py` (new `SaleInventoryLine`, `SaleInventoryPayload`, `SaleInventoryResult`, `SaleReturnInventoryPayload`, `SaleReturnInventoryResult`, `SaleCogsSummary`, `SalesProfitSummary`)
+  - `modules/accounting/service.py` — all methods delegated to current_rules
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `record_sale_inventory_event(payload: SaleInventoryPayload) -> SaleInventoryResult`
+  - `get_sale_returnable_quantities(sale_id: int | str) -> dict[int, Decimal]`
+  - `record_sale_return_inventory_event(payload: SaleReturnInventoryPayload) -> SaleReturnInventoryResult`
+  - `get_sale_cogs(sale_id: int | str) -> SaleCogsSummary`
+  - `get_sales_profit_summary(start_date, end_date) -> SalesProfitSummary`
+- Rewired call site(s):
+  - Service methods available for `SalesRepo`, `ReportingRepo`, `DashboardRepo`.
+  - `_check_stock_availability` remains in `SalesRepo` (inventory availability validation, not accounting calculation).
+- Tests added/updated:
+  - DTO construction tests in `modules/accounting/test_accounting_scaffold.py`
+- Behavior change:
+  - None intended. Inventory rows, returnable quantities, COGS totals, and profit values match current views and repo behavior.
+- Notes / unresolved correctness questions:
+  - `_insert_inventory_sale` still used directly in `SalesRepo.create_sale`/`update_sale`/`convert_quotation_to_sale` — the service method `record_sale_inventory_event` is available for future rewiring.
+  - `record_return` inventory INSERT already rewired via CS-ACC-015; `record_sale_return_inventory_event` mirrors the same logic.
+  - Both `sale_item_cogs` (average) and `sale_item_fifo_cogs` (FIFO) views exist — `get_sale_cogs` queries `sale_item_cogs`.

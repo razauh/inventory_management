@@ -12,6 +12,10 @@ from ..dto import (
     PurchaseInventoryResult,
     PurchaseReturnInventoryPayload,
     PurchaseReturnInventoryResult,
+    SaleInventoryPayload,
+    SaleInventoryResult,
+    SaleReturnInventoryPayload,
+    SaleReturnInventoryResult,
 )
 
 
@@ -238,3 +242,89 @@ def get_inventory_accounting_events(
         )
         for row in conn.execute(sql, params).fetchall()
     )
+
+
+def record_sale_inventory_event(
+    conn: Connection,
+    payload: SaleInventoryPayload,
+) -> SaleInventoryResult:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
+        (payload.date,),
+    ).fetchone()
+    next_seq = int(row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) + 10
+
+    txn_ids: list[int] = []
+    for line in payload.lines:
+        cur = conn.execute(
+            "INSERT INTO inventory_transactions(product_id, quantity, uom_id, transaction_type, "
+            "reference_table, reference_id, reference_item_id, date, txn_seq, notes, created_by) "
+            "VALUES (?, ?, ?, 'sale', 'sales', ?, ?, ?, ?, ?, ?)",
+            (line.product_id, float(line.quantity), line.uom_id,
+             payload.sale_id, line.item_id,
+             payload.date, next_seq, payload.notes, payload.created_by),
+        )
+        txn_ids.append(int(cur.lastrowid))
+        next_seq += 10
+
+    _rebuild_dirty_valuations(conn)
+    return SaleInventoryResult(payload.sale_id, tuple(txn_ids))
+
+
+def record_sale_return_inventory_event(
+    conn: Connection,
+    payload: SaleReturnInventoryPayload,
+) -> SaleReturnInventoryResult:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
+        (payload.date,),
+    ).fetchone()
+    seq = int(row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) + 10
+    if seq < 100:
+        seq = 100
+
+    txn_ids: list[int] = []
+    for line in payload.lines:
+        chk = conn.execute(
+            "SELECT product_id, uom_id FROM sale_items WHERE item_id=? AND sale_id=?",
+            (line.get("item_id"), payload.sale_id),
+        ).fetchone()
+        if not chk:
+            raise ValueError(f"Sale item mismatch for item_id {line.get('item_id')}")
+        pid = int(chk["product_id"] if isinstance(chk, sqlite3.Row) else chk[0])
+        uid = int(chk["uom_id"] if isinstance(chk, sqlite3.Row) else chk[1])
+        cur = conn.execute(
+            "INSERT INTO inventory_transactions(product_id, quantity, uom_id, transaction_type, "
+            "reference_table, reference_id, reference_item_id, date, txn_seq, notes, created_by) "
+            "VALUES (?, ?, ?, 'sale_return', 'sales', ?, ?, ?, ?, ?, ?)",
+            (pid, float(line["qty_return"]), uid,
+             payload.sale_id, int(line["item_id"]),
+             payload.date, seq, payload.notes, payload.created_by),
+        )
+        txn_ids.append(int(cur.lastrowid))
+        seq += 10
+
+    _rebuild_dirty_valuations(conn)
+    return SaleReturnInventoryResult(payload.sale_id, tuple(txn_ids))
+
+
+def get_sale_returnable_quantities(
+    conn: Connection, sale_id: int | str
+) -> dict[int, Decimal]:
+    rows = conn.execute(
+        """
+        SELECT si.item_id, CAST(si.quantity AS REAL) -
+          COALESCE((
+            SELECT SUM(CAST(it.quantity AS REAL))
+            FROM inventory_transactions it
+            WHERE it.transaction_type='sale_return'
+              AND it.reference_table='sales'
+              AND it.reference_id = si.sale_id
+              AND it.reference_item_id = si.item_id
+          ), 0.0) AS returnable
+        FROM sale_items si
+        WHERE si.sale_id = ?
+        """,
+        (sale_id,),
+    ).fetchall()
+    return {int(row["item_id"]): _decimal(row["returnable"]) for row in rows}
