@@ -20,6 +20,7 @@ from modules.accounting import (
     SaleOutstanding,
     SalePaymentRow,
     SalePaymentStatus,
+    SaleTotalInputLine,
     SaleTotals,
     VendorBalance,
 )
@@ -58,7 +59,6 @@ def test_accounting_package_imports_and_service_instantiates():
         ("record_sale_return_event", ()),
         ("record_expense_event", ()),
         ("record_stock_adjustment_event", ()),
-        ("get_sale_totals", (1,)),
         ("get_sale_financial_summary", (1,)),
         ("get_sale_payment_status", (1,)),
         ("get_sale_payment_history", (1,)),
@@ -80,6 +80,7 @@ def test_accounting_dtos_construct():
     assert CustomerBalance(customer_id=1, balance=Decimal("10.00"))
     assert PurchaseOutstanding(purchase_id=1, outstanding=Decimal("10.00"))
     assert SaleOutstanding(sale_id=1, outstanding=Decimal("10.00"))
+    assert SaleTotalInputLine(quantity=Decimal("2"), unit_price=Decimal("10"), item_discount=Decimal("1"))
     assert SaleTotals(sale_id=1, subtotal_before_order_discount=Decimal("10"), order_discount=Decimal("0"), returned_value=Decimal("0"), net_total=Decimal("10"))
     assert SaleFinancialSummary(sale_id=1, net_total=Decimal("10"), paid_amount=Decimal("0"), applied_credit=Decimal("0"), returned_value=Decimal("0"), outstanding=Decimal("10"))
     assert SalePaymentStatus(sale_id=1, status="paid", paid_amount=Decimal("10"), applied_credit=Decimal("0"), remaining_due=Decimal("0"))

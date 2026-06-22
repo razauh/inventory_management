@@ -39,6 +39,7 @@ from .dto import (
     SaleOutstanding,
     SalePaymentRow,
     SalePaymentStatus,
+    SaleTotalInputLine,
     SaleTotals,
     SupplierRefundMetadata,
     SupplierRefundPayload,
@@ -90,6 +91,10 @@ from .current_rules.purchase_rules import (
     preview_purchase_total as preview_current_purchase_total,
     record_purchase_return_event as record_current_purchase_return_event,
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
+)
+from .current_rules.sales_rules import (
+    get_sale_totals as get_current_sale_totals,
+    preview_sale_total as preview_current_sale_total,
 )
 from .current_rules.vendor_rules import (
     get_vendor_advance_balance as get_current_vendor_advance_balance,
@@ -356,7 +361,16 @@ class AccountingService:
         self._not_implemented("get_customer_credit_balance")
 
     def get_sale_totals(self, sale_id: int | str) -> SaleTotals:
-        self._not_implemented("get_sale_totals")
+        if self.conn is None:
+            self._not_implemented("get_sale_totals")
+        return get_current_sale_totals(self.conn, sale_id)
+
+    def preview_sale_total(
+        self,
+        items: tuple[SaleTotalInputLine, ...],
+        order_discount: Decimal,
+    ) -> SaleTotals:
+        return preview_current_sale_total(items, order_discount)
 
     def get_sale_financial_summary(self, sale_id: int | str) -> SaleFinancialSummary:
         self._not_implemented("get_sale_financial_summary")

@@ -491,6 +491,13 @@ class SaleOutstanding:
 
 
 @dataclass(frozen=True)
+class SaleTotalInputLine:
+    quantity: Decimal
+    unit_price: Decimal
+    item_discount: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
 class SaleTotals:
     sale_id: int | str | None
     subtotal_before_order_discount: Decimal

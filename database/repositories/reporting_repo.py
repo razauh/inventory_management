@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterable, Optional, Sequence
 
-from ...modules.accounting import AccountingService
+from modules.accounting import AccountingService
 
 
 class ReportingRepo:

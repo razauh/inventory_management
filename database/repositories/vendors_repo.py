@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import sqlite3
 
-from ...modules.accounting import AccountingService
+from modules.accounting import AccountingService
 
 
 class DomainError(Exception):

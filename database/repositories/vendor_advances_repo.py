@@ -4,7 +4,7 @@ from typing import Optional
 
 from decimal import Decimal
 
-from ...modules.accounting import AccountingService, VendorAdvancePayload, VendorPaymentMetadata
+from modules.accounting import AccountingService, VendorAdvancePayload, VendorPaymentMetadata
 
 
 # ----------------------------

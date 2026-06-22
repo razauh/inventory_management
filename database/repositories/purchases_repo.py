@@ -5,7 +5,7 @@ import sqlite3
 from typing import Iterable, Optional
 
 # For settlements
-from ...modules.accounting import (
+from modules.accounting import (
     AccountingService,
     PurchaseInventoryLine,
     PurchaseInventoryPayload,

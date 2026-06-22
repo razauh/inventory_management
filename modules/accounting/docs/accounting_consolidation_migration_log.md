@@ -82,3 +82,39 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - All new methods raise `AccountingNotImplementedError` via `_not_implemented`.
   - DTO shapes mirror existing Vendor + Purchase DTOs.
+
+## CS-ACC-003: Consolidate sale totals and discount summaries
+
+- Migrated behavior:
+  - Sale total reads from `sale_detailed_totals` view
+  - Sale total preview calculation (UI preview math)
+- Original location(s):
+  - `database/repositories/sales_repo.py::get_sale_detail_summary` (inline SQL via `sale_detailed_totals`)
+  - `modules/sales/controller.py::_generate_invoice_html_content` (duplicated line-item math)
+  - `modules/sales/controller.py::_generate_quotation_html_content` (duplicated line-item math)
+  - `modules/sales/form.py::_refresh_totals` (UI preview pattern mirrored in `preview_sale_total`)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py` (new)
+    - `get_sale_totals(conn, sale_id) -> SaleTotals` — queries `sale_detailed_totals`
+    - `preview_sale_total(items, order_discount) -> SaleTotals` — computes from input lines
+  - `modules/accounting/dto.py` (new `SaleTotalInputLine`)
+  - `modules/accounting/service.py` — `get_sale_totals` and `preview_sale_total` delegates
+- AccountingService API:
+  - `get_sale_totals(sale_id: int | str) -> SaleTotals` (implemented, delegates to view)
+  - `preview_sale_total(items: tuple[SaleTotalInputLine, ...], order_discount: Decimal) -> SaleTotals`
+- Rewired call site(s):
+  - `database/repositories/sales_repo.py` — added `self.accounting`, rewired `get_sale_detail_summary` to use `self.accounting.get_sale_totals()` for `sale_detailed_totals` fields
+  - `modules/sales/controller.py` — added `self.accounting`, rewired invoice and quotation total generation via `self.accounting.get_sale_totals()`
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_sale_totals.py` (new)
+    - `test_sale_totals_match_current_view`
+    - `test_sale_totals_preserve_item_and_order_discount_behavior`
+    - `test_sales_repo_routes_sale_totals_through_accounting_service`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Removed `get_sale_totals` from placeholder list (now implemented)
+    - Added `SaleTotalInputLine` to DTO construction test
+- Behavior change:
+  - None intended. Values match `sale_detailed_totals` view output.
+- Notes / unresolved correctness questions:
+  - `get_sale_detail_summary` now queries `sale_receivable_totals` and return/credit subqueries directly, but gets `sale_detailed_totals` fields via `AccountingService`.
+  - Invoice total math replaced with service call — produces identical values since both query the same view.

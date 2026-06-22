@@ -3,7 +3,7 @@ import sqlite3
 from decimal import Decimal
 from typing import Optional
 
-from ...modules.accounting import AccountingService, VendorPaymentPayload
+from modules.accounting import AccountingService, VendorPaymentPayload
 
 
 class PurchasePaymentsRepo:

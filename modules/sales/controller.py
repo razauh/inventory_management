@@ -10,6 +10,7 @@ from .view import SalesView
 from .model import SalesTableModel
 from .form import SaleForm
 from .return_form import SaleReturnForm
+from modules.accounting import AccountingService
 from ...database.repositories.sales_repo import SalesRepo, SaleHeader, SaleItem
 from ...database.repositories.customer_advances_repo import CustomerAdvancesRepo
 from ...database.repositories.sales_returns_helpers import get_returnable_quantities
@@ -106,6 +107,7 @@ class SalesController(BaseModule):
         self.repo = SalesRepo(conn)
         self.customers = CustomersRepo(conn)
         self.products = ProductsRepo(conn)
+        self.accounting = AccountingService(conn)
 
         # Optional repo for bank accounts (lazy import; safe if missing)
         self.bank_accounts = None
@@ -2218,24 +2220,17 @@ class SalesController(BaseModule):
 
             enriched_data['items'] = items
 
-            # Calculate totals
-            # Add back the quantity * item_discount per item to get subtotal before discounts
-            subtotal_before_order_discount = sum(
-                item['line_total'] + (float(item.get('quantity', 0.0)) * float(item.get('item_discount', 0.0)))
-                for item in items
+            sale_totals = self.accounting.get_sale_totals(sale_id)
+            line_discount_total = float(
+                sale_totals.subtotal_before_order_discount
+                - sale_totals.stored_total
+                - sale_totals.order_discount
             )
-            line_discount_total = sum(
-                (float(item.get('quantity', 0.0)) * float(item.get('item_discount', 0.0)))
-                for item in items
-            )
-            order_discount = float(doc_data.get('order_discount', 0.0))
-            total = subtotal_before_order_discount - line_discount_total - order_discount
-
             enriched_data['totals'] = {
-                'subtotal_before_order_discount': subtotal_before_order_discount,
+                'subtotal_before_order_discount': float(sale_totals.subtotal_before_order_discount),
                 'line_discount_total': line_discount_total,
-                'order_discount': order_discount,
-                'total': total
+                'order_discount': float(sale_totals.order_discount),
+                'total': float(sale_totals.stored_total or sale_totals.net_total),
             }
 
             # Keep gross invoice totals, but use the canonical net receivable for balance.
@@ -2401,23 +2396,17 @@ class SalesController(BaseModule):
                 items.append(item_dict)
             enriched_data["items"] = items
 
-            subtotal_before_order_discount = sum(
-                it["line_total"]
-                + (float(it.get("quantity", 0.0)) * float(it.get("item_discount", 0.0)))
-                for it in items
+            sale_totals = self.accounting.get_sale_totals(quotation_id)
+            line_discount_total = float(
+                sale_totals.subtotal_before_order_discount
+                - sale_totals.stored_total
+                - sale_totals.order_discount
             )
-            line_discount_total = sum(
-                float(it.get("quantity", 0.0)) * float(it.get("item_discount", 0.0))
-                for it in items
-            )
-            order_discount = float(doc_data.get("order_discount", 0.0))
-            total = subtotal_before_order_discount - line_discount_total - order_discount
-
             enriched_data["totals"] = {
-                "subtotal_before_order_discount": subtotal_before_order_discount,
+                "subtotal_before_order_discount": float(sale_totals.subtotal_before_order_discount),
                 "line_discount_total": line_discount_total,
-                "order_discount": order_discount,
-                "total": total,
+                "order_discount": float(sale_totals.order_discount),
+                "total": float(sale_totals.stored_total or sale_totals.net_total),
             }
 
             from ...database.repositories.company_info_repo import get_invoice_company_context

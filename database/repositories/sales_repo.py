@@ -4,6 +4,7 @@ import math
 import sqlite3
 from typing import Iterable, Optional
 
+from modules.accounting import AccountingService
 from .inventory_repo import next_inventory_txn_seq, rebuild_dirty_valuations
 
 
@@ -51,6 +52,7 @@ class SalesRepo:
         # ensure rows behave like dicts/tuples
         conn.row_factory = sqlite3.Row
         self.conn = conn
+        self.accounting = AccountingService(conn)
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_source_quotation ON sales(source_id) WHERE source_type = 'quotation'"
         )
@@ -1158,21 +1160,18 @@ class SalesRepo:
         }
 
     def get_sale_detail_summary(self, sale_id: str) -> dict:
+        sizes = self.accounting.get_sale_totals(sale_id)
         row = self.conn.execute(
             """
             SELECT
               CAST(s.total_amount AS REAL) AS total_amount,
               CAST(COALESCE(rt.qty_returned, 0.0) AS REAL) AS returned_qty,
-              CAST(COALESCE(sdt.returned_value, 0.0) AS REAL) AS returned_value,
-              CAST(COALESCE(sdt.calculated_total_amount, s.total_amount) AS REAL) AS gross_total_amount,
-              CAST(COALESCE(sdt.net_total_amount, s.total_amount) AS REAL) AS net_total_amount,
               CAST(COALESCE(srt.paid_amount, 0.0) AS REAL) AS paid_amount,
               CAST(COALESCE(srt.advance_payment_applied, 0.0) AS REAL) AS advance_payment_applied,
               CAST(COALESCE(rc.return_credit_amount, 0.0) AS REAL) AS return_credit_amount,
               CAST(COALESCE(srt.canonical_total_amount, s.total_amount) AS REAL) AS calculated_total_amount,
               CAST(COALESCE(srt.remaining_due, 0.0) AS REAL) AS remaining_due
             FROM sales s
-            LEFT JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
             LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
             LEFT JOIN (
                 SELECT
@@ -1201,9 +1200,9 @@ class SalesRepo:
         return {
             "total_amount": float(row["total_amount"] or 0.0),
             "returned_qty": float(row["returned_qty"] or 0.0),
-            "returned_value": float(row["returned_value"] or 0.0),
-            "gross_total_amount": float(row["gross_total_amount"] or 0.0),
-            "net_total_amount": float(row["net_total_amount"] or 0.0),
+            "returned_value": float(sizes.returned_value),
+            "gross_total_amount": float(sizes.stored_total or sizes.net_total),
+            "net_total_amount": float(sizes.net_total),
             "paid_amount": float(row["paid_amount"] or 0.0),
             "advance_payment_applied": float(row["advance_payment_applied"] or 0.0),
             "return_credit_amount": float(row["return_credit_amount"] or 0.0),
