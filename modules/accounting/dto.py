@@ -229,6 +229,33 @@ class SupplierRefundRow:
 
 
 @dataclass(frozen=True)
+class VendorCashMovement:
+    date: str
+    type: str
+    amount: Decimal
+    direction: str
+    method: str | None
+    status: str | None
+    doc_id: int | str | None
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
+class BankLedgerRow:
+    src: str
+    payment_id: int
+    date: str | None
+    amount_in: Decimal
+    amount_out: Decimal
+    method: str | None
+    instrument_type: str | None
+    instrument_no: str | None
+    bank_account_id: int | None
+    doc_id: int | str | None
+    vendor_bank_account_id: int | None = None
+
+
+@dataclass(frozen=True)
 class VendorPaymentPayload:
     purchase_id: int | str
     amount: Decimal

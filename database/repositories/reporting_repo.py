@@ -5,6 +5,8 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterable, Optional, Sequence
 
+from ...modules.accounting import AccountingService
+
 
 class ReportingRepo:
     """
@@ -31,6 +33,7 @@ class ReportingRepo:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
+        self.accounting = AccountingService(conn)
 
     def __enter__(self):
         """Context manager entry for proper resource management."""
@@ -912,42 +915,21 @@ class ReportingRepo:
         Cash disbursements grouped by cleared_date.
         Returns gross vendor payments, refunds received, and net outflow.
         """
-        sql = """
-        WITH disbursement_events AS (
-          SELECT
-            pp.cleared_date AS date,
-            COALESCE(SUM(CASE WHEN CAST(pp.amount AS REAL) > 0 THEN CAST(pp.amount AS REAL) ELSE 0.0 END), 0.0) AS gross_outflow,
-            0.0 AS refunds_received
-          FROM purchase_payments pp
-          WHERE pp.clearing_state = 'cleared'
-            AND pp.cleared_date IS NOT NULL
-            AND pp.cleared_date >= ?
-            AND pp.cleared_date <= ?
-          GROUP BY pp.cleared_date
-          UNION ALL
-          SELECT
-            pr.cleared_date AS date,
-            0.0 AS gross_outflow,
-            COALESCE(SUM(CAST(pr.amount AS REAL)), 0.0) AS refunds_received
-          FROM purchase_refunds pr
-          WHERE pr.clearing_state = 'cleared'
-            AND pr.cleared_date IS NOT NULL
-            AND pr.cleared_date >= ?
-            AND pr.cleared_date <= ?
-          GROUP BY pr.cleared_date
-        )
-        SELECT
-          date,
-          COALESCE(SUM(gross_outflow), 0.0) AS gross_outflow,
-          COALESCE(SUM(refunds_received), 0.0) AS refunds_received,
-          COALESCE(SUM(gross_outflow), 0.0) - COALESCE(SUM(refunds_received), 0.0) AS net_outflow
-        FROM disbursement_events
-        GROUP BY date
-        ORDER BY date
-        """
-        lim_sql, lim_params = self._limit_clause(limit)
-        sql += lim_sql
-        return list(self.conn.execute(sql, [date_from, date_to, date_from, date_to, *lim_params]))
+        totals: dict[str, dict[str, float]] = {}
+        for movement in self.accounting.get_vendor_cash_movements(date_from, date_to):
+            if movement.type not in {"Disbursement", "Vendor Refund"}:
+                continue
+            day = movement.date
+            totals.setdefault(day, {"date": day, "gross_outflow": 0.0, "refunds_received": 0.0})
+            if movement.type == "Disbursement":
+                totals[day]["gross_outflow"] += float(movement.amount)
+            else:
+                totals[day]["refunds_received"] += float(movement.amount)
+        rows = []
+        for row in sorted(totals.values(), key=lambda item: item["date"]):
+            row["net_outflow"] = row["gross_outflow"] - row["refunds_received"]
+            rows.append(row)
+        return rows if limit is None else rows[:limit]
 
     # ----------------------------------------------------------------------
     # ------------------------------ SALES (NEW) ---------------------------

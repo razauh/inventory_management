@@ -7,6 +7,7 @@ from sqlite3 import Connection
 from typing import Any
 
 from .dto import (
+    BankLedgerRow,
     PurchaseFinancials,
     PurchaseOutstanding,
     PurchasePaymentRow,
@@ -27,6 +28,7 @@ from .dto import (
     VendorAdvancePayload,
     VendorAdvanceResult,
     VendorBalance,
+    VendorCashMovement,
     VendorCreditLedgerRow,
     VendorOpenPurchase,
     VendorPaymentEffect,
@@ -35,6 +37,10 @@ from .dto import (
     VendorPaymentResult,
     VendorPurchaseTotals,
     VendorStatement,
+)
+from .current_rules.bank_rules import (
+    get_bank_ledger as get_current_bank_ledger,
+    get_vendor_cash_movements as get_current_vendor_cash_movements,
 )
 from .current_rules.purchase_rules import (
     get_purchase_outstanding as get_current_purchase_outstanding,
@@ -264,6 +270,25 @@ class AccountingService:
 
     def get_bank_balance(self, bank_account_id: int) -> None:
         self._not_implemented("get_bank_balance")
+
+    def get_vendor_cash_movements(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> tuple[VendorCashMovement, ...]:
+        if self.conn is None:
+            self._not_implemented("get_vendor_cash_movements")
+        return get_current_vendor_cash_movements(self.conn, start_date, end_date)
+
+    def get_bank_ledger(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        account_id: int | None = None,
+    ) -> tuple[BankLedgerRow, ...]:
+        if self.conn is None:
+            self._not_implemented("get_bank_ledger")
+        return get_current_bank_ledger(self.conn, start_date, end_date, account_id)
 
     def get_inventory_value(self, product_id: int | None = None) -> None:
         self._not_implemented("get_inventory_value")

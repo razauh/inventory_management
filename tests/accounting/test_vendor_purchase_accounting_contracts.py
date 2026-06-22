@@ -6,6 +6,7 @@ import pytest
 from modules.accounting import (
     AccountingNotImplementedError,
     AccountingService,
+    BankLedgerRow,
     PurchaseFinancials,
     PurchasePaymentStatus,
     PurchasePaymentRow,
@@ -25,6 +26,7 @@ from modules.accounting import (
     SupplierRefundRow,
     VendorAdvancePayload,
     VendorAdvanceResult,
+    VendorCashMovement,
     VendorOpenPurchase,
     VendorCreditLedgerRow,
     VendorPaymentMetadata,
@@ -54,6 +56,8 @@ VENDOR_PURCHASE_METHODS = [
     ("validate_supplier_refund_metadata", ("metadata",)),
     ("record_supplier_refund_event", ("payload",)),
     ("get_supplier_refunds_for_purchase", ("purchase_id",)),
+    ("get_vendor_cash_movements", ("start_date", "end_date")),
+    ("get_bank_ledger", ("start_date", "end_date", "account_id")),
     ("preview_vendor_payment_effect", ("payload",)),
     ("record_vendor_payment_event", ("payload",)),
     ("update_vendor_payment_state", ("payment_id", "clearing_state", "cleared_date", "notes")),
@@ -179,6 +183,27 @@ def test_vendor_purchase_service_contract_methods_exist():
         date="2026-06-21",
         amount=Decimal("5.00"),
         method="Cash",
+    )
+    assert VendorCashMovement(
+        date="2026-06-21",
+        type="Disbursement",
+        amount=Decimal("5.00"),
+        direction="outflow",
+        method="Cash",
+        status="cleared",
+        doc_id=1,
+    )
+    assert BankLedgerRow(
+        src="purchase",
+        payment_id=1,
+        date="2026-06-21",
+        amount_in=Decimal("0"),
+        amount_out=Decimal("5.00"),
+        method="Cash",
+        instrument_type=None,
+        instrument_no=None,
+        bank_account_id=None,
+        doc_id=1,
     )
     effect = VendorPaymentEffect(
         purchase_id=1,
