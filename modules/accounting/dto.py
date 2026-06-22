@@ -491,6 +491,105 @@ class SaleOutstanding:
 
 
 @dataclass(frozen=True)
+class SaleTotals:
+    sale_id: int | str | None
+    subtotal_before_order_discount: Decimal
+    order_discount: Decimal
+    returned_value: Decimal
+    net_total: Decimal
+    stored_total: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class SaleFinancialSummary:
+    sale_id: int | str
+    net_total: Decimal
+    paid_amount: Decimal
+    applied_credit: Decimal
+    returned_value: Decimal
+    outstanding: Decimal
+    total_amount: Decimal = Decimal("0")
+    return_credit_amount: Decimal = Decimal("0")
+    is_fully_paid: bool = False
+    remaining_refundable_amount: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class SalePaymentStatus:
+    sale_id: int | str
+    status: str
+    paid_amount: Decimal
+    applied_credit: Decimal
+    remaining_due: Decimal
+
+
+@dataclass(frozen=True)
+class SalePaymentRow:
+    payment_id: int
+    sale_id: int | str
+    date: str | None
+    amount: Decimal
+    method: str | None
+    bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    instrument_date: str | None = None
+    deposited_date: str | None = None
+    cleared_date: str | None = None
+    clearing_state: str | None = None
+    ref_no: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+    bank_account_label: str | None = None
+
+
+@dataclass(frozen=True)
+class CustomerOpenSale:
+    sale_id: int | str
+    customer_id: int
+    sale_date: str | None
+    reference: str | None
+    net_total: Decimal
+    outstanding: Decimal
+    total_amount: Decimal = Decimal("0")
+    paid_amount: Decimal = Decimal("0")
+    calculated_total_amount: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class CustomerStatementEntry:
+    entry_date: str | None
+    description: str
+    debit: Decimal
+    credit: Decimal
+    balance: Decimal
+
+
+@dataclass(frozen=True)
+class CustomerStatement:
+    customer_id: int
+    start_date: str | None
+    end_date: str | None
+    opening_balance: Decimal
+    closing_balance: Decimal
+    entries: tuple[CustomerStatementEntry, ...] = ()
+
+
+@dataclass(frozen=True)
+class SaleInvoiceFinancials:
+    sale_id: int | str
+    context: dict[str, Any]
+    preview_context: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class QuotationFinancials:
+    quotation_id: int | str
+    context: dict[str, Any]
+    preview_context: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class PartyLedgerSummary:
     party_type: str
     party_id: int

@@ -7,9 +7,12 @@ from sqlite3 import Connection
 from typing import Any
 
 from .dto import (
-    BankLedgerRow,
-    InventoryAccountingEvent,
     APSummary,
+    BankLedgerRow,
+    CustomerBalance,
+    CustomerOpenSale,
+    CustomerStatement,
+    InventoryAccountingEvent,
     PaymentActivityReport,
     PurchaseFinancials,
     PurchaseInvoiceFinancials,
@@ -30,6 +33,13 @@ from .dto import (
     PurchaseTotalInputLine,
     PurchaseTotals,
     PurchaseReportBundle,
+    QuotationFinancials,
+    SaleFinancialSummary,
+    SaleInvoiceFinancials,
+    SaleOutstanding,
+    SalePaymentRow,
+    SalePaymentStatus,
+    SaleTotals,
     SupplierRefundMetadata,
     SupplierRefundPayload,
     SupplierRefundResult,
@@ -119,7 +129,7 @@ class AccountingService:
     def get_vendor_balance(self, vendor_id: int) -> VendorBalance:
         self._not_implemented("get_vendor_balance")
 
-    def get_customer_balance(self, customer_id: int) -> None:
+    def get_customer_balance(self, customer_id: int) -> CustomerBalance:
         self._not_implemented("get_customer_balance")
 
     def get_purchase_totals(self, purchase_id: int | str) -> PurchaseTotals:
@@ -250,7 +260,7 @@ class AccountingService:
             self._not_implemented("get_supplier_refunds_for_purchase")
         return get_current_supplier_refunds_for_purchase(self.conn, purchase_id)
 
-    def get_sale_outstanding(self, sale_id: int) -> None:
+    def get_sale_outstanding(self, sale_id: int | str) -> SaleOutstanding:
         self._not_implemented("get_sale_outstanding")
 
     def get_vendor_advance_balance(self, vendor_id: int) -> VendorBalance:
@@ -342,8 +352,45 @@ class AccountingService:
             repo=getattr(self, "_reporting_repo", None),
         )
 
-    def get_customer_credit_balance(self, customer_id: int) -> None:
+    def get_customer_credit_balance(self, customer_id: int) -> CustomerBalance:
         self._not_implemented("get_customer_credit_balance")
+
+    def get_sale_totals(self, sale_id: int | str) -> SaleTotals:
+        self._not_implemented("get_sale_totals")
+
+    def get_sale_financial_summary(self, sale_id: int | str) -> SaleFinancialSummary:
+        self._not_implemented("get_sale_financial_summary")
+
+    def get_sale_payment_status(self, sale_id: int | str) -> SalePaymentStatus:
+        self._not_implemented("get_sale_payment_status")
+
+    def get_sale_payment_history(
+        self, sale_id: int | str
+    ) -> tuple[SalePaymentRow, ...]:
+        self._not_implemented("get_sale_payment_history")
+
+    def get_customer_open_sales(
+        self, customer_id: int
+    ) -> tuple[CustomerOpenSale, ...]:
+        self._not_implemented("get_customer_open_sales")
+
+    def get_customer_statement(
+        self,
+        customer_id: int,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> CustomerStatement:
+        self._not_implemented("get_customer_statement")
+
+    def get_sale_invoice_financials(
+        self, sale_id: int | str
+    ) -> SaleInvoiceFinancials:
+        self._not_implemented("get_sale_invoice_financials")
+
+    def get_quotation_financials(
+        self, quotation_id: int | str
+    ) -> QuotationFinancials:
+        self._not_implemented("get_quotation_financials")
 
     def get_bank_balance(self, bank_account_id: int) -> None:
         self._not_implemented("get_bank_balance")

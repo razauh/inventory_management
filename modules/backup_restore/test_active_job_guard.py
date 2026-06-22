@@ -77,7 +77,8 @@ def test_active_backup_blocks_duplicate_backup_jobs_and_reenables_controls(qtbot
     messages: list[str] = []
     enabled_changes: list[bool] = []
 
-    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: messages.append(args[2]))
+    from modules.backup_restore import controller as controller_mod
+    monkeypatch.setattr(controller_mod, "notify_info", lambda *args, **kwargs: messages.append(args[2]))
     controller.operation_controls_enabled_changed.connect(enabled_changes.append)
 
     class BackupJob:
@@ -125,9 +126,10 @@ def test_active_restore_blocks_duplicate_restore_jobs(qtbot, monkeypatch, tmp_pa
     messages: list[str] = []
     confirmations: list[str] = []
 
+    from modules.backup_restore import controller as controller_mod
     monkeypatch.setattr(sqlite_ops, "get_db_path", lambda: str(target))
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: confirmations.append(args[2]) or QMessageBox.StandardButton.Yes)
-    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: messages.append(args[2]))
+    monkeypatch.setattr(controller_mod, "notify_info", lambda *args, **kwargs: messages.append(args[2]))
     monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
 
     class RestoreJob:

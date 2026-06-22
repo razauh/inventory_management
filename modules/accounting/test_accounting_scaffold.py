@@ -7,11 +7,20 @@ from modules.accounting import (
     AccountingNotImplementedError,
     AccountingService,
     CustomerBalance,
+    CustomerOpenSale,
+    CustomerStatement,
+    CustomerStatementEntry,
     JournalPreview,
     PartyLedgerSummary,
     PurchaseOutstanding,
     PurchaseReturnPayload,
+    QuotationFinancials,
+    SaleFinancialSummary,
+    SaleInvoiceFinancials,
     SaleOutstanding,
+    SalePaymentRow,
+    SalePaymentStatus,
+    SaleTotals,
     VendorBalance,
 )
 
@@ -49,6 +58,14 @@ def test_accounting_package_imports_and_service_instantiates():
         ("record_sale_return_event", ()),
         ("record_expense_event", ()),
         ("record_stock_adjustment_event", ()),
+        ("get_sale_totals", (1,)),
+        ("get_sale_financial_summary", (1,)),
+        ("get_sale_payment_status", (1,)),
+        ("get_sale_payment_history", (1,)),
+        ("get_customer_open_sales", (1,)),
+        ("get_customer_statement", (1,)),
+        ("get_sale_invoice_financials", (1,)),
+        ("get_quotation_financials", (1,)),
     ],
 )
 def test_accounting_service_placeholders_raise_accounting_error(method_name, args):
@@ -63,6 +80,15 @@ def test_accounting_dtos_construct():
     assert CustomerBalance(customer_id=1, balance=Decimal("10.00"))
     assert PurchaseOutstanding(purchase_id=1, outstanding=Decimal("10.00"))
     assert SaleOutstanding(sale_id=1, outstanding=Decimal("10.00"))
+    assert SaleTotals(sale_id=1, subtotal_before_order_discount=Decimal("10"), order_discount=Decimal("0"), returned_value=Decimal("0"), net_total=Decimal("10"))
+    assert SaleFinancialSummary(sale_id=1, net_total=Decimal("10"), paid_amount=Decimal("0"), applied_credit=Decimal("0"), returned_value=Decimal("0"), outstanding=Decimal("10"))
+    assert SalePaymentStatus(sale_id=1, status="paid", paid_amount=Decimal("10"), applied_credit=Decimal("0"), remaining_due=Decimal("0"))
+    assert SalePaymentRow(payment_id=1, sale_id=1, date="2026-06-21", amount=Decimal("10"), method="Cash")
+    assert CustomerOpenSale(sale_id=1, customer_id=1, sale_date=None, reference=None, net_total=Decimal("10"), outstanding=Decimal("10"))
+    assert CustomerStatementEntry(entry_date="2026-06-21", description="Sale", debit=Decimal("10"), credit=Decimal("0"), balance=Decimal("10"))
+    assert CustomerStatement(customer_id=1, start_date=None, end_date=None, opening_balance=Decimal("0"), closing_balance=Decimal("10"))
+    assert SaleInvoiceFinancials(sale_id=1, context={})
+    assert QuotationFinancials(quotation_id=1, context={})
     assert PartyLedgerSummary(party_type="vendor", party_id=1, balance=Decimal("10.00"))
     assert AccountingEvent(event_type="purchase", source_type="purchase", source_id=1)
     assert JournalPreview(source_type="purchase", source_id=1)

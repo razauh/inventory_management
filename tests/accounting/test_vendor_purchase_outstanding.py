@@ -118,7 +118,8 @@ def test_purchase_outstanding_matches_repo_remaining_due(purchase_outstanding_db
     assert repo.get_remaining_due_header("PO-DUE") == pytest.approx(0.0)
 
     conn.execute("UPDATE purchases SET paid_amount = 120 WHERE purchase_id = 'PO-DUE'")
-    assert float(service.get_purchase_outstanding("PO-DUE").outstanding) == (
+    assert float(service.get_purchase_outstanding("PO-DUE").outstanding) == -20.0
+    assert float(service.get_purchase_remaining_due_header("PO-DUE").outstanding) == (
         pytest.approx(repo.get_purchase_remaining_due("PO-DUE")["remaining_due"])
     )
     assert repo.get_remaining_due_header("PO-DUE") == pytest.approx(0.0)
