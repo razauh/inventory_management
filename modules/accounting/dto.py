@@ -176,6 +176,59 @@ class SupplierRefundMetadata(VendorPaymentMetadata):
 
 
 @dataclass(frozen=True)
+class SupplierRefundPayload:
+    purchase_id: int | str
+    vendor_id: int
+    amount: Decimal
+    date: str
+    method: str
+    bank_account_id: int | None = None
+    vendor_bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    instrument_date: str | None = None
+    deposited_date: str | None = None
+    cleared_date: str | None = None
+    clearing_state: str = "cleared"
+    ref_no: str | None = None
+    temp_vendor_bank_name: str | None = None
+    temp_vendor_bank_number: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
+class SupplierRefundResult:
+    refund_id: int
+    purchase_id: int | str
+    vendor_id: int
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class SupplierRefundRow:
+    refund_id: int
+    purchase_id: int | str
+    vendor_id: int
+    date: str
+    amount: Decimal
+    method: str
+    bank_account_id: int | None = None
+    vendor_bank_account_id: int | None = None
+    instrument_type: str | None = None
+    instrument_no: str | None = None
+    instrument_date: str | None = None
+    deposited_date: str | None = None
+    cleared_date: str | None = None
+    clearing_state: str = "cleared"
+    ref_no: str | None = None
+    temp_vendor_bank_name: str | None = None
+    temp_vendor_bank_number: str | None = None
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
 class VendorPaymentPayload:
     purchase_id: int | str
     amount: Decimal
@@ -256,7 +309,7 @@ class VendorCreditLedgerRow:
 
 @dataclass(frozen=True)
 class PurchaseFinancials:
-    purchase_id: int
+    purchase_id: int | str
     net_total: Decimal
     paid_amount: Decimal
     applied_credit: Decimal

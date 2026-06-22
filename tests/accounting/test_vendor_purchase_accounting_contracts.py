@@ -20,6 +20,9 @@ from modules.accounting import (
     PurchaseTotalInputLine,
     PurchaseTotals,
     SupplierRefundMetadata,
+    SupplierRefundPayload,
+    SupplierRefundResult,
+    SupplierRefundRow,
     VendorAdvancePayload,
     VendorAdvanceResult,
     VendorOpenPurchase,
@@ -49,6 +52,8 @@ VENDOR_PURCHASE_METHODS = [
     ("record_purchase_return_event", ("payload",)),
     ("validate_vendor_payment_metadata", ("metadata",)),
     ("validate_supplier_refund_metadata", ("metadata",)),
+    ("record_supplier_refund_event", ("payload",)),
+    ("get_supplier_refunds_for_purchase", ("purchase_id",)),
     ("preview_vendor_payment_effect", ("payload",)),
     ("record_vendor_payment_event", ("payload",)),
     ("update_vendor_payment_state", ("payment_id", "clearing_state", "cleared_date", "notes")),
@@ -154,6 +159,27 @@ def test_vendor_purchase_service_contract_methods_exist():
     }
     assert VendorPaymentMetadata(vendor_id=2, method="Cash")
     assert SupplierRefundMetadata(vendor_id=2, method="Cash")
+    assert SupplierRefundPayload(
+        purchase_id=1,
+        vendor_id=2,
+        amount=Decimal("5.00"),
+        date="2026-06-21",
+        method="Cash",
+    )
+    assert SupplierRefundResult(
+        refund_id=3,
+        purchase_id=1,
+        vendor_id=2,
+        amount=Decimal("5.00"),
+    )
+    assert SupplierRefundRow(
+        refund_id=3,
+        purchase_id=1,
+        vendor_id=2,
+        date="2026-06-21",
+        amount=Decimal("5.00"),
+        method="Cash",
+    )
     effect = VendorPaymentEffect(
         purchase_id=1,
         vendor_id=2,

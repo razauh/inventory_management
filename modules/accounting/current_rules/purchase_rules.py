@@ -20,11 +20,10 @@ from ..dto import (
     PurchaseReturnValue,
     PurchaseTotalInputLine,
     PurchaseTotals,
-    SupplierRefundMetadata,
+    SupplierRefundPayload,
     VendorAdvancePayload,
 )
-from ..validators import validate_supplier_refund_metadata
-from .vendor_rules import record_vendor_advance_event
+from .vendor_rules import record_supplier_refund_event, record_vendor_advance_event
 
 
 def _decimal(value: object) -> Decimal:
@@ -516,62 +515,27 @@ def _record_purchase_return_event(
             )
 
         if cash_refund_amount > 1e-9:
-            validate_supplier_refund_metadata(
+            record_supplier_refund_event(
                 conn,
-                SupplierRefundMetadata(
+                SupplierRefundPayload(
+                    purchase_id=pid,
                     vendor_id=vendor_id,
+                    amount=Decimal(str(cash_refund_amount)),
+                    date=settlement.get("date") or date if settlement else date,
                     method=settlement.get("method") or "Other" if settlement else "Other",
                     bank_account_id=settlement.get("bank_account_id") if settlement else None,
                     vendor_bank_account_id=settlement.get("vendor_bank_account_id") if settlement else None,
                     instrument_type=settlement.get("instrument_type") if settlement else None,
                     instrument_no=settlement.get("instrument_no") if settlement else None,
+                    instrument_date=settlement.get("instrument_date") if settlement else None,
+                    deposited_date=settlement.get("deposited_date") if settlement else None,
+                    cleared_date=settlement.get("cleared_date") or date if settlement else date,
                     clearing_state="cleared",
+                    ref_no=settlement.get("ref_no") if settlement else None,
                     temp_vendor_bank_name=settlement.get("temp_vendor_bank_name") if settlement else None,
                     temp_vendor_bank_number=settlement.get("temp_vendor_bank_number") if settlement else None,
-                    vendor_label="purchase",
-                ),
-            )
-            cur = conn.execute(
-                """
-                INSERT INTO purchase_refunds (
-                    purchase_id, vendor_id, date, amount, method,
-                    bank_account_id, vendor_bank_account_id,
-                    instrument_type, instrument_no, instrument_date,
-                    deposited_date, cleared_date, clearing_state, ref_no,
-                    temp_vendor_bank_name, temp_vendor_bank_number,
-                    notes, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?, ?)
-                """,
-                (
-                    pid,
-                    vendor_id,
-                    settlement.get("date") or date if settlement else date,
-                    cash_refund_amount,
-                    settlement.get("method") or "Other" if settlement else "Other",
-                    settlement.get("bank_account_id") if settlement else None,
-                    settlement.get("vendor_bank_account_id") if settlement else None,
-                    settlement.get("instrument_type") if settlement else None,
-                    settlement.get("instrument_no") if settlement else None,
-                    settlement.get("instrument_date") if settlement else None,
-                    settlement.get("deposited_date") if settlement else None,
-                    settlement.get("cleared_date") or date if settlement else date,
-                    settlement.get("ref_no") if settlement else None,
-                    settlement.get("temp_vendor_bank_name") if settlement else None,
-                    settlement.get("temp_vendor_bank_number") if settlement else None,
-                    settlement.get("notes") or notes if settlement else notes,
-                    created_by,
-                ),
-            )
-            refund_id = int(cur.lastrowid)
-            conn.execute(
-                """
-                INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
-                VALUES (?, 'refund', 'purchase_refunds', ?, ?)
-                """,
-                (
-                    created_by,
-                    refund_id,
-                    f"Recorded vendor refund of {cash_refund_amount:g}. Purchase ID: {pid}",
+                    notes=settlement.get("notes") or notes if settlement else notes,
+                    created_by=created_by,
                 ),
             )
 

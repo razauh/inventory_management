@@ -11,6 +11,10 @@ from decimal import Decimal
 from sqlite3 import Connection
 
 from ..dto import (
+    SupplierRefundMetadata,
+    SupplierRefundPayload,
+    SupplierRefundResult,
+    SupplierRefundRow,
     VendorBalance,
     VendorAdvancePayload,
     VendorAdvanceResult,
@@ -22,7 +26,7 @@ from ..dto import (
     VendorPaymentResult,
     VendorPurchaseTotals,
 )
-from ..validators import validate_vendor_payment_metadata
+from ..validators import validate_supplier_refund_metadata, validate_vendor_payment_metadata
 
 _log = logging.getLogger(__name__)
 
@@ -922,6 +926,123 @@ def record_vendor_advance_event(
         vendor_id=payload.vendor_id,
         amount=payload.amount,
         source_type=source_type,
+    )
+
+
+def record_supplier_refund_event(
+    conn: Connection,
+    payload: SupplierRefundPayload,
+) -> SupplierRefundResult:
+    if payload.amount <= 0:
+        raise ValueError("amount must be positive when recording supplier refund")
+    validate_supplier_refund_metadata(
+        conn,
+        SupplierRefundMetadata(
+            vendor_id=payload.vendor_id,
+            method=payload.method,
+            bank_account_id=payload.bank_account_id,
+            vendor_bank_account_id=payload.vendor_bank_account_id,
+            instrument_type=payload.instrument_type,
+            instrument_no=payload.instrument_no,
+            clearing_state=payload.clearing_state,
+            temp_vendor_bank_name=payload.temp_vendor_bank_name,
+            temp_vendor_bank_number=payload.temp_vendor_bank_number,
+            vendor_label="purchase",
+        ),
+    )
+    cur = conn.execute(
+        """
+        INSERT INTO purchase_refunds (
+            purchase_id, vendor_id, date, amount, method,
+            bank_account_id, vendor_bank_account_id,
+            instrument_type, instrument_no, instrument_date,
+            deposited_date, cleared_date, clearing_state, ref_no,
+            temp_vendor_bank_name, temp_vendor_bank_number,
+            notes, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?, ?)
+        """,
+        (
+            payload.purchase_id,
+            payload.vendor_id,
+            payload.date,
+            float(payload.amount),
+            payload.method,
+            payload.bank_account_id,
+            payload.vendor_bank_account_id,
+            payload.instrument_type,
+            payload.instrument_no,
+            payload.instrument_date,
+            payload.deposited_date,
+            payload.cleared_date or payload.date,
+            payload.ref_no,
+            payload.temp_vendor_bank_name,
+            payload.temp_vendor_bank_number,
+            payload.notes,
+            payload.created_by,
+        ),
+    )
+    refund_id = int(cur.lastrowid)
+    conn.execute(
+        """
+        INSERT INTO audit_logs (user_id, action_type, table_name, record_id, details)
+        VALUES (?, 'refund', 'purchase_refunds', ?, ?)
+        """,
+        (
+            payload.created_by,
+            refund_id,
+            f"Recorded vendor refund of {payload.amount:g}. Purchase ID: {payload.purchase_id}",
+        ),
+    )
+    return SupplierRefundResult(
+        refund_id=refund_id,
+        purchase_id=payload.purchase_id,
+        vendor_id=payload.vendor_id,
+        amount=payload.amount,
+    )
+
+
+def get_supplier_refunds_for_purchase(
+    conn: Connection,
+    purchase_id: int | str,
+) -> tuple[SupplierRefundRow, ...]:
+    rows = conn.execute(
+        """
+        SELECT
+          refund_id, purchase_id, vendor_id, date,
+          CAST(amount AS REAL) AS amount,
+          method, bank_account_id, vendor_bank_account_id,
+          instrument_type, instrument_no, instrument_date,
+          deposited_date, cleared_date, clearing_state, ref_no,
+          temp_vendor_bank_name, temp_vendor_bank_number, notes, created_by
+        FROM purchase_refunds
+        WHERE purchase_id = ?
+        ORDER BY refund_id
+        """,
+        (purchase_id,),
+    ).fetchall()
+    return tuple(
+        SupplierRefundRow(
+            refund_id=int(row["refund_id"]),
+            purchase_id=row["purchase_id"],
+            vendor_id=int(row["vendor_id"]),
+            date=row["date"],
+            amount=_decimal(row["amount"]),
+            method=row["method"],
+            bank_account_id=row["bank_account_id"],
+            vendor_bank_account_id=row["vendor_bank_account_id"],
+            instrument_type=row["instrument_type"],
+            instrument_no=row["instrument_no"],
+            instrument_date=row["instrument_date"],
+            deposited_date=row["deposited_date"],
+            cleared_date=row["cleared_date"],
+            clearing_state=row["clearing_state"],
+            ref_no=row["ref_no"],
+            temp_vendor_bank_name=row["temp_vendor_bank_name"],
+            temp_vendor_bank_number=row["temp_vendor_bank_number"],
+            notes=row["notes"],
+            created_by=row["created_by"],
+        )
+        for row in rows
     )
 
 

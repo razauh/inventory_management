@@ -21,6 +21,9 @@ from .dto import (
     PurchaseTotalInputLine,
     PurchaseTotals,
     SupplierRefundMetadata,
+    SupplierRefundPayload,
+    SupplierRefundResult,
+    SupplierRefundRow,
     VendorAdvancePayload,
     VendorAdvanceResult,
     VendorBalance,
@@ -54,12 +57,14 @@ from .current_rules.vendor_rules import (
     get_vendor_open_purchases as get_current_vendor_open_purchases,
     get_vendor_purchase_totals as get_current_vendor_purchase_totals,
     get_vendor_statement as get_current_vendor_statement,
+    get_supplier_refunds_for_purchase as get_current_supplier_refunds_for_purchase,
     list_vendor_purchases as list_current_vendor_purchases,
     preview_vendor_advance_allocation as preview_current_vendor_advance_allocation,
     preview_vendor_payment_effect as preview_current_vendor_payment_effect,
     record_vendor_advance_with_auto_apply as record_current_vendor_advance_with_auto_apply,
     record_vendor_payment_event as record_current_vendor_payment_event,
     record_vendor_advance_event as record_current_vendor_advance_event,
+    record_supplier_refund_event as record_current_supplier_refund_event,
     update_vendor_payment_state as update_current_vendor_payment_state,
 )
 from .exceptions import AccountingNotImplementedError
@@ -180,6 +185,22 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("validate_supplier_refund_metadata")
         validate_current_supplier_refund_metadata(self.conn, metadata)
+
+    def record_supplier_refund_event(
+        self,
+        payload: SupplierRefundPayload,
+    ) -> SupplierRefundResult:
+        if self.conn is None:
+            self._not_implemented("record_supplier_refund_event")
+        return record_current_supplier_refund_event(self.conn, payload)
+
+    def get_supplier_refunds_for_purchase(
+        self,
+        purchase_id: int | str,
+    ) -> tuple[SupplierRefundRow, ...]:
+        if self.conn is None:
+            self._not_implemented("get_supplier_refunds_for_purchase")
+        return get_current_supplier_refunds_for_purchase(self.conn, purchase_id)
 
     def get_sale_outstanding(self, sale_id: int) -> None:
         self._not_implemented("get_sale_outstanding")
