@@ -316,3 +316,40 @@ It records where legacy/current behavior moved and which application call sites 
   - Full customer aging service method not implemented — `ReportingRepo.customer_headers_as_of_batch` has complex cutoff logic that must be preserved exactly; defer to later card if needed.
   - Dashboard `summary_metrics` remains in `DashboardRepo` (SQL matches service method exactly). Service method exists for future controller rewiring.
   - Report UI widgets (`CustomerAgingReports`, etc.) use `ReportingRepo` directly and continue working unchanged.
+
+## CS-ACC-011: Consolidate customer payment history read model
+
+- Migrated behavior:
+  - Sale payment history reads (by sale, by customer, latest payment)
+- Original location(s):
+  - `database/repositories/sale_payments_repo.py::list_by_sale` (inline SQL)
+  - `database/repositories/sale_payments_repo.py::list_by_customer` (inline SQL)
+  - `database/repositories/sale_payments_repo.py::get_latest_payment_for_sale` (inline SQL)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sale_payment_history(conn, sale_id) -> tuple[SalePaymentRow, ...]`
+    - `get_latest_sale_payment(conn, sale_id) -> SalePaymentRow | None`
+  - `modules/accounting/current_rules/customer_rules.py`
+    - `get_customer_payment_history(conn, customer_id) -> tuple[SalePaymentRow, ...]`
+  - `modules/accounting/service.py` — all three methods delegated to current_rules
+- AccountingService API:
+  - `get_sale_payment_history(sale_id: int | str) -> tuple[SalePaymentRow, ...]`
+  - `get_latest_sale_payment(sale_id: int | str) -> SalePaymentRow | None`
+  - `get_customer_payment_history(customer_id: int) -> tuple[SalePaymentRow, ...]`
+- Rewired call site(s):
+  - `database/repositories/sale_payments_repo.py::list_by_sale` — via `AccountingService(con).get_sale_payment_history(sale_id)`
+  - `database/repositories/sale_payments_repo.py::list_by_customer` — via `AccountingService(con).get_customer_payment_history(customer_id)`
+  - `database/repositories/sale_payments_repo.py::get_latest_payment_for_sale` — via `AccountingService(con).get_latest_sale_payment(sale_id)`
+  - All indirect callers (controller invoice generation, detail snapshots, payment tab, customer history) — through the repo
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_payment_history.py` (new)
+    - `test_sale_payment_history_matches_repo`
+    - `test_latest_sale_payment_matches_repo`
+    - `test_customer_payment_history_matches_repo`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Removed `get_sale_payment_history` from placeholder list
+- Behavior change:
+  - None intended. Row shapes, order, and field values match original `SalePaymentsRepo` SQL.
+- Notes / unresolved correctness questions:
+  - `SalePaymentsRepo` read methods now convert `SalePaymentRow` DTOs to plain dicts (callers use `dict()` and key access, which both work on dicts).
+  - Payment write methods (`record_payment`, `record_payment_with_conn`) remain untouched.

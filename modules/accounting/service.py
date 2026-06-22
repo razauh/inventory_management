@@ -95,14 +95,17 @@ from .current_rules.purchase_rules import (
 )
 from .current_rules.customer_rules import (
     get_customer_history as get_current_customer_history,
+    get_customer_payment_history as get_current_customer_payment_history,
     get_customer_receivable_summary as get_current_customer_receivable_summary,
     get_customer_statement as get_current_customer_statement,
 )
 from .current_rules.sales_rules import (
+    get_latest_sale_payment as get_current_latest_sale_payment,
     get_quotation_financials as get_current_quotation_financials,
     get_sale_financial_summary as get_current_sale_financial_summary,
     get_sale_invoice_financials as get_current_sale_invoice_financials,
     get_sale_outstanding as get_current_sale_outstanding,
+    get_sale_payment_history as get_current_sale_payment_history,
     get_sale_payment_status as get_current_sale_payment_status,
     get_sales_dashboard_metrics as get_current_sales_dashboard_metrics,
     get_sale_totals as get_current_sale_totals,
@@ -407,7 +410,23 @@ class AccountingService:
     def get_sale_payment_history(
         self, sale_id: int | str
     ) -> tuple[SalePaymentRow, ...]:
-        self._not_implemented("get_sale_payment_history")
+        if self.conn is None:
+            self._not_implemented("get_sale_payment_history")
+        return get_current_sale_payment_history(self.conn, sale_id)
+
+    def get_latest_sale_payment(
+        self, sale_id: int | str
+    ) -> SalePaymentRow | None:
+        if self.conn is None:
+            self._not_implemented("get_latest_sale_payment")
+        return get_current_latest_sale_payment(self.conn, sale_id)
+
+    def get_customer_payment_history(
+        self, customer_id: int
+    ) -> tuple[SalePaymentRow, ...]:
+        if self.conn is None:
+            self._not_implemented("get_customer_payment_history")
+        return get_current_customer_payment_history(self.conn, customer_id)
 
     def get_customer_open_sales(
         self, customer_id: int

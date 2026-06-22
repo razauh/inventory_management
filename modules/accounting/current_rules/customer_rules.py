@@ -14,6 +14,7 @@ from ..dto import (
     CustomerReceivableSummary,
     CustomerStatement,
     CustomerStatementEntry,
+    SalePaymentRow,
 )
 
 
@@ -356,3 +357,42 @@ def get_customer_receivable_summary(
         last_payment_date=row["last_payment_date"],
         last_advance_date=row["last_advance_date"],
     )
+
+
+def get_customer_payment_history(
+    conn: Connection, customer_id: int
+) -> tuple[SalePaymentRow, ...]:
+    rows = conn.execute(
+        """
+        SELECT sp.*
+          FROM sale_payments sp
+          JOIN sales s ON s.sale_id = sp.sale_id
+         WHERE s.customer_id = ?
+         ORDER BY sp.date ASC, sp.payment_id ASC
+        """,
+        (customer_id,),
+    ).fetchall()
+    res = []
+    for r in rows:
+        d = dict(r)
+        res.append(
+            SalePaymentRow(
+                payment_id=d["payment_id"],
+                sale_id=d["sale_id"],
+                date=d["date"],
+                amount=Decimal(str(d["amount"] or 0)),
+                method=d["method"],
+                bank_account_id=d.get("bank_account_id"),
+                instrument_type=d.get("instrument_type"),
+                instrument_no=d.get("instrument_no"),
+                instrument_date=d.get("instrument_date"),
+                deposited_date=d.get("deposited_date"),
+                cleared_date=d.get("cleared_date"),
+                clearing_state=d.get("clearing_state"),
+                ref_no=d.get("ref_no"),
+                notes=d.get("notes"),
+                created_by=d.get("created_by"),
+                bank_account_label=d.get("bank_account_label"),
+            )
+        )
+    return tuple(res)

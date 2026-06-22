@@ -4,6 +4,9 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from modules.accounting import AccountingService
+
+
 class SalePaymentsRepo:
     """
     Repository for customer receipts/refunds (rows in sale_payments).
@@ -649,55 +652,73 @@ class SalePaymentsRepo:
 
 
     def list_by_sale(self, sale_id: str) -> list[sqlite3.Row]:
-        """
-        Return all payments for a given sale_id (chronological).
-        """
         with self._connect() as con:
-            cur = con.execute(
-                """
-                SELECT *
-                  FROM sale_payments
-                 WHERE sale_id = ?
-                 ORDER BY date ASC, payment_id ASC;
-                """,
-                (sale_id,),
-            )
-            return cur.fetchall()
+            svc = AccountingService(con)
+            return [dict(
+                payment_id=r.payment_id,
+                sale_id=r.sale_id,
+                date=r.date,
+                amount=float(r.amount),
+                method=r.method,
+                bank_account_id=r.bank_account_id,
+                instrument_type=r.instrument_type,
+                instrument_no=r.instrument_no,
+                instrument_date=r.instrument_date,
+                deposited_date=r.deposited_date,
+                cleared_date=r.cleared_date,
+                clearing_state=r.clearing_state,
+                ref_no=r.ref_no,
+                notes=r.notes,
+                created_by=r.created_by,
+                bank_account_label=r.bank_account_label,
+            ) for r in svc.get_sale_payment_history(sale_id)]
 
     def get_latest_payment_for_sale(self, sale_id: str) -> sqlite3.Row | None:
-        """
-        Return the latest payment for a given sale_id (by date and payment_id).
-        """
         with self._connect() as con:
-            cur = con.execute(
-                """
-                SELECT *
-                  FROM sale_payments
-                 WHERE sale_id = ?
-                 ORDER BY date DESC, payment_id DESC
-                 LIMIT 1;
-                """,
-                (sale_id,),
+            svc = AccountingService(con)
+            r = svc.get_latest_sale_payment(sale_id)
+            if r is None:
+                return None
+            return dict(
+                payment_id=r.payment_id,
+                sale_id=r.sale_id,
+                date=r.date,
+                amount=float(r.amount),
+                method=r.method,
+                bank_account_id=r.bank_account_id,
+                instrument_type=r.instrument_type,
+                instrument_no=r.instrument_no,
+                instrument_date=r.instrument_date,
+                deposited_date=r.deposited_date,
+                cleared_date=r.cleared_date,
+                clearing_state=r.clearing_state,
+                ref_no=r.ref_no,
+                notes=r.notes,
+                created_by=r.created_by,
+                bank_account_label=r.bank_account_label,
             )
-            return cur.fetchone()
 
     def list_by_customer(self, customer_id: int) -> list[sqlite3.Row]:
-        """
-        Return all payments for all SALES belonging to a given customer.
-        (Payments against quotations are disallowed by DB triggers, so this yields sales only.)
-        """
         with self._connect() as con:
-            cur = con.execute(
-                """
-                SELECT sp.*
-                  FROM sale_payments sp
-                  JOIN sales s ON s.sale_id = sp.sale_id
-                 WHERE s.customer_id = ?
-                 ORDER BY sp.date ASC, sp.payment_id ASC;
-                """,
-                (customer_id,),
-            )
-            return cur.fetchall()
+            svc = AccountingService(con)
+            return [dict(
+                payment_id=r.payment_id,
+                sale_id=r.sale_id,
+                date=r.date,
+                amount=float(r.amount),
+                method=r.method,
+                bank_account_id=r.bank_account_id,
+                instrument_type=r.instrument_type,
+                instrument_no=r.instrument_no,
+                instrument_date=r.instrument_date,
+                deposited_date=r.deposited_date,
+                cleared_date=r.cleared_date,
+                clearing_state=r.clearing_state,
+                ref_no=r.ref_no,
+                notes=r.notes,
+                created_by=r.created_by,
+                bank_account_label=r.bank_account_label,
+            ) for r in svc.get_customer_payment_history(customer_id)]
 
     def get(self, payment_id: int) -> Optional[sqlite3.Row]:
         """

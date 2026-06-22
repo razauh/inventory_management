@@ -12,6 +12,7 @@ from ..dto import (
     SaleFinancialSummary,
     SaleInvoiceFinancials,
     SaleOutstanding,
+    SalePaymentRow,
     SalePaymentStatus,
     SalesDashboardMetrics,
     SaleTotalInputLine,
@@ -281,3 +282,66 @@ def recalculate_sale_payment_status(
         (current.status, sale_id),
     )
     return current
+
+
+def get_sale_payment_history(
+    conn: Connection, sale_id: int | str
+) -> tuple[SalePaymentRow, ...]:
+    rows = conn.execute(
+        "SELECT * FROM sale_payments WHERE sale_id = ? ORDER BY date ASC, payment_id ASC",
+        (sale_id,),
+    ).fetchall()
+    res = []
+    for r in rows:
+        d = dict(r)
+        res.append(
+            SalePaymentRow(
+                payment_id=d["payment_id"],
+                sale_id=d["sale_id"],
+                date=d["date"],
+                amount=Decimal(str(d["amount"] or 0)),
+                method=d["method"],
+                bank_account_id=d.get("bank_account_id"),
+                instrument_type=d.get("instrument_type"),
+                instrument_no=d.get("instrument_no"),
+                instrument_date=d.get("instrument_date"),
+                deposited_date=d.get("deposited_date"),
+                cleared_date=d.get("cleared_date"),
+                clearing_state=d.get("clearing_state"),
+                ref_no=d.get("ref_no"),
+                notes=d.get("notes"),
+                created_by=d.get("created_by"),
+                bank_account_label=d.get("bank_account_label"),
+            )
+        )
+    return tuple(res)
+
+
+def get_latest_sale_payment(
+    conn: Connection, sale_id: int | str
+) -> SalePaymentRow | None:
+    row = conn.execute(
+        "SELECT * FROM sale_payments WHERE sale_id = ? ORDER BY date DESC, payment_id DESC LIMIT 1",
+        (sale_id,),
+    ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    return SalePaymentRow(
+        payment_id=d["payment_id"],
+        sale_id=d["sale_id"],
+        date=d["date"],
+        amount=Decimal(str(d["amount"] or 0)),
+        method=d["method"],
+        bank_account_id=d.get("bank_account_id"),
+        instrument_type=d.get("instrument_type"),
+        instrument_no=d.get("instrument_no"),
+        instrument_date=d.get("instrument_date"),
+        deposited_date=d.get("deposited_date"),
+        cleared_date=d.get("cleared_date"),
+        clearing_state=d.get("clearing_state"),
+        ref_no=d.get("ref_no"),
+        notes=d.get("notes"),
+        created_by=d.get("created_by"),
+        bank_account_label=d.get("bank_account_label"),
+    )

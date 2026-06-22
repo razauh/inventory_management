@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from decimal import Decimal
 
 import pytest
@@ -61,7 +68,6 @@ def test_accounting_package_imports_and_service_instantiates():
         ("record_sale_return_event", ()),
         ("record_expense_event", ()),
         ("record_stock_adjustment_event", ()),
-        ("get_sale_payment_history", (1,)),
         ("get_customer_open_sales", (1,)),
         ("get_purchase_totals", (1,)),
     ],
