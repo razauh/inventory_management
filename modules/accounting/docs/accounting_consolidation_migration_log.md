@@ -118,3 +118,42 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - `get_sale_detail_summary` now queries `sale_receivable_totals` and return/credit subqueries directly, but gets `sale_detailed_totals` fields via `AccountingService`.
   - Invoice total math replaced with service call — produces identical values since both query the same view.
+
+## CS-ACC-004: Consolidate sale outstanding and receivable position
+
+- Migrated behavior:
+  - Sale outstanding / remaining due reads from `sale_receivable_totals` view
+  - Receivable position (gross, net, paid, advance, remaining)
+- Original location(s):
+  - `database/repositories/sales_repo.py::get_receivable_position` (inline SQL on both views)
+  - `database/repositories/sales_repo.py::get_sale_detail_summary` (receivable fields via raw SQL)
+  - `database/repositories/sales_repo.py::get_sale_totals` (dict from view)
+  - `modules/sales/controller.py::_fetch_sale_financials` (via detail summary)
+  - `database/repositories/customer_advances_repo.py::apply_credit_to_sale` (remaining_due validation)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sale_financial_summary(conn, sale_id) -> SaleFinancialSummary` — joins both views
+    - `get_sale_outstanding(conn, sale_id) -> SaleOutstanding` — delegates to financial summary
+  - `modules/accounting/dto.py` — updated `SaleFinancialSummary` with `gross_total_amount` field
+  - `modules/accounting/service.py` — `get_sale_financial_summary` and `get_sale_outstanding` implemented
+- AccountingService API:
+  - `get_sale_outstanding(sale_id: int | str) -> SaleOutstanding`
+  - `get_sale_financial_summary(sale_id: int | str) -> SaleFinancialSummary`
+- Rewired call site(s):
+  - `database/repositories/sales_repo.py::get_receivable_position` — via `self.accounting.get_sale_financial_summary()`
+  - `database/repositories/sales_repo.py::get_sale_detail_summary` — receivable fields via `self.accounting.get_sale_financial_summary()`
+  - `database/repositories/sales_repo.py::get_sale_totals` — via `self.accounting.get_sale_totals()`
+  - `modules/sales/controller.py::_fetch_sale_financials` — via `self.accounting.get_sale_financial_summary()`
+  - `database/repositories/customer_advances_repo.py::apply_credit_to_sale` — remaining_due validation via `AccountingService(con).get_sale_outstanding()`
+  - `modules/customer/controller.py` — added `self.accounting`; bulk listing methods (ponytail: direct view query for N+1 avoidance)
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_sale_outstanding.py` (new)
+    - `test_sale_outstanding_matches_receivable_view`
+    - `test_sale_financial_summary_matches_sales_repo`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Removed `get_sale_outstanding` and `get_sale_financial_summary` from placeholder list
+- Behavior change:
+  - None intended. Values match `sale_receivable_totals` view output.
+- Notes / unresolved correctness questions:
+  - Customer controller bulk listing methods (`_list_sales_for_customer`, `_eligible_sales_for_application`) still query the view directly to avoid N+1; `AccountingService` is available for per-sale reads.
+  - `customer_advances_repo.apply_credit_to_sale` now validates via `AccountingService` within the same transaction.

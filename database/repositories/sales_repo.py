@@ -1160,19 +1160,14 @@ class SalesRepo:
         }
 
     def get_sale_detail_summary(self, sale_id: str) -> dict:
-        sizes = self.accounting.get_sale_totals(sale_id)
+        fin = self.accounting.get_sale_financial_summary(sale_id)
         row = self.conn.execute(
             """
             SELECT
               CAST(s.total_amount AS REAL) AS total_amount,
               CAST(COALESCE(rt.qty_returned, 0.0) AS REAL) AS returned_qty,
-              CAST(COALESCE(srt.paid_amount, 0.0) AS REAL) AS paid_amount,
-              CAST(COALESCE(srt.advance_payment_applied, 0.0) AS REAL) AS advance_payment_applied,
-              CAST(COALESCE(rc.return_credit_amount, 0.0) AS REAL) AS return_credit_amount,
-              CAST(COALESCE(srt.canonical_total_amount, s.total_amount) AS REAL) AS calculated_total_amount,
-              CAST(COALESCE(srt.remaining_due, 0.0) AS REAL) AS remaining_due
+              CAST(COALESCE(rc.return_credit_amount, 0.0) AS REAL) AS return_credit_amount
             FROM sales s
-            LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
             LEFT JOIN (
                 SELECT
                   it.reference_id AS sale_id,
@@ -1200,14 +1195,14 @@ class SalesRepo:
         return {
             "total_amount": float(row["total_amount"] or 0.0),
             "returned_qty": float(row["returned_qty"] or 0.0),
-            "returned_value": float(sizes.returned_value),
-            "gross_total_amount": float(sizes.stored_total or sizes.net_total),
-            "net_total_amount": float(sizes.net_total),
-            "paid_amount": float(row["paid_amount"] or 0.0),
-            "advance_payment_applied": float(row["advance_payment_applied"] or 0.0),
+            "returned_value": float(fin.returned_value),
+            "gross_total_amount": float(fin.gross_total_amount),
+            "net_total_amount": float(fin.net_total),
+            "paid_amount": float(fin.paid_amount),
+            "advance_payment_applied": float(fin.applied_credit),
             "return_credit_amount": float(row["return_credit_amount"] or 0.0),
-            "calculated_total_amount": float(row["calculated_total_amount"] or 0.0),
-            "remaining_due": float(row["remaining_due"] or 0.0),
+            "calculated_total_amount": float(fin.gross_total_amount),
+            "remaining_due": float(fin.outstanding),
         }
 
     def get_sale_detail_snapshot(self, sale_id: str) -> dict:
@@ -1290,33 +1285,17 @@ class SalesRepo:
         }
 
     def get_receivable_position(self, sale_id: str, return_value: float = 0.0) -> dict:
-        row = self.conn.execute(
-            """
-            SELECT
-              CAST(sdt.calculated_total_amount AS REAL) AS gross_total_amount,
-              CAST(sdt.returned_value AS REAL) AS returned_value,
-              CAST(sdt.net_total_amount AS REAL) AS net_total_amount,
-              CAST(srt.paid_amount AS REAL) AS paid_amount,
-              CAST(srt.advance_payment_applied AS REAL) AS advance_payment_applied,
-              CAST(srt.remaining_due AS REAL) AS remaining_due
-            FROM sale_detailed_totals sdt
-            JOIN sale_receivable_totals srt ON srt.sale_id = sdt.sale_id
-            WHERE sdt.sale_id = ?
-            """,
-            (sale_id,),
-        ).fetchone()
-        if not row:
-            raise ValueError(f"Unknown sale_id: {sale_id}")
-        remaining = float(row["remaining_due"] or 0.0)
-        paid = float(row["paid_amount"] or 0.0)
+        fin = self.accounting.get_sale_financial_summary(sale_id)
+        remaining = float(fin.outstanding)
+        paid = float(fin.paid_amount)
         prospective_return = max(0.0, float(return_value or 0.0))
         settlement_due = max(0.0, prospective_return - remaining)
         return {
-            "gross_total_amount": float(row["gross_total_amount"] or 0.0),
-            "returned_value": float(row["returned_value"] or 0.0),
-            "net_total_amount": float(row["net_total_amount"] or 0.0),
+            "gross_total_amount": float(fin.gross_total_amount),
+            "returned_value": float(fin.returned_value),
+            "net_total_amount": float(fin.net_total),
             "paid_amount": paid,
-            "advance_payment_applied": float(row["advance_payment_applied"] or 0.0),
+            "advance_payment_applied": float(fin.applied_credit),
             "remaining_due": remaining,
             "settlement_due": settlement_due,
             "cash_refund_cap": min(settlement_due, paid),
@@ -1349,28 +1328,22 @@ class SalesRepo:
     # SAFE TOTALS — for OD proration in returns UI
     # ---------------------------------------------------------------------
     def get_sale_totals(self, sale_id: str) -> dict:
-        """
-        Returns subtotal_before_order_discount and calculated_total_amount
-        from the 'sale_detailed_totals' view for correct proration.
-        """
-        row = self.conn.execute(
-            """
-            SELECT CAST(subtotal_before_order_discount AS REAL) AS net_subtotal,
-                   CAST(calculated_total_amount AS REAL) AS total_after_od,
-                   CAST(calculated_total_amount AS REAL) AS calculated_total_amount,
-                   CAST(returned_value AS REAL) AS returned_value,
-                   CAST(net_total_amount AS REAL) AS net_total_amount
-            FROM sale_detailed_totals
-            WHERE sale_id = ?
-            """,
-            (sale_id,),
-        ).fetchone()
-        return row or {
-            "net_subtotal": 0.0,
-            "total_after_od": 0.0,
-            "calculated_total_amount": 0.0,
-            "returned_value": 0.0,
-            "net_total_amount": 0.0,
+        try:
+            t = self.accounting.get_sale_totals(sale_id)
+        except ValueError:
+            return {
+                "net_subtotal": 0.0,
+                "total_after_od": 0.0,
+                "calculated_total_amount": 0.0,
+                "returned_value": 0.0,
+                "net_total_amount": 0.0,
+            }
+        return {
+            "net_subtotal": float(t.subtotal_before_order_discount),
+            "total_after_od": float(t.stored_total or t.net_total),
+            "calculated_total_amount": float(t.stored_total or t.net_total),
+            "returned_value": float(t.returned_value),
+            "net_total_amount": float(t.net_total),
         }
 
     def list_by_customer(self, customer_id: int, doc_type: str = 'sale') -> list[sqlite3.Row]:

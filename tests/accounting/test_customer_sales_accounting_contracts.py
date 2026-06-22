@@ -45,6 +45,7 @@ def test_customer_sales_service_contract_methods_exist():
     )
     assert SaleFinancialSummary(
         sale_id=1,
+        gross_total_amount=Decimal("10.00"),
         net_total=Decimal("9.00"),
         paid_amount=Decimal("5.00"),
         applied_credit=Decimal("1.00"),

@@ -93,6 +93,8 @@ from .current_rules.purchase_rules import (
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
 from .current_rules.sales_rules import (
+    get_sale_financial_summary as get_current_sale_financial_summary,
+    get_sale_outstanding as get_current_sale_outstanding,
     get_sale_totals as get_current_sale_totals,
     preview_sale_total as preview_current_sale_total,
 )
@@ -266,7 +268,9 @@ class AccountingService:
         return get_current_supplier_refunds_for_purchase(self.conn, purchase_id)
 
     def get_sale_outstanding(self, sale_id: int | str) -> SaleOutstanding:
-        self._not_implemented("get_sale_outstanding")
+        if self.conn is None:
+            self._not_implemented("get_sale_outstanding")
+        return get_current_sale_outstanding(self.conn, sale_id)
 
     def get_vendor_advance_balance(self, vendor_id: int) -> VendorBalance:
         if self.conn is None:
@@ -373,7 +377,9 @@ class AccountingService:
         return preview_current_sale_total(items, order_discount)
 
     def get_sale_financial_summary(self, sale_id: int | str) -> SaleFinancialSummary:
-        self._not_implemented("get_sale_financial_summary")
+        if self.conn is None:
+            self._not_implemented("get_sale_financial_summary")
+        return get_current_sale_financial_summary(self.conn, sale_id)
 
     def get_sale_payment_status(self, sale_id: int | str) -> SalePaymentStatus:
         self._not_implemented("get_sale_payment_status")

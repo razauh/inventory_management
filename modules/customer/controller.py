@@ -11,6 +11,7 @@ from ..base_module import BaseModule
 from .view import CustomerView
 from .form import CustomerForm
 from .model import CustomersTableModel
+from modules.accounting import AccountingService
 from ...database.repositories.customers_repo import CustomersRepo
 from ...utils.ui_helpers import info
 from ...utils.invoice_preview import show_invoice_preview
@@ -38,6 +39,7 @@ class CustomerController(BaseModule):
     def __init__(self, conn: sqlite3.Connection):
         super().__init__()
         self.conn = conn
+        self.accounting = AccountingService(conn)
         self.repo = CustomersRepo(conn)
         self.view = CustomerView()
         self._search_timer = QTimer(self.view)
@@ -408,9 +410,8 @@ class CustomerController(BaseModule):
         return [dict(r) for r in rows]
 
     def _list_sales_for_customer(self, customer_id: int) -> List[Dict[str, Any]]:
-        """
-        Return sales for a customer with totals/paid to compute remaining.
-        """
+        # ponytail: bulk read queries sale_receivable_totals directly
+        # (same view the service wraps); per-sale callers use self.accounting.
         rows = self.conn.execute(
             """
             SELECT
@@ -431,10 +432,7 @@ class CustomerController(BaseModule):
         return [dict(r) for r in rows]
 
     def _eligible_sales_for_application(self, customer_id: int) -> List[Dict[str, Any]]:
-        """
-        Return list of sales with remaining due > 0 for the customer.
-        (Used to seed 'apply advance' UI when needed.)
-        """
+        # ponytail: bulk read queries sale_receivable_totals directly
         rows = self.conn.execute(
             """
             SELECT

@@ -486,7 +486,7 @@ class VendorStatement:
 
 @dataclass(frozen=True)
 class SaleOutstanding:
-    sale_id: int
+    sale_id: int | str
     outstanding: Decimal
 
 
@@ -510,6 +510,7 @@ class SaleTotals:
 @dataclass(frozen=True)
 class SaleFinancialSummary:
     sale_id: int | str
+    gross_total_amount: Decimal
     net_total: Decimal
     paid_amount: Decimal
     applied_credit: Decimal

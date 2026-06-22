@@ -885,23 +885,13 @@ class SalesController(BaseModule):
 
     # --- small helper: fetch financials using calc view + header -----------
     def _fetch_sale_financials(self, sale_id: str) -> dict:
-        """
-        Returns a dict with:
-          total_amount, paid_amount, advance_payment_applied,
-          calculated_total_amount, remaining_due
-        remaining_due = calculated_total_amount - paid_amount - advance_payment_applied (clamped ≥ 0)
-        """
-        summary = self._get_sale_detail_summary(sale_id)
-        calc_total = float(summary.get("calculated_total_amount") or 0.0)
-        paid = float(summary.get("paid_amount") or 0.0)
-        adv = float(summary.get("advance_payment_applied") or 0.0)
-        remaining = float(summary.get("remaining_due") or 0.0)
+        fin = self.accounting.get_sale_financial_summary(sale_id)
         return {
-            "total_amount": float(summary.get("total_amount") or 0.0),
-            "paid_amount": paid,
-            "advance_payment_applied": adv,
-            "calculated_total_amount": calc_total,
-            "remaining_due": remaining,
+            "total_amount": float(fin.gross_total_amount),
+            "paid_amount": float(fin.paid_amount),
+            "advance_payment_applied": float(fin.applied_credit),
+            "calculated_total_amount": float(fin.gross_total_amount),
+            "remaining_due": float(fin.outstanding),
         }
 
     def _get_sale_detail_summary(self, sale_id: str) -> dict:

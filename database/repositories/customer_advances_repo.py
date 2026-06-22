@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from modules.accounting import AccountingService
+
 
 class CustomerAdvancesRepo:
     """
@@ -181,12 +183,8 @@ class CustomerAdvancesRepo:
             # Validate sale exists, is a real sale, and belongs to the customer
             row = con.execute(
                 """
-                SELECT s.sale_id,
-                       s.customer_id,
-                       s.doc_type,
-                       COALESCE(srt.remaining_due, 0.0) AS remaining_due
+                SELECT s.customer_id, s.doc_type
                   FROM sales s
-                  LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
                  WHERE s.sale_id = ?;
                 """,
                 (sale_id,),
@@ -199,7 +197,7 @@ class CustomerAdvancesRepo:
             if int(row["customer_id"]) != int(customer_id):
                 raise ValueError("Sale does not belong to the specified customer.")
 
-            remaining_due = float(row["remaining_due"] or 0.0)
+            remaining_due = float(AccountingService(con).get_sale_outstanding(sale_id).outstanding)
 
             if float(amount) > (remaining_due + 1e-9):
                 raise ValueError(
