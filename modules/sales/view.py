@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QComboBox, QTabWidget,
 )
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal
-from ...widgets.table_view import TableView
+from widgets.table_view import TableView
 from .details import SaleDetails
 from .items import SaleItemsView
 from ...utils.helpers import fmt_money

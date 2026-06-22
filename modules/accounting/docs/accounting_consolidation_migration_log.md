@@ -190,3 +190,35 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - DB triggers remain intact and still fire on `sale_payments` and `customer_advances` mutations.
   - `recalculate_sale_payment_status` updates the header row directly (same as old `_refresh_sale_payment_status`).
+
+## CS-ACC-007: Consolidate customer statement/history read model
+
+- Migrated behavior:
+  - Customer financial history assembly (sales with items, payments, returns, advances ledger, timeline, overview)
+  - Customer statement (advance-based running balance)
+- Original location(s):
+  - `modules/customer/history.py::CustomerHistoryService` (full_history, sales_with_items, sale_payments, sale_returns, advances_ledger, timeline, overview)
+  - `modules/customer/controller.py::_on_history_print` (creates CustomerHistoryService directly)
+- New accounting location(s):
+  - `modules/accounting/current_rules/customer_rules.py` (new)
+    - `get_customer_history(conn, customer_id) -> dict` — full payload matching `CustomerHistoryService.full_history`
+    - `get_customer_statement(conn, customer_id, start_date, end_date) -> CustomerStatement`
+  - `modules/accounting/service.py` — `get_customer_history` and `get_customer_statement` delegated
+- AccountingService API:
+  - `get_customer_history(customer_id: int) -> dict`
+  - `get_customer_statement(customer_id: int, start_date, end_date) -> CustomerStatement`
+- Rewired call site(s):
+  - `modules/customer/history.py::CustomerHistoryService` — accepts optional `accounting` kwarg; `full_history` delegates to `self._accounting.get_customer_history()` when set
+  - `modules/customer/controller.py::_on_history_print` — passes `self.accounting` to `CustomerHistoryService`
+  - `modules/customer/actions.py::_get_customer_history_service` — accepts optional `accounting` kwarg
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_customer_statement.py` (new)
+    - `test_customer_statement_matches_current_history_service`
+    - `test_customer_statement_preserves_timeline_order_and_event_types`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Removed `get_customer_statement` from placeholder list
+- Behavior change:
+  - None intended. Dict shapes, timeline order, and event kinds match `CustomerHistoryService` output exactly.
+- Notes / unresolved correctness questions:
+  - `CustomerHistoryService` still works standalone when `accounting` is not passed (old SQL path).
+  - `get_customer_statement` builds a simple running balance from the advance ledger; the full timeline-based statement is available via `get_customer_history`.

@@ -11,8 +11,8 @@ import time
 from jinja2 import Template
 from weasyprint import HTML
 from importlib import resources as importlib_resources
-from ...utils.invoice_preview import show_invoice_preview
-from ...utils.ui_helpers import info
+from utils.invoice_preview import show_invoice_preview
+from utils.ui_helpers import info
 
 try:
     # Per project standard: PySide6

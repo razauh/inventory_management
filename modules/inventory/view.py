@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QLabel
 )
 
-from ...widgets.table_view import TableView
+from widgets.table_view import TableView
 
 
 class InventoryView(QWidget):

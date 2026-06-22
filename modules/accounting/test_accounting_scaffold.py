@@ -60,7 +60,6 @@ def test_accounting_package_imports_and_service_instantiates():
         ("record_stock_adjustment_event", ()),
         ("get_sale_payment_history", (1,)),
         ("get_customer_open_sales", (1,)),
-        ("get_customer_statement", (1,)),
         ("get_sale_invoice_financials", (1,)),
         ("get_quotation_financials", (1,)),
     ],

@@ -12,9 +12,9 @@ from .view import CustomerView
 from .form import CustomerForm
 from .model import CustomersTableModel
 from modules.accounting import AccountingService
-from ...database.repositories.customers_repo import CustomersRepo
-from ...utils.ui_helpers import info
-from ...utils.invoice_preview import show_invoice_preview
+from database.repositories.customers_repo import CustomersRepo
+from utils.ui_helpers import info
+from utils.invoice_preview import show_invoice_preview
 
 
 CUSTOMER_SEARCH_DELAY_MS = 150
@@ -498,7 +498,7 @@ class CustomerController(BaseModule):
         from weasyprint import HTML, CSS
 
         try:
-            svc = CustomerHistoryService(db_path)
+            svc = CustomerHistoryService(db_path, accounting=self.accounting)
             payload = svc.full_history(cid)
         except Exception as e:
             info(self.view, "Error", f"Could not load customer history:\n{e}")
@@ -529,7 +529,7 @@ class CustomerController(BaseModule):
         template = Template(template_content, autoescape=True)
         company = {}
         if hasattr(self, "conn"):
-            from ...database.repositories.company_info_repo import get_invoice_company_context
+            from database.repositories.company_info_repo import get_invoice_company_context
             company = get_invoice_company_context(self.conn)
         html = template.render(
             company=company,

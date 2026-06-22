@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout
-from ...widgets.table_view import TableView
+from widgets.table_view import TableView
 from .model import SaleItemsModel
 
 class SaleItemsView(QWidget):

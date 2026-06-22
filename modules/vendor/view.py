@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QSizePolicy
 )
 from PySide6.QtCore import Qt
-from ...widgets.table_view import TableView
+from widgets.table_view import TableView
 from .details import VendorDetails
 
 

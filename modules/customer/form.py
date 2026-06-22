@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from ...utils.validators import non_empty
-from ...utils import ui_helpers as uih
+from utils.validators import non_empty
+from utils import ui_helpers as uih
 
 
 class CustomerForm(QDialog):

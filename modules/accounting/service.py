@@ -92,6 +92,10 @@ from .current_rules.purchase_rules import (
     record_purchase_return_event as record_current_purchase_return_event,
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
+from .current_rules.customer_rules import (
+    get_customer_history as get_current_customer_history,
+    get_customer_statement as get_current_customer_statement,
+)
 from .current_rules.sales_rules import (
     get_sale_financial_summary as get_current_sale_financial_summary,
     get_sale_outstanding as get_current_sale_outstanding,
@@ -411,7 +415,14 @@ class AccountingService:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> CustomerStatement:
-        self._not_implemented("get_customer_statement")
+        if self.conn is None:
+            self._not_implemented("get_customer_statement")
+        return get_current_customer_statement(self.conn, customer_id, start_date, end_date)
+
+    def get_customer_history(self, customer_id: int) -> dict[str, Any]:
+        if self.conn is None:
+            self._not_implemented("get_customer_history")
+        return get_current_customer_history(self.conn, customer_id)
 
     def get_sale_invoice_financials(
         self, sale_id: int | str

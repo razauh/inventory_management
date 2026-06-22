@@ -1,5 +1,5 @@
 from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
-from ...database.repositories.customers_repo import Customer
+from database.repositories.customers_repo import Customer
 
 
 class CustomersTableModel(QAbstractTableModel):

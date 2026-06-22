@@ -33,11 +33,11 @@ def _get_customer_advances_repo(db_path: str | Path):
     return CustomerAdvancesRepo(db_path)
 
 
-def _get_customer_history_service(db_path: str | Path):
+def _get_customer_history_service(db_path: str | Path, accounting=None):
     from inventory_management.modules.customer.history import (
         CustomerHistoryService,
     )
-    return CustomerHistoryService(db_path)
+    return CustomerHistoryService(db_path, accounting=accounting)
 
 
 def _get_invoice_company_context(db_path: str | Path) -> dict:

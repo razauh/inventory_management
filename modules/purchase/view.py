@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QSplitter, QRadioButton, QButtonGroup, QGroupBox, QTabWidget
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
-from ...widgets.table_view import TableView
+from widgets.table_view import TableView
 from .details import PurchaseDetails
 from .items import PurchaseItemsView
 

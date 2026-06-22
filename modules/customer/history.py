@@ -4,6 +4,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from modules.accounting import AccountingService
+
 
 class CustomerHistoryService:
     """
@@ -18,8 +20,9 @@ class CustomerHistoryService:
     Returns structured dictionaries to keep the UI layer simple.
     """
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, accounting: AccountingService | None = None):
         self.db_path = str(db_path)
+        self._accounting = accounting
 
     # --------------------------------------------------------------------- #
     # Internals
@@ -392,14 +395,8 @@ class CustomerHistoryService:
         }
 
     def full_history(self, customer_id: int) -> Dict[str, Any]:
-        """
-        Complete payload for UI screens:
-          - sales (with items & remaining due)
-          - payments
-          - advances (+balance)
-          - timeline (merged)
-          - overview
-        """
+        if self._accounting is not None:
+            return self._accounting.get_customer_history(customer_id)
         sales = self.sales_with_items(customer_id)
         payments = self.sale_payments(customer_id)
         advances = self.advances_ledger(customer_id)
