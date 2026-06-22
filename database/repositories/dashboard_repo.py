@@ -4,6 +4,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
+from modules.accounting import AccountingService
+
 
 def _to_float(x: Optional[Any]) -> float:
     try:
@@ -37,6 +39,7 @@ class DashboardRepo:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
+        self.accounting = AccountingService(conn)
         # Ensure we can access columns by name in a safe, schema-friendly way.
         self.conn.row_factory = sqlite3.Row
 

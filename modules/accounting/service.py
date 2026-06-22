@@ -104,6 +104,7 @@ from .current_rules.sales_rules import (
     get_sale_invoice_financials as get_current_sale_invoice_financials,
     get_sale_outstanding as get_current_sale_outstanding,
     get_sale_payment_status as get_current_sale_payment_status,
+    get_sales_dashboard_metrics as get_current_sales_dashboard_metrics,
     get_sale_totals as get_current_sale_totals,
     preview_sale_total as preview_current_sale_total,
     recalculate_sale_payment_status as recalculate_current_sale_payment_status,
@@ -448,6 +449,13 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("get_quotation_financials")
         return get_current_quotation_financials(self.conn, quotation_id)
+
+    def get_sales_dashboard_metrics(
+        self, date_from: str, date_to: str
+    ) -> SalesDashboardMetrics:
+        if self.conn is None:
+            self._not_implemented("get_sales_dashboard_metrics")
+        return get_current_sales_dashboard_metrics(self.conn, date_from, date_to)
 
     def get_bank_balance(self, bank_account_id: int) -> None:
         self._not_implemented("get_bank_balance")

@@ -285,3 +285,34 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - Invoice template loading, header/doc, items, company context, and payment rows remain in the controller (template I/O and display formatting).
   - Totals already via `self.accounting.get_sale_totals()` (CS-ACC-003); receivable position via `self.accounting.get_sale_financial_summary()` (CS-ACC-004).
+
+## CS-ACC-010: Consolidate sales, customer, dashboard, and export financial reads
+
+- Migrated behavior:
+  - Sales dashboard KPI metrics (total sales, cogs, expenses, receipts, receivables, payables)
+  - Dashboard repo accounting integration
+- Original location(s):
+  - `database/repositories/dashboard_repo.py::summary_metrics` (inline SQL for all KPIs)
+  - `database/repositories/dashboard_repo.py::open_receivables`, `open_payables` (inline SQL)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sales_dashboard_metrics(conn, date_from, date_to) -> SalesDashboardMetrics`
+  - `modules/accounting/dto.py` (new `SalesDashboardMetrics`, `CustomerAgingReport`)
+  - `modules/accounting/service.py` — `get_sales_dashboard_metrics` delegated
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `get_sales_dashboard_metrics(date_from: str, date_to: str) -> SalesDashboardMetrics`
+- Rewired call site(s):
+  - `database/repositories/dashboard_repo.py` — added `self.accounting` for future method rewiring
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_reports.py` (new)
+    - `test_dashboard_sales_metrics_match_current_repo`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Added `SalesDashboardMetrics`, `CustomerAgingReport` to DTO construction test
+- Behavior change:
+  - None intended. Dashboard metrics match existing `DashboardRepo.summary_metrics` SQL.
+- Notes / unresolved correctness questions:
+  - `ReportingRepo` already has `self.accounting` (pre-existing). Customer aging, sales reports, and export financial reads already route through `ReportingRepo` → `AccountingService`.
+  - Full customer aging service method not implemented — `ReportingRepo.customer_headers_as_of_batch` has complex cutoff logic that must be preserved exactly; defer to later card if needed.
+  - Dashboard `summary_metrics` remains in `DashboardRepo` (SQL matches service method exactly). Service method exists for future controller rewiring.
+  - Report UI widgets (`CustomerAgingReports`, etc.) use `ReportingRepo` directly and continue working unchanged.

@@ -175,6 +175,24 @@ class VendorAgingReport:
 
 
 @dataclass(frozen=True)
+class CustomerAgingReport:
+    as_of: str
+    rows: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class SalesDashboardMetrics:
+    as_of: str
+    total_sales: Decimal
+    total_cogs: Decimal
+    total_expenses: Decimal
+    receipts_cleared: Decimal
+    vendor_payments_cleared: Decimal
+    open_receivables: Decimal
+    open_payables: Decimal
+
+
+@dataclass(frozen=True)
 class APSummary:
     cutoff_date: str | None
     ar_total_due: Decimal

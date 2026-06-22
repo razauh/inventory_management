@@ -13,6 +13,7 @@ from ..dto import (
     SaleInvoiceFinancials,
     SaleOutstanding,
     SalePaymentStatus,
+    SalesDashboardMetrics,
     SaleTotalInputLine,
     SaleTotals,
 )
@@ -152,6 +153,71 @@ def get_quotation_financials(
 ) -> QuotationFinancials:
     return QuotationFinancials(
         quotation_id=quotation_id, context={"id": quotation_id}
+    )
+
+
+def get_sales_dashboard_metrics(
+    conn: Connection, date_from: str, date_to: str
+) -> SalesDashboardMetrics:
+    row = conn.execute(
+        """
+        WITH
+        sales_cte AS (
+          SELECT
+            COALESCE(SUM(CAST(revenue AS REAL)), 0.0) AS total_sales,
+            COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS total_cogs
+          FROM sale_financial_events
+          WHERE event_date >= ? AND event_date <= ?
+        ),
+        expenses_cte AS (
+          SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_expenses
+          FROM expenses e
+          WHERE e.date >= ? AND e.date <= ?
+        ),
+        receipts AS (
+          SELECT COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0) AS receipts_cleared
+          FROM sale_payments sp
+          WHERE sp.clearing_state = 'cleared'
+            AND sp.cleared_date >= ? AND sp.cleared_date <= ?
+        ),
+        payables AS (
+          SELECT
+            COALESCE((SELECT SUM(CAST(pp.amount AS REAL)) FROM purchase_payments pp
+                      WHERE pp.clearing_state = 'cleared' AND pp.cleared_date >= ? AND pp.cleared_date <= ?), 0.0)
+            - COALESCE((SELECT SUM(CAST(pr.amount AS REAL)) FROM purchase_refunds pr
+                        WHERE pr.clearing_state = 'cleared' AND pr.cleared_date >= ? AND pr.cleared_date <= ?), 0.0)
+            AS vendor_payments_cleared
+        ),
+        receivables AS (
+          SELECT COALESCE(SUM(srt.remaining_due), 0.0) AS open_receivables
+          FROM sales s
+          JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+          WHERE s.doc_type = 'sale' AND srt.remaining_due > 0.0000001
+        ),
+        all_payables AS (
+          SELECT MAX(0.0, COALESCE(SUM(CAST(p.total_amount AS REAL)
+            - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+            - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)), 0.0)) AS open_payables
+          FROM purchases p
+        )
+        SELECT sales_cte.total_sales, sales_cte.total_cogs, expenses_cte.total_expenses,
+               receipts.receipts_cleared, payables.vendor_payments_cleared,
+               receivables.open_receivables, all_payables.open_payables
+        FROM sales_cte, expenses_cte, receipts, payables, receivables, all_payables
+        """,
+        (date_from, date_to, date_from, date_to, date_from, date_to,
+         date_from, date_to, date_from, date_to),
+    ).fetchone()
+    # ponytail: empty result set is degenerate — the CROSS JOIN yields one row
+    return SalesDashboardMetrics(
+        as_of=date_to,
+        total_sales=Decimal(str(row["total_sales"] or 0)),
+        total_cogs=Decimal(str(row["total_cogs"] or 0)),
+        total_expenses=Decimal(str(row["total_expenses"] or 0)),
+        receipts_cleared=Decimal(str(row["receipts_cleared"] or 0)),
+        vendor_payments_cleared=Decimal(str(row["vendor_payments_cleared"] or 0)),
+        open_receivables=Decimal(str(row["open_receivables"] or 0)),
+        open_payables=Decimal(str(row["open_payables"] or 0)),
     )
 
 
