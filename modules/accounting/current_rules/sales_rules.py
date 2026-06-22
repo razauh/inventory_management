@@ -17,6 +17,11 @@ from ..dto import (
     SaleOutstanding,
     SalePaymentRow,
     SalePaymentStatus,
+    SaleReturnEffect,
+    SaleReturnPayload,
+    SaleReturnResult,
+    SaleReturnTotals,
+    SaleReturnValue,
     SalesDashboardMetrics,
     SaleTotalInputLine,
     SaleTotals,
@@ -347,6 +352,133 @@ def get_latest_sale_payment(
         notes=d.get("notes"),
         created_by=d.get("created_by"),
         bank_account_label=d.get("bank_account_label"),
+    )
+
+
+def get_sale_return_totals(
+    conn: Connection, sale_id: int | str
+) -> SaleReturnTotals:
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(CAST(srs.returned_quantity AS REAL)), 0.0) AS qty,
+               COALESCE(SUM(CAST(srs.return_value AS REAL)), 0.0) AS value,
+               COALESCE(SUM(CAST(srs.cogs_reversal_value AS REAL)), 0.0) AS cogs_reversed
+        FROM inventory_transactions it
+        JOIN sale_return_snapshots srs ON srs.transaction_id = it.transaction_id
+        WHERE it.reference_table = 'sales'
+          AND it.reference_id = ?
+          AND it.transaction_type = 'sale_return'
+        """,
+        (sale_id,),
+    ).fetchone()
+    return SaleReturnTotals(
+        qty=Decimal(str(row["qty"] or 0)),
+        value=Decimal(str(row["value"] or 0)),
+        cogs_reversed=Decimal(str(row["cogs_reversed"] or 0)),
+    )
+
+
+def get_sale_return_values(
+    conn: Connection, sale_id: int | str
+) -> tuple[SaleReturnValue, ...]:
+    rows = conn.execute(
+        """
+        SELECT srs.transaction_id, srs.item_id,
+               CAST(srs.returned_quantity AS REAL) AS qty_returned,
+               CAST(srs.unit_sale_price AS REAL) AS unit_sale_price,
+               CAST(srs.unit_discount AS REAL) AS unit_discount,
+               srs.return_date,
+               CAST(srs.return_value AS REAL) AS return_value,
+               CAST(srs.allocated_order_discount AS REAL) AS allocated_order_discount,
+               'resolved' AS valuation_status
+        FROM sale_return_snapshots srs
+        WHERE srs.sale_id = ?
+        ORDER BY srs.return_date, srs.transaction_id
+        """,
+        (sale_id,),
+    ).fetchall()
+    return tuple(
+        SaleReturnValue(
+            transaction_id=r["transaction_id"],
+            item_id=r["item_id"],
+            qty_returned=Decimal(str(r["qty_returned"] or 0)),
+            unit_sale_price=Decimal(str(r["unit_sale_price"] or 0)),
+            unit_discount=Decimal(str(r["unit_discount"] or 0)),
+            return_date=r["return_date"],
+            valuation_status=r["valuation_status"],
+            return_value=Decimal(str(r["return_value"] or 0)),
+            allocated_order_discount=Decimal(str(r["allocated_order_discount"] or 0)),
+        )
+        for r in rows
+    )
+
+
+def record_sale_return_event(
+    conn: Connection, payload: SaleReturnPayload
+) -> SaleReturnEffect:
+    from .customer_rules import get_customer_receivable_summary
+
+    fin = get_sale_financial_summary(conn, payload.sale_id)
+    remaining_due_before = fin.outstanding
+
+    prior_credit = conn.execute(
+        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS total "
+        "FROM customer_advances WHERE source_type = 'return_credit' AND source_id = ?",
+        (payload.sale_id,),
+    ).fetchone()["total"]
+
+    net_total_before = fin.net_total
+    advance_applied = fin.applied_credit
+    net_advance = max(Decimal("0"), advance_applied - Decimal(str(prior_credit or 0)))
+
+    prop_adv = Decimal("0")
+    if net_total_before > Decimal("1e-9"):
+        prop_adv = min(
+            (payload.return_value / net_total_before) * advance_applied,
+            net_advance,
+        )
+
+    settlement_due = max(Decimal("0"), payload.return_value - remaining_due_before)
+    paid_before = fin.paid_amount
+    max_cash = max(Decimal("0"), settlement_due - prop_adv)
+    cash_cap = min(settlement_due, paid_before, max_cash)
+    requested = payload.settlement_cash_refund
+    cash_refund = min(requested, cash_cap)
+    credit_amount = max(Decimal("0"), settlement_due - cash_refund)
+
+    if settlement_due > 0:
+        if cash_refund > 0:
+            conn.execute(
+                "INSERT INTO sale_payments (sale_id, date, amount, method, instrument_type, "
+                "clearing_state, cleared_date, notes, created_by) "
+                "VALUES (?, ?, ?, 'Cash', 'other', 'cleared', ?, ?, ?)",
+                (payload.sale_id, payload.date, -float(cash_refund),
+                 payload.date,
+                 payload.notes or "[Return refund]",
+                 payload.created_by),
+            )
+        if credit_amount > 0:
+            conn.execute(
+                "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, "
+                "source_id, notes, created_by) VALUES (?, ?, ?, 'return_credit', ?, ?, ?)",
+                (int(conn.execute(
+                    "SELECT customer_id FROM sales WHERE sale_id = ?",
+                    (payload.sale_id,),
+                ).fetchone()["customer_id"]),
+                 payload.date, float(credit_amount), payload.sale_id,
+                 payload.notes or "[Return credit]",
+                 payload.created_by),
+            )
+
+    return SaleReturnEffect(
+        return_value=payload.return_value,
+        allocated_order_discount=Decimal("0"),
+        cogs_reversal_value=Decimal("0"),
+        remaining_due_before_return=remaining_due_before,
+        settlement_due=settlement_due,
+        cash_refund_cap=cash_cap,
+        cash_refund=cash_refund,
+        credit_amount=credit_amount,
     )
 
 

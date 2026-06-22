@@ -464,3 +464,39 @@ It records where legacy/current behavior moved and which application call sites 
   - DB triggers `trg_advances_no_overdraw`, `trg_customer_advances_not_exceed_remaining_due` remain the integrity layer.
   - Sale header rollup (`payment_status`, `advance_payment_applied`) is handled by DB triggers, not the service.
   - `preview_customer_credit_allocation` and `validate_customer_credit_application` not implemented — validation is inlined in the record method.
+
+## CS-ACC-015: Consolidate sale return financial behavior
+
+- Migrated behavior:
+  - Sale return totals query
+  - Sale return values query
+  - Return settlement (cash refund vs customer credit split, proportional advance reinstatement)
+- Original location(s):
+  - `database/repositories/sales_repo.py::record_return` (settlement math + INSERTs for refund/credit)
+  - `database/repositories/sales_repo.py::sale_return_totals` (inline SQL)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sale_return_totals(conn, sale_id) -> SaleReturnTotals`
+    - `get_sale_return_values(conn, sale_id) -> tuple[SaleReturnValue, ...]`
+    - `record_sale_return_event(conn, payload) -> SaleReturnEffect`
+  - `modules/accounting/dto.py` (new `SaleReturnValue`, `SaleReturnTotals`, `SaleReturnEffect`, `SaleReturnPayload`, `SaleReturnResult`, `SaleReturnPreviewLine`, `SaleReturnPreviewPayload`)
+  - `modules/accounting/service.py` — all methods delegated to current_rules
+  - `modules/accounting/__init__.py` — exported new DTOs
+- AccountingService API:
+  - `get_sale_return_totals(sale_id: int | str) -> SaleReturnTotals`
+  - `get_sale_return_values(sale_id: int | str) -> tuple[SaleReturnValue, ...]`
+  - `record_sale_return_event(payload: SaleReturnPayload) -> SaleReturnEffect`
+- Rewired call site(s):
+  - `database/repositories/sales_repo.py::record_return` — validates quantities, inserts inventory, captures snapshots, then delegates settlement to `self.accounting.record_sale_return_event()`
+  - `database/repositories/sales_repo.py::sale_return_totals` — delegates to `self.accounting.get_sale_return_totals()`
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_sale_return_financials.py` (new)
+    - `test_sale_return_totals_matches_repo`
+    - `test_sale_return_values_matches_repo`
+    - `test_sale_return_credit_settlement_matches_repo`
+- Behavior change:
+  - None intended. Settlement values (cash refund, credit amount, proportional advance) match original `record_return` math.
+- Notes / unresolved correctness questions:
+  - Inventory INSERT + snapshot trigger remain in `record_return` (tightly coupled with `next_inventory_txn_seq` and `rebuild_dirty_valuations`).
+  - Service `record_sale_return_event` performs the settlement math (proportional advance, cash cap, split) and does the cash/credit INSERTs.
+  - `SaleReturnPreviewLine`/`SaleReturnPreviewPayload` DTOs exist for future preview implementation but no service method wraps them yet.

@@ -634,6 +634,75 @@ class PartyLedgerSummary:
 
 
 @dataclass(frozen=True)
+class SaleReturnPreviewLine:
+    quantity: Decimal
+    unit_price: Decimal
+    item_discount: Decimal = Decimal("0")
+    return_qty: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class SaleReturnPreviewPayload:
+    lines: tuple[SaleReturnPreviewLine, ...]
+    order_discount: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class SaleReturnValue:
+    transaction_id: int
+    item_id: int | None
+    qty_returned: Decimal
+    unit_sale_price: Decimal
+    unit_discount: Decimal
+    return_date: str | None
+    valuation_status: str
+    return_value: Decimal
+    allocated_order_discount: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class SaleReturnTotals:
+    qty: Decimal
+    value: Decimal
+    cogs_reversed: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class SaleReturnEffect:
+    return_value: Decimal
+    allocated_order_discount: Decimal
+    cogs_reversal_value: Decimal
+    remaining_due_before_return: Decimal
+    settlement_due: Decimal
+    cash_refund_cap: Decimal
+    cash_refund: Decimal = Decimal("0")
+    credit_amount: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class SaleReturnPayload:
+    sale_id: int | str
+    date: str
+    created_by: int | None
+    lines: tuple[dict, ...]
+    settlement_cash_refund: Decimal = Decimal("0")
+    notes: str | None = None
+    return_value: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class SaleReturnResult:
+    sale_id: int | str
+    transaction_ids: tuple[int, ...]
+    return_value: Decimal
+    allocated_order_discount: Decimal
+    cogs_reversal_value: Decimal
+    cash_refund: Decimal
+    credit_amount: Decimal
+    remaining_due_before_return: Decimal
+
+
+@dataclass(frozen=True)
 class AccountingEvent:
     event_type: str
     source_type: str

@@ -116,11 +116,14 @@ from .current_rules.sales_rules import (
     get_sale_outstanding as get_current_sale_outstanding,
     get_sale_payment_history as get_current_sale_payment_history,
     get_sale_payment_status as get_current_sale_payment_status,
+    get_sale_return_totals as get_current_sale_return_totals,
+    get_sale_return_values as get_current_sale_return_values,
     get_sales_dashboard_metrics as get_current_sales_dashboard_metrics,
     get_sale_totals as get_current_sale_totals,
     preview_sale_total as preview_current_sale_total,
     recalculate_sale_payment_status as recalculate_current_sale_payment_status,
     record_customer_payment_event as record_current_customer_payment_event,
+    record_sale_return_event as record_current_sale_return_event,
     update_customer_payment_state as update_current_customer_payment_state,
     reopen_customer_payment_state as reopen_current_customer_payment_state,
 )
@@ -710,8 +713,20 @@ class AccountingService:
             self._not_implemented("record_purchase_return_event")
         return record_current_purchase_return_event(self.conn, payload)
 
-    def record_sale_return_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_sale_return_event")
+    def get_sale_return_totals(self, sale_id: int | str) -> SaleReturnTotals:
+        if self.conn is None:
+            self._not_implemented("get_sale_return_totals")
+        return get_current_sale_return_totals(self.conn, sale_id)
+
+    def get_sale_return_values(self, sale_id: int | str) -> tuple[SaleReturnValue, ...]:
+        if self.conn is None:
+            self._not_implemented("get_sale_return_values")
+        return get_current_sale_return_values(self.conn, sale_id)
+
+    def record_sale_return_event(self, payload: SaleReturnPayload) -> SaleReturnEffect:
+        if self.conn is None:
+            self._not_implemented("record_sale_return_event")
+        return record_current_sale_return_event(self.conn, payload)
 
     def record_expense_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_expense_event")
