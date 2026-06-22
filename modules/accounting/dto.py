@@ -793,6 +793,17 @@ class CustomerCreditLedgerRow:
 
 
 @dataclass(frozen=True)
+class CustomerRefundRow:
+    payment_id: int
+    sale_id: str
+    date: str | None
+    amount: Decimal
+    method: str | None
+    clearing_state: str | None = None
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
 class CustomerPaymentResult:
     payment_id: int
     effect: CustomerPaymentEffect

@@ -15,6 +15,7 @@ from .dto import (
     CustomerPaymentPayload,
     CustomerPaymentResult,
     CustomerReceivableSummary,
+    CustomerRefundRow,
     CustomerStatement,
     InventoryAccountingEvent,
     PaymentActivityReport,
@@ -101,6 +102,7 @@ from .current_rules.customer_rules import (
     get_customer_history as get_current_customer_history,
     get_customer_payment_history as get_current_customer_payment_history,
     get_customer_receivable_summary as get_current_customer_receivable_summary,
+    get_customer_refunds as get_current_customer_refunds,
     get_customer_sales_with_items as get_current_customer_sales_with_items,
     get_customer_statement as get_current_customer_statement,
     list_customer_credit_ledger as list_current_customer_credit_ledger,
@@ -116,6 +118,7 @@ from .current_rules.sales_rules import (
     get_sale_outstanding as get_current_sale_outstanding,
     get_sale_payment_history as get_current_sale_payment_history,
     get_sale_payment_status as get_current_sale_payment_status,
+    get_sale_refunds as get_current_sale_refunds,
     get_sale_return_totals as get_current_sale_return_totals,
     get_sale_return_values as get_current_sale_return_values,
     get_sales_dashboard_metrics as get_current_sales_dashboard_metrics,
@@ -495,6 +498,16 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("list_customer_credit_ledger")
         return list_current_customer_credit_ledger(self.conn, customer_id)
+
+    def get_customer_refunds(self, customer_id: int) -> tuple[CustomerRefundRow, ...]:
+        if self.conn is None:
+            self._not_implemented("get_customer_refunds")
+        return get_current_customer_refunds(self.conn, customer_id)
+
+    def get_sale_refunds(self, sale_id: int | str) -> tuple[CustomerRefundRow, ...]:
+        if self.conn is None:
+            self._not_implemented("get_sale_refunds")
+        return get_current_sale_refunds(self.conn, sale_id)
 
     def record_customer_credit_application_event(
         self, payload: CustomerCreditApplicationPayload

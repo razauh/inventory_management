@@ -11,6 +11,7 @@ from ..dto import (
     CustomerPaymentEffect,
     CustomerPaymentPayload,
     CustomerPaymentResult,
+    CustomerRefundRow,
     QuotationFinancials,
     SaleFinancialSummary,
     SaleInvoiceFinancials,
@@ -694,3 +695,24 @@ def reopen_customer_payment_state(
         (payment_id, old_state),
     )
     return 1
+
+
+def get_sale_refunds(conn: Connection, sale_id: int | str) -> tuple[CustomerRefundRow, ...]:
+    rows = conn.execute(
+        "SELECT payment_id, sale_id, date, amount, method, clearing_state, notes "
+        "FROM sale_payments WHERE sale_id = ? AND amount < 0 "
+        "ORDER BY date ASC, payment_id ASC",
+        (sale_id,),
+    ).fetchall()
+    res = []
+    for r in rows:
+        d = dict(r)
+        res.append(
+            CustomerRefundRow(
+                payment_id=d["payment_id"], sale_id=d["sale_id"], date=d["date"],
+                amount=Decimal(str(abs(d["amount"] or 0))),
+                method=d["method"], clearing_state=d.get("clearing_state"),
+                notes=d.get("notes"),
+            )
+        )
+    return tuple(res)

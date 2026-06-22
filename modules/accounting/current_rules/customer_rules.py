@@ -16,6 +16,7 @@ from ..dto import (
     CustomerCreditLedgerRow,
     CustomerCreditPayload,
     CustomerCreditResult,
+    CustomerRefundRow,
     CustomerReceivableSummary,
     CustomerStatement,
     CustomerStatementEntry,
@@ -546,3 +547,26 @@ def record_customer_credit_application_event(
         sale_id=payload.sale_id,
         amount=payload.amount,
     )
+
+
+def get_customer_refunds(conn: Connection, customer_id: int) -> tuple[CustomerRefundRow, ...]:
+    rows = conn.execute(
+        "SELECT sp.payment_id, sp.sale_id, sp.date, sp.amount, sp.method, "
+        "sp.clearing_state, sp.notes "
+        "FROM sale_payments sp JOIN sales s ON s.sale_id = sp.sale_id "
+        "WHERE s.customer_id = ? AND sp.amount < 0 "
+        "ORDER BY sp.date ASC, sp.payment_id ASC",
+        (customer_id,),
+    ).fetchall()
+    res = []
+    for r in rows:
+        d = dict(r)
+        res.append(
+            CustomerRefundRow(
+                payment_id=d["payment_id"], sale_id=d["sale_id"], date=d["date"],
+                amount=Decimal(str(abs(d["amount"] or 0))),
+                method=d["method"], clearing_state=d.get("clearing_state"),
+                notes=d.get("notes"),
+            )
+        )
+    return tuple(res)

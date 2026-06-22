@@ -500,3 +500,34 @@ It records where legacy/current behavior moved and which application call sites 
   - Inventory INSERT + snapshot trigger remain in `record_return` (tightly coupled with `next_inventory_txn_seq` and `rebuild_dirty_valuations`).
   - Service `record_sale_return_event` performs the settlement math (proportional advance, cash cap, split) and does the cash/credit INSERTs.
   - `SaleReturnPreviewLine`/`SaleReturnPreviewPayload` DTOs exist for future preview implementation but no service method wraps them yet.
+
+## CS-ACC-016: Consolidate customer refund behavior
+
+- Migrated behavior:
+  - Customer refund reads (by customer, by sale — filtering negative payment rows)
+- Original location(s):
+  - Scattered across `sale_payments` queries (no centralized refund read)
+- New accounting location(s):
+  - `modules/accounting/current_rules/customer_rules.py`
+    - `get_customer_refunds(conn, customer_id) -> tuple[CustomerRefundRow, ...]`
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sale_refunds(conn, sale_id) -> tuple[CustomerRefundRow, ...]`
+  - `modules/accounting/dto.py` (new `CustomerRefundRow`)
+  - `modules/accounting/service.py` — both methods delegated to current_rules
+- AccountingService API:
+  - `get_customer_refunds(customer_id: int) -> tuple[CustomerRefundRow, ...]`
+  - `get_sale_refunds(sale_id: int | str) -> tuple[CustomerRefundRow, ...]`
+- Rewired call site(s):
+  - Refund reads now available through `AccountingService`; direct callers can use service methods.
+  - Refund writes already go through `AccountingService` via:
+    - `record_customer_payment_event` (negative amount) — CS-ACC-012
+    - `record_sale_return_event` (settlement cash refund) — CS-ACC-015
+    - `SalesRepo.apply_refund` — already deprecated as NotImplementedError
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_customer_refunds.py` (new)
+    - `test_customer_refund_event_matches_current_payment_row`
+- Behavior change:
+  - None intended. Refund amounts (absolute values), method, and clearing_state match source `sale_payments` rows.
+- Notes / unresolved correctness questions:
+  - No separate `record_customer_refund_event` method — refunds are negative payments handled by `record_customer_payment_event`.
+  - `CustomerRefundRow.amount` stores the absolute (positive) refund value for display convenience.
