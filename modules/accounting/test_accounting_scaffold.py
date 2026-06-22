@@ -58,7 +58,6 @@ def test_accounting_package_imports_and_service_instantiates():
         ("record_sale_return_event", ()),
         ("record_expense_event", ()),
         ("record_stock_adjustment_event", ()),
-        ("get_sale_payment_status", (1,)),
         ("get_sale_payment_history", (1,)),
         ("get_customer_open_sales", (1,)),
         ("get_customer_statement", (1,)),

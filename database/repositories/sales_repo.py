@@ -473,23 +473,7 @@ class SalesRepo:
         self.conn.execute("DELETE FROM sale_items WHERE sale_id=?", (sid,))
 
     def _refresh_sale_payment_status(self, sid: str) -> None:
-        self.conn.execute(
-            """
-            UPDATE sales
-               SET payment_status = CASE
-                 WHEN COALESCE((
-                   SELECT remaining_due
-                   FROM sale_receivable_totals
-                   WHERE sale_id = sales.sale_id
-                 ), 0.0) <= 1e-9 THEN 'paid'
-                 WHEN COALESCE(CAST(paid_amount AS REAL), 0.0)
-                      + COALESCE(CAST(advance_payment_applied AS REAL), 0.0) > 1e-9 THEN 'partial'
-                 ELSE 'unpaid'
-               END
-             WHERE sale_id = ? AND doc_type = 'sale'
-            """,
-            (sid,),
-        )
+        self.accounting.recalculate_sale_payment_status(sid)
 
     def _check_stock_availability(self, items: Iterable[SaleItem] | list[sqlite3.Row]):
         requested_base = {}

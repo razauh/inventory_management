@@ -95,8 +95,10 @@ from .current_rules.purchase_rules import (
 from .current_rules.sales_rules import (
     get_sale_financial_summary as get_current_sale_financial_summary,
     get_sale_outstanding as get_current_sale_outstanding,
+    get_sale_payment_status as get_current_sale_payment_status,
     get_sale_totals as get_current_sale_totals,
     preview_sale_total as preview_current_sale_total,
+    recalculate_sale_payment_status as recalculate_current_sale_payment_status,
 )
 from .current_rules.vendor_rules import (
     get_vendor_advance_balance as get_current_vendor_advance_balance,
@@ -382,7 +384,16 @@ class AccountingService:
         return get_current_sale_financial_summary(self.conn, sale_id)
 
     def get_sale_payment_status(self, sale_id: int | str) -> SalePaymentStatus:
-        self._not_implemented("get_sale_payment_status")
+        if self.conn is None:
+            self._not_implemented("get_sale_payment_status")
+        return get_current_sale_payment_status(self.conn, sale_id)
+
+    def recalculate_sale_payment_status(
+        self, sale_id: int | str
+    ) -> SalePaymentStatus:
+        if self.conn is None:
+            self._not_implemented("recalculate_sale_payment_status")
+        return recalculate_current_sale_payment_status(self.conn, sale_id)
 
     def get_sale_payment_history(
         self, sale_id: int | str

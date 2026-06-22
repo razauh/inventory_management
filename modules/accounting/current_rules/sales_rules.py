@@ -5,7 +5,13 @@ from __future__ import annotations
 from decimal import Decimal
 from sqlite3 import Connection
 
-from ..dto import SaleFinancialSummary, SaleOutstanding, SaleTotalInputLine, SaleTotals
+from ..dto import (
+    SaleFinancialSummary,
+    SaleOutstanding,
+    SalePaymentStatus,
+    SaleTotalInputLine,
+    SaleTotals,
+)
 
 
 def get_sale_totals(conn: Connection, sale_id: int | str) -> SaleTotals:
@@ -99,3 +105,57 @@ def get_sale_outstanding(conn: Connection, sale_id: int | str) -> SaleOutstandin
         sale_id=int(sale_id) if isinstance(sale_id, int) else sale_id,
         outstanding=summary.outstanding,
     )
+
+
+def _compute_payment_status(
+    remaining_due: Decimal, paid_amount: Decimal, applied_credit: Decimal
+) -> str:
+    if remaining_due <= Decimal("1e-9"):
+        return "paid"
+    if paid_amount + applied_credit > Decimal("1e-9"):
+        return "partial"
+    return "unpaid"
+
+
+def get_sale_payment_status(
+    conn: Connection, sale_id: int | str
+) -> SalePaymentStatus:
+    row = conn.execute(
+        """
+        SELECT COALESCE(srt.remaining_due, 0.0) AS remaining_due,
+               COALESCE(s.paid_amount, 0.0) AS paid_amount,
+               COALESCE(s.advance_payment_applied, 0.0) AS advance_payment_applied
+          FROM sales s
+          LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+         WHERE s.sale_id = ?
+        """,
+        (sale_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Unknown sale_id: {sale_id}")
+    remaining = Decimal(str(row["remaining_due"] or 0))
+    paid = Decimal(str(row["paid_amount"] or 0))
+    advance = Decimal(str(row["advance_payment_applied"] or 0))
+    status = _compute_payment_status(remaining, paid, advance)
+    return SalePaymentStatus(
+        sale_id=sale_id,
+        status=status,
+        paid_amount=paid,
+        applied_credit=advance,
+        remaining_due=remaining,
+    )
+
+
+def recalculate_sale_payment_status(
+    conn: Connection, sale_id: int | str
+) -> SalePaymentStatus:
+    current = get_sale_payment_status(conn, sale_id)
+    conn.execute(
+        """
+        UPDATE sales
+           SET payment_status = ?
+         WHERE sale_id = ? AND doc_type = 'sale'
+        """,
+        (current.status, sale_id),
+    )
+    return current

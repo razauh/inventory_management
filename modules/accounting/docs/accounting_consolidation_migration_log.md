@@ -157,3 +157,36 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - Customer controller bulk listing methods (`_list_sales_for_customer`, `_eligible_sales_for_application`) still query the view directly to avoid N+1; `AccountingService` is available for per-sale reads.
   - `customer_advances_repo.apply_credit_to_sale` now validates via `AccountingService` within the same transaction.
+
+## CS-ACC-005: Consolidate sale payment status rollups
+
+- Migrated behavior:
+  - Sale payment status calculation (`paid`/`unpaid`/`partial`)
+  - Header `payment_status` refresh/recalculation
+- Original location(s):
+  - `database/repositories/sales_repo.py::_refresh_sale_payment_status` (inline SQL update)
+  - DB triggers `trg_paid_from_sale_payments_*` and `trg_adv_applied_from_customer_*` (not removed)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sale_payment_status(conn, sale_id) -> SalePaymentStatus` — reads header + `sale_receivable_totals`
+    - `recalculate_sale_payment_status(conn, sale_id) -> SalePaymentStatus` — computes status + updates header
+    - `_compute_payment_status(remaining_due, paid_amount, applied_credit) -> str` — shared logic
+  - `modules/accounting/service.py` — both methods delegated to current_rules
+- AccountingService API:
+  - `get_sale_payment_status(sale_id: int | str) -> SalePaymentStatus`
+  - `recalculate_sale_payment_status(sale_id: int | str) -> SalePaymentStatus`
+- Rewired call site(s):
+  - `database/repositories/sales_repo.py::_refresh_sale_payment_status` — now delegates to `self.accounting.recalculate_sale_payment_status()`
+  - All 4 callers of `_refresh_sale_payment_status` (create_sale, update_sale, record_return) — indirect
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_payment_status.py` (new)
+    - `test_sale_payment_status_matches_header_rollup` — unpaid, partial, paid, credit-only
+    - `test_sale_payment_status_preserves_payment_and_credit_mix`
+    - `test_recalculate_sale_payment_status_preserves_sales_repo_behavior`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Removed `get_sale_payment_status` from placeholder list
+- Behavior change:
+  - None intended. Status logic mirrors `SalesRepo._refresh_sale_payment_status` exactly.
+- Notes / unresolved correctness questions:
+  - DB triggers remain intact and still fire on `sale_payments` and `customer_advances` mutations.
+  - `recalculate_sale_payment_status` updates the header row directly (same as old `_refresh_sale_payment_status`).
