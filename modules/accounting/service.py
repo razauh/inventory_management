@@ -99,7 +99,9 @@ from .current_rules.customer_rules import (
     get_customer_statement as get_current_customer_statement,
 )
 from .current_rules.sales_rules import (
+    get_quotation_financials as get_current_quotation_financials,
     get_sale_financial_summary as get_current_sale_financial_summary,
+    get_sale_invoice_financials as get_current_sale_invoice_financials,
     get_sale_outstanding as get_current_sale_outstanding,
     get_sale_payment_status as get_current_sale_payment_status,
     get_sale_totals as get_current_sale_totals,
@@ -436,12 +438,16 @@ class AccountingService:
     def get_sale_invoice_financials(
         self, sale_id: int | str
     ) -> SaleInvoiceFinancials:
-        self._not_implemented("get_sale_invoice_financials")
+        if self.conn is None:
+            self._not_implemented("get_sale_invoice_financials")
+        return get_current_sale_invoice_financials(self.conn, sale_id)
 
     def get_quotation_financials(
         self, quotation_id: int | str
     ) -> QuotationFinancials:
-        self._not_implemented("get_quotation_financials")
+        if self.conn is None:
+            self._not_implemented("get_quotation_financials")
+        return get_current_quotation_financials(self.conn, quotation_id)
 
     def get_bank_balance(self, bank_account_id: int) -> None:
         self._not_implemented("get_bank_balance")

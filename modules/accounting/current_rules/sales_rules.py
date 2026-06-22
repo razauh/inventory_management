@@ -5,8 +5,12 @@ from __future__ import annotations
 from decimal import Decimal
 from sqlite3 import Connection
 
+from typing import Any
+
 from ..dto import (
+    QuotationFinancials,
     SaleFinancialSummary,
+    SaleInvoiceFinancials,
     SaleOutstanding,
     SalePaymentStatus,
     SaleTotalInputLine,
@@ -96,6 +100,58 @@ def get_sale_financial_summary(
         outstanding=remaining,
         total_amount=gross,
         is_fully_paid=remaining <= Decimal("1e-9"),
+    )
+
+
+def get_sale_invoice_financials(
+    conn: Connection, sale_id: int | str
+) -> SaleInvoiceFinancials:
+    fin = get_sale_financial_summary(conn, sale_id)
+    returns = conn.execute(
+        """
+        SELECT srs.return_date, p.name AS product_name, u.unit_name AS uom_name,
+               CAST(srs.returned_quantity AS REAL) AS returned_quantity,
+               CAST(srs.return_value AS REAL) AS return_value
+        FROM sale_return_snapshots srs
+        JOIN products p ON p.product_id = srs.product_id
+        JOIN uoms u ON u.uom_id = srs.uom_id
+        WHERE srs.sale_id = ?
+        ORDER BY srs.return_date, srs.transaction_id
+        """,
+        (sale_id,),
+    ).fetchall()
+
+    credit_row = conn.execute(
+        """
+        SELECT
+          COALESCE(SUM(CASE WHEN source_type='return_credit'
+                            THEN CAST(amount AS REAL) ELSE 0 END), 0.0) AS return_credit,
+          COALESCE(SUM(CASE WHEN source_type='applied_to_sale'
+                            THEN -CAST(amount AS REAL) ELSE 0 END), 0.0) AS applied_credit
+        FROM customer_advances
+        WHERE source_id = ? AND source_type IN ('return_credit', 'applied_to_sale')
+        """,
+        (sale_id,),
+    ).fetchone()
+
+    context: dict[str, Any] = {
+        "returns": [dict(r) for r in returns],
+        "return_credit": float(credit_row["return_credit"] or 0.0),
+        "applied_credit": float(credit_row["applied_credit"] or float(fin.applied_credit)),
+        "paid_amount": float(fin.paid_amount),
+        "advance_payment_applied": float(fin.applied_credit),
+        "remaining": float(fin.outstanding),
+        "returned_value": float(fin.returned_value),
+        "net_total": float(fin.net_total),
+    }
+    return SaleInvoiceFinancials(sale_id=sale_id, context=context)
+
+
+def get_quotation_financials(
+    conn: Connection, quotation_id: int | str
+) -> QuotationFinancials:
+    return QuotationFinancials(
+        quotation_id=quotation_id, context={"id": quotation_id}
     )
 
 

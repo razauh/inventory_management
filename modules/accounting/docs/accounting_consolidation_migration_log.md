@@ -254,3 +254,34 @@ It records where legacy/current behavior moved and which application call sites 
   - Sales detail panel (`SaleDetails`) data flows through `SalesRepo.get_sale_detail_snapshot()` → `AccountingService` via repo's `self.accounting`. Already rewired in CS-ACC-003/004.
   - Customer detail panel (`CustomerDetails`) data flows through `CustomersRepo.get_detail_snapshot()` → `AccountingService` via repo's `self.accounting`. Rewired in this card.
   - `open_due_sum` calculation uses `clearing_state IN ('posted','cleared')` matching original `get_detail_snapshot` — intentionally different from `sale_receivable_totals.paid_amount` (which uses trigger-updated cleared-only sum).
+
+## CS-ACC-009: Consolidate sale invoice and quotation financial sourcing
+
+- Migrated behavior:
+  - Sale invoice supplementary financial context (returns, credits, net position)
+  - Quotation invoice financial context
+- Original location(s):
+  - `modules/sales/controller.py::_generate_invoice_html_content` (inline SQL for returns, credit, payment data)
+  - `modules/sales/controller.py::_generate_quotation_html_content` (inline position data)
+- New accounting location(s):
+  - `modules/accounting/current_rules/sales_rules.py`
+    - `get_sale_invoice_financials(conn, sale_id) -> SaleInvoiceFinancials`
+    - `get_quotation_financials(conn, quotation_id) -> QuotationFinancials`
+  - `modules/accounting/service.py` — both methods delegated to current_rules
+- AccountingService API:
+  - `get_sale_invoice_financials(sale_id: int | str) -> SaleInvoiceFinancials`
+  - `get_quotation_financials(quotation_id: int | str) -> QuotationFinancials`
+- Rewired call site(s):
+  - `modules/sales/controller.py::_generate_invoice_html_content` — replaced returns/credit/position inline SQL with `self.accounting.get_sale_invoice_financials()`
+  - `modules/sales/controller.py::_generate_quotation_html_content` — added `self.accounting.get_quotation_financials()` call
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_invoice_financials.py` (new)
+    - `test_sale_invoice_financials_match_current_controller_context`
+    - `test_quotation_invoice_financials_match_current_controller_context`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Removed `get_sale_invoice_financials` and `get_quotation_financials` from placeholder list
+- Behavior change:
+  - None intended. Context keys and values match original inline SQL.
+- Notes / unresolved correctness questions:
+  - Invoice template loading, header/doc, items, company context, and payment rows remain in the controller (template I/O and display formatting).
+  - Totals already via `self.accounting.get_sale_totals()` (CS-ACC-003); receivable position via `self.accounting.get_sale_financial_summary()` (CS-ACC-004).

@@ -2223,55 +2223,16 @@ class SalesController(BaseModule):
                 'total': float(sale_totals.stored_total or sale_totals.net_total),
             }
 
-            # Keep gross invoice totals, but use the canonical net receivable for balance.
-            position = self.repo.get_receivable_position(sale_id)
-            paid_amount = float(position['paid_amount'])
-            advance_payment_applied = float(position['advance_payment_applied'])
-            remaining = float(position['remaining_due'])
-            enriched_data['totals']['returned_value'] = float(position['returned_value'])
-            enriched_data['totals']['net_total'] = float(position['net_total_amount'])
-
-            return_rows = self.conn.execute(
-                """
-                SELECT
-                  srs.return_date,
-                  p.name AS product_name,
-                  u.unit_name AS uom_name,
-                  CAST(srs.returned_quantity AS REAL) AS returned_quantity,
-                  CAST(srs.return_value AS REAL) AS return_value
-                FROM sale_return_snapshots srs
-                JOIN products p ON p.product_id = srs.product_id
-                JOIN uoms u ON u.uom_id = srs.uom_id
-                WHERE srs.sale_id = ?
-                ORDER BY srs.return_date, srs.transaction_id
-                """,
-                (sale_id,),
-            ).fetchall()
-            enriched_data['returns'] = [dict(row) for row in return_rows]
-
-            credit_row = self.conn.execute(
-                """
-                SELECT
-                  COALESCE(SUM(CASE WHEN source_type='return_credit'
-                                    THEN CAST(amount AS REAL) ELSE 0 END), 0.0)
-                    AS return_credit,
-                  COALESCE(SUM(CASE WHEN source_type='applied_to_sale'
-                                    THEN -CAST(amount AS REAL) ELSE 0 END), 0.0)
-                    AS applied_credit
-                FROM customer_advances
-                WHERE source_id = ?
-                  AND source_type IN ('return_credit', 'applied_to_sale')
-                """,
-                (sale_id,),
-            ).fetchone()
-            enriched_data['return_credit'] = float(credit_row['return_credit'] or 0.0)
-            enriched_data['applied_credit'] = float(
-                credit_row['applied_credit'] or advance_payment_applied
-            )
-
-            enriched_data['paid_amount'] = paid_amount
-            enriched_data['advance_payment_applied'] = advance_payment_applied
-            enriched_data['remaining'] = remaining
+            invoice_fin = self.accounting.get_sale_invoice_financials(sale_id)
+            ctx = invoice_fin.context
+            enriched_data['returns'] = ctx['returns']
+            enriched_data['return_credit'] = ctx['return_credit']
+            enriched_data['applied_credit'] = ctx['applied_credit']
+            enriched_data['paid_amount'] = ctx['paid_amount']
+            enriched_data['advance_payment_applied'] = ctx['advance_payment_applied']
+            enriched_data['remaining'] = ctx['remaining']
+            enriched_data['totals']['returned_value'] = ctx['returned_value']
+            enriched_data['totals']['net_total'] = ctx['net_total']
 
             from ...database.repositories.company_info_repo import get_invoice_company_context
             enriched_data['company'] = get_invoice_company_context(self.conn)
@@ -2398,6 +2359,9 @@ class SalesController(BaseModule):
                 "order_discount": float(sale_totals.order_discount),
                 "total": float(sale_totals.stored_total or sale_totals.net_total),
             }
+
+            qfin = self.accounting.get_quotation_financials(quotation_id)
+            enriched_data.update(qfin.context)
 
             from ...database.repositories.company_info_repo import get_invoice_company_context
             enriched_data["company"] = get_invoice_company_context(self.conn)
