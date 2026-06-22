@@ -854,123 +854,54 @@ class PurchaseController(BaseModule):
             _log.error(error_msg)
             raise OSError(error_msg)
         
-        # Prepare data for the template
-        enriched_data = {"purchase_id": purchase_id}
-        
-        # Fetch purchase header data using repository
-        header_row = self.repo.get_header_with_vendor(purchase_id)
-        
-        if header_row:
-            doc_data = dict(header_row)
-            enriched_data['doc'] = doc_data
-            enriched_data['vendor'] = {
-                'name': doc_data.get('vendor_name', ''),
-                'contact_info': doc_data.get('vendor_contact_info', ''),
-                'address': doc_data.get('vendor_address', '')
-            }
-            
-            # Fetch purchase items using repository
-            items_rows = self.repo.list_items(purchase_id)
-            
-            items = []
-            for row in items_rows:
-                item_dict = dict(row)
-                # Calculate line_total
-                quantity = float(item_dict.get('quantity', 0.0))
-                purchase_price = float(item_dict.get('purchase_price', 0.0))
-                line_total = quantity * purchase_price
-                item_dict['unit_price'] = purchase_price
-                item_dict['line_total'] = line_total
-                item_dict['uom_name'] = item_dict.get('unit_name') or 'N/A'
-                
-                # Calculate idx (row number)
-                item_dict['idx'] = len(items) + 1
-                
-                items.append(item_dict)
-            
-            enriched_data['items'] = items
-            
-            # Calculate totals
-            subtotal = sum(item['line_total'] for item in items)
-            order_discount = float(doc_data.get('order_discount', 0.0))
-            total = max(0.0, subtotal - order_discount)
-            
-            enriched_data['totals'] = {
-                'subtotal_before_order_discount': subtotal,
-                'line_discount_total': 0,  # No line discounts in purchase for now
-                'order_discount': order_discount,
-                'total': total,
-            }
-
-            # Paid / remaining from header (mirrors sales invoice)
-            paid_amount = float(doc_data.get('paid_amount', 0.0))
-            total_amount = float(doc_data.get('total_amount', total))
-            advance_payment_applied = float(doc_data.get('advance_payment_applied', 0.0))
-            remaining = max(0.0, total_amount - paid_amount - advance_payment_applied)
-
-            enriched_data['paid_amount'] = paid_amount
-            enriched_data['advance_payment_applied'] = advance_payment_applied
-            enriched_data['remaining'] = remaining
-
-            # Get ALL payment rows for this purchase so the invoice can show a
-            # full payment history, not just the initial payment.
-            raw_payments = list(self.payments.list_payments(purchase_id)) or []
-
-            # Pre-load company and vendor bank labels
-            bank_labels: dict[int, str] = {}
-            vendor_labels: dict[int, str] = {}
-            try:
-                cur = self.conn.execute(
-                    "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1"
-                )
-                bank_labels = {int(r["account_id"]): str(r["label"]) for r in cur.fetchall()}
-            except Exception:
-                bank_labels = {}
-            try:
-                cur = self.conn.execute(
-                    "SELECT vendor_bank_account_id, label FROM vendor_bank_accounts WHERE is_active=1"
-                )
-                vendor_labels = {
-                    int(r["vendor_bank_account_id"]): str(r["label"])
-                    for r in cur.fetchall()
+        enriched_data = dict(
+            self.accounting.get_purchase_invoice_financials(purchase_id).context
+        )
+        if "doc" not in enriched_data:
+            header_row = self.repo.get_header_with_vendor(purchase_id)
+            if header_row:
+                doc_data = dict(header_row)
+                items = []
+                for row in self.repo.list_items(purchase_id):
+                    item = dict(row)
+                    quantity = float(item.get("quantity") or 0.0)
+                    purchase_price = float(item.get("purchase_price") or 0.0)
+                    item["unit_price"] = purchase_price
+                    item["line_total"] = quantity * purchase_price
+                    item["uom_name"] = item.get("unit_name") or "N/A"
+                    item["idx"] = len(items) + 1
+                    items.append(item)
+                subtotal = sum(float(item["line_total"]) for item in items)
+                order_discount = float(doc_data.get("order_discount") or 0.0)
+                total = max(0.0, subtotal - order_discount)
+                paid_amount = float(doc_data.get("paid_amount") or 0.0)
+                advance = float(doc_data.get("advance_payment_applied") or 0.0)
+                total_amount = float(doc_data.get("total_amount") or total)
+                payments = [dict(row) for row in self.payments.list_payments(purchase_id)]
+                enriched_data = {
+                    "purchase_id": purchase_id,
+                    "doc": doc_data,
+                    "vendor": {
+                        "name": doc_data.get("vendor_name", ""),
+                        "contact_info": doc_data.get("vendor_contact_info", ""),
+                        "address": doc_data.get("vendor_address", ""),
+                    },
+                    "items": items,
+                    "totals": {
+                        "subtotal_before_order_discount": subtotal,
+                        "line_discount_total": 0,
+                        "order_discount": order_discount,
+                        "total": total,
+                    },
+                    "paid_amount": paid_amount,
+                    "advance_payment_applied": advance,
+                    "remaining": max(0.0, total_amount - paid_amount - advance),
+                    "payments": payments,
+                    "initial_payment": payments[0] if payments else None,
                 }
-            except Exception:
-                vendor_labels = {}
-
-            payments: list[dict] = []
-            for row in raw_payments:
-                d = dict(row)
-                cbid = d.get("bank_account_id")
-                if cbid is not None:
-                    try:
-                        d["bank_account_label"] = bank_labels.get(int(cbid), "")
-                    except Exception:
-                        d["bank_account_label"] = ""
-                else:
-                    d["bank_account_label"] = ""
-
-                vbid = d.get("vendor_bank_account_id")
-                if vbid is not None:
-                    try:
-                        d["vendor_bank_account_label"] = vendor_labels.get(int(vbid), "")
-                    except Exception:
-                        d["vendor_bank_account_label"] = ""
-                else:
-                    d["vendor_bank_account_label"] = ""
-
-                payments.append(d)
-
-            enriched_data["payments"] = payments
-
-            # For backward compatibility, still expose the first (chronological)
-            # payment as `initial_payment` if anyone relies on it.
-            enriched_data["initial_payment"] = payments[0] if payments else None
-            
+        if "doc" in enriched_data:
             from ...database.repositories.company_info_repo import get_invoice_company_context
             enriched_data['company'] = get_invoice_company_context(self.conn)
-            
-            # Add payment status
-            enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
         
         # Create Jinja2 template and render
         template = Template(template_content, autoescape=True)

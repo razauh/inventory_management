@@ -40,6 +40,7 @@ from .html_export import escape_html, html_table_from_model
 from .csv_export import safe_csv_row
 from .large_results import maybe_resize_columns
 from ...database.repositories.reporting_repo import ReportingRepo
+from ...modules.accounting import AccountingService
 
 
 _EPS = 1e-9  # guard for tiny float noise when comparing remaining due
@@ -57,62 +58,7 @@ def _days_between(older_yyyy_mm_dd: str, asof_yyyy_mm_dd: str) -> int:
 
 
 def _build_vendor_aging_rows(repo: ReportingRepo, as_of: str, max_rows: int) -> List[Dict]:
-    rows: List[Dict] = []
-
-    vendors = repo.get_all_vendors()
-    vendor_ids = [int(v["vendor_id"]) for v in vendors]
-    vendor_headers = repo.vendor_headers_as_of_batch(vendor_ids, as_of)
-
-    headers_by_vendor: dict[int, list] = {}
-    for header in vendor_headers:
-        vid = int(header["vendor_id"])
-        headers_by_vendor.setdefault(vid, []).append(header)
-
-    vendor_credits = repo.vendor_credit_as_of_batch(vendor_ids, as_of)
-
-    for v in vendors:
-        vid = int(v["vendor_id"])
-        vname = str(v["name"] or vid)
-
-        total_due = 0.0
-        b_0_30 = b_31_60 = b_61_90 = b_91_plus = 0.0
-
-        for h in headers_by_vendor.get(vid, []):
-            total_amount = float(h["total_amount"] or 0.0)
-            paid_amount = float(h["paid_amount"] or 0.0)
-            adv_applied = float(h["advance_payment_applied"] or 0.0)
-            raw_remaining = total_amount - paid_amount - adv_applied
-            remaining = raw_remaining if raw_remaining > _EPS else 0.0
-            if remaining <= 0.0:
-                continue
-
-            days = _days_between(str(h["date"]), as_of)
-            total_due += remaining
-            if days <= 30:
-                b_0_30 += remaining
-            elif days <= 60:
-                b_31_60 += remaining
-            elif days <= 90:
-                b_61_90 += remaining
-            else:
-                b_91_plus += remaining
-
-        if total_due == 0.0:
-            continue
-
-        rows.append({
-            "vendor_id": vid,
-            "name": vname,
-            "total_due": total_due,
-            "b_0_30": b_0_30,
-            "b_31_60": b_31_60,
-            "b_61_90": b_61_90,
-            "b_91_plus": b_91_plus,
-            "available_credit": vendor_credits.get(vid, 0.0),
-        })
-
-    rows.sort(key=lambda r: r["name"].lower())
-    return rows[:max_rows]
+    return list(AccountingService(repo.conn).get_vendor_aging(as_of).rows)[:max_rows]
 
 
 class VendorAgingWorker(QThread):
@@ -165,6 +111,7 @@ class VendorAgingTab(QWidget):
         super().__init__(parent)
         self.conn = conn
         self.repo = ReportingRepo(conn)
+        self.accounting = AccountingService(conn)
         self._worker: VendorAgingWorker | None = None
         self._workers: list[VendorAgingWorker] = []
         self._refresh_token = 0
@@ -340,7 +287,7 @@ class VendorAgingTab(QWidget):
         all vendor headers and credits in batch operations instead of individual queries.
         Expected performance improvement: 10x+ with 1000+ vendors.
         """
-        return _build_vendor_aging_rows(self.repo, as_of, self.MAX_ROWS)
+        return list(self.accounting.get_vendor_aging(as_of).rows)[: self.MAX_ROWS]
 
     def _load_open_for_row(self, row_index: int, as_of: str) -> None:
         """Populate bottom table with open purchases for the selected vendor."""

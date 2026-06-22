@@ -40,6 +40,7 @@ from .html_export import escape_html, html_table_from_model
 from .date_range import validate_date_range
 from .large_results import maybe_resize_columns
 from ...database.repositories.reporting_repo import ReportingRepo
+from ...modules.accounting import AccountingService
 
 
 # ------------------------------ Logic ---------------------------------------
@@ -58,6 +59,8 @@ class FinancialReports:
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
         self.repo = ReportingRepo(conn)
+        self.accounting = AccountingService(conn)
+        self.accounting._reporting_repo = self.repo
 
     # ---- helpers ----
 
@@ -88,37 +91,11 @@ class FinancialReports:
         all customer and vendor headers in batch operations instead of individual queries.
         Expected performance improvement: 10x+ with 1000+ customers/vendors.
         """
-        # AR = customers; AP = vendors. Use correct PKs from schema.
-        ar_total = 0.0
-        ap_total = 0.0
-
-        # Performance optimization: Get all customer IDs and fetch headers in a single batch
-        customer_rows = self.repo.get_all_customers()
-        customer_ids = [int(row["customer_id"]) for row in customer_rows]
-        customer_headers = self.repo.customer_headers_as_of_batch(customer_ids, as_of)
-        
-        # Calculate AR total from batch data
-        for h in customer_headers:
-            remaining = float(h["total_amount"] or 0.0) - float(h["paid_amount"] or 0.0) - float(
-                h["advance_payment_applied"] or 0.0
-            )
-            if remaining > 0:
-                ar_total += remaining
-
-        # Performance optimization: Get all vendor IDs and fetch headers in a single batch  
-        vendor_rows = self.repo.get_all_vendors()
-        vendor_ids = [int(row["vendor_id"]) for row in vendor_rows]
-        vendor_headers = self.repo.vendor_headers_as_of_batch(vendor_ids, as_of)
-        
-        # Calculate AP total from batch data
-        for h in vendor_headers:
-            remaining = float(h["total_amount"] or 0.0) - float(h["paid_amount"] or 0.0) - float(
-                h["advance_payment_applied"] or 0.0
-            )
-            if remaining > 0:
-                ap_total += remaining
-
-        return {"AR_total_due": ar_total, "AP_total_due": ap_total}
+        summary = self.accounting.get_ap_summary(as_of)
+        return {
+            "AR_total_due": float(summary.ar_total_due),
+            "AP_total_due": float(summary.ap_total_due),
+        }
 
     # ---- Income Statement ----
 
@@ -169,32 +146,13 @@ class FinancialReports:
             'total_disbursements': float
           }
         """
-        cols = []
-        total_cols = 0.0
-        for r in self.repo.sale_collections_by_day(date_from, date_to):
-            amt = float(r["amount"] or 0.0)
-            cols.append({"date": str(r["date"]), "amount": amt})
-            total_cols += amt
-
-        disb = []
-        total_disb = 0.0
-        for r in self.repo.purchase_disbursements_by_day(date_from, date_to):
-            gross = float(r["gross_outflow"] or 0.0)
-            refunds = float(r["refunds_received"] or 0.0)
-            net = float(r["net_outflow"] or 0.0)
-            disb.append({
-                "date": str(r["date"]),
-                "gross_outflow": gross,
-                "refunds_received": refunds,
-                "net_outflow": net,
-            })
-            total_disb += net
+        activity = self.accounting.get_payment_activity(date_from, date_to)
 
         return {
-            "collections": cols,
-            "total_collections": total_cols,
-            "disbursements": disb,
-            "total_disbursements": total_disb,
+            "collections": list(activity.collections),
+            "total_collections": float(activity.total_collections),
+            "disbursements": list(activity.disbursements),
+            "total_disbursements": float(activity.total_disbursements),
         }
 
 

@@ -33,6 +33,7 @@ from .csv_export import safe_csv_row
 from .date_range import validate_date_range
 from .large_results import maybe_resize_columns
 from ...database.repositories.reporting_repo import ReportingRepo
+from ...modules.accounting import AccountingService
 from ...modules.notifications import notify_info
 
 
@@ -137,6 +138,7 @@ class PurchaseReportsTab(QWidget):
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
         self.repo = ReportingRepo(conn)
+        self.accounting = AccountingService(conn)
         self._loaded_rows: Dict[str, List[Dict[str, Any]]] = {}
         self._page_index: Dict[str, int] = {}
         self._has_next_page: Dict[str, bool] = {}
@@ -403,6 +405,16 @@ class PurchaseReportsTab(QWidget):
         vendor_id = filters["vendor_id"]
         product_id = filters["product_id"]
         category = filters["category"]
+        service_rows = None
+        if not vendor_id and not product_id and not category:
+            bundle = self.accounting.get_purchase_reports(df, dt)
+            service_rows = bundle.rows_by_key
+
+        if key == "purch_by_period" and service_rows is not None and gran == "daily":
+            return list(service_rows.get(key, ()))[: self.MAX_ROWS_PER_TABLE]
+
+        if key == "drilldown" and service_rows is not None and page_limit is None:
+            return list(service_rows.get(key, ()))[: self.MAX_ROWS_PER_TABLE]
 
         if key == "purch_by_period":
             fmt = {"daily": "%Y-%m-%d", "monthly": "%Y-%m", "yearly": "%Y"}[gran]

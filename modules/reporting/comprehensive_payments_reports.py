@@ -29,6 +29,7 @@ except Exception:  # pragma: no cover
 
 # Reporting repo
 from ...database.repositories.reporting_repo import ReportingRepo
+from ...modules.accounting import AccountingService
 from ...modules.notifications import notify_success
 from .csv_export import safe_csv_row
 from .date_range import validate_date_range
@@ -143,6 +144,8 @@ class ComprehensivePaymentReports:
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
         self.repo = ReportingRepo(conn)
+        self.accounting = AccountingService(conn)
+        self.accounting._reporting_repo = self.repo
 
     @staticmethod
     def _date_basis_label(date_basis: str) -> str:
@@ -184,55 +187,13 @@ class ComprehensivePaymentReports:
         date_basis: str = "posting",
     ) -> List[Dict]:
         """Get payment summary grouped by status"""
-        date_expr = self._date_expr("p", date_basis)
-        where_clause = f"WHERE {date_expr} >= ? AND {date_expr} <= ?"
-        params = [date_from, date_to]
-        
-        query = f"""
-        SELECT 
-            p.clearing_state AS status,
-            'Collection' AS type,
-            COUNT(*) AS count,
-            COALESCE(SUM(CAST(p.amount AS REAL)), 0.0) AS total_amount
-        FROM sale_payments p
-        {where_clause}
-        GROUP BY p.clearing_state
-        
-        UNION ALL
-        
-        SELECT 
-            p.clearing_state AS status,
-            'Disbursement' AS type,
-            COUNT(*) AS count,
-            COALESCE(SUM(CAST(p.amount AS REAL)), 0.0) AS total_amount
-        FROM purchase_payments p
-        {where_clause}
-        GROUP BY p.clearing_state
-
-        UNION ALL
-
-        SELECT 
-            p.clearing_state AS status,
-            'Vendor Refund' AS type,
-            COUNT(*) AS count,
-            COALESCE(SUM(CAST(p.amount AS REAL)), 0.0) AS total_amount
-        FROM purchase_refunds p
-        {where_clause}
-        GROUP BY p.clearing_state
-
-        ORDER BY status, type
-        """
-        
-        rows = list(self.conn.execute(query, params * 3))
-        result = []
-        for r in rows:
-            result.append({
-                "status": str(r["status"]),
-                "type": str(r["type"]),
-                "count": int(r["count"]),
-                "total_amount": float(r["total_amount"])
-            })
-        return result
+        return list(
+            self.accounting.get_payment_activity(
+                date_from,
+                date_to,
+                date_basis=date_basis,
+            ).summary_by_status
+        )
     
     def unprocessed_payments(
         self, 
@@ -242,66 +203,13 @@ class ComprehensivePaymentReports:
         date_basis: str = "posting",
     ) -> List[Dict]:
         """Get payments that are not cleared (posted/pending)"""
-        date_expr = self._date_expr("p", date_basis)
-        where_clause = (
-            f"WHERE {date_expr} >= ? AND {date_expr} <= ? "
-            "AND p.clearing_state IN ('posted', 'pending')"
+        return list(
+            self.accounting.get_payment_activity(
+                date_from,
+                date_to,
+                date_basis=date_basis,
+            ).unprocessed
         )
-        params = [date_from, date_to]
-        
-        query = f"""
-        SELECT 
-            {date_expr} AS date,
-            'Collection' AS type,
-            p.amount,
-            p.method,
-            p.clearing_state AS status,
-            p.sale_id AS doc_id,
-            p.notes
-        FROM sale_payments p
-        {where_clause}
-        
-        UNION ALL
-        
-        SELECT 
-            {date_expr} AS date,
-            'Disbursement' AS type,
-            p.amount,
-            p.method,
-            p.clearing_state AS status,
-            p.purchase_id AS doc_id,
-            p.notes
-        FROM purchase_payments p
-        {where_clause}
-
-        UNION ALL
-
-        SELECT 
-            {date_expr} AS date,
-            'Vendor Refund' AS type,
-            p.amount,
-            p.method,
-            p.clearing_state AS status,
-            p.purchase_id AS doc_id,
-            p.notes
-        FROM purchase_refunds p
-        {where_clause}
-        ORDER BY date DESC
-        """.format(date_expr=date_expr)
-        
-        rows = list(self.conn.execute(query, params * 3))
-        result = []
-        for r in rows:
-            result.append({
-                "date": str(r["date"]),
-                "type": str(r["type"]),
-                "amount": float(r["amount"]),
-                "method": str(r["method"]),
-                "status": str(r["status"]),
-                "doc_id": str(r["doc_id"]),
-                "notes": str(r["notes"]) if r["notes"] else ""
-            })
-        return result
     
     def all_payments_detailed(
         self, 
@@ -311,63 +219,13 @@ class ComprehensivePaymentReports:
         date_basis: str = "posting",
     ) -> List[Dict]:
         """Get all payments with full details"""
-        date_expr = self._date_expr("p", date_basis)
-        where_clause = f"WHERE {date_expr} >= ? AND {date_expr} <= ?"
-        params = [date_from, date_to]
-        
-        query = f"""
-        SELECT 
-            {date_expr} AS date,
-            'Collection' AS type,
-            p.amount,
-            p.method,
-            p.clearing_state AS status,
-            p.sale_id AS doc_id,
-            p.notes
-        FROM sale_payments p
-        {where_clause}
-        
-        UNION ALL
-        
-        SELECT 
-            {date_expr} AS date,
-            'Disbursement' AS type,
-            p.amount,
-            p.method,
-            p.clearing_state AS status,
-            p.purchase_id AS doc_id,
-            p.notes
-        FROM purchase_payments p
-        {where_clause}
-
-        UNION ALL
-
-        SELECT 
-            {date_expr} AS date,
-            'Vendor Refund' AS type,
-            p.amount,
-            p.method,
-            p.clearing_state AS status,
-            p.purchase_id AS doc_id,
-            p.notes
-        FROM purchase_refunds p
-        {where_clause}
-        ORDER BY date DESC, type
-        """.format(date_expr=date_expr)
-        
-        rows = list(self.conn.execute(query, params * 3))
-        result = []
-        for r in rows:
-            result.append({
-                "date": str(r["date"]),
-                "type": str(r["type"]),
-                "amount": float(r["amount"]),
-                "method": str(r["method"]),
-                "status": str(r["status"]),
-                "doc_id": str(r["doc_id"]),
-                "notes": str(r["notes"]) if r["notes"] else ""
-            })
-        return result
+        return list(
+            self.accounting.get_payment_activity(
+                date_from,
+                date_to,
+                date_basis=date_basis,
+            ).detailed
+        )
 
 
 # ------------------------------ UI Tab ----------------------------------------

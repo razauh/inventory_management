@@ -58,3 +58,60 @@ def test_accounting_service_is_public_facade():
     assert ServiceFacade.__module__ == "modules.accounting.service"
     assert "current_rules" not in accounting.__all__
     assert "ledger" not in accounting.__all__
+
+
+def test_migrated_vendor_purchase_slices_route_through_accounting_service():
+    required_routes = {
+        "database/repositories/purchases_repo.py": [
+            "self.accounting.get_purchase_financials",
+            "self.accounting.get_purchase_remaining_due_header",
+            "self.accounting.get_purchase_return_values",
+            "self.accounting.get_purchase_return_totals",
+            "self.accounting.get_purchase_returnable_quantities",
+            "self.accounting.record_purchase_inventory_event",
+            "self.accounting.record_purchase_return_event",
+        ],
+        "database/repositories/purchase_payments_repo.py": [
+            "AccountingService(self.conn).record_vendor_payment_event",
+        ],
+        "database/repositories/vendor_advances_repo.py": [
+            "self.accounting.get_purchase_remaining_due_header",
+            "self.accounting.record_vendor_advance_event",
+        ],
+        "modules/purchase/controller.py": [
+            "self.accounting.get_purchase_invoice_financials",
+            "self.accounting.get_purchase_payment_summary",
+            "self.accounting.record_vendor_payment_event",
+            "self.accounting.record_purchase_return_event",
+        ],
+        "modules/purchase/return_form.py": [
+            "self.accounting.get_purchase_financials",
+            "self.accounting.preview_purchase_return_effect",
+        ],
+        "modules/reporting/financial_reports.py": [
+            "self.accounting.get_ap_summary",
+            "self.accounting.get_payment_activity",
+        ],
+        "modules/reporting/payment_reports.py": [
+            "self.accounting.get_payment_activity",
+        ],
+        "modules/reporting/vendor_aging_reports.py": [
+            "self.accounting.get_vendor_aging",
+        ],
+        "widgets/invoice_preview.py": [
+            "AccountingService(self.conn).get_purchase_invoice_financials",
+        ],
+    }
+
+    missing: list[str] = []
+    for rel_path, snippets in required_routes.items():
+        source = (PROJECT_ROOT / rel_path).read_text()
+        for snippet in snippets:
+            if snippet not in source:
+                missing.append(f"{rel_path} missing {snippet}")
+
+    assert missing == []
+
+
+def test_no_direct_accounting_internal_imports_outside_accounting_module():
+    test_vendor_purchase_modules_do_not_import_accounting_internals()

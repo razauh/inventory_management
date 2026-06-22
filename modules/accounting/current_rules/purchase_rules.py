@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlite3 import Connection
 
 from ..dto import (
+    PurchaseInvoiceFinancials,
     PurchaseOutstanding,
     PurchaseFinancials,
     PurchasePaymentRow,
@@ -33,6 +34,127 @@ from .vendor_rules import record_supplier_refund_event, record_vendor_advance_ev
 
 def _decimal(value: object) -> Decimal:
     return Decimal(str(value or "0"))
+
+
+def get_purchase_invoice_financials(
+    conn: Connection,
+    purchase_id: int | str,
+) -> PurchaseInvoiceFinancials:
+    row = conn.execute(
+        """
+        SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info,
+               v.address AS vendor_address
+        FROM purchases p
+        JOIN vendors v ON p.vendor_id = v.vendor_id
+        WHERE p.purchase_id = ?
+        """,
+        (purchase_id,),
+    ).fetchone()
+    if row is None:
+        return PurchaseInvoiceFinancials(purchase_id, {"purchase_id": purchase_id})
+
+    doc = dict(row)
+    vendor = {
+        "name": doc.get("vendor_name", ""),
+        "contact_info": doc.get("vendor_contact_info", ""),
+        "address": doc.get("vendor_address", ""),
+    }
+    item_rows = conn.execute(
+        """
+        SELECT
+            pi.item_id,
+            pi.product_id,
+            p.name AS product_name,
+            pi.quantity,
+            u.unit_name,
+            u.unit_name AS uom_name,
+            pi.purchase_price,
+            pi.purchase_price AS unit_price,
+            pi.sale_price,
+            pi.item_discount,
+            (pi.quantity * pi.purchase_price) AS line_total
+        FROM purchase_items pi
+        JOIN products p ON pi.product_id = p.product_id
+        JOIN uoms u ON pi.uom_id = u.uom_id
+        WHERE pi.purchase_id = ?
+        ORDER BY pi.item_id
+        """,
+        (purchase_id,),
+    ).fetchall()
+    items = []
+    for index, item_row in enumerate(item_rows, start=1):
+        item = dict(item_row)
+        item["uom_name"] = item.get("unit_name") or item.get("uom_name") or "N/A"
+        item["idx"] = index
+        items.append(item)
+
+    subtotal = sum(float(item.get("line_total") or 0.0) for item in items)
+    order_discount = float(doc.get("order_discount") or 0.0)
+    total = max(0.0, subtotal - order_discount)
+    paid_amount = float(doc.get("paid_amount") or 0.0)
+    total_amount = float(doc.get("total_amount") or total)
+    advance = float(doc.get("advance_payment_applied") or 0.0)
+
+    payments = [
+        dict(payment.__dict__)
+        for payment in get_purchase_payment_history(conn, purchase_id)
+    ]
+    context = {
+        "purchase_id": purchase_id,
+        "doc": doc,
+        "vendor": vendor,
+        "items": items,
+        "totals": {
+            "subtotal_before_order_discount": subtotal,
+            "line_discount_total": 0,
+            "order_discount": order_discount,
+            "total": total,
+        },
+        "paid_amount": paid_amount,
+        "advance_payment_applied": advance,
+        "remaining": max(0.0, total_amount - paid_amount - advance),
+        "payments": payments,
+        "initial_payment": payments[0] if payments else None,
+    }
+    doc["payment_status"] = doc.get("payment_status", "Unpaid")
+
+    preview_context = dict(context)
+    preview_context["totals"] = {
+        "subtotal_before_order_discount": subtotal,
+        "line_discount_total": 0,
+        "order_discount": 0,
+        "total": subtotal,
+    }
+    latest = conn.execute(
+        """
+        SELECT
+            pp.amount,
+            pp.method,
+            pp.date,
+            pp.bank_account_id,
+            pp.vendor_bank_account_id,
+            pp.instrument_type,
+            pp.instrument_no,
+            pp.instrument_date,
+            pp.deposited_date,
+            pp.cleared_date,
+            pp.ref_no,
+            pp.notes,
+            pp.clearing_state,
+            ca.label AS bank_account_label,
+            va.label AS vendor_bank_account_label
+        FROM purchase_payments pp
+        LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
+        LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
+        WHERE pp.purchase_id = ?
+        ORDER BY pp.payment_id DESC
+        LIMIT 1
+        """,
+        (purchase_id,),
+    ).fetchone()
+    preview_context["initial_payment"] = dict(latest) if latest else None
+
+    return PurchaseInvoiceFinancials(purchase_id, context, preview_context)
 
 
 def preview_purchase_total(

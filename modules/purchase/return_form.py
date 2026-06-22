@@ -814,35 +814,46 @@ class PurchaseReturnForm(QDialog):
             return
             
         try:
+            financials = None
             if self.accounting.conn:
                 financials = self.accounting.get_purchase_financials(self.purchase_id)
-                if financials:
+            elif hasattr(self.purchases_repo, "fetch_purchase_financials"):
+                financials = self.purchases_repo.fetch_purchase_financials(
+                    self.purchase_id
+                )
+
+            if financials:
+                if isinstance(financials, dict):
+                    total_calc = float(financials.get("calculated_total_amount") or 0.0)
+                    paid_amount = float(financials.get("paid_amount") or 0.0)
+                    advance_applied = float(financials.get("advance_payment_applied") or 0.0)
+                    is_fully_paid = bool(financials.get("is_fully_paid"))
+                    refundable = float(financials.get("remaining_refundable_amount") or 0.0)
+                else:
                     total_calc = float(financials.net_total)
                     paid_amount = float(financials.paid_amount)
                     advance_applied = float(financials.applied_credit)
-                    self._refund_financials_loaded = True
-                    self._purchase_fully_paid = financials.is_fully_paid
-                    self._remaining_refundable_amount = float(financials.remaining_refundable_amount)
-                    
-                    current_return_value = self._calculate_return_value()
-                    original_remaining = total_calc - paid_amount - advance_applied
-                    adjusted_remaining = original_remaining - current_return_value
-                    payable_remaining = max(0.0, adjusted_remaining)
-                    excess_settlement = max(0.0, -adjusted_remaining)
-                    label = (
-                        f"Adjusted Payable: {payable_remaining:.2f} "
-                        f"(Original: {original_remaining:.2f})"
-                    )
-                    if excess_settlement > EPSILON:
-                        label += (
-                            f" | Refund/Credit Due: {excess_settlement:.2f}"
-                        )
-                    self.lbl_remaining.setText(label)
-                else:
-                    self.lbl_remaining.setText("Purchase financials not found")
-                    self._refund_financials_loaded = False
+                    is_fully_paid = financials.is_fully_paid
+                    refundable = float(financials.remaining_refundable_amount)
+
+                self._refund_financials_loaded = True
+                self._purchase_fully_paid = is_fully_paid
+                self._remaining_refundable_amount = refundable
+
+                current_return_value = self._calculate_return_value()
+                original_remaining = total_calc - paid_amount - advance_applied
+                adjusted_remaining = original_remaining - current_return_value
+                payable_remaining = max(0.0, adjusted_remaining)
+                excess_settlement = max(0.0, -adjusted_remaining)
+                label = (
+                    f"Adjusted Payable: {payable_remaining:.2f} "
+                    f"(Original: {original_remaining:.2f})"
+                )
+                if excess_settlement > EPSILON:
+                    label += f" | Refund/Credit Due: {excess_settlement:.2f}"
+                self.lbl_remaining.setText(label)
             else:
-                self.lbl_remaining.setText("Accounting service not available")
+                self.lbl_remaining.setText("Purchase financials not found")
                 self._refund_financials_loaded = False
             self._refresh_refund_availability()
                 

@@ -9,7 +9,10 @@ from typing import Any
 from .dto import (
     BankLedgerRow,
     InventoryAccountingEvent,
+    APSummary,
+    PaymentActivityReport,
     PurchaseFinancials,
+    PurchaseInvoiceFinancials,
     PurchaseInventoryPayload,
     PurchaseInventoryResult,
     PurchaseOutstanding,
@@ -26,6 +29,7 @@ from .dto import (
     PurchaseReturnValue,
     PurchaseTotalInputLine,
     PurchaseTotals,
+    PurchaseReportBundle,
     SupplierRefundMetadata,
     SupplierRefundPayload,
     SupplierRefundResult,
@@ -42,6 +46,15 @@ from .dto import (
     VendorPaymentResult,
     VendorPurchaseTotals,
     VendorStatement,
+    VendorAgingReport,
+)
+from .reports.ar_ap_summary import (
+    get_ap_summary as get_current_ap_summary,
+    get_payment_activity as get_current_payment_activity,
+    get_vendor_aging as get_current_vendor_aging,
+)
+from .reports.party_ledger import (
+    get_purchase_reports as get_current_purchase_reports,
 )
 from .current_rules.inventory_rules import (
     get_inventory_accounting_events as get_current_inventory_accounting_events,
@@ -59,6 +72,7 @@ from .current_rules.purchase_rules import (
     get_purchase_payment_summary as get_current_purchase_payment_summary,
     get_purchase_payment_status as get_current_purchase_payment_status,
     get_purchase_financials as get_current_purchase_financials,
+    get_purchase_invoice_financials as get_current_purchase_invoice_financials,
     get_purchase_return_totals as get_current_purchase_return_totals,
     get_purchase_return_values as get_current_purchase_return_values,
     get_purchase_totals as get_current_purchase_totals,
@@ -187,6 +201,23 @@ class AccountingService:
             self._not_implemented("get_purchase_financials")
         return get_current_purchase_financials(self.conn, purchase_id)
 
+    def get_purchase_invoice_financials(
+        self,
+        purchase_id: int | str,
+    ) -> PurchaseInvoiceFinancials:
+        if self.conn is None:
+            self._not_implemented("get_purchase_invoice_financials")
+        return get_current_purchase_invoice_financials(self.conn, purchase_id)
+
+    def get_purchase_reports(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> PurchaseReportBundle:
+        if self.conn is None:
+            self._not_implemented("get_purchase_reports")
+        return get_current_purchase_reports(self.conn, start_date, end_date)
+
     def validate_vendor_payment_metadata(
         self,
         metadata: VendorPaymentMetadata,
@@ -275,6 +306,41 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("get_vendor_statement")
         return get_current_vendor_statement(self.conn, vendor_id, start_date, end_date)
+
+    def get_vendor_aging(self, cutoff_date: str) -> VendorAgingReport:
+        if self.conn is None:
+            self._not_implemented("get_vendor_aging")
+        return get_current_vendor_aging(
+            self.conn,
+            cutoff_date,
+            repo=getattr(self, "_reporting_repo", None),
+        )
+
+    def get_ap_summary(self, cutoff_date: str | None = None) -> APSummary:
+        if self.conn is None:
+            self._not_implemented("get_ap_summary")
+        return get_current_ap_summary(
+            self.conn,
+            cutoff_date,
+            repo=getattr(self, "_reporting_repo", None),
+        )
+
+    def get_payment_activity(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        *,
+        date_basis: str = "posting",
+    ) -> PaymentActivityReport:
+        if self.conn is None:
+            self._not_implemented("get_payment_activity")
+        return get_current_payment_activity(
+            self.conn,
+            start_date,
+            end_date,
+            date_basis=date_basis,
+            repo=getattr(self, "_reporting_repo", None),
+        )
 
     def get_customer_credit_balance(self, customer_id: int) -> None:
         self._not_implemented("get_customer_credit_balance")

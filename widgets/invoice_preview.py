@@ -6,6 +6,8 @@ import os
 import sqlite3
 import sys
 
+from inventory_management.modules.accounting import AccountingService
+
 
 class InvoicePreview(QWidget):
     def __init__(self, template_path, context_data, conn=None):
@@ -99,101 +101,14 @@ class InvoicePreview(QWidget):
         
         if self.conn and 'purchase_id' in self.context_data:
             purchase_id = self.context_data['purchase_id']
-            
-            # Fetch purchase header data
-            header_query = """
-            SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info, v.address AS vendor_address
-            FROM purchases p
-            JOIN vendors v ON p.vendor_id = v.vendor_id
-            WHERE p.purchase_id = ?
-            """
-            header_row = self.conn.execute(header_query, (purchase_id,)).fetchone()
-            
-            if header_row:
-                doc_data = dict(header_row)
-                enriched_data['doc'] = doc_data
-                enriched_data['vendor'] = {
-                    'name': doc_data.get('vendor_name', ''),
-                    'contact_info': doc_data.get('vendor_contact_info', ''),
-                    'address': doc_data.get('vendor_address', '')
-                }
-                
-                # Fetch purchase items
-                items_query = """
-                SELECT 
-                    pi.item_id,
-                    pi.product_id,
-                    p.name AS product_name,
-                    pi.quantity,
-                    u.unit_name AS uom_name,
-                    pi.purchase_price AS unit_price,
-                    pi.sale_price,
-                    pi.item_discount,
-                    (pi.quantity * pi.purchase_price) AS line_total,
-                    ROW_NUMBER() OVER (ORDER BY pi.item_id) AS idx
-                FROM purchase_items pi
-                JOIN products p ON pi.product_id = p.product_id
-                JOIN uoms u ON pi.uom_id = u.uom_id
-                WHERE pi.purchase_id = ?
-                ORDER BY pi.item_id
-                """
-                items_rows = self.conn.execute(items_query, (purchase_id,)).fetchall()
-                
-                items = []
-                for row in items_rows:
-                    item_dict = dict(row)
-                    items.append(item_dict)
-                
-                enriched_data['items'] = items
-                
-                # Calculate totals
-                subtotal = sum(item['line_total'] for item in items)
-                total = subtotal  # For purchases, total = subtotal (no discount for now)
-                
-                enriched_data['totals'] = {
-                    'subtotal_before_order_discount': subtotal,
-                    'line_discount_total': 0,  # No line discounts in purchase for now
-                    'order_discount': 0,  # No order discount in purchase for now
-                    'total': total
-                }
-                
-                # Get initial payment details if exists
-                payment_query = """
-                SELECT 
-                    pp.amount,
-                    pp.method,
-                    pp.date,
-                    pp.bank_account_id,
-                    pp.vendor_bank_account_id,
-                    pp.instrument_type,
-                    pp.instrument_no,
-                    pp.instrument_date,
-                    pp.deposited_date,
-                    pp.cleared_date,
-                    pp.ref_no,
-                    pp.notes,
-                    pp.clearing_state,
-                    ca.label AS bank_account_label,
-                    va.label AS vendor_bank_account_label
-                FROM purchase_payments pp
-                LEFT JOIN company_bank_accounts ca ON ca.account_id = pp.bank_account_id
-                LEFT JOIN vendor_bank_accounts va ON va.vendor_bank_account_id = pp.vendor_bank_account_id
-                WHERE pp.purchase_id = ?
-                ORDER BY pp.payment_id DESC
-                LIMIT 1
-                """
-                payment_row = self.conn.execute(payment_query, (purchase_id,)).fetchone()
-                
-                if payment_row:
-                    enriched_data['initial_payment'] = dict(payment_row)
-                else:
-                    enriched_data['initial_payment'] = None
-                
+
+            invoice = AccountingService(self.conn).get_purchase_invoice_financials(
+                purchase_id
+            )
+            enriched_data.update(invoice.preview_context)
+            if 'doc' in enriched_data:
                 from inventory_management.database.repositories.company_info_repo import get_invoice_company_context
                 enriched_data['company'] = get_invoice_company_context(self.conn)
-                
-                # Add payment status
-                enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
         
         return enriched_data
     

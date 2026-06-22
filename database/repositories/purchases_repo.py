@@ -822,24 +822,16 @@ class PurchasesRepo:
         """
         Get the remaining due amount for a purchase.
         """
-        sql = """
-        SELECT
-            COALESCE(pdt.calculated_total_amount, p.total_amount) AS calculated_total_amount,
-            CAST(p.paid_amount AS REAL) AS paid_amount,
-            CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
-            (COALESCE(pdt.calculated_total_amount, p.total_amount) - CAST(p.paid_amount AS REAL) - CAST(p.advance_payment_applied AS REAL)) AS remaining_due
-        FROM purchases p
-        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-        WHERE p.purchase_id = ?
-        """
-        row = self.conn.execute(sql, (purchase_id,)).fetchone()
-        if row is None:
+        try:
+            financials = self.accounting.get_purchase_financials(purchase_id)
+        except ValueError:
             return None
-        data = dict(row)
-        data["remaining_due"] = float(
-            self.accounting.get_purchase_outstanding(purchase_id).outstanding
-        )
-        return data
+        return {
+            "calculated_total_amount": float(financials.net_total),
+            "paid_amount": float(financials.paid_amount),
+            "advance_payment_applied": float(financials.applied_credit),
+            "remaining_due": float(financials.outstanding),
+        }
 
     def get_header_with_vendor(self, purchase_id: str) -> dict | None:
         """

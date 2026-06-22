@@ -157,6 +157,44 @@ class InventoryAccountingEvent:
 
 
 @dataclass(frozen=True)
+class PurchaseInvoiceFinancials:
+    purchase_id: int | str
+    context: dict[str, Any]
+    preview_context: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PurchaseReportBundle:
+    rows_by_key: dict[str, tuple[dict[str, Any], ...]]
+
+
+@dataclass(frozen=True)
+class VendorAgingReport:
+    as_of: str
+    rows: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class APSummary:
+    cutoff_date: str | None
+    ar_total_due: Decimal
+    ap_total_due: Decimal
+
+
+@dataclass(frozen=True)
+class PaymentActivityReport:
+    start_date: str | None
+    end_date: str | None
+    collections: tuple[dict[str, Any], ...]
+    disbursements: tuple[dict[str, Any], ...]
+    total_collections: Decimal
+    total_disbursements: Decimal
+    summary_by_status: tuple[dict[str, Any], ...] = ()
+    unprocessed: tuple[dict[str, Any], ...] = ()
+    detailed: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
 class PurchasePaymentStatus:
     purchase_id: int | str
     status: str
