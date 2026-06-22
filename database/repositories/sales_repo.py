@@ -5,7 +5,7 @@ import math
 import sqlite3
 from typing import Iterable, Optional
 
-from modules.accounting import AccountingService, SaleReturnPayload
+from modules.accounting import AccountingService, SaleInventoryLine, SaleInventoryPayload, SaleReturnPayload
 from .inventory_repo import next_inventory_txn_seq, rebuild_dirty_valuations
 
 
@@ -428,26 +428,15 @@ class SalesRepo:
         created_by: int | None,
         notes: str | None,
     ):
-        self.conn.execute(
-            """
-            INSERT INTO inventory_transactions (
-                product_id, quantity, uom_id, transaction_type,
-                reference_table, reference_id, reference_item_id,
-                date, txn_seq, notes, created_by
+        self.accounting.record_sale_inventory_event(
+            SaleInventoryPayload(
+                sale_id=sid, date=date, created_by=created_by,
+                lines=(SaleInventoryLine(
+                    item_id=item_id, product_id=product_id,
+                    quantity=Decimal(str(qty)), uom_id=uom_id,
+                ),),
+                notes=notes,
             )
-            VALUES (?, ?, ?, 'sale', 'sales', ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                product_id,
-                qty,
-                uom_id,
-                sid,
-                item_id,
-                date,
-                next_inventory_txn_seq(self.conn, date),
-                notes,
-                created_by,
-            ),
         )
 
     def _delete_sale_content(self, sid: str):
@@ -996,24 +985,11 @@ class SalesRepo:
             }
 
     def sale_return_totals(self, sale_id: str) -> dict:
-        row = self.conn.execute(
-            """
-            SELECT
-              COALESCE(SUM(CAST(srs.returned_quantity AS REAL)), 0.0) AS qty_returned,
-              COALESCE(SUM(CAST(srs.return_value AS REAL)), 0.0) AS value_returned,
-              COALESCE(SUM(CAST(srs.cogs_reversal_value AS REAL)), 0.0)
-                AS cogs_reversed
-            FROM inventory_transactions it
-            JOIN sale_return_snapshots srs ON srs.transaction_id = it.transaction_id
-            WHERE it.reference_table='sales'
-              AND it.reference_id=? AND it.transaction_type='sale_return'
-            """,
-            (sale_id,),
-        ).fetchone()
+        t = self.accounting.get_sale_return_totals(sale_id)
         return {
-            "qty": float(row["qty_returned"]),
-            "value": float(row["value_returned"]),
-            "cogs_reversed": float(row["cogs_reversed"]),
+            "qty": float(t.qty),
+            "value": float(t.value),
+            "cogs_reversed": float(t.cogs_reversed),
         }
 
     def get_sale_detail_summary(self, sale_id: str) -> dict:

@@ -644,3 +644,28 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - Full quotation-to-sale conversion (sale header copy, item copy, inventory posting, stock check) remains in `SalesRepo` — tightly coupled with sale creation and `_validate_financials`/`_check_stock_availability`.
   - Service handles only the validation and status update slice; the broader conversion includes inventory and sale creation side effects that need the repo's helper methods.
+
+## CS-ACC-020: Cleanup migrated calculations and enforce guardrails
+
+- Migrated behavior:
+  - `SalesRepo._insert_inventory_sale` — rewired to delegate to `self.accounting.record_sale_inventory_event()`
+  - `SalesRepo.sale_return_totals` — rewired to delegate to `self.accounting.get_sale_return_totals()`
+- Original location(s):
+  - `database/repositories/sales_repo.py::_insert_inventory_sale` (direct INSERT + txn_seq + rebuild)
+  - `database/repositories/sales_repo.py::sale_return_totals` (inline SQL on inventory_transactions + sale_return_snapshots)
+- New accounting location(s):
+  - No new locations — existing service/current-rule methods from CS-ACC-018/015 are now fully wired.
+- AccountingService API:
+  - No new API added.
+- Rewired call site(s):
+  - `database/repositories/sales_repo.py::_insert_inventory_sale` — now builds `SaleInventoryPayload` and calls `self.accounting.record_sale_inventory_event()`
+  - `database/repositories/sales_repo.py::sale_return_totals` — now calls `self.accounting.get_sale_return_totals()`
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_accounting_guardrails.py`
+    - Added `test_migrated_customer_sales_slices_route_through_accounting_service` — verifies 30+ service call patterns across 7 files
+- Behavior change:
+  - None intended.
+- Notes / unresolved correctness questions:
+  - `record_return` inventory INSERT remains in repo (coupled with `next_inventory_txn_seq` sequencing and snapshot trigger).
+  - `_check_stock_availability` remains in repo (inventory availability validation, not accounting).
+  - All 19 previous CS cards have migration log entries.

@@ -86,5 +86,63 @@ def test_customer_sales_placeholder_methods_exist():
             pass
 
 
+def test_migrated_customer_sales_slices_route_through_accounting_service():
+    required_routes = {
+        "database/repositories/sales_repo.py": [
+            "self.accounting.get_sale_totals",
+            "self.accounting.get_sale_financial_summary",
+            "self.accounting.recalculate_sale_payment_status",
+            "self.accounting.record_sale_return_event",
+            "self.accounting.record_sale_inventory_event",
+            "self.accounting.get_sale_return_totals",
+        ],
+        "database/repositories/sale_payments_repo.py": [
+            "get_sale_payment_history",
+            "get_latest_sale_payment",
+            "get_customer_payment_history",
+            "record_customer_payment_event",
+            "update_customer_payment_state",
+            "reopen_customer_payment_state",
+        ],
+        "database/repositories/customer_advances_repo.py": [
+            "get_customer_credit_balance",
+            "list_customer_credit_ledger",
+            "record_customer_credit_event",
+            "record_customer_credit_application_event",
+        ],
+        "database/repositories/customers_repo.py": [
+            "self.accounting.get_customer_receivable_summary",
+        ],
+        "database/repositories/reporting_repo.py": [
+            "self.accounting",
+        ],
+        "database/repositories/dashboard_repo.py": [
+            "self.accounting",
+        ],
+        "modules/sales/controller.py": [
+            "self.accounting.get_sale_totals",
+            "self.accounting.get_sale_financial_summary",
+            "self.accounting.get_sale_invoice_financials",
+            "self.accounting.get_quotation_financials",
+        ],
+        "modules/customer/controller.py": [
+            "self.accounting.list_customer_sale_summaries",
+            "list_customer_sale_summaries",
+        ],
+        "modules/dashboard/controller.py": [
+            "self.accounting.get_sales_dashboard_metrics",
+        ],
+    }
+
+    missing: list[str] = []
+    for rel_path, snippets in required_routes.items():
+        source = (PROJECT_ROOT / rel_path).read_text()
+        for snippet in snippets:
+            if snippet not in source:
+                missing.append(f"{rel_path} missing {snippet}")
+
+    assert missing == []
+
+
 def test_no_direct_accounting_internal_imports_outside_accounting_module():
     test_customer_sales_modules_do_not_import_accounting_internals()
