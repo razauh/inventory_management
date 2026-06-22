@@ -8,6 +8,7 @@ from modules.accounting import (
     AccountingService,
     CustomerBalance,
     CustomerOpenSale,
+    CustomerReceivableSummary,
     CustomerStatement,
     CustomerStatementEntry,
     JournalPreview,
@@ -83,6 +84,7 @@ def test_accounting_dtos_construct():
     assert SalePaymentRow(payment_id=1, sale_id=1, date="2026-06-21", amount=Decimal("10"), method="Cash")
     assert CustomerOpenSale(sale_id=1, customer_id=1, sale_date=None, reference=None, net_total=Decimal("10"), outstanding=Decimal("10"))
     assert CustomerStatementEntry(entry_date="2026-06-21", description="Sale", debit=Decimal("10"), credit=Decimal("0"), balance=Decimal("10"))
+    assert CustomerReceivableSummary(customer_id=1, credit_balance=Decimal("10"), sales_count=2, open_due_sum=Decimal("50"))
     assert CustomerStatement(customer_id=1, start_date=None, end_date=None, opening_balance=Decimal("0"), closing_balance=Decimal("10"))
     assert SaleInvoiceFinancials(sale_id=1, context={})
     assert QuotationFinancials(quotation_id=1, context={})

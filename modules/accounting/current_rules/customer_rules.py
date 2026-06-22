@@ -7,7 +7,11 @@ from decimal import Decimal
 from sqlite3 import Connection, Row as SqliteRow
 from typing import Any
 
-from ..dto import CustomerStatement, CustomerStatementEntry
+from ..dto import (
+    CustomerReceivableSummary,
+    CustomerStatement,
+    CustomerStatementEntry,
+)
 
 
 def _collect_headers(rows: list[dict]) -> list[str]:
@@ -314,4 +318,38 @@ def get_customer_statement(
         opening_balance=Decimal("0"),
         closing_balance=closing_balance,
         entries=tuple(entries),
+    )
+
+
+def get_customer_receivable_summary(
+    conn: Connection, customer_id: int
+) -> CustomerReceivableSummary:
+    row = conn.execute(
+        """
+        SELECT
+          COALESCE((SELECT balance FROM v_customer_advance_balance WHERE customer_id = ?), 0.0) AS credit_balance,
+          COALESCE((SELECT COUNT(*) FROM sales WHERE customer_id = ? AND doc_type = 'sale'), 0) AS sales_count,
+          COALESCE((
+            SELECT SUM(MAX(0.0, CAST(sdt.net_total_amount AS REAL)
+              - COALESCE((SELECT SUM(CAST(sp.amount AS REAL)) FROM sale_payments sp
+                          WHERE sp.sale_id = s.sale_id AND sp.clearing_state IN ('posted','cleared')), 0.0)
+              - COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)))
+            FROM sales s
+            JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            WHERE s.customer_id = ? AND s.doc_type = 'sale'
+          ), 0.0) AS open_due_sum,
+          (SELECT MAX(s.date) FROM sales s WHERE s.customer_id = ? AND s.doc_type = 'sale') AS last_sale_date,
+          (SELECT MAX(sp.date) FROM sale_payments sp JOIN sales s ON s.sale_id = sp.sale_id WHERE s.customer_id = ?) AS last_payment_date,
+          (SELECT MAX(tx_date) FROM customer_advances WHERE customer_id = ?) AS last_advance_date
+        """,
+        (customer_id, customer_id, customer_id, customer_id, customer_id, customer_id),
+    ).fetchone()
+    return CustomerReceivableSummary(
+        customer_id=customer_id,
+        credit_balance=Decimal(str(row["credit_balance"] or 0)),
+        sales_count=int(row["sales_count"] or 0),
+        open_due_sum=Decimal(str(row["open_due_sum"] or 0)),
+        last_sale_date=row["last_sale_date"],
+        last_payment_date=row["last_payment_date"],
+        last_advance_date=row["last_advance_date"],
     )

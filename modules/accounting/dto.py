@@ -574,6 +574,17 @@ class CustomerStatementEntry:
 
 
 @dataclass(frozen=True)
+class CustomerReceivableSummary:
+    customer_id: int
+    credit_balance: Decimal
+    sales_count: int
+    open_due_sum: Decimal
+    last_sale_date: str | None = None
+    last_payment_date: str | None = None
+    last_advance_date: str | None = None
+
+
+@dataclass(frozen=True)
 class CustomerStatement:
     customer_id: int
     start_date: str | None

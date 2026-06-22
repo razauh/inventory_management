@@ -11,6 +11,7 @@ from .dto import (
     BankLedgerRow,
     CustomerBalance,
     CustomerOpenSale,
+    CustomerReceivableSummary,
     CustomerStatement,
     InventoryAccountingEvent,
     PaymentActivityReport,
@@ -94,6 +95,7 @@ from .current_rules.purchase_rules import (
 )
 from .current_rules.customer_rules import (
     get_customer_history as get_current_customer_history,
+    get_customer_receivable_summary as get_current_customer_receivable_summary,
     get_customer_statement as get_current_customer_statement,
 )
 from .current_rules.sales_rules import (
@@ -423,6 +425,13 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("get_customer_history")
         return get_current_customer_history(self.conn, customer_id)
+
+    def get_customer_receivable_summary(
+        self, customer_id: int
+    ) -> CustomerReceivableSummary:
+        if self.conn is None:
+            self._not_implemented("get_customer_receivable_summary")
+        return get_current_customer_receivable_summary(self.conn, customer_id)
 
     def get_sale_invoice_financials(
         self, sale_id: int | str

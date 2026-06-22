@@ -222,3 +222,35 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - `CustomerHistoryService` still works standalone when `accounting` is not passed (old SQL path).
   - `get_customer_statement` builds a simple running balance from the advance ledger; the full timeline-based statement is available via `get_customer_history`.
+
+## CS-ACC-008: Rewire sales and customer display panels
+
+- Migrated behavior:
+  - Customer credit balance, sales count, open due sum, last activity dates (detail snapshot financial fields)
+- Original location(s):
+  - `database/repositories/customers_repo.py::get_detail_snapshot` (inline SQL for all financial subqueries)
+  - `modules/customer/controller.py::_details_enrichment` (calls `self.repo.get_detail_snapshot`)
+  - `modules/sales/controller.py::_sync_details_impl` (call chain already rewired in previous cards)
+- New accounting location(s):
+  - `modules/accounting/current_rules/customer_rules.py`
+    - `get_customer_receivable_summary(conn, customer_id) -> CustomerReceivableSummary`
+  - `modules/accounting/dto.py` (new `CustomerReceivableSummary` DTO)
+  - `modules/accounting/service.py` — `get_customer_receivable_summary` delegated
+  - `modules/accounting/__init__.py` — exported `CustomerReceivableSummary`
+- AccountingService API:
+  - `get_customer_receivable_summary(customer_id: int) -> CustomerReceivableSummary`
+- Rewired call site(s):
+  - `database/repositories/customers_repo.py` — added `self.accounting`; `get_detail_snapshot` delegates financial fields to `self.accounting.get_customer_receivable_summary()`
+  - Sales and customer detail widgets (`details.py`, `model.py`) — pure rendering, no rewiring needed (data arrives via controller payloads)
+- Tests added/updated:
+  - `tests/accounting/test_customer_sales_display_rewiring.py` (new)
+    - `test_sales_detail_payload_routes_through_accounting_service`
+    - `test_customer_detail_financial_payload_routes_through_accounting_service`
+  - `modules/accounting/test_accounting_scaffold.py` (updated)
+    - Added `CustomerReceivableSummary` to DTO construction test
+- Behavior change:
+  - None intended. Financial field values match original `get_detail_snapshot` SQL exactly.
+- Notes / unresolved correctness questions:
+  - Sales detail panel (`SaleDetails`) data flows through `SalesRepo.get_sale_detail_snapshot()` → `AccountingService` via repo's `self.accounting`. Already rewired in CS-ACC-003/004.
+  - Customer detail panel (`CustomerDetails`) data flows through `CustomersRepo.get_detail_snapshot()` → `AccountingService` via repo's `self.accounting`. Rewired in this card.
+  - `open_due_sum` calculation uses `clearing_state IN ('posted','cleared')` matching original `get_detail_snapshot` — intentionally different from `sale_receivable_totals.paid_amount` (which uses trigger-updated cleared-only sum).

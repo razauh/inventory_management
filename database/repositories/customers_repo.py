@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import sqlite3
 
+from modules.accounting import AccountingService
+
 
 # Domain-level error the controller can surface directly (e.g., toast/snackbar)
 class DomainError(Exception):
@@ -18,7 +20,8 @@ class Customer:
 
 class CustomersRepo:
     def __init__(self, conn: sqlite3.Connection):
-        # ensure rows behave like dicts/tuples
+        self.conn = conn
+        self.accounting = AccountingService(conn)
         conn.row_factory = sqlite3.Row
         self.conn = conn
 
@@ -101,64 +104,24 @@ class CustomersRepo:
     def get_detail_snapshot(self, customer_id: int) -> dict | None:
         row = self.conn.execute(
             """
-            SELECT
-                c.customer_id,
-                c.name,
-                c.contact_info,
-                c.address,
-                COALESCE((
-                    SELECT balance
-                    FROM v_customer_advance_balance vab
-                    WHERE vab.customer_id = c.customer_id
-                ), 0.0) AS credit_balance,
-                COALESCE((
-                    SELECT COUNT(*)
-                    FROM sales s
-                    WHERE s.customer_id = c.customer_id
-                      AND s.doc_type = 'sale'
-                ), 0) AS sales_count,
-                COALESCE((
-                    SELECT SUM(
-                        MAX(
-                            0.0,
-                            CAST(sdt.net_total_amount AS REAL)
-                              - COALESCE((
-                                  SELECT SUM(CAST(sp.amount AS REAL))
-                                  FROM sale_payments sp
-                                  WHERE sp.sale_id = s.sale_id
-                                    AND sp.clearing_state IN ('posted', 'cleared')
-                                ), 0.0)
-                              - COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)
-                        )
-                    )
-                    FROM sales s
-                    JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
-                    WHERE s.customer_id = c.customer_id
-                      AND s.doc_type = 'sale'
-                ), 0.0) AS open_due_sum,
-                (
-                    SELECT MAX(s.date)
-                    FROM sales s
-                    WHERE s.customer_id = c.customer_id
-                      AND s.doc_type = 'sale'
-                ) AS last_sale_date,
-                (
-                    SELECT MAX(sp.date)
-                    FROM sale_payments sp
-                    JOIN sales s ON s.sale_id = sp.sale_id
-                    WHERE s.customer_id = c.customer_id
-                ) AS last_payment_date,
-                (
-                    SELECT MAX(ca.tx_date)
-                    FROM customer_advances ca
-                    WHERE ca.customer_id = c.customer_id
-                ) AS last_advance_date
-            FROM customers c
-            WHERE c.customer_id = ?
+            SELECT customer_id, name, contact_info, address
+              FROM customers
+             WHERE customer_id = ?
             """,
             (customer_id,),
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        fin = self.accounting.get_customer_receivable_summary(customer_id)
+        return {
+            **dict(row),
+            "credit_balance": float(fin.credit_balance),
+            "sales_count": fin.sales_count,
+            "open_due_sum": float(fin.open_due_sum),
+            "last_sale_date": fin.last_sale_date,
+            "last_payment_date": fin.last_payment_date,
+            "last_advance_date": fin.last_advance_date,
+        }
 
     def get(self, customer_id: int) -> Customer | None:
         r = self.conn.execute(
