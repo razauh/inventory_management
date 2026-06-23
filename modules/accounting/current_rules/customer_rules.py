@@ -301,34 +301,40 @@ def get_customer_statement(
         (customer_id,),
     ).fetchall()
 
-    bal_row = conn.execute(
-        "SELECT balance FROM v_customer_advance_balance WHERE customer_id = ?",
-        (customer_id,),
-    ).fetchone()
-    closing_balance = Decimal(str(bal_row["balance"])) if bal_row else Decimal("0")
-
-    # ponytail: statement uses simple running balance from advance ledger
-    entries: list[CustomerStatementEntry] = []
+    opening_balance = Decimal("0")
     running = Decimal("0")
+    entries: list[CustomerStatementEntry] = []
+
     for r in entries_raw:
+        tx_date = r["tx_date"]
         amt = Decimal(str(r["amount"] or 0))
-        running += amt
-        entries.append(CustomerStatementEntry(
-            entry_date=r["tx_date"],
-            description=f"{r['source_type']} ({r['source_id'] or ''})",
-            debit=amt if amt > 0 else Decimal("0"),
-            credit=(-amt) if amt < 0 else Decimal("0"),
-            balance=running,
-        ))
+
+        if start_date and tx_date < start_date:
+            running += amt
+            opening_balance = running
+        elif end_date and tx_date > end_date:
+            pass
+        else:
+            running += amt
+            entries.append(CustomerStatementEntry(
+                entry_date=tx_date,
+                description=f"{r['source_type']} ({r['source_id'] or ''})",
+                debit=amt if amt > 0 else Decimal("0"),
+                credit=(-amt) if amt < 0 else Decimal("0"),
+                balance=running,
+            ))
+
+    closing_balance = running
 
     return CustomerStatement(
         customer_id=customer_id,
         start_date=start_date,
         end_date=end_date,
-        opening_balance=Decimal("0"),
+        opening_balance=opening_balance,
         closing_balance=closing_balance,
         entries=tuple(entries),
     )
+
 
 
 def get_customer_aging(

@@ -197,3 +197,79 @@ def test_customer_statement_preserves_timeline_order_and_event_types():
     assert len(timeline) == 2
     kinds = [e["kind"] for e in timeline]
     assert kinds == ["sale", "receipt"]
+
+
+def test_customer_statement_filters_period_and_computes_opening_balance():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+
+    conn.execute("INSERT INTO customers (customer_id, name) VALUES (1, 'Test')")
+
+    # Pre-period advances
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) "
+        "VALUES (1, '2026-05-10', 50.0, 'deposit')"
+    )
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) "
+        "VALUES (1, '2026-05-15', -15.0, 'applied_to_sale')"
+    )
+
+    # In-period advances
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) "
+        "VALUES (1, '2026-06-05', 20.0, 'deposit')"
+    )
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) "
+        "VALUES (1, '2026-06-10', -10.0, 'applied_to_sale')"
+    )
+
+    # Post-period advance
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) "
+        "VALUES (1, '2026-07-01', 100.0, 'deposit')"
+    )
+
+    svc = AccountingService(conn)
+    statement = svc.get_customer_statement(1, start_date="2026-06-01", end_date="2026-06-30")
+
+    # Opening balance should be 50.0 - 15.0 = 35.0
+    import pytest
+    assert float(statement.opening_balance) == pytest.approx(35.0)
+
+    # Closing balance should be 35.0 + 20.0 - 10.0 = 45.0
+    assert float(statement.closing_balance) == pytest.approx(45.0)
+
+    # There should be exactly 2 entries (in-period)
+    assert len(statement.entries) == 2
+    assert statement.entries[0].entry_date == "2026-06-05"
+    assert float(statement.entries[0].balance) == pytest.approx(55.0)
+    assert statement.entries[1].entry_date == "2026-06-10"
+    assert float(statement.entries[1].balance) == pytest.approx(45.0)
+    conn.close()
+
+
+def test_customer_statement_empty_period_keeps_nonzero_opening_balance():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+
+    conn.execute("INSERT INTO customers (customer_id, name) VALUES (1, 'Test')")
+
+    conn.execute(
+        "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type) "
+        "VALUES (1, '2026-05-10', 50.0, 'deposit')"
+    )
+
+    svc = AccountingService(conn)
+    # Filter for a period after the deposit, containing no transactions
+    statement = svc.get_customer_statement(1, start_date="2026-06-01", end_date="2026-06-30")
+
+    import pytest
+    assert float(statement.opening_balance) == pytest.approx(50.0)
+    assert float(statement.closing_balance) == pytest.approx(50.0)
+    assert len(statement.entries) == 0
+    conn.close()
+

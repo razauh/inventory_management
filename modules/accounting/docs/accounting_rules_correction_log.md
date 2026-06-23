@@ -118,3 +118,25 @@ Copy this template for each completed card:
   - None.
 - Follow-up questions:
   - None.
+
+## ACC-FIX-011: Make customer statements honor period filters and opening balance
+
+- Problem ID:
+  - `ACC-PROB-011`
+- Related rule IDs:
+  - `REPORT`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_customer_statement.py::test_customer_statement_filters_period_and_computes_opening_balance`
+  - `tests/accounting/test_customer_sales_customer_statement.py::test_customer_statement_empty_period_keeps_nonzero_opening_balance`
+- Production files changed:
+  - `modules/accounting/current_rules/customer_rules.py`
+- Behavior before:
+  - get_customer_statement read all customer advances regardless of start/end dates and hard-coded opening_balance=0.
+- Behavior after:
+  - get_customer_statement filters advances by period, computes the opening balance from pre-period running balances, and limits closing balance and entries to the requested period.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
