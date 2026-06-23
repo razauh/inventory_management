@@ -396,10 +396,21 @@ class AccountingService:
         vendor_id: int,
         start_date: str | None = None,
         end_date: str | None = None,
-    ) -> VendorStatement:
+        *,
+        include_opening: bool = True,
+        show_return_origins: bool = False,
+    ) -> Any:
         if self.conn is None:
             self._not_implemented("get_vendor_statement")
-        return get_current_vendor_statement(self.conn, vendor_id, start_date, end_date)
+        return get_current_vendor_statement(
+            self.conn,
+            vendor_id,
+            start_date,
+            end_date,
+            include_opening=include_opening,
+            show_return_origins=show_return_origins,
+        )
+
 
     def get_vendor_aging(self, cutoff_date: str) -> VendorAgingReport:
         if self.conn is None:

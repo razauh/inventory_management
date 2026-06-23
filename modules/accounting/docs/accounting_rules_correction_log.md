@@ -407,4 +407,29 @@ Copy this template for each completed card:
   - None.
 
 
+## ACC-FIX-019: Tighten guardrails to catch relative imports of accounting internals
+
+- Problem ID:
+  - `ACC-PROB-019`
+- Related rule IDs:
+  - `VND-RULE-003`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_accounting_guardrails.py::test_guardrails_reject_relative_imports_of_accounting_internals`
+  - `tests/accounting/test_vendor_purchase_accounting_guardrails.py::test_guardrails_scan_fallback_vendor_controller_import_path`
+- Production files changed:
+  - `modules/vendor/controller.py`
+  - `modules/accounting/service.py`
+- Behavior before:
+  - The import scanner helper `_imported_modules` did not resolve relative imports, allowing relative imports of forbidden accounting internals (e.g. `from ..accounting.current_rules.vendor_rules import get_vendor_statement` in `modules/vendor/controller.py`) to bypass guardrail scanning.
+- Behavior after:
+  - Updated `_imported_modules` to resolve relative imports to their absolute module name based on the source file location relative to the project root. Exposed the full parameter set on `AccountingService.get_vendor_statement` and refactored `modules/vendor/controller.py` to route through it and remove the direct relative import.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+
+
 

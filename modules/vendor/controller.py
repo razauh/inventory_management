@@ -810,12 +810,8 @@ class VendorController(BaseModule):
         self._clear_accounts_cache()
         self._reload()
     def build_vendor_statement(self, vendor_id: int, *, date_from: Optional[str] = None, date_to: Optional[str] = None, include_opening: bool = True, show_return_origins: bool = False) -> dict:
-        if include_opening and not show_return_origins:
-            accounting = getattr(self, "accounting", AccountingService(self.conn))
-            return accounting.get_vendor_statement(vendor_id, date_from, date_to)
-        from ..accounting.current_rules.vendor_rules import get_vendor_statement
-        return get_vendor_statement(
-            self.conn,
+        accounting = getattr(self, "accounting", AccountingService(self.conn))
+        return accounting.get_vendor_statement(
             vendor_id,
             date_from,
             date_to,

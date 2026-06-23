@@ -29,13 +29,28 @@ def _tracked_module_python_files() -> list[Path]:
     ]
 
 
-def _imported_modules(tree: ast.AST) -> set[str]:
+def _imported_modules(tree: ast.AST, file_path: Path) -> set[str]:
     imports: set[str] = set()
+    try:
+        rel_path = file_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        rel_path = file_path
+
+    dir_parts = [p for p in rel_path.parent.parts if p and p != "."]
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 0:
+                slice_idx = len(dir_parts) - node.level + 1
+                base_parts = dir_parts[:slice_idx]
+                mod_parts = list(base_parts)
+                if node.module:
+                    mod_parts.extend(node.module.split("."))
+                imports.add(".".join(mod_parts))
+            elif node.module:
+                imports.add(node.module)
     return imports
 
 
@@ -44,7 +59,7 @@ def test_vendor_purchase_modules_do_not_import_accounting_internals():
 
     for path in _tracked_module_python_files():
         tree = ast.parse(path.read_text(), filename=str(path))
-        for module_name in _imported_modules(tree):
+        for module_name in _imported_modules(tree, path):
             if module_name.startswith(FORBIDDEN_ACCOUNTING_INTERNALS):
                 bad_imports.append(
                     f"{path.relative_to(PROJECT_ROOT)} imports {module_name}"
@@ -115,3 +130,21 @@ def test_migrated_vendor_purchase_slices_route_through_accounting_service():
 
 def test_no_direct_accounting_internal_imports_outside_accounting_module():
     test_vendor_purchase_modules_do_not_import_accounting_internals()
+
+
+def test_guardrails_reject_relative_imports_of_accounting_internals():
+    # Verify relative imports are correctly resolved and flagged by _imported_modules
+    code = "from ..accounting.current_rules.vendor_rules import get_vendor_statement"
+    tree = ast.parse(code)
+    file_path = PROJECT_ROOT / "modules/vendor/controller.py"
+    resolved = _imported_modules(tree, file_path)
+    assert "modules.accounting.current_rules.vendor_rules" in resolved
+
+
+def test_guardrails_scan_fallback_vendor_controller_import_path():
+    vendor_controller_path = PROJECT_ROOT / "modules/vendor/controller.py"
+    assert vendor_controller_path.exists()
+
+    tracked_files = _tracked_module_python_files()
+    assert vendor_controller_path in tracked_files
+
