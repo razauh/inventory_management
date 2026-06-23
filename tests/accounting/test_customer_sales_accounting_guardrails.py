@@ -77,7 +77,7 @@ def test_customer_sales_placeholder_methods_exist():
         (svc.get_sale_outstanding, (1,)),
         (svc.get_customer_credit_balance, (1,)),
         (svc.record_customer_payment_event, (None,)),
-        (svc.record_sale_return_event, ()),
+        (svc.record_sale_return_event, (None,)),
     ]:
         try:
             method(*args)

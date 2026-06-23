@@ -173,5 +173,44 @@ It records where legacy/current behavior moved and which application call sites 
   - None.
 
 
+## EX-ACC-009: Audit and document vendor/purchase overlap
+
+- Migrated behavior:
+  - Documentation-only risk audit concerning free-text expenses and purchase/vendor payments.
+- Original location(s):
+  - None (analytical review of `database/schema.py`, `ExpensesRepo`, `PurchasesRepo`, and `PurchasePaymentsRepo`).
+- New accounting location(s):
+  - `modules/accounting/docs/expenses/vendor_purchase_overlap_risk.md` (new document).
+- Rewired call site(s):
+  - None (documentation only).
+- Tests added/updated:
+  - None.
+- Behavior change:
+  - None.
+- Notes / unresolved correctness questions:
+  - None.
+
+
+## EX-ACC-010: Cleanup migrated calculations and verify guardrails
+
+- Migrated behavior:
+  - Removal of obsolete calculations and search methods in `ExpensesRepo`.
+  - Added module-level guardrails to ensure proper `AccountingService` routing.
+- Original location(s):
+  - `database/repositories/expenses_repo.py` (`_build_where_clause`, `list_expenses`, and `search_expenses` removed).
+- New accounting location(s):
+  - `tests/accounting/test_expense_accounting_guardrails.py` (new guardrails tests).
+- Rewired call site(s):
+  - Verification that all active controllers and repositories route via `AccountingService`.
+- Tests added/updated:
+  - `tests/accounting/test_expense_accounting_guardrails.py` (new)
+- Behavior change:
+  - None.
+- Notes / unresolved correctness questions:
+  - None.
+
+
+
+
 
 

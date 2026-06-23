@@ -324,6 +324,14 @@ class AccountingService:
             self._not_implemented("validate_customer_payment_metadata")
         validate_current_customer_payment_metadata(self.conn, metadata)
 
+    def record_supplier_refund_event(
+        self,
+        payload: SupplierRefundPayload,
+    ) -> SupplierRefundResult:
+        if self.conn is None:
+            self._not_implemented("record_supplier_refund_event")
+        return record_current_supplier_refund_event(self.conn, payload)
+
     def get_supplier_refunds_for_purchase(
         self,
         purchase_id: int | str,
