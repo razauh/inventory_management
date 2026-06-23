@@ -57,3 +57,97 @@ def test_record_customer_payment_preserves_sale_payment_row():
     assert float(row["amount"]) == 50.0
     assert row["method"] == "Cash"
     assert row["clearing_state"] == "cleared"
+
+
+def test_sale_payments_repo_overpayment_uses_sale_customer_id():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.executescript("""
+        CREATE TABLE sale_payments (
+            payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id TEXT, date TEXT, amount REAL, method TEXT,
+            bank_account_id INTEGER, instrument_type TEXT, instrument_no TEXT,
+            instrument_date TEXT, deposited_date TEXT, cleared_date TEXT,
+            clearing_state TEXT, ref_no TEXT, notes TEXT, created_by INTEGER,
+            overpayment_converted INTEGER DEFAULT 0, converted_to_credit REAL DEFAULT 0
+        );
+        CREATE TABLE customer_advances (
+            tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL,
+            source_type TEXT, source_id TEXT, notes TEXT, created_by INTEGER
+        );
+        CREATE TABLE sales (
+            sale_id TEXT PRIMARY KEY, customer_id INTEGER, date TEXT,
+            total_amount REAL, doc_type TEXT DEFAULT 'sale'
+        );
+        CREATE TABLE sale_receivable_totals (
+            sale_id TEXT PRIMARY KEY, canonical_total_amount REAL,
+            paid_amount REAL, advance_payment_applied REAL, remaining_due REAL
+        );
+        CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, name TEXT);
+        INSERT OR IGNORE INTO customers (customer_id, name) VALUES (42, 'Real Customer');
+        INSERT INTO sales (sale_id, customer_id, date, total_amount) VALUES ('S_OVER_1', 42, '2026-06-21', 100);
+        INSERT INTO sale_receivable_totals (sale_id, canonical_total_amount, paid_amount, advance_payment_applied, remaining_due)
+        VALUES ('S_OVER_1', 100, 0, 0, 100);
+    """)
+
+    from database.repositories.sale_payments_repo import SalePaymentsRepo
+    repo = SalePaymentsRepo(conn)
+    payment_id = repo.record_payment(
+        sale_id='S_OVER_1',
+        amount=150.0,
+        method='Cash',
+        date='2026-06-22',
+        clearing_state='cleared',
+    )
+    row = conn.execute("SELECT customer_id FROM customer_advances WHERE source_id = ?", (str(payment_id),)).fetchone()
+    assert row is not None
+    assert row["customer_id"] == 42
+
+
+def test_repo_overpayment_credit_posts_to_sale_customer():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.executescript("""
+        CREATE TABLE sale_payments (
+            payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id TEXT, date TEXT, amount REAL, method TEXT,
+            bank_account_id INTEGER, instrument_type TEXT, instrument_no TEXT,
+            instrument_date TEXT, deposited_date TEXT, cleared_date TEXT,
+            clearing_state TEXT, ref_no TEXT, notes TEXT, created_by INTEGER,
+            overpayment_converted INTEGER DEFAULT 0, converted_to_credit REAL DEFAULT 0
+        );
+        CREATE TABLE customer_advances (
+            tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL,
+            source_type TEXT, source_id TEXT, notes TEXT, created_by INTEGER
+        );
+        CREATE TABLE sales (
+            sale_id TEXT PRIMARY KEY, customer_id INTEGER, date TEXT,
+            total_amount REAL, doc_type TEXT DEFAULT 'sale'
+        );
+        CREATE TABLE sale_receivable_totals (
+            sale_id TEXT PRIMARY KEY, canonical_total_amount REAL,
+            paid_amount REAL, advance_payment_applied REAL, remaining_due REAL
+        );
+        CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, name TEXT);
+        INSERT OR IGNORE INTO customers (customer_id, name) VALUES (100, 'Another Customer');
+        INSERT INTO sales (sale_id, customer_id, date, total_amount) VALUES ('S_OVER_2', 100, '2026-06-21', 50);
+        INSERT INTO sale_receivable_totals (sale_id, canonical_total_amount, paid_amount, advance_payment_applied, remaining_due)
+        VALUES ('S_OVER_2', 50, 0, 0, 50);
+    """)
+
+    from database.repositories.sale_payments_repo import SalePaymentsRepo
+    repo = SalePaymentsRepo(conn)
+    payment_id = repo.record_payment(
+        sale_id='S_OVER_2',
+        amount=100.0,
+        method='Cash',
+        date='2026-06-22',
+        clearing_state='cleared',
+    )
+    row = conn.execute("SELECT customer_id, amount FROM customer_advances").fetchone()
+    assert row is not None
+    assert row["customer_id"] == 100
+    assert float(row["amount"]) == 50.0
+

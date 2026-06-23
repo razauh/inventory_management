@@ -240,10 +240,14 @@ class SalePaymentsRepo:
         )
         if not clearing_state:
             clearing_state = self.DEFAULT_CLEARING_STATE_BY_METHOD.get(method, "posted")
+        row = con.execute("SELECT customer_id FROM sales WHERE sale_id = ?", (sale_id,)).fetchone()
+        if not row:
+            raise ValueError(f"Sale {sale_id} not found")
+        customer_id = int(row["customer_id"])
         result = AccountingService(con).record_customer_payment_event(
             CustomerPaymentPayload(
                 sale_id=sale_id,
-                customer_id=0,
+                customer_id=customer_id,
                 amount=Decimal(str(amount)),
                 method=method,
                 date=date,
