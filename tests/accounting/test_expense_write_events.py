@@ -158,3 +158,49 @@ def test_expenses_repo_write_delegation(db_conn):
 
     with pytest.raises(DomainError, match="Date must be in YYYY-MM-DD format"):
         repo.create_expense("Lunch", 15.0, "2026/06/23", None)
+
+
+def test_expense_model_no_cash_link_is_documented_behavior(db_conn):
+    service = AccountingService(db_conn)
+
+    # Record initial counts/balances
+    initial_bank_ledger = service.get_bank_ledger()
+    initial_vendor_movements = service.get_vendor_cash_movements()
+    initial_customer_movements = service.get_customer_cash_movements()
+
+    # Record a new expense
+    expense_id = service.record_expense_create_event(
+        description="Office catering",
+        amount=150.00,
+        date="2026-06-23",
+        category_id=None,
+    )
+    assert expense_id > 0
+
+    # Assert that bank ledger, customer/vendor cash movements are completely unaffected
+    assert service.get_bank_ledger() == initial_bank_ledger
+    assert service.get_vendor_cash_movements() == initial_vendor_movements
+    assert service.get_customer_cash_movements() == initial_customer_movements
+
+    # Update the expense
+    service.record_expense_update_event(
+        expense_id=expense_id,
+        description="Office catering (updated)",
+        amount=200.00,
+        date="2026-06-23",
+        category_id=None,
+    )
+
+    # Check again
+    assert service.get_bank_ledger() == initial_bank_ledger
+    assert service.get_vendor_cash_movements() == initial_vendor_movements
+    assert service.get_customer_cash_movements() == initial_customer_movements
+
+    # Delete the expense
+    service.record_expense_delete_event(expense_id)
+
+    # Check again
+    assert service.get_bank_ledger() == initial_bank_ledger
+    assert service.get_vendor_cash_movements() == initial_vendor_movements
+    assert service.get_customer_cash_movements() == initial_customer_movements
+

@@ -383,3 +383,28 @@ Copy this template for each completed card:
   - None.
 
 
+## ACC-FIX-014: Decide whether the expense model must link to cash/bank events
+
+- Problem ID:
+  - `ACC-PROB-014`
+- Related rule IDs:
+  - `EXP-RULE-003`
+  - `EXP-RULE-004`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_expense_write_events.py::test_expense_model_no_cash_link_is_documented_behavior`
+  - `tests/accounting/test_expense_dashboard_totals.py::test_expense_reporting_policy_matches_documented_no_bank_link_decision`
+- Production files changed:
+  - None.
+- Behavior before:
+  - Expenses moved P&L and dashboard totals without any payment status, vendor, payable, or bank linkage.
+- Behavior after:
+  - Simple "no-bank-link" model for expenses is accepted and locked as documented behavior via unit tests.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+
+

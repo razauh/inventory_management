@@ -75,3 +75,29 @@ def test_sales_dashboard_metrics(dashboard_expense_db):
 
     metrics_filtered = service.get_sales_dashboard_metrics("2026-06-01", "2026-06-12")
     assert metrics_filtered.total_expenses == Decimal("120.50")
+
+
+def test_expense_reporting_policy_matches_documented_no_bank_link_decision(dashboard_expense_db):
+    service = AccountingService(dashboard_expense_db)
+
+    # 1. Assert that current dashboard totals sum to Decimal("181.25")
+    assert service.get_dashboard_expense_total("2026-06-01", "2026-06-30") == Decimal("181.25")
+
+    # 2. Add another expense and verify dashboard total increases
+    expense_id = service.record_expense_create_event(
+        description="Filing cabinets",
+        amount=300.00,
+        date="2026-06-18",
+        category_id=None,
+    )
+    assert expense_id > 0
+    assert service.get_dashboard_expense_total("2026-06-01", "2026-06-30") == Decimal("481.25")
+
+    # 3. Assert bank ledger & cash movements are completely blank/unchanged
+    # Because there are no bank/cash entries in the DB in this test setup,
+    # the ledger lists should be completely empty, confirming that the expense
+    # does not post to the bank ledger.
+    assert len(service.get_bank_ledger()) == 0
+    assert len(service.get_vendor_cash_movements()) == 0
+    assert len(service.get_customer_cash_movements()) == 0
+
