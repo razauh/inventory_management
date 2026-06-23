@@ -173,6 +173,7 @@ from .current_rules.expense_rules import (
     get_expense_report_category_totals as get_current_expense_report_category_totals,
     get_expense_report_lines as get_current_expense_report_lines,
     get_profit_loss_expense_summary as get_current_profit_loss_expense_summary,
+    get_dashboard_expense_total as get_current_dashboard_expense_total,
 )
 from .validators import (
     validate_customer_payment_metadata as validate_current_customer_payment_metadata,
@@ -875,7 +876,13 @@ class AccountingService:
         )
 
     def get_dashboard_expense_total(self, date_from: str, date_to: str) -> Decimal:
-        self._not_implemented("get_dashboard_expense_total")
+        if self.conn is None:
+            self._not_implemented("get_dashboard_expense_total")
+        return get_current_dashboard_expense_total(
+            self.conn,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
     def get_profit_loss_expense_summary(self, date_from: str, date_to: str) -> ExpenseProfitLossSummary:
         if self.conn is None:

@@ -110,3 +110,24 @@ It records where legacy/current behavior moved and which application call sites 
   - None.
 
 
+## EX-ACC-006: Consolidate dashboard expense totals and sales-dashboard expense dependency
+
+- Migrated behavior:
+  - Dashboard expense total reads (`expenses_total`) and the expense total dependency inside sales dashboard metrics (`get_sales_dashboard_metrics`).
+- Original location(s):
+  - `database/repositories/dashboard_repo.py`
+  - `modules/accounting/current_rules/sales_rules.py`
+- New accounting location(s):
+  - `modules/accounting/current_rules/expense_rules.py` (method: `get_dashboard_expense_total`)
+  - `modules/accounting/service.py` (implemented method: `get_dashboard_expense_total`)
+- Rewired call site(s):
+  - `database/repositories/dashboard_repo.py` (`expenses_total` and `summary_metrics` now route through `AccountingService`)
+  - `modules/accounting/current_rules/sales_rules.py` (`get_sales_dashboard_metrics` now pre-fetches and passes expense totals to SQL parameter)
+- Tests added/updated:
+  - `tests/accounting/test_expense_dashboard_totals.py` (new)
+- Behavior change:
+  - None intended.
+- Notes / unresolved correctness questions:
+  - None.
+
+

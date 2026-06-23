@@ -50,9 +50,10 @@ class DashboardRepo:
         These numbers are independent aggregates, so we cross join aggregate
         CTEs instead of issuing separate queries from the UI thread.
         """
+        total_expenses = float(self.accounting.get_dashboard_expense_total(date_from, date_to))
         sql = """
             WITH
-            sales AS (
+            sales_cte AS (
               SELECT
                 COALESCE(SUM(CAST(revenue AS REAL)), 0.0) AS total_sales,
                 COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS total_cogs
@@ -60,9 +61,7 @@ class DashboardRepo:
               WHERE event_date >= ? AND event_date <= ?
             ),
             expenses AS (
-              SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_expenses
-              FROM expenses e
-              WHERE e.date >= ? AND e.date <= ?
+              SELECT ? AS total_expenses
             ),
             receipts AS (
               SELECT COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0) AS receipts_cleared
@@ -113,15 +112,15 @@ class DashboardRepo:
               WHERE COALESCE(CAST(v.qty_in_base AS REAL), 0.0) < CAST(p.min_stock_level AS REAL)
             )
             SELECT
-              sales.total_sales,
-              sales.total_cogs,
+              sales_cte.total_sales,
+              sales_cte.total_cogs,
               expenses.total_expenses,
               receipts.receipts_cleared,
               vendor_payments.vendor_payments_cleared,
               receivables.open_receivables,
               payables.open_payables,
               stock.low_stock_count
-            FROM sales
+            FROM sales_cte
             CROSS JOIN expenses
             CROSS JOIN receipts
             CROSS JOIN vendor_payments
@@ -134,8 +133,7 @@ class DashboardRepo:
             (
                 date_from,
                 date_to,
-                date_from,
-                date_to,
+                total_expenses,
                 date_from,
                 date_to,
                 date_from,
@@ -185,12 +183,7 @@ class DashboardRepo:
         return _to_float(self._scalar(sql, (date_from, date_to)))
 
     def expenses_total(self, date_from: str, date_to: str) -> float:
-        sql = """
-            SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS v
-            FROM expenses e
-            WHERE e.date >= ? AND e.date <= ?
-        """
-        return _to_float(self._scalar(sql, (date_from, date_to)))
+        return float(self.accounting.get_dashboard_expense_total(date_from, date_to))
 
     def gross_profit(self, date_from: str, date_to: str) -> float:
         sales = self.total_sales(date_from, date_to)

@@ -173,6 +173,9 @@ def get_quotation_financials(
 def get_sales_dashboard_metrics(
     conn: Connection, date_from: str, date_to: str
 ) -> SalesDashboardMetrics:
+    from .expense_rules import get_dashboard_expense_total
+
+    total_expenses = float(get_dashboard_expense_total(conn, date_from, date_to))
     row = conn.execute(
         """
         WITH
@@ -184,9 +187,7 @@ def get_sales_dashboard_metrics(
           WHERE event_date >= ? AND event_date <= ?
         ),
         expenses_cte AS (
-          SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_expenses
-          FROM expenses e
-          WHERE e.date >= ? AND e.date <= ?
+          SELECT ? AS total_expenses
         ),
         receipts AS (
           SELECT COALESCE(SUM(CAST(sp.amount AS REAL)), 0.0) AS receipts_cleared
@@ -219,7 +220,7 @@ def get_sales_dashboard_metrics(
                receivables.open_receivables, all_payables.open_payables
         FROM sales_cte, expenses_cte, receipts, payables, receivables, all_payables
         """,
-        (date_from, date_to, date_from, date_to, date_from, date_to,
+        (date_from, date_to, total_expenses, date_from, date_to,
          date_from, date_to, date_from, date_to),
     ).fetchone()
     # ponytail: empty result set is degenerate — the CROSS JOIN yields one row

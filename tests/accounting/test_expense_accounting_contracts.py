@@ -80,9 +80,9 @@ def test_unmigrated_expense_methods_raise_not_implemented():
     with pytest.raises(AccountingNotImplementedError):
         service.get_expense_screen_category_totals()
     with pytest.raises(AccountingNotImplementedError):
-        service.get_expense_report_category_totals()
+        service.get_expense_report_category_totals("2026-06-01", "2026-06-30", None)
     with pytest.raises(AccountingNotImplementedError):
-        service.get_expense_report_lines()
+        service.get_expense_report_lines("2026-06-01", "2026-06-30", None)
     with pytest.raises(AccountingNotImplementedError):
         service.get_dashboard_expense_total("2026-06-01", "2026-06-30")
     with pytest.raises(AccountingNotImplementedError):

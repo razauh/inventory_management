@@ -367,3 +367,18 @@ def get_profit_loss_expense_summary(
         expenses=tuple(expenses),
         total_expenses=total_val,
     )
+
+
+def get_dashboard_expense_total(
+    conn: sqlite3.Connection,
+    date_from: str,
+    date_to: str,
+) -> Decimal:
+    sql = """
+        SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS v
+        FROM expenses e
+        WHERE e.date >= ? AND e.date <= ?
+    """
+    row = conn.execute(sql, (date_from, date_to)).fetchone()
+    val = row["v"] if row else 0.0
+    return Decimal(str(val)) if val is not None else Decimal("0.00")
