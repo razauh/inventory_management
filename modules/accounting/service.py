@@ -166,6 +166,11 @@ from .current_rules.vendor_rules import (
     update_vendor_payment_state as update_current_vendor_payment_state,
 )
 from .exceptions import AccountingNotImplementedError
+from .current_rules.expense_rules import (
+    get_expense_financial_summary as get_current_expense_financial_summary,
+    list_expense_rows as list_current_expense_rows,
+    get_expense_screen_category_totals as get_current_expense_screen_category_totals,
+)
 from .validators import (
     validate_customer_payment_metadata as validate_current_customer_payment_metadata,
     validate_supplier_refund_metadata as validate_current_supplier_refund_metadata,
@@ -785,14 +790,56 @@ class AccountingService:
     def record_expense_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_expense_event")
 
-    def get_expense_financial_summary(self, expense_id: int) -> ExpenseFinancialSummary:
-        self._not_implemented("get_expense_financial_summary")
+    def get_expense_financial_summary(self, expense_id: int) -> ExpenseFinancialSummary | None:
+        if self.conn is None:
+            self._not_implemented("get_expense_financial_summary")
+        return get_current_expense_financial_summary(self.conn, expense_id)
 
-    def list_expense_rows(self, *args: Any, **kwargs: Any) -> tuple[ExpenseFinancialSummary, ...]:
-        self._not_implemented("list_expense_rows")
+    def list_expense_rows(
+        self,
+        query: str = "",
+        date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        category_id: int | None = None,
+        amount_min: float | None = None,
+        amount_max: float | None = None,
+    ) -> tuple[ExpenseFinancialSummary, ...]:
+        if self.conn is None:
+            self._not_implemented("list_expense_rows")
+        return list_current_expense_rows(
+            self.conn,
+            query=query,
+            date=date,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+        )
 
-    def get_expense_screen_category_totals(self, *args: Any, **kwargs: Any) -> tuple[ExpenseCategoryTotal, ...]:
-        self._not_implemented("get_expense_screen_category_totals")
+    def get_expense_screen_category_totals(
+        self,
+        query: str = "",
+        date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        category_id: int | None = None,
+        amount_min: float | None = None,
+        amount_max: float | None = None,
+    ) -> tuple[ExpenseCategoryTotal, ...]:
+        if self.conn is None:
+            self._not_implemented("get_expense_screen_category_totals")
+        return get_current_expense_screen_category_totals(
+            self.conn,
+            query=query,
+            date=date,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+        )
 
     def get_expense_report_category_totals(self, *args: Any, **kwargs: Any) -> tuple[ExpenseCategoryTotal, ...]:
         self._not_implemented("get_expense_report_category_totals")

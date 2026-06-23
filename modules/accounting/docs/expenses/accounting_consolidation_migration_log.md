@@ -48,3 +48,25 @@ It records where legacy/current behavior moved and which application call sites 
 - Notes / unresolved correctness questions:
   - Expense behavior is still managed in legacy locations (`ExpensesRepo`, `FinancialReports`, etc.). Call sites will be rewired in subsequent cards.
 
+
+## EX-ACC-003: Consolidate expense row reads and screen totals
+
+- Migrated behavior:
+  - Single-row reads (`get_expense`), advanced search (`search_expenses_adv`), and screen-level category totals (`total_by_category`).
+- Original location(s):
+  - `database/repositories/expenses_repo.py`
+- New accounting location(s):
+  - `modules/accounting/current_rules/expense_rules.py` (new)
+  - `modules/accounting/service.py` (implemented methods: `get_expense_financial_summary`, `list_expense_rows`, `get_expense_screen_category_totals`)
+- Rewired call site(s):
+  - `database/repositories/expenses_repo.py` (`get_expense`, `search_expenses_adv`, `total_by_category` now route through `AccountingService`)
+  - `modules/expense/controller.py` (read calls rewired to use `AccountingService` directly)
+- Tests added/updated:
+  - `tests/accounting/test_expense_row_reads.py` (new)
+  - `tests/accounting/test_expense_screen_totals.py` (new)
+- Behavior change:
+  - None intended.
+- Notes / unresolved correctness questions:
+  - Return types of migrated methods are standardized to DTO dataclasses with `Decimal` values for financial amounts.
+
+

@@ -1,4 +1,213 @@
-"""Future home for extracted expense accounting behavior.
+"""Current extracted expense accounting behavior.
 
-These rules will mirror current code first. They are not assumed correct.
+These rules mirror current code first. They are not assumed correct.
 """
+
+from decimal import Decimal
+import sqlite3
+from typing import Optional, Any
+from ..dto import ExpenseFinancialSummary, ExpenseCategoryTotal
+
+
+def _build_where_clause(
+    query: str = "",
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    category_id: Optional[int] = None,
+    amount_min: Optional[float] = None,
+    amount_max: Optional[float] = None,
+) -> tuple[str, list]:
+    where = []
+    params = []
+    if query:
+        where.append("e.description LIKE ?")
+        params.append(f"%{query.strip()}%")
+    if date:
+        where.append("DATE(e.date) = DATE(?)")
+        params.append(date)
+    if date_from:
+        where.append("DATE(e.date) >= DATE(?)")
+        params.append(date_from)
+    if date_to:
+        where.append("DATE(e.date) <= DATE(?)")
+        params.append(date_to)
+    if category_id is not None:
+        if category_id == 0:
+            where.append("e.category_id IS NULL")
+        else:
+            where.append("e.category_id = ?")
+            params.append(category_id)
+    if amount_min is not None:
+        where.append("CAST(e.amount AS REAL) >= ?")
+        params.append(float(amount_min))
+    if amount_max is not None:
+        where.append("CAST(e.amount AS REAL) <= ?")
+        params.append(float(amount_max))
+    return " AND ".join(where), params
+
+
+def get_expense_financial_summary(
+    conn: sqlite3.Connection,
+    expense_id: int,
+) -> Optional[ExpenseFinancialSummary]:
+    row = conn.execute(
+        """
+        SELECT e.expense_id,
+               e.description,
+               CAST(e.amount AS REAL) AS amount,
+               e.date,
+               e.category_id,
+               c.name AS category_name
+        FROM expenses e
+        LEFT JOIN expense_categories c ON c.category_id = e.category_id
+        WHERE e.expense_id = ?
+        """,
+        (expense_id,),
+    ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    return ExpenseFinancialSummary(
+        expense_id=d["expense_id"],
+        description=d["description"],
+        amount=Decimal(str(d["amount"])) if d["amount"] is not None else Decimal("0.00"),
+        date=d["date"],
+        category_id=d["category_id"],
+        category_name=d["category_name"],
+    )
+
+
+def list_expense_rows(
+    conn: sqlite3.Connection,
+    query: str = "",
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    category_id: Optional[int] = None,
+    amount_min: Optional[float] = None,
+    amount_max: Optional[float] = None,
+) -> tuple[ExpenseFinancialSummary, ...]:
+    where_str, params = _build_where_clause(
+        query=query,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
+        category_id=category_id,
+        amount_min=amount_min,
+        amount_max=amount_max,
+    )
+    sql = """
+        SELECT e.expense_id,
+               e.description,
+               CAST(e.amount AS REAL) AS amount,
+               e.date,
+               e.category_id,
+               c.name AS category_name
+        FROM expenses e
+        LEFT JOIN expense_categories c ON c.category_id = e.category_id
+    """
+    if where_str:
+        sql += " WHERE " + where_str
+    sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
+
+    rows = conn.execute(sql, tuple(params)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append(
+            ExpenseFinancialSummary(
+                expense_id=d["expense_id"],
+                description=d["description"],
+                amount=Decimal(str(d["amount"])) if d["amount"] is not None else Decimal("0.00"),
+                date=d["date"],
+                category_id=d["category_id"],
+                category_name=d["category_name"],
+            )
+        )
+    return tuple(out)
+
+
+def get_expense_screen_category_totals(
+    conn: sqlite3.Connection,
+    query: str = "",
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    category_id: Optional[int] = None,
+    amount_min: Optional[float] = None,
+    amount_max: Optional[float] = None,
+) -> tuple[ExpenseCategoryTotal, ...]:
+    where_str, params = _build_where_clause(
+        query=query,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
+        category_id=category_id,
+        amount_min=amount_min,
+        amount_max=amount_max,
+    )
+
+    if where_str:
+        on_clause = f" ON e.category_id = c.category_id AND {where_str} "
+    else:
+        on_clause = " ON e.category_id = c.category_id "
+
+    sql_parts = []
+    sql_parts.append(f"""
+        SELECT c.category_id,
+               c.name AS category_name,
+               CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total_amount
+        FROM expense_categories c
+        LEFT JOIN expenses e {on_clause}
+        GROUP BY c.category_id, c.name
+    """)
+
+    if category_id is None or category_id == 0:
+        uncat_where_str, uncat_params = _build_where_clause(
+            query=query,
+            date=date,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=None,
+            amount_min=amount_min,
+            amount_max=amount_max,
+        )
+        if uncat_where_str:
+            uncat_clause = f" e.category_id IS NULL AND {uncat_where_str} "
+        else:
+            uncat_clause = " e.category_id IS NULL "
+
+        sql_parts.append(f"""
+            UNION ALL
+
+            SELECT 0 AS category_id,
+                   '(Uncategorized)' AS category_name,
+                   CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total_amount
+            FROM expenses e
+            WHERE {uncat_clause}
+        """)
+        exec_params = params + uncat_params
+    else:
+        exec_params = params
+
+    full_sql = f"""
+        SELECT category_id, category_name, total_amount
+        FROM (
+            {" ".join(sql_parts)}
+        )
+        ORDER BY category_name
+    """
+
+    rows = conn.execute(full_sql, tuple(exec_params)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append(
+            ExpenseCategoryTotal(
+                category_id=d["category_id"],
+                category_name=d["category_name"],
+                total_amount=Decimal(str(d["total_amount"])) if d["total_amount"] is not None else Decimal("0.00"),
+            )
+        )
+    return tuple(out)

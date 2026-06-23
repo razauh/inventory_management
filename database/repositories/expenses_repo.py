@@ -306,7 +306,8 @@ class ExpensesRepo:
 
         Returns rows ordered by date (DESC) then expense_id (DESC).
         """
-        where_str, params = self._build_where_clause(
+        from modules.accounting.service import AccountingService
+        rows = AccountingService(self.conn).list_expense_rows(
             query=query,
             date=date,
             date_from=date_from,
@@ -315,22 +316,17 @@ class ExpensesRepo:
             amount_min=amount_min,
             amount_max=amount_max,
         )
-        sql = """
-            SELECT e.expense_id,
-                   e.description,
-                   CAST(e.amount AS REAL) AS amount,
-                   e.date,
-                   e.category_id,
-                   c.name AS category_name
-            FROM expenses e
-            LEFT JOIN expense_categories c ON c.category_id = e.category_id
-        """
-        if where_str:
-            sql += " WHERE " + where_str
-        sql += " ORDER BY DATE(e.date) DESC, e.expense_id DESC"
-
-        rows = self.conn.execute(sql, tuple(params)).fetchall()
-        return [Expense(**dict(r)) for r in rows]
+        return [
+            Expense(
+                expense_id=r.expense_id,
+                description=r.description,
+                amount=float(r.amount),
+                date=r.date,
+                category_id=r.category_id,
+                category_name=r.category_name,
+            )
+            for r in rows
+        ]
 
     def create_expense(
         self,
@@ -421,21 +417,18 @@ class ExpensesRepo:
         """
         Fetch a single expense by ID.  Returns None if not found.
         """
-        row = self.conn.execute(
-            """
-            SELECT e.expense_id,
-                   e.description,
-                   CAST(e.amount AS REAL) AS amount,
-                   e.date,
-                   e.category_id,
-                   c.name AS category_name
-            FROM expenses e
-            LEFT JOIN expense_categories c ON c.category_id = e.category_id
-            WHERE e.expense_id = ?
-            """,
-            (expense_id,),
-        ).fetchone()
-        return Expense(**dict(row)) if row else None
+        from modules.accounting.service import AccountingService
+        summary = AccountingService(self.conn).get_expense_financial_summary(expense_id)
+        if not summary:
+            return None
+        return Expense(
+            expense_id=summary.expense_id,
+            description=summary.description,
+            amount=float(summary.amount),
+            date=summary.date,
+            category_id=summary.category_id,
+            category_name=summary.category_name,
+        )
 
     def total_by_category(
         self,
@@ -454,8 +447,8 @@ class ExpensesRepo:
         ordered by category name with keys: category_id, category_name,
         total_amount.
         """
-        # Part 1: Named categories
-        where_str, params = self._build_where_clause(
+        from modules.accounting.service import AccountingService
+        totals = AccountingService(self.conn).get_expense_screen_category_totals(
             query=query,
             date=date,
             date_from=date_from,
@@ -464,58 +457,11 @@ class ExpensesRepo:
             amount_min=amount_min,
             amount_max=amount_max,
         )
-
-        if where_str:
-            on_clause = f" ON e.category_id = c.category_id AND {where_str} "
-        else:
-            on_clause = " ON e.category_id = c.category_id "
-
-        sql_parts = []
-        sql_parts.append(f"""
-            SELECT c.category_id,
-                   c.name AS category_name,
-                   CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total_amount
-            FROM expense_categories c
-            LEFT JOIN expenses e {on_clause}
-            GROUP BY c.category_id, c.name
-        """)
-
-        # Part 2: Uncategorized
-        if category_id is None or category_id == 0:
-            uncat_where_str, uncat_params = self._build_where_clause(
-                query=query,
-                date=date,
-                date_from=date_from,
-                date_to=date_to,
-                category_id=None,
-                amount_min=amount_min,
-                amount_max=amount_max,
-            )
-            if uncat_where_str:
-                uncat_clause = f" e.category_id IS NULL AND {uncat_where_str} "
-            else:
-                uncat_clause = " e.category_id IS NULL "
-
-            sql_parts.append(f"""
-                UNION ALL
-
-                SELECT 0 AS category_id,
-                       '(Uncategorized)' AS category_name,
-                       CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total_amount
-                FROM expenses e
-                WHERE {uncat_clause}
-            """)
-            exec_params = params + uncat_params
-        else:
-            exec_params = params
-
-        full_sql = f"""
-            SELECT category_id, category_name, total_amount
-            FROM (
-                {" ".join(sql_parts)}
-            )
-            ORDER BY category_name
-        """
-
-        rows = self.conn.execute(full_sql, tuple(exec_params)).fetchall()
-        return [dict(r) for r in rows]
+        return [
+            {
+                "category_id": t.category_id,
+                "category_name": t.category_name,
+                "total_amount": float(t.total_amount),
+            }
+            for t in totals
+        ]

@@ -39,6 +39,7 @@ from .model import ExpensesTableModel
 from .category_dialog import CategoryDialog  # new dialog
 from ...utils import ui_helpers as ui
 from ...database.repositories.expenses_repo import ExpensesRepo, DomainError
+from ..accounting import AccountingService
 
 
 class ExpenseController(BaseModule):
@@ -48,6 +49,7 @@ class ExpenseController(BaseModule):
         super().__init__()
         self.conn = conn
         self.repo = ExpensesRepo(conn)
+        self.accounting = AccountingService(conn)
 
         # Root view
         self.view = ExpenseView()
@@ -118,7 +120,7 @@ class ExpenseController(BaseModule):
         if not self._apply_filter_feedback(filters):
             return
 
-        rows = self.repo.search_expenses_adv(
+        rows = self.accounting.list_expense_rows(
             query=filters["query"],
             date=filters["effective_date"],
             date_from=filters["date_from"],
@@ -128,7 +130,19 @@ class ExpenseController(BaseModule):
             amount_max=filters["amount_max"],
         )
 
-        self._expense_model.set_rows(rows)
+        dict_rows = [
+            {
+                "expense_id": r.expense_id,
+                "description": r.description,
+                "amount": float(r.amount),
+                "date": r.date,
+                "category_id": r.category_id,
+                "category_name": r.category_name,
+            }
+            for r in rows
+        ]
+
+        self._expense_model.set_rows(dict_rows)
         if not self._expense_columns_resized:
             self.view.tbl_expenses.resizeColumnsToContents()
             self._expense_columns_resized = True
@@ -215,7 +229,7 @@ class ExpenseController(BaseModule):
     ) -> None:
         """Populate the totals table (totals by category)."""
         try:
-            totals: List[Dict] = self.repo.total_by_category(
+            category_totals = self.accounting.get_expense_screen_category_totals(
                 query=query,
                 date=None if date_range_active else (effective_date if effective_date is not None else date),
                 date_from=date_from,
@@ -224,6 +238,14 @@ class ExpenseController(BaseModule):
                 amount_min=amount_min,
                 amount_max=amount_max,
             )
+            totals = [
+                {
+                    "category_id": t.category_id,
+                    "category_name": t.category_name,
+                    "total_amount": float(t.total_amount),
+                }
+                for t in category_totals
+            ]
         except Exception as e:
             # Fail gracefully; keep UI usable even if aggregate query fails
             totals = []
@@ -368,13 +390,22 @@ class ExpenseController(BaseModule):
             ui.info(self.view, "Select", "Please select an expense to edit.")
             return
 
-        current = self.repo.get_expense(exp_id)
+        current = self.accounting.get_expense_financial_summary(exp_id)
         if not current:
             ui.info(self.view, "Not found", "The selected expense no longer exists.")
             self._reload()
             return
 
-        payload = self._open_form(initial=current)
+        current_dict = {
+            "expense_id": current.expense_id,
+            "description": current.description,
+            "amount": float(current.amount),
+            "date": current.date,
+            "category_id": current.category_id,
+            "category_name": current.category_name,
+        }
+
+        payload = self._open_form(initial=current_dict)
         if not payload:
             return
 
