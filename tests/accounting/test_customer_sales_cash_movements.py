@@ -92,3 +92,46 @@ def test_bank_ledger_ordering_matches_intended_date_basis():
     assert rows[1].date == "2026-06-22"
     conn.close()
 
+
+def test_customer_cash_movements_exclude_non_cash_return_credit():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.executescript("""
+        CREATE TABLE sale_payments (payment_id INTEGER PRIMARY KEY,
+            sale_id TEXT, date TEXT, amount REAL, method TEXT,
+            clearing_state TEXT, cleared_date TEXT, notes TEXT);
+        CREATE TABLE customer_advances (tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL, source_type TEXT, source_id TEXT,
+            method TEXT, bank_account_id INTEGER, reference_no TEXT, notes TEXT, created_by INTEGER);
+
+        INSERT INTO customer_advances (customer_id, tx_date, amount, source_type)
+        VALUES (1, '2026-06-15', 50.0, 'return_credit');
+    """)
+    svc = AccountingService(conn)
+    movements = svc.get_customer_cash_movements()
+    assert len(movements) == 0
+    conn.close()
+
+
+def test_customer_deposit_credit_still_appears_in_cash_movements():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.executescript("""
+        CREATE TABLE sale_payments (payment_id INTEGER PRIMARY KEY,
+            sale_id TEXT, date TEXT, amount REAL, method TEXT,
+            clearing_state TEXT, cleared_date TEXT, notes TEXT);
+        CREATE TABLE customer_advances (tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL, source_type TEXT, source_id TEXT,
+            method TEXT, bank_account_id INTEGER, reference_no TEXT, notes TEXT, created_by INTEGER);
+
+        INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, method)
+        VALUES (1, '2026-06-15', 50.0, 'deposit', 'Cash');
+    """)
+    svc = AccountingService(conn)
+    movements = svc.get_customer_cash_movements()
+    assert len(movements) == 1
+    assert movements[0].type == "Customer Credit"
+    assert float(movements[0].amount) == 50.0
+    conn.close()
+
+

@@ -187,3 +187,27 @@ Copy this template for each completed card:
 - Follow-up questions:
   - None.
 
+## ACC-FIX-016: Exclude non-cash customer return credit from cash movements
+
+- Problem ID:
+  - `ACC-PROB-016`
+- Related rule IDs:
+  - `SAL-RULE-004`
+  - `CUST-RULE-001`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_cash_movements.py::test_customer_cash_movements_exclude_non_cash_return_credit`
+  - `tests/accounting/test_customer_sales_cash_movements.py::test_customer_deposit_credit_still_appears_in_cash_movements`
+- Production files changed:
+  - `modules/accounting/current_rules/bank_rules.py`
+- Behavior before:
+  - `get_customer_cash_movements` selected customer advances with `source_type IN ('deposit', 'return_credit')`, incorrectly treating return credits (liability) as cash inflow.
+- Behavior after:
+  - `get_customer_cash_movements` filters advances to `source_type = 'deposit'` only, excluding non-cash return credits.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+

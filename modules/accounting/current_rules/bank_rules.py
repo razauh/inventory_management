@@ -166,7 +166,7 @@ def get_customer_cash_movements(
                  CASE WHEN CAST(ca.amount AS REAL) > 0 THEN 'inflow' ELSE 'outflow' END AS direction,
                  ca.method, 'cleared' AS status, ca.source_id AS doc_id, ca.notes
           FROM customer_advances ca
-          WHERE ca.source_type IN ('deposit', 'return_credit')
+          WHERE ca.source_type = 'deposit'
             AND CAST(ca.amount AS REAL) > 0
         )
         SELECT * FROM movements WHERE 1 = 1 {date_where}
