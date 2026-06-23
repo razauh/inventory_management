@@ -332,3 +332,28 @@ Copy this template for each completed card:
   - None.
 - Follow-up questions:
   - None.
+
+
+## ACC-FIX-008: Finish sale-return ownership boundaries
+
+- Problem ID:
+  - `ACC-PROB-008`
+- Related rule IDs:
+  - `INV-RULE-001`
+  - `ACC-PROB-020`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_sale_return_financials.py::test_sale_return_service_owns_documented_responsibilities`
+  - `tests/accounting/test_customer_sales_sale_return_financials.py::test_sale_return_repo_service_boundary_is_explicit`
+- Production files changed:
+  - `database/repositories/sales_repo.py`
+- Behavior before:
+  - `SalesRepo.record_return` manually wrote inventory transactions to the database and directly rebuilt stock valuations before invoking the `AccountingService` for return settlement.
+- Behavior after:
+  - `SalesRepo.record_return` delegates inventory transactions posting and valuation rebuilding to `AccountingService.record_sale_return_inventory_event`, aligning with the documented rule boundaries.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+

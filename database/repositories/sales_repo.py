@@ -5,7 +5,13 @@ import math
 import sqlite3
 from typing import Iterable, Optional
 
-from modules.accounting import AccountingService, SaleInventoryLine, SaleInventoryPayload, SaleReturnPayload
+from modules.accounting import (
+    AccountingService,
+    SaleInventoryLine,
+    SaleInventoryPayload,
+    SaleReturnPayload,
+    SaleReturnInventoryPayload,
+)
 from .inventory_repo import next_inventory_txn_seq, rebuild_dirty_valuations
 
 
@@ -931,19 +937,17 @@ class SalesRepo:
                 ).fetchone():
                     raise ValueError(f"Sale item mismatch for item_id {ln['item_id']}")
 
-            # Insert inventory return rows + capture snapshots
-            seq = next_inventory_txn_seq(self.conn, date)
-            txn_ids: list[int] = []
-            for ln in lines:
-                cur = self.conn.execute(
-                    "INSERT INTO inventory_transactions(product_id, quantity, uom_id, transaction_type, "
-                    "reference_table, reference_id, reference_item_id, date, txn_seq, notes, created_by) "
-                    "VALUES (?,?,?,'sale_return','sales',?,?,?,?,?,?)",
-                    (ln["product_id"], ln["qty_return"], ln["uom_id"], sid, ln["item_id"], date, seq, notes, created_by),
+            # Insert inventory return rows + capture snapshots via AccountingService
+            inv_res = self.accounting.record_sale_return_inventory_event(
+                SaleReturnInventoryPayload(
+                    sale_id=sid,
+                    date=date,
+                    created_by=created_by,
+                    lines=tuple(dict(ln) for ln in lines),
+                    notes=notes,
                 )
-                txn_ids.append(int(cur.lastrowid))
-                seq += 10
-            rebuild_dirty_valuations(self.conn)
+            )
+            txn_ids = list(inv_res.transaction_ids)
 
             ph = ",".join("?" * len(txn_ids))
             vr = self.conn.execute(

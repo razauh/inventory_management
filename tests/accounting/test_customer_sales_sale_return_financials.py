@@ -178,3 +178,134 @@ def test_sale_return_refund_by_bank_requires_metadata_if_policy_allows_it():
     assert row["instrument_no"] == "TX123"
     assert row["instrument_type"] == "online"
     conn.close()
+
+
+def test_sale_return_service_owns_documented_responsibilities():
+    from inventory_management.database.schema import SQL
+    from modules.accounting.dto import SaleReturnInventoryPayload
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(SQL)
+
+    customer_id = conn.execute(
+        "INSERT INTO customers (name, contact_info) VALUES ('Return Customer', 'Test')"
+    ).lastrowid
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Return Product')").lastrowid
+    conn.execute(
+        "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+        (product_id, uom_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, date)
+        VALUES (?, 100.0, ?, 'adjustment', '2026-06-11')
+        """,
+        (product_id, uom_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO sales (sale_id, customer_id, date, total_amount, payment_status, paid_amount)
+        VALUES ('SAL-001', ?, '2026-06-11', 100.0, 'unpaid', 0.0)
+        """,
+        (customer_id,),
+    )
+    item_id = conn.execute(
+        """
+        INSERT INTO sale_items (sale_id, product_id, quantity, uom_id, unit_price, item_discount)
+        VALUES ('SAL-001', ?, 10.0, ?, 10.0, 0.0)
+        """,
+        (product_id, uom_id),
+    ).lastrowid
+
+    svc = AccountingService(conn)
+    payload = SaleReturnInventoryPayload(
+        sale_id='SAL-001',
+        date='2026-06-12',
+        created_by=None,
+        lines=({"item_id": item_id, "qty_return": 3.0},),
+        notes="Return 3 items"
+    )
+    res = svc.record_sale_return_inventory_event(payload)
+    assert len(res.transaction_ids) == 1
+
+    txn = conn.execute(
+        "SELECT * FROM inventory_transactions WHERE transaction_id = ?",
+        (res.transaction_ids[0],)
+    ).fetchone()
+    assert txn is not None
+    assert txn["transaction_type"] == "sale_return"
+    assert txn["reference_table"] == "sales"
+    assert txn["reference_id"] == "SAL-001"
+    assert txn["reference_item_id"] == item_id
+    assert float(txn["quantity"]) == 3.0
+    conn.close()
+
+
+def test_sale_return_repo_service_boundary_is_explicit():
+    from unittest.mock import MagicMock
+    from database.repositories.sales_repo import SalesRepo
+    from inventory_management.database.schema import SQL
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(SQL)
+
+    customer_id = conn.execute(
+        "INSERT INTO customers (name, contact_info) VALUES ('Return Customer', 'Test')"
+    ).lastrowid
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Return Product')").lastrowid
+    conn.execute(
+        "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+        (product_id, uom_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, date)
+        VALUES (?, 100.0, ?, 'adjustment', '2026-06-11')
+        """,
+        (product_id, uom_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO sales (sale_id, customer_id, date, total_amount, payment_status, paid_amount)
+        VALUES ('SAL-001', ?, '2026-06-11', 100.0, 'unpaid', 0.0)
+        """,
+        (customer_id,),
+    )
+    item_id = conn.execute(
+        """
+        INSERT INTO sale_items (sale_id, product_id, quantity, uom_id, unit_price, item_discount)
+        VALUES ('SAL-001', ?, 10.0, ?, 10.0, 0.0)
+        """,
+        (product_id, uom_id),
+    ).lastrowid
+
+    repo = SalesRepo(conn)
+    repo.accounting.record_sale_return_inventory_event = MagicMock(
+        side_effect=repo.accounting.record_sale_return_inventory_event
+    )
+    repo.accounting.record_sale_return_event = MagicMock(
+        side_effect=repo.accounting.record_sale_return_event
+    )
+
+    repo.record_return(
+        sid="SAL-001",
+        date="2026-06-12",
+        created_by=None,
+        lines=[{
+            "item_id": item_id,
+            "product_id": product_id,
+            "uom_id": uom_id,
+            "qty_return": 3.0,
+        }],
+        notes="Return 3 items",
+        settlement={"cash_refund": 0.0},
+    )
+
+    repo.accounting.record_sale_return_inventory_event.assert_called_once()
+    repo.accounting.record_sale_return_event.assert_called_once()
+    conn.close()
+
