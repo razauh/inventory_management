@@ -89,6 +89,10 @@ from .dto import (
     VendorPurchaseTotals,
     VendorStatement,
     VendorStatementEntry,
+    ExpenseFinancialSummary,
+    ExpenseCategoryTotal,
+    ExpenseReportLine,
+    ExpenseProfitLossSummary,
 )
 from .exceptions import (
     AccountingError,
@@ -192,4 +196,8 @@ __all__ = [
     "VendorPurchaseTotals",
     "VendorStatement",
     "VendorStatementEntry",
+    "ExpenseFinancialSummary",
+    "ExpenseCategoryTotal",
+    "ExpenseReportLine",
+    "ExpenseProfitLossSummary",
 ]

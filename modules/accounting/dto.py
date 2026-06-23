@@ -903,3 +903,36 @@ class JournalPreview:
     source_type: str
     source_id: int
     lines: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExpenseFinancialSummary:
+    expense_id: int | None
+    description: str
+    amount: Decimal
+    date: str
+    category_id: int | None
+    category_name: str | None
+
+
+@dataclass(frozen=True)
+class ExpenseCategoryTotal:
+    category_id: int | None
+    category_name: str | None
+    total_amount: Decimal
+
+
+@dataclass(frozen=True)
+class ExpenseReportLine:
+    expense_id: int
+    date: str
+    category_name: str
+    description: str
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class ExpenseProfitLossSummary:
+    expenses: tuple[ExpenseCategoryTotal, ...]
+    total_expenses: Decimal
+

@@ -70,6 +70,10 @@ from .dto import (
     VendorPurchaseTotals,
     VendorStatement,
     VendorAgingReport,
+    ExpenseFinancialSummary,
+    ExpenseCategoryTotal,
+    ExpenseReportLine,
+    ExpenseProfitLossSummary,
 )
 from .reports.ar_ap_summary import (
     get_ap_summary as get_current_ap_summary,
@@ -780,6 +784,39 @@ class AccountingService:
 
     def record_expense_event(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("record_expense_event")
+
+    def get_expense_financial_summary(self, expense_id: int) -> ExpenseFinancialSummary:
+        self._not_implemented("get_expense_financial_summary")
+
+    def list_expense_rows(self, *args: Any, **kwargs: Any) -> tuple[ExpenseFinancialSummary, ...]:
+        self._not_implemented("list_expense_rows")
+
+    def get_expense_screen_category_totals(self, *args: Any, **kwargs: Any) -> tuple[ExpenseCategoryTotal, ...]:
+        self._not_implemented("get_expense_screen_category_totals")
+
+    def get_expense_report_category_totals(self, *args: Any, **kwargs: Any) -> tuple[ExpenseCategoryTotal, ...]:
+        self._not_implemented("get_expense_report_category_totals")
+
+    def get_expense_report_lines(self, *args: Any, **kwargs: Any) -> tuple[ExpenseReportLine, ...]:
+        self._not_implemented("get_expense_report_lines")
+
+    def get_dashboard_expense_total(self, date_from: str, date_to: str) -> Decimal:
+        self._not_implemented("get_dashboard_expense_total")
+
+    def get_profit_loss_expense_summary(self, date_from: str, date_to: str) -> ExpenseProfitLossSummary:
+        self._not_implemented("get_profit_loss_expense_summary")
+
+    def validate_expense_input(self, *args: Any, **kwargs: Any) -> None:
+        self._not_implemented("validate_expense_input")
+
+    def record_expense_create_event(self, *args: Any, **kwargs: Any) -> None:
+        self._not_implemented("record_expense_create_event")
+
+    def record_expense_update_event(self, *args: Any, **kwargs: Any) -> None:
+        self._not_implemented("record_expense_update_event")
+
+    def record_expense_delete_event(self, expense_id: int) -> None:
+        self._not_implemented("record_expense_delete_event")
 
     def record_sale_inventory_event(
         self, payload: SaleInventoryPayload
