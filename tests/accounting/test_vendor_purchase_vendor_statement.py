@@ -115,3 +115,92 @@ def test_vendor_statement_preserves_opening_and_closing_balances():
     assert statement["closing_balance"] == pytest.approx(100.0)
     assert statement["period"] == {"from": "2026-06-01", "to": "2026-06-30"}
     conn.close()
+
+
+def test_vendor_statement_opening_credit_includes_return_credit_balance():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SQL)
+
+    vendor_id = conn.execute(
+        "INSERT INTO vendors (name, contact_info) VALUES ('Vendor', 'Contact')"
+    ).lastrowid
+
+    # Pre-period deposit
+    conn.execute(
+        """
+        INSERT INTO vendor_advances (vendor_id, tx_date, amount, source_type)
+        VALUES (?, '2026-05-10', 25.0, 'deposit')
+        """,
+        (vendor_id,),
+    )
+
+    # Pre-period return credit
+    conn.execute(
+        """
+        INSERT INTO vendor_advances (vendor_id, tx_date, amount, source_type)
+        VALUES (?, '2026-05-15', 15.0, 'return_credit')
+        """,
+        (vendor_id,),
+    )
+
+    # Pre-period credit applied
+    conn.execute(
+        """
+        INSERT INTO vendor_advances (vendor_id, tx_date, amount, source_type)
+        VALUES (?, '2026-05-20', -10.0, 'applied_to_purchase')
+        """,
+        (vendor_id,),
+    )
+
+    statement = AccountingService(conn).get_vendor_statement(
+        vendor_id,
+        "2026-06-01",
+        "2026-06-30",
+    )
+
+    # Opening credit should be 25.0 + 15.0 - 10.0 = 30.0
+    assert statement["opening_credit"] == pytest.approx(30.0)
+    conn.close()
+
+
+def test_vendor_statement_opening_credit_matches_vendor_balance_basis():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SQL)
+
+    vendor_id = conn.execute(
+        "INSERT INTO vendors (name, contact_info) VALUES ('Vendor', 'Contact')"
+    ).lastrowid
+
+    conn.execute(
+        """
+        INSERT INTO vendor_advances (vendor_id, tx_date, amount, source_type)
+        VALUES (?, '2026-05-10', 50.0, 'deposit')
+        """,
+        (vendor_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO vendor_advances (vendor_id, tx_date, amount, source_type)
+        VALUES (?, '2026-05-15', 30.0, 'return_credit')
+        """,
+        (vendor_id,),
+    )
+
+    # View balance matches before 2026-06-01
+    service = AccountingService(conn)
+    statement = service.get_vendor_statement(
+        vendor_id,
+        "2026-06-01",
+        "2026-06-30",
+    )
+
+    view_balance = conn.execute(
+        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS balance FROM vendor_advances WHERE vendor_id = ? AND DATE(tx_date) < '2026-06-01'",
+        (vendor_id,),
+    ).fetchone()["balance"]
+
+    assert statement["opening_credit"] == pytest.approx(view_balance)
+    conn.close()
+

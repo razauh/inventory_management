@@ -393,7 +393,6 @@ def get_vendor_statement(
                 SELECT COALESCE(SUM(CAST(va.amount AS REAL)), 0.0) AS amount
                 FROM vendor_advances va
                 WHERE va.vendor_id = ?
-                  AND va.source_type = 'deposit'
                   AND DATE(va.tx_date) < DATE(?)
             )
             SELECT

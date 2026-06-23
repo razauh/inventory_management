@@ -96,4 +96,25 @@ Copy this template for each completed card:
 - Follow-up questions:
   - None.
 
+## ACC-FIX-005: Include carried return credit in vendor statement opening credit
 
+- Problem ID:
+  - `ACC-PROB-005`
+- Related rule IDs:
+  - `VND-RULE-001`
+  - `PUR-RULE-003`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_vendor_statement.py::test_vendor_statement_opening_credit_includes_return_credit_balance`
+  - `tests/accounting/test_vendor_purchase_vendor_statement.py::test_vendor_statement_opening_credit_matches_vendor_balance_basis`
+- Production files changed:
+  - `modules/accounting/current_rules/vendor_rules.py`
+- Behavior before:
+  - get_vendor_statement calculated opening credit using only 'deposit' advances, omitting 'return_credit' and 'applied_to_purchase'.
+- Behavior after:
+  - get_vendor_statement queries all vendor advances to calculate opening credit and opening payable, matching the vendor advance balance basis.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
