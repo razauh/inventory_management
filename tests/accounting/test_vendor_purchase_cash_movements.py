@@ -130,3 +130,40 @@ def test_bank_ledger_preserves_vendor_payment_advance_and_refund_rows(vendor_cas
         ("purchase_refund", 15.0, 0.0),
     ]
     assert {row.instrument_no for row in rows} == {"PAY-60", "ADV-25", "REF-15"}
+
+
+def test_bank_ledger_filters_on_intended_date_basis(vendor_cash_db):
+    conn, bank_account_id = vendor_cash_db
+    vendor_bank_account_id = conn.execute("SELECT vendor_bank_account_id FROM vendor_bank_accounts LIMIT 1").fetchone()[0]
+
+    # Add a purchase payment with transaction date 2026-06-11 but cleared on 2026-06-15
+    conn.execute(
+        """
+        INSERT INTO purchase_payments (
+            purchase_id, date, amount, method, bank_account_id,
+            vendor_bank_account_id, instrument_type, instrument_no,
+            cleared_date, clearing_state
+        ) VALUES (
+            'PO-CASH', '2026-06-11', 40.0, 'Bank Transfer', ?,
+            ?, 'online', 'PAY-40',
+            '2026-06-15', 'cleared'
+        )
+        """,
+        (bank_account_id, vendor_bank_account_id),
+    )
+
+
+    svc = AccountingService(conn)
+
+    # If we filter from 2026-06-14 to 2026-06-16, the entry should be included
+    # because it cleared on 2026-06-15.
+    rows = svc.get_bank_ledger("2026-06-14", "2026-06-16", bank_account_id)
+    assert len(rows) == 1
+    assert float(rows[0].amount_out) == 40.0
+    assert rows[0].date == "2026-06-15"
+
+    # If we filter from 2026-06-10 to 2026-06-12, this new entry should NOT be included
+    # (even though transaction date is 2026-06-11, it cleared outside this window)
+    rows_old = svc.get_bank_ledger("2026-06-10", "2026-06-12", bank_account_id)
+    assert not any(float(row.amount_out) == 40.0 for row in rows_old)
+

@@ -195,48 +195,91 @@ def get_bank_ledger(
     end_date: str | None = None,
     account_id: int | None = None,
 ) -> tuple[BankLedgerRow, ...]:
-    where = []
-    params: list[object] = []
+    part_params = []
     if start_date is not None:
-        where.append("date >= ?")
-        params.append(start_date)
+        part_params.append(start_date)
     if end_date is not None:
-        where.append("date <= ?")
-        params.append(end_date)
+        part_params.append(end_date)
     if account_id is not None:
-        where.append("bank_account_id = ?")
-        params.append(account_id)
-    where_sql = "WHERE " + " AND ".join(where) if where else ""
-    rows = conn.execute(
-        f"""
+        part_params.append(account_id)
+
+    params = part_params * 4
+
+    conds = []
+    if start_date is not None:
+        conds.append("cleared_date >= ?")
+    if end_date is not None:
+        conds.append("cleared_date <= ?")
+    if account_id is not None:
+        conds.append("bank_account_id = ?")
+    conds_sql = " AND ".join([""] + conds) if conds else ""
+
+    va_conds = []
+    if start_date is not None:
+        va_conds.append("COALESCE(cleared_date, tx_date) >= ?")
+    if end_date is not None:
+        va_conds.append("COALESCE(cleared_date, tx_date) <= ?")
+    if account_id is not None:
+        va_conds.append("bank_account_id = ?")
+    va_conds_sql = " AND ".join([""] + va_conds) if va_conds else ""
+
+    query = f"""
         SELECT
-          src, payment_id, date,
-          CAST(amount_in AS REAL) AS amount_in,
-          CAST(amount_out AS REAL) AS amount_out,
-          method, instrument_type, instrument_no,
-          bank_account_id, vendor_bank_account_id, doc_id
-        FROM v_bank_ledger_ext
-        {where_sql}
+          'sale' AS src,
+          sp.payment_id,
+          sp.cleared_date AS date,
+          CASE WHEN sp.amount > 0 THEN CAST(sp.amount AS REAL) ELSE 0.0 END AS amount_in,
+          CASE WHEN sp.amount < 0 THEN CAST(-sp.amount AS REAL) ELSE 0.0 END AS amount_out,
+          sp.method, sp.instrument_type, sp.instrument_no,
+          sp.bank_account_id, NULL AS vendor_bank_account_id, sp.sale_id AS doc_id
+        FROM sale_payments sp
+        WHERE sp.clearing_state = 'cleared'
+          AND sp.cleared_date IS NOT NULL
+          {conds_sql}
+        UNION ALL
+        SELECT
+          'purchase' AS src,
+          pp.payment_id,
+          pp.cleared_date AS date,
+          CASE WHEN pp.amount < 0 THEN CAST(-pp.amount AS REAL) ELSE 0.0 END AS amount_in,
+          CASE WHEN pp.amount > 0 THEN CAST(pp.amount AS REAL) ELSE 0.0 END AS amount_out,
+          pp.method, pp.instrument_type, pp.instrument_no,
+          pp.bank_account_id, pp.vendor_bank_account_id, pp.purchase_id AS doc_id
+        FROM purchase_payments pp
+        WHERE pp.clearing_state = 'cleared'
+          AND pp.cleared_date IS NOT NULL
+          {conds_sql}
+        UNION ALL
+        SELECT
+          'purchase_refund' AS src,
+          pr.refund_id AS payment_id,
+          pr.cleared_date AS date,
+          CAST(pr.amount AS REAL) AS amount_in,
+          0.0 AS amount_out,
+          pr.method, pr.instrument_type, pr.instrument_no,
+          pr.bank_account_id, pr.vendor_bank_account_id, pr.purchase_id AS doc_id
+        FROM purchase_refunds pr
+        WHERE pr.clearing_state = 'cleared'
+          AND pr.cleared_date IS NOT NULL
+          {conds_sql}
         UNION ALL
         SELECT
           'vendor_advance' AS src,
-          tx_id AS payment_id,
-          tx_date AS date,
+          va.tx_id AS payment_id,
+          COALESCE(va.cleared_date, va.tx_date) AS date,
           0.0 AS amount_in,
-          CAST(amount AS REAL) AS amount_out,
-          method, instrument_type, instrument_no,
-          bank_account_id, vendor_bank_account_id, source_id AS doc_id
-        FROM vendor_advances
-        WHERE source_type = 'deposit'
-          AND CAST(amount AS REAL) > 0
-          AND COALESCE(clearing_state, 'cleared') = 'cleared'
-          {"AND tx_date >= ?" if start_date is not None else ""}
-          {"AND tx_date <= ?" if end_date is not None else ""}
-          {"AND bank_account_id = ?" if account_id is not None else ""}
+          CAST(va.amount AS REAL) AS amount_out,
+          va.method, va.instrument_type, va.instrument_no,
+          va.bank_account_id, va.vendor_bank_account_id, va.source_id AS doc_id
+        FROM vendor_advances va
+        WHERE va.source_type = 'deposit'
+          AND CAST(va.amount AS REAL) > 0
+          AND COALESCE(va.clearing_state, 'cleared') = 'cleared'
+          {va_conds_sql}
         ORDER BY date, src, payment_id
-        """,
-        params + params,
-    ).fetchall()
+    """
+
+    rows = conn.execute(query, params).fetchall()
     return tuple(
         BankLedgerRow(
             src=row["src"],
@@ -253,3 +296,4 @@ def get_bank_ledger(
         )
         for row in rows
     )
+

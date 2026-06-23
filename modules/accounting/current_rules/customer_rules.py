@@ -363,12 +363,9 @@ def get_customer_receivable_summary(
           COALESCE((SELECT balance FROM v_customer_advance_balance WHERE customer_id = ?), 0.0) AS credit_balance,
           COALESCE((SELECT COUNT(*) FROM sales WHERE customer_id = ? AND doc_type = 'sale'), 0) AS sales_count,
           COALESCE((
-            SELECT SUM(MAX(0.0, CAST(sdt.net_total_amount AS REAL)
-              - COALESCE((SELECT SUM(CAST(sp.amount AS REAL)) FROM sale_payments sp
-                          WHERE sp.sale_id = s.sale_id AND sp.clearing_state IN ('posted','cleared')), 0.0)
-              - COALESCE(CAST(s.advance_payment_applied AS REAL), 0.0)))
+            SELECT SUM(srt.remaining_due)
             FROM sales s
-            JOIN sale_detailed_totals sdt ON sdt.sale_id = s.sale_id
+            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
             WHERE s.customer_id = ? AND s.doc_type = 'sale'
           ), 0.0) AS open_due_sum,
           (SELECT MAX(s.date) FROM sales s WHERE s.customer_id = ? AND s.doc_type = 'sale') AS last_sale_date,

@@ -100,3 +100,77 @@ def test_dashboard_sales_metrics_match_current_repo():
     assert float(metrics.total_expenses) == 20.0
     assert float(metrics.receipts_cleared) == 40.0
     assert metrics.as_of == '2026-06-30'
+
+
+def test_customer_receivable_summary_ignores_posted_uncleared_payments():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS customer_advances (
+            tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL,
+            source_type TEXT, source_id TEXT
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE VIEW IF NOT EXISTS v_customer_advance_balance AS
+        SELECT customer_id, COALESCE(SUM(amount), 0.0) AS balance
+        FROM customer_advances GROUP BY customer_id;
+        """
+    )
+
+    # Insert customer and sale
+    conn.execute("INSERT INTO sales (sale_id, customer_id, date, total_amount, paid_amount) VALUES ('S1', 1, '2026-06-20', 100.0, 0.0)")
+
+    # Add a posted but uncleared payment
+    conn.execute(
+        "INSERT INTO sale_payments (sale_id, date, amount, clearing_state) "
+        "VALUES ('S1', '2026-06-22', 40.0, 'posted')"
+    )
+
+    svc = AccountingService(conn)
+    summary = svc.get_customer_receivable_summary(1)
+
+    # Since it is posted but not cleared, paid_amount on sale is 0,
+    # so remaining due should still be 100.0, NOT 60.0!
+    import pytest
+    assert float(summary.open_due_sum) == pytest.approx(100.0)
+    conn.close()
+
+
+def test_customer_receivable_summary_matches_sale_receivable_totals_remaining_due():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS customer_advances (
+            tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL,
+            source_type TEXT, source_id TEXT
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE VIEW IF NOT EXISTS v_customer_advance_balance AS
+        SELECT customer_id, COALESCE(SUM(amount), 0.0) AS balance
+        FROM customer_advances GROUP BY customer_id;
+        """
+    )
+
+    conn.execute("INSERT INTO sales (sale_id, customer_id, date, total_amount, paid_amount) VALUES ('S1', 1, '2026-06-20', 100.0, 40.0)")
+    conn.execute("INSERT INTO sales (sale_id, customer_id, date, total_amount, paid_amount) VALUES ('S2', 1, '2026-06-21', 50.0, 50.0)")
+
+    svc = AccountingService(conn)
+    summary = svc.get_customer_receivable_summary(1)
+
+    import pytest
+    # Remaining due should be (100 - 40) + (50 - 50) = 60.0
+    assert float(summary.open_due_sum) == pytest.approx(60.0)
+    conn.close()
+

@@ -140,3 +140,50 @@ Copy this template for each completed card:
   - None.
 - Follow-up questions:
   - None.
+
+## ACC-FIX-012: Align customer receivable summary with cleared receivable logic
+
+- Problem ID:
+  - `ACC-PROB-012`
+- Related rule IDs:
+  - `SAL-RULE-006`
+  - `REPORT`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_reports.py::test_customer_receivable_summary_ignores_posted_uncleared_payments`
+  - `tests/accounting/test_customer_sales_reports.py::test_customer_receivable_summary_matches_sale_receivable_totals_remaining_due`
+- Production files changed:
+  - `modules/accounting/current_rules/customer_rules.py`
+- Behavior before:
+  - `get_customer_receivable_summary` calculated open due by subtracting payments in `('posted', 'cleared')`, thus letting posted uncleared payments reduce the due amount prematurely.
+- Behavior after:
+  - `get_customer_receivable_summary` sources the remaining due sum directly from the canonical `sale_receivable_totals` view which uses cleared payments only.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+## ACC-FIX-015: Make bank ledger date basis explicit and consistent
+
+- Problem ID:
+  - `ACC-PROB-015`
+- Related rule IDs:
+  - `BANK-RULE-002`
+  - `REPORT`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_cash_movements.py::test_bank_ledger_filters_on_intended_date_basis`
+  - `tests/accounting/test_customer_sales_cash_movements.py::test_bank_ledger_ordering_matches_intended_date_basis`
+- Production files changed:
+  - `modules/accounting/current_rules/bank_rules.py`
+- Behavior before:
+  - `get_bank_ledger` queried `v_bank_ledger_ext` using the transaction date (`sp.date`, `pp.date`, `pr.date`), which was inconsistent with cash movements using cleared-date semantics.
+- Behavior after:
+  - `get_bank_ledger` queries the source payment tables directly using `cleared_date` as the date field, aligning it with cash movement cleared-date semantics.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
