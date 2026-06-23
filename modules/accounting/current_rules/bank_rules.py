@@ -195,6 +195,10 @@ def get_bank_ledger(
     end_date: str | None = None,
     account_id: int | None = None,
 ) -> tuple[BankLedgerRow, ...]:
+    """
+    Get bank ledger entries.
+    Uses cleared_date semantics for filtering and ordering.
+    """
     part_params = []
     if start_date is not None:
         part_params.append(start_date)
