@@ -131,3 +131,71 @@ def test_purchase_payment_repo_delegates_to_accounting_service():
         (payment_id,),
     ).fetchone()[0] == pytest.approx(50.0)
     conn.close()
+
+
+def test_vendor_overpayment_credit_preserves_bank_metadata():
+    conn = _payment_event_db()
+    # Add company info
+    company_id = conn.execute(
+        "INSERT INTO company_info (company_name) VALUES ('Co Name')"
+    ).lastrowid
+    # Add a company bank account
+    bank_account_id = conn.execute(
+        "INSERT INTO company_bank_accounts (company_id, label, bank_name, account_no) VALUES (?, 'Co Bank', 'Co Bank', '123')",
+        (company_id,)
+    ).lastrowid
+    # Add a vendor bank account
+    vendor_id = conn.execute("SELECT vendor_id FROM vendors LIMIT 1").fetchone()[0]
+    vendor_bank_account_id = conn.execute(
+        "INSERT INTO vendor_bank_accounts (vendor_id, label, bank_name, account_no) VALUES (?, 'Ven Bank', 'Ven Bank', '456')",
+        (vendor_id,)
+    ).lastrowid
+
+    payload = VendorPaymentPayload(
+        purchase_id="PO-PAY-EVENT",
+        amount=Decimal("125.00"),
+        method="Bank Transfer",
+        date="2026-06-10",
+        cleared_date="2026-06-10",
+        clearing_state="cleared",
+        bank_account_id=int(bank_account_id),
+        vendor_bank_account_id=int(vendor_bank_account_id),
+        instrument_type="online",
+        instrument_no="TXN-999",
+        instrument_date="2026-06-10",
+        ref_no="REF-888",
+        temp_vendor_bank_name="Ven Bank Temp",
+        temp_vendor_bank_number="456 Temp",
+        notes="Payment",
+    )
+
+    result = AccountingService(conn).record_vendor_payment_event(payload)
+
+    # Check vendor_advances (the credit row)
+    credit = conn.execute(
+        """
+        SELECT amount, method, bank_account_id, vendor_bank_account_id,
+               instrument_type, instrument_no, instrument_date,
+               cleared_date, clearing_state, ref_no,
+               temp_vendor_bank_name, temp_vendor_bank_number
+        FROM vendor_advances
+        WHERE tx_id = ?
+        """,
+        (result.credit_tx_id,),
+    ).fetchone()
+
+    assert float(credit["amount"]) == pytest.approx(25.0)
+    assert credit["method"] == "Bank Transfer"
+    assert credit["bank_account_id"] == bank_account_id
+    assert credit["vendor_bank_account_id"] == vendor_bank_account_id
+    assert credit["instrument_type"] == "online"
+    assert credit["instrument_no"] == "TXN-999"
+    assert credit["instrument_date"] == "2026-06-10"
+    assert credit["cleared_date"] == "2026-06-10"
+    assert credit["clearing_state"] == "cleared"
+    assert credit["ref_no"] == "REF-888"
+    assert credit["temp_vendor_bank_name"] == "Ven Bank Temp"
+    assert credit["temp_vendor_bank_number"] == "456 Temp"
+
+    conn.close()
+

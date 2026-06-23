@@ -308,3 +308,27 @@ Copy this template for each completed card:
   - None.
 - Follow-up questions:
   - None.
+
+
+## ACC-FIX-006: Preserve bank/payment metadata on auto-created vendor overpayment credit
+
+- Problem ID:
+  - `ACC-PROB-006`
+- Related rule IDs:
+  - `BANK-RULE-001`
+  - `BANK-RULE-002`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_vendor_payment_event.py::test_vendor_overpayment_credit_preserves_bank_metadata`
+  - `tests/accounting/test_vendor_purchase_cash_movements.py::test_bank_ledger_keeps_account_attribution_for_vendor_overpayment_split`
+- Production files changed:
+  - `modules/accounting/current_rules/vendor_rules.py`
+- Behavior before:
+  - When a payment exceeded the outstanding purchase invoice balance, the auto-created vendor credit row in `vendor_advances` was created without propagating the payment method, company/vendor bank accounts, or instrument details.
+- Behavior after:
+  - Propagated all payment and bank metadata attributes from `VendorPaymentPayload` when calling `_record_vendor_deposit_credit` to create the overpayment credit row.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.

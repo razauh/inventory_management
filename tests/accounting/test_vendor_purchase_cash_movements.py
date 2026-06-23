@@ -1,4 +1,5 @@
 import sqlite3
+from decimal import Decimal
 
 import pytest
 
@@ -166,4 +167,83 @@ def test_bank_ledger_filters_on_intended_date_basis(vendor_cash_db):
     # (even though transaction date is 2026-06-11, it cleared outside this window)
     rows_old = svc.get_bank_ledger("2026-06-10", "2026-06-12", bank_account_id)
     assert not any(float(row.amount_out) == 40.0 for row in rows_old)
+
+
+def test_bank_ledger_keeps_account_attribution_for_vendor_overpayment_split(vendor_cash_db):
+    conn, bank_account_id = vendor_cash_db
+    vendor_bank_account_id = conn.execute("SELECT vendor_bank_account_id FROM vendor_bank_accounts LIMIT 1").fetchone()[0]
+
+    # Create a fresh purchase PO-OVERPAY with remaining due 40.0
+    vendor_id = conn.execute("SELECT vendor_id FROM vendors LIMIT 1").fetchone()[0]
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Product')").lastrowid
+    conn.execute(
+        "INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)",
+        (product_id, uom_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO purchases (
+            purchase_id, vendor_id, date, total_amount, payment_status, paid_amount
+        ) VALUES ('PO-OVERPAY', ?, '2026-06-10', 100.0, 'partial', 60.0)
+        """,
+        (vendor_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO purchase_items (
+            purchase_id, product_id, quantity, uom_id,
+            purchase_price, sale_price, item_discount
+        ) VALUES ('PO-OVERPAY', ?, 1, ?, 100.0, 120.0, 0.0)
+        """,
+        (product_id, uom_id),
+    )
+
+    from inventory_management.modules.accounting import VendorPaymentPayload
+    payload = VendorPaymentPayload(
+        purchase_id="PO-OVERPAY",
+        amount=Decimal("65.00"),
+        method="Bank Transfer",
+        date="2026-06-11",
+        cleared_date="2026-06-11",
+        clearing_state="cleared",
+        bank_account_id=bank_account_id,
+        vendor_bank_account_id=vendor_bank_account_id,
+        instrument_type="online",
+        instrument_no="SPLIT-1",
+        ref_no="REF-SPLIT",
+        notes="Split overpayment",
+    )
+
+    AccountingService(conn).record_vendor_payment_event(payload)
+
+    # Check the bank ledger for this account in the window 2026-06-10 to 2026-06-12
+    # We should see both rows:
+    # 1) purchase payment of 40.0
+    # 2) vendor_advance of 25.0
+    # Both must have bank_account_id = bank_account_id and instrument_no = 'SPLIT-1'
+    rows = AccountingService(conn).get_bank_ledger(
+        "2026-06-10",
+        "2026-06-12",
+        bank_account_id,
+    )
+
+    split_payment_rows = [row for row in rows if row.instrument_no == "SPLIT-1"]
+    assert len(split_payment_rows) == 2
+
+    purchase_row = [r for r in split_payment_rows if r.src == "purchase"][0]
+    advance_row = [r for r in split_payment_rows if r.src == "vendor_advance"][0]
+
+    assert float(purchase_row.amount_out) == pytest.approx(40.0)
+    assert purchase_row.bank_account_id == bank_account_id
+    assert purchase_row.vendor_bank_account_id == vendor_bank_account_id
+    assert purchase_row.method == "Bank Transfer"
+    assert purchase_row.instrument_type == "online"
+
+    assert float(advance_row.amount_out) == pytest.approx(25.0)
+    assert advance_row.bank_account_id == bank_account_id
+    assert advance_row.vendor_bank_account_id == vendor_bank_account_id
+    assert advance_row.method == "Bank Transfer"
+    assert advance_row.instrument_type == "online"
+
 

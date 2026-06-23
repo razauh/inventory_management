@@ -714,15 +714,49 @@ def _record_vendor_deposit_credit(
     notes: str,
     created_by: int | None,
     source_id: int | str,
+    method: str | None = None,
+    bank_account_id: int | None = None,
+    vendor_bank_account_id: int | None = None,
+    instrument_type: str | None = None,
+    instrument_no: str | None = None,
+    instrument_date: str | None = None,
+    deposited_date: str | None = None,
+    cleared_date: str | None = None,
+    clearing_state: str | None = None,
+    ref_no: str | None = None,
+    temp_vendor_bank_name: str | None = None,
+    temp_vendor_bank_number: str | None = None,
 ) -> int:
     cur = conn.execute(
         """
         INSERT INTO vendor_advances (
-            vendor_id, tx_date, amount, source_type, source_id, notes, created_by
+            vendor_id, tx_date, amount, source_type, source_id, notes, created_by,
+            method, bank_account_id, vendor_bank_account_id, instrument_type,
+            instrument_no, instrument_date, deposited_date, cleared_date, clearing_state,
+            ref_no, temp_vendor_bank_name, temp_vendor_bank_number
         )
-        VALUES (?, ?, ?, 'deposit', ?, ?, ?)
+        VALUES (?, ?, ?, 'deposit', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (vendor_id, date, float(amount), source_id, notes, created_by),
+        (
+            vendor_id,
+            date,
+            float(amount),
+            source_id,
+            notes,
+            created_by,
+            method,
+            bank_account_id,
+            vendor_bank_account_id,
+            instrument_type,
+            instrument_no,
+            instrument_date,
+            deposited_date,
+            cleared_date,
+            clearing_state,
+            ref_no,
+            temp_vendor_bank_name,
+            temp_vendor_bank_number,
+        ),
     )
     return int(cur.lastrowid)
 
@@ -745,6 +779,18 @@ def record_vendor_payment_event(
             notes=f"Excess payment converted to vendor credit on {payload.purchase_id}",
             created_by=payload.created_by,
             source_id=payload.purchase_id,
+            method=payload.method,
+            bank_account_id=payload.bank_account_id,
+            vendor_bank_account_id=payload.vendor_bank_account_id,
+            instrument_type=payload.instrument_type,
+            instrument_no=payload.instrument_no,
+            instrument_date=payload.instrument_date,
+            deposited_date=payload.deposited_date,
+            cleared_date=payload.cleared_date,
+            clearing_state=payload.clearing_state,
+            ref_no=payload.ref_no,
+            temp_vendor_bank_name=payload.temp_vendor_bank_name,
+            temp_vendor_bank_number=payload.temp_vendor_bank_number,
         )
         if effect.payment_amount <= Decimal("0.000000001"):
             return VendorPaymentResult(
