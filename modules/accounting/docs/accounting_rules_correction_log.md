@@ -234,5 +234,29 @@ Copy this template for each completed card:
 - Follow-up questions:
   - None.
 
+## ACC-FIX-009: Decide and enforce sale-return refund method policy
+
+- Problem ID:
+  - `ACC-PROB-009`
+- Related rule IDs:
+  - `BANK-RULE-001`
+  - `BANK-RULE-002`
+- Card mode:
+  - `Investigation First` / `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_sale_return_financials.py::test_sale_return_refund_method_policy_is_explicit`
+  - `tests/accounting/test_customer_sales_sale_return_financials.py::test_sale_return_refund_by_bank_requires_metadata_if_policy_allows_it`
+- Production files changed:
+  - `modules/accounting/dto.py`
+  - `modules/accounting/current_rules/sales_rules.py`
+- Behavior before:
+  - Immediate refunds in sale returns were hard-coded as negative cash receipts with no bank metadata or validation path.
+- Behavior after:
+  - Enabled bank/cheque refund options by adding metadata fields to `SaleReturnPayload`, validating them using `validate_customer_payment_metadata`, and inserting them into `sale_payments` properly. Default remains Cash.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
 
 

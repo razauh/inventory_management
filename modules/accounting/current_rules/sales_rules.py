@@ -462,11 +462,36 @@ def record_sale_return_event(
 
     if settlement_due > 0:
         if cash_refund > 0:
+            refund_method = payload.refund_method or "Cash"
+            refund_instr_type = payload.refund_instrument_type
+            if refund_instr_type is None and refund_method == "Cash":
+                refund_instr_type = "other"
+
+            # Validate using validate_customer_payment_metadata
+            from ..validators import validate_customer_payment_metadata
+            from ..dto import CustomerPaymentMetadata
+
+            cust_row = conn.execute("SELECT customer_id FROM sales WHERE sale_id = ?", (payload.sale_id,)).fetchone()
+            customer_id = cust_row["customer_id"] if cust_row else 0
+
+            meta = CustomerPaymentMetadata(
+                customer_id=customer_id,
+                method=refund_method,
+                bank_account_id=payload.refund_bank_account_id,
+                instrument_type=refund_instr_type,
+                instrument_no=payload.refund_instrument_no,
+                clearing_state="cleared",
+                require_method_details=True,
+            )
+            validate_customer_payment_metadata(conn, meta)
+
             conn.execute(
-                "INSERT INTO sale_payments (sale_id, date, amount, method, instrument_type, "
-                "clearing_state, cleared_date, notes, created_by) "
-                "VALUES (?, ?, ?, 'Cash', 'other', 'cleared', ?, ?, ?)",
+                "INSERT INTO sale_payments (sale_id, date, amount, method, bank_account_id, "
+                "instrument_type, instrument_no, clearing_state, cleared_date, notes, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?)",
                 (payload.sale_id, payload.date, -float(cash_refund),
+                 refund_method, payload.refund_bank_account_id,
+                 refund_instr_type, payload.refund_instrument_no,
                  payload.date,
                  payload.notes or "[Return refund]",
                  payload.created_by),

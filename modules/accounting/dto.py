@@ -777,6 +777,10 @@ class SaleReturnPayload:
     settlement_cash_refund: Decimal = Decimal("0")
     notes: str | None = None
     return_value: Decimal = Decimal("0")
+    refund_method: str = "Cash"
+    refund_bank_account_id: int | None = None
+    refund_instrument_no: str | None = None
+    refund_instrument_type: str | None = None
 
 
 @dataclass(frozen=True)

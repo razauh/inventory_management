@@ -1126,10 +1126,10 @@ None.
 ### SAL-RULE-004: Sale Return Event Processing
 
 #### Plain-English explanation
-This rule registers customer product returns. It determines if a cash refund is allowed, caps the cash refund based on payments already cleared, and converts any remaining value to customer store credit.
+This rule registers customer product returns. It determines if a refund is allowed, caps the refund based on payments already cleared, validates the refund details (supporting Cash, Bank Transfer, Cheque, etc., with associated bank/instrument metadata), records the refund in sale payments, and converts any remaining value to customer store credit (return credit).
 
 #### Why this rule exists in the application
-To return products, adjust stock counts, reverse sales totals, and manage refunds/store credits.
+To return products, adjust stock counts, reverse sales totals, and manage refunds (cash or bank/cheque) and store credits.
 
 #### When this rule runs
 - When submitting a customer return.
@@ -1140,7 +1140,9 @@ Log return
 → AccountingService.record_sale_return_event()
 → sales_rules.record_sale_return_event()
 → Validates return boundaries
-→ Inserts cash refund payments or credit advances
+→ Validates refund method and bank details if non-cash
+→ Inserts refund row (negative) into sale_payments
+→ Inserts credit advances if any credit remainder
 → Returns SaleReturnEffect DTO
 ```
 
@@ -1157,19 +1159,20 @@ Log return
 
 #### Constraints and validations
 - Return quantities cannot exceed original purchase quantities.
-- Cash refund cannot exceed cleared customer payments.
+- Refund amount cannot exceed cleared customer payments.
+- If refund is non-cash (e.g. Bank Transfer, Cheque), validates company bank account is active and instrument numbers are present.
 
 #### Data read
-- Tables: `sales`, `sale_payments`, `customer_advances`
+- Tables: `sales`, `sale_payments`, `customer_advances`, `company_bank_accounts`
 
 #### Data written or side effects
-- Writes to `sale_payments` (negative cash amount for refunds)
+- Writes to `sale_payments` (negative amount for refunds, with the specified method and bank details)
 - Writes to `customer_advances` (on credit note settlement)
 - Writes to `inventory_transactions`
 - Updates `sales.payment_status`
 
 #### Edge cases handled
-- Caps refund amount to prevent returning cash that was never cleared.
+- Caps refund amount to prevent returning cash/bank funds that were never cleared.
 
 #### Edge cases not clearly handled
 - Returns allocated order discount as `Decimal("0")` in python code while database triggers aggregate values.

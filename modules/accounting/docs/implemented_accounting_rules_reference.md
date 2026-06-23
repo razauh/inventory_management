@@ -163,7 +163,7 @@ This design isolates accounting calculations from views and controllers, route-h
 - **Call Sites**: `AccountingService.get_sale_invoice_financials`
 
 ### SAL-RULE-004: Sale Return Event Processing
-- **Definition**: Computes returned value, determines if cash refund is allowed, caps cash refund based on cleared payments, and logs any remaining balance as a customer advance credit (source type `return_credit`).
+- **Definition**: Computes returned value, determines if immediate refund is allowed, caps refund based on cleared payments, validates and processes the refund using the specified method (Cash, Bank Transfer, Cheque, etc., with associated bank account/instrument metadata), and logs any remaining balance as a customer advance credit (source type `return_credit`).
 - **Confidence**: High
 - **Implementation**: `modules/accounting/current_rules/sales_rules.py#record_sale_return_event` (L422-L489)
 - **Test Reference**: `tests/accounting/test_customer_sales_sale_return_financials.py`

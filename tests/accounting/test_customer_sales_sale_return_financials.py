@@ -75,3 +75,106 @@ def test_sale_return_credit_settlement_matches_repo():
     # Since return_value=0 and remaining_due=40, settlement_due = max(0, 0-40) = 0
     # Actually return_value defaults to 0 in SaleReturnPayload - so settlement_due is 0
     # This is fine - the test validates the structure works
+
+
+def test_sale_return_refund_method_policy_is_explicit():
+    # If refund_method is None or Cash, it should work fine without bank details
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.executescript("""
+        CREATE TABLE sales (sale_id TEXT PRIMARY KEY, customer_id INTEGER,
+            total_amount REAL, paid_amount REAL DEFAULT 0,
+            advance_payment_applied REAL DEFAULT 0, doc_type TEXT DEFAULT 'sale');
+        CREATE TABLE sale_payments (payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id TEXT, date TEXT, amount REAL, method TEXT, bank_account_id INTEGER,
+            instrument_type TEXT, instrument_no TEXT, clearing_state TEXT, cleared_date TEXT, notes TEXT, created_by INTEGER);
+        CREATE TABLE customer_advances (tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL, source_type TEXT, source_id TEXT,
+            method TEXT, bank_account_id INTEGER, reference_no TEXT, notes TEXT, created_by INTEGER);
+        CREATE VIEW sale_detailed_totals AS SELECT sale_id, 0 AS order_discount,
+            0 AS subtotal, total_amount AS calculated_total_amount,
+            0 AS returned_value, MAX(0,total_amount) AS net_total_amount FROM sales;
+        CREATE VIEW sale_receivable_totals AS SELECT sale_id,
+            MAX(0,net_total_amount) AS canonical_total_amount,
+            paid_amount, advance_payment_applied,
+            MAX(0,net_total_amount-paid_amount-advance_payment_applied) AS remaining_due
+            FROM sales JOIN sale_detailed_totals USING(sale_id);
+        INSERT INTO sales (sale_id, customer_id, total_amount, paid_amount) VALUES ('S1', 1, 100, 60);
+    """)
+    svc = AccountingService(conn)
+    # Default is Cash, should succeed without bank details
+    payload = SaleReturnPayload(
+        sale_id='S1', date='2026-06-22', created_by=None,
+        lines=(), settlement_cash_refund=Decimal('20'),
+        return_value=Decimal('80'),
+        refund_method='Cash'
+    )
+    effect = svc.record_sale_return_event(payload)
+    assert effect.cash_refund == Decimal('20')
+
+    # Query payment and assert method is 'Cash' and bank_account_id is null
+    row = conn.execute("SELECT * FROM sale_payments").fetchone()
+    assert row["method"] == "Cash"
+    assert row["bank_account_id"] is None
+    conn.close()
+
+
+def test_sale_return_refund_by_bank_requires_metadata_if_policy_allows_it():
+    # If refund_method is 'Bank Transfer', it should fail if bank details are missing, and succeed if present
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.executescript("""
+        CREATE TABLE sales (sale_id TEXT PRIMARY KEY, customer_id INTEGER,
+            total_amount REAL, paid_amount REAL DEFAULT 0,
+            advance_payment_applied REAL DEFAULT 0, doc_type TEXT DEFAULT 'sale');
+        CREATE TABLE sale_payments (payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id TEXT, date TEXT, amount REAL, method TEXT, bank_account_id INTEGER,
+            instrument_type TEXT, instrument_no TEXT, clearing_state TEXT, cleared_date TEXT, notes TEXT, created_by INTEGER);
+        CREATE TABLE customer_advances (tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER, tx_date TEXT, amount REAL, source_type TEXT, source_id TEXT,
+            method TEXT, bank_account_id INTEGER, reference_no TEXT, notes TEXT, created_by INTEGER);
+        CREATE TABLE company_bank_accounts (account_id INTEGER PRIMARY KEY, is_active INTEGER);
+        CREATE VIEW sale_detailed_totals AS SELECT sale_id, 0 AS order_discount,
+            0 AS subtotal, total_amount AS calculated_total_amount,
+            0 AS returned_value, MAX(0,total_amount) AS net_total_amount FROM sales;
+        CREATE VIEW sale_receivable_totals AS SELECT sale_id,
+            MAX(0,net_total_amount) AS canonical_total_amount,
+            paid_amount, advance_payment_applied,
+            MAX(0,net_total_amount-paid_amount-advance_payment_applied) AS remaining_due
+            FROM sales JOIN sale_detailed_totals USING(sale_id);
+        INSERT INTO sales (sale_id, customer_id, total_amount, paid_amount) VALUES ('S1', 1, 100, 60);
+        INSERT INTO company_bank_accounts (account_id, is_active) VALUES (1, 1);
+    """)
+    svc = AccountingService(conn)
+    
+    # Bank Transfer without details should fail
+    import pytest
+    payload_invalid = SaleReturnPayload(
+        sale_id='S1', date='2026-06-22', created_by=None,
+        lines=(), settlement_cash_refund=Decimal('20'),
+        return_value=Decimal('80'),
+        refund_method='Bank Transfer'
+    )
+    with pytest.raises(ValueError) as exc:
+        svc.record_sale_return_event(payload_invalid)
+    assert "Bank Transfer requires company account and transaction #" in str(exc.value)
+
+    # With correct details, should succeed
+    payload_valid = SaleReturnPayload(
+        sale_id='S1', date='2026-06-22', created_by=None,
+        lines=(), settlement_cash_refund=Decimal('20'),
+        return_value=Decimal('80'),
+        refund_method='Bank Transfer',
+        refund_bank_account_id=1,
+        refund_instrument_no='TX123',
+        refund_instrument_type='online'
+    )
+    effect = svc.record_sale_return_event(payload_valid)
+    assert effect.cash_refund == Decimal('20')
+
+    row = conn.execute("SELECT * FROM sale_payments").fetchone()
+    assert row["method"] == "Bank Transfer"
+    assert row["bank_account_id"] == 1
+    assert row["instrument_no"] == "TX123"
+    assert row["instrument_type"] == "online"
+    conn.close()
