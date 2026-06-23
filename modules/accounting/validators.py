@@ -199,3 +199,8 @@ def validate_expense_input(
         py_date.fromisoformat(date)
     except ValueError:
         raise ValueError("Date must be in YYYY-MM-DD format.")
+
+
+def validate_expense_category_input(name: str) -> None:
+    if not name or not name.strip():
+        raise ValueError("Name cannot be empty.")

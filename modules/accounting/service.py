@@ -177,6 +177,9 @@ from .current_rules.expense_rules import (
     record_expense_create_event as record_current_expense_create_event,
     record_expense_update_event as record_current_expense_update_event,
     record_expense_delete_event as record_current_expense_delete_event,
+    record_expense_category_create_event as record_current_expense_category_create_event,
+    record_expense_category_update_event as record_current_expense_category_update_event,
+    record_expense_category_delete_event as record_current_expense_category_delete_event,
 )
 from .validators import (
     validate_customer_payment_metadata as validate_current_customer_payment_metadata,
@@ -948,6 +951,27 @@ class AccountingService:
         if self.conn is None:
             self._not_implemented("record_expense_delete_event")
         record_current_expense_delete_event(self.conn, expense_id)
+
+    def validate_expense_category_input(self, name: str) -> None:
+        if self.conn is None:
+            self._not_implemented("validate_expense_category_input")
+        from .validators import validate_expense_category_input as val_cat
+        val_cat(name)
+
+    def record_expense_category_create_event(self, name: str) -> int:
+        if self.conn is None:
+            self._not_implemented("record_expense_category_create_event")
+        return record_current_expense_category_create_event(self.conn, name)
+
+    def record_expense_category_update_event(self, category_id: int, name: str) -> None:
+        if self.conn is None:
+            self._not_implemented("record_expense_category_update_event")
+        record_current_expense_category_update_event(self.conn, category_id, name)
+
+    def record_expense_category_delete_event(self, category_id: int) -> None:
+        if self.conn is None:
+            self._not_implemented("record_expense_category_delete_event")
+        record_current_expense_category_delete_event(self.conn, category_id)
 
     def record_sale_inventory_event(
         self, payload: SaleInventoryPayload

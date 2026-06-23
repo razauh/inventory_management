@@ -22,8 +22,12 @@ EXPENSE_METHODS = [
     ("get_profit_loss_expense_summary", ("date_from", "date_to")),
     ("validate_expense_input", None),  # uses *args, **kwargs
     ("record_expense_create_event", None),  # uses *args, **kwargs
-    ("record_expense_update_event", None),  # uses *args, **kwargs
+    ("record_expense_update_event", ("expense_id", "description", "amount", "date", "category_id")),
     ("record_expense_delete_event", ("expense_id",)),
+    ("validate_expense_category_input", ("name",)),
+    ("record_expense_category_create_event", ("name",)),
+    ("record_expense_category_update_event", ("category_id", "name")),
+    ("record_expense_category_delete_event", ("category_id",)),
 ]
 
 
@@ -95,3 +99,11 @@ def test_unmigrated_expense_methods_raise_not_implemented():
         service.record_expense_update_event(1, "Coffee", 10.0, "2026-06-23", None)
     with pytest.raises(AccountingNotImplementedError):
         service.record_expense_delete_event(1)
+    with pytest.raises(AccountingNotImplementedError):
+        service.validate_expense_category_input("Rent")
+    with pytest.raises(AccountingNotImplementedError):
+        service.record_expense_category_create_event("Rent")
+    with pytest.raises(AccountingNotImplementedError):
+        service.record_expense_category_update_event(1, "Rent")
+    with pytest.raises(AccountingNotImplementedError):
+        service.record_expense_category_delete_event(1)

@@ -111,51 +111,27 @@ class ExpensesRepo:
         a UNIQUE constraint violation will be raised by SQLite.
         Returns the new category_id.
         """
-        if not name or not name.strip():
-            raise DomainError("Name cannot be empty.")
-        was_in_transaction = self.conn.in_transaction
-        name_n = name.strip()
-        cur = self.conn.execute(
-            "INSERT INTO expense_categories(name) VALUES (?)", (name_n,)
-        )
-        if not was_in_transaction:
-            self.conn.commit()
-        return int(cur.lastrowid)
+        from modules.accounting.service import AccountingService
+        try:
+            return AccountingService(self.conn).record_expense_category_create_event(name)
+        except ValueError as e:
+            raise DomainError(str(e))
 
     def update_category(self, category_id: int, name: str) -> None:
         """Update the name of an existing category."""
-        if not name or not name.strip():
-            raise DomainError("Name cannot be empty.")
-        was_in_transaction = self.conn.in_transaction
-        name_n = name.strip()
-        cur = self.conn.execute(
-            "UPDATE expense_categories SET name=? WHERE category_id=?",
-            (name_n, category_id),
-        )
-        if cur.rowcount == 0:
-            raise DomainError(f"Category with ID {category_id} not found.")
-        if not was_in_transaction:
-            self.conn.commit()
+        from modules.accounting.service import AccountingService
+        try:
+            AccountingService(self.conn).record_expense_category_update_event(category_id, name)
+        except ValueError as e:
+            raise DomainError(str(e))
 
     def delete_category(self, category_id: int) -> None:
         """Remove a category. Translate FK violations into a domain error."""
-        was_in_transaction = self.conn.in_transaction
+        from modules.accounting.service import AccountingService
         try:
-            cur = self.conn.execute(
-                "DELETE FROM expense_categories WHERE category_id=?",
-                (category_id,),
-            )
-            if cur.rowcount == 0:
-                raise DomainError(f"Category with ID {category_id} not found.")
-            if not was_in_transaction:
-                self.conn.commit()
-        except sqlite3.IntegrityError as e:
-            if not was_in_transaction:
-                self.conn.rollback()
-            # category is referenced by existing expenses
-            raise DomainError(
-                "Cannot delete a category that is used by existing expenses."
-            ) from e
+            AccountingService(self.conn).record_expense_category_delete_event(category_id)
+        except ValueError as e:
+            raise DomainError(str(e))
 
     # ------------------------------------------------------------------
     # Expense operations

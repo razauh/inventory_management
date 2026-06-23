@@ -152,4 +152,26 @@ It records where legacy/current behavior moved and which application call sites 
   - None.
 
 
+## EX-ACC-008: Consolidate expense-category validation and lifecycle behavior
+
+- Migrated behavior:
+  - Expense category CRUD operations (create, update, delete) and validation logic.
+- Original location(s):
+  - `database/repositories/expenses_repo.py`
+- New accounting location(s):
+  - `modules/accounting/validators.py` (method: `validate_expense_category_input`)
+  - `modules/accounting/current_rules/expense_rules.py` (methods: `record_expense_category_create_event`, `record_expense_category_update_event`, `record_expense_category_delete_event`)
+  - `modules/accounting/service.py` (implemented methods: `validate_expense_category_input`, `record_expense_category_create_event`, `record_expense_category_update_event`, `record_expense_category_delete_event`)
+- Rewired call site(s):
+  - `database/repositories/expenses_repo.py` (`create_category`, `update_category`, and `delete_category` now delegate to `AccountingService`)
+- Tests added/updated:
+  - `tests/accounting/test_expense_category_lifecycle.py` (new)
+  - `tests/accounting/test_expense_accounting_contracts.py` (updated)
+- Behavior change:
+  - None.
+- Notes / unresolved correctness questions:
+  - None.
+
+
+
 
