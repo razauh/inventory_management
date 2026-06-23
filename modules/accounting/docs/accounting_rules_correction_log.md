@@ -283,4 +283,28 @@ Copy this template for each completed card:
   - None.
 
 
+## ACC-FIX-003: Make purchase returnable quantity output match stock reality
 
+- Problem ID:
+  - `ACC-PROB-003`
+- Related rule IDs:
+  - `PUR-RULE-003`
+  - `INV-RULE-001`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_return_valuation.py::test_purchase_returnable_qty_can_exceed_stock_but_write_path_blocks`
+  - `tests/accounting/test_vendor_purchase_return_valuation.py::test_purchase_returnable_quantities_expose_stock_aware_value`
+- Production files changed:
+  - `modules/accounting/current_rules/inventory_rules.py`
+  - `modules/accounting/service.py`
+  - `database/repositories/purchases_repo.py`
+  - `modules/purchase/controller.py`
+- Behavior before:
+  - `get_purchase_returnable_quantities` only reported contractual returnable quantities, leading to misleading "Max returnable" values in the UI even when physical stock-on-hand was lower.
+- Behavior after:
+  - Added an optional `stock_aware: bool = False` parameter to `get_purchase_returnable_quantities`. When `True`, the returnable quantities are constrained by stock-on-hand availability. The return dialog and controller consume the stock-aware values, while checking contractual limits to verify if the purchase is fully returned.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.

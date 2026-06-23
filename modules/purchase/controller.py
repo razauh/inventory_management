@@ -442,8 +442,8 @@ class PurchaseController(BaseModule):
             return list(self.repo.search_purchases(search_text, search_field=search_field))
         return list(self.repo.list_purchases())
 
-    def _returnable_map(self, purchase_id: str) -> dict[int, float]:
-        return self.repo.get_returnable_map(purchase_id)
+    def _returnable_map(self, purchase_id: str, *, stock_aware: bool = False) -> dict[int, float]:
+        return self.repo.get_returnable_map(purchase_id, stock_aware=stock_aware)
 
     def _get_payment(self, payment_id: int) -> Optional[dict]:
         row = self._selected_row_dict()
@@ -1053,15 +1053,16 @@ class PurchaseController(BaseModule):
             return
         pid = row["purchase_id"]
         items = self.repo.list_items(pid)
-        returnable = self._returnable_map(pid)
-        if not any(float(qty or 0.0) > _EPS for qty in returnable.values()):
+        returnable_contractual = self._returnable_map(pid, stock_aware=False)
+        if not any(float(qty or 0.0) > _EPS for qty in returnable_contractual.values()):
             info(self.view, "Return unavailable", "Purchase is fully returned.")
             self._set_return_action_state({"returned_value": 1.0, "calculated_total_amount": 0.0})
             return
+        returnable_stock = self._returnable_map(pid, stock_aware=True)
         items_for_form = []
         for it in items:
             it2 = dict(it)
-            it2["returnable"] = float(returnable.get(it["item_id"], 0.0))
+            it2["returnable"] = float(returnable_stock.get(it["item_id"], 0.0))
             items_for_form.append(it2)
 
         vendor_id = row.get("vendor_id")

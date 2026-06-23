@@ -664,10 +664,14 @@ class AccountingService:
     def get_purchase_returnable_quantities(
         self,
         purchase_id: int | str,
+        *,
+        stock_aware: bool = False,
     ) -> dict[int, Decimal]:
         if self.conn is None:
             self._not_implemented("get_purchase_returnable_quantities")
-        return get_current_purchase_returnable_quantities(self.conn, purchase_id)
+        return get_current_purchase_returnable_quantities(
+            self.conn, purchase_id, stock_aware=stock_aware
+        )
 
     def get_inventory_accounting_events(
         self,

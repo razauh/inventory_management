@@ -169,11 +169,15 @@ def record_purchase_return_inventory_event(
 def get_purchase_returnable_quantities(
     conn: Connection,
     purchase_id: int | str,
+    *,
+    stock_aware: bool = False,
 ) -> dict[int, Decimal]:
     rows = conn.execute(
         """
         SELECT
           pi.item_id,
+          pi.product_id,
+          pi.uom_id,
           CAST(pi.quantity AS REAL) -
           COALESCE((
             SELECT SUM(CAST(it.quantity AS REAL))
@@ -188,7 +192,33 @@ def get_purchase_returnable_quantities(
         """,
         (purchase_id,),
     ).fetchall()
-    return {int(row["item_id"]): _decimal(row["returnable"]) for row in rows}
+
+    res: dict[int, Decimal] = {}
+    for row in rows:
+        item_id = int(row["item_id"])
+        product_id = int(row["product_id"])
+        uom_id = int(row["uom_id"])
+        returnable = _decimal(row["returnable"])
+
+        if stock_aware:
+            _rebuild_dirty_valuations(conn)
+            stock_row = conn.execute(
+                "SELECT qty_in_base FROM v_stock_on_hand WHERE product_id=?",
+                (product_id,),
+            ).fetchone()
+            on_hand = float(stock_row["qty_in_base"] if stock_row else 0.0)
+
+            factor_row = conn.execute(
+                "SELECT COALESCE(CAST(factor_to_base AS REAL), 1.0) AS factor FROM product_uoms WHERE product_id=? AND uom_id=?",
+                (product_id, uom_id),
+            ).fetchone()
+            factor = float(factor_row["factor"] if factor_row else 1.0)
+            on_hand_in_uom = Decimal(str(on_hand / factor))
+
+            returnable = max(Decimal("0"), min(returnable, on_hand_in_uom))
+
+        res[item_id] = returnable
+    return res
 
 
 def get_inventory_accounting_events(

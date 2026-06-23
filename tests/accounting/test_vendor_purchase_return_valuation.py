@@ -11,6 +11,7 @@ from inventory_management.database.repositories.purchases_repo import (
 from inventory_management.database.schema import SQL
 from inventory_management.modules.accounting import (
     AccountingService,
+    PurchaseReturnPayload,
     PurchaseReturnPreviewLine,
     PurchaseReturnPreviewPayload,
 )
@@ -164,3 +165,100 @@ def test_return_values_match_snapshot_view(purchase_return_valuation_db):
     assert float(service_totals.value) == pytest.approx(
         sum(float(row["return_value"]) for row in view_rows)
     )
+
+
+def test_purchase_returnable_qty_can_exceed_stock_but_write_path_blocks(
+    purchase_return_valuation_db,
+):
+    conn, ids = purchase_return_valuation_db
+    repo = _create_purchase(conn, ids)
+    items = repo.list_items("PO-RETURN-VALUATION")
+    item_a_id = int(items[0]["item_id"])
+    product_a_id = ids["product_a"]
+
+    # Sell some of Product A to reduce physical stock-on-hand
+    # Available base stock was 6.0 (from purchase)
+    # Let's adjust it down by 4.0, leaving 2.0 on hand
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (
+            product_id, quantity, uom_id, transaction_type,
+            reference_table, reference_id, reference_item_id,
+            date, txn_seq, notes, created_by
+        )
+        VALUES (?, -4.0, ?, 'adjustment', NULL, NULL, NULL, '2026-06-22', 50, 'Test Adjustment', NULL)
+        """,
+        (product_a_id, ids["uom_id"]),
+    )
+
+    # Rebuild valuations
+    from inventory_management.database.repositories.inventory_repo import (
+        rebuild_dirty_valuations,
+    )
+
+    rebuild_dirty_valuations(conn, product_a_id)
+
+    # Verify stock on hand of Product A is 2.0
+    stock_row = conn.execute(
+        "SELECT qty_in_base FROM v_stock_on_hand WHERE product_id=?",
+        (product_a_id,),
+    ).fetchone()
+    assert float(stock_row["qty_in_base"]) == pytest.approx(2.0)
+
+    # 1) Read path: with stock_aware=False, we still have contractual returnable = 6.0
+    service = AccountingService(conn)
+    ret_quantities_contract = service.get_purchase_returnable_quantities(
+        "PO-RETURN-VALUATION", stock_aware=False
+    )
+    assert float(ret_quantities_contract[item_a_id]) == pytest.approx(6.0)
+
+    # 2) Write path: trying to return 5.0 units should fail because only 2.0 are on hand
+    with pytest.raises(ValueError, match="only 2.00 available in stock"):
+        service.record_purchase_return_event(
+            PurchaseReturnPayload(
+                purchase_id="PO-RETURN-VALUATION",
+                date="2026-06-23",
+                created_by=None,
+                lines=({"item_id": item_a_id, "qty_return": 5.0},),
+                notes="Too many units",
+                settlement=None,
+            )
+        )
+
+
+def test_purchase_returnable_quantities_expose_stock_aware_value(
+    purchase_return_valuation_db,
+):
+    conn, ids = purchase_return_valuation_db
+    repo = _create_purchase(conn, ids)
+    items = repo.list_items("PO-RETURN-VALUATION")
+    item_a_id = int(items[0]["item_id"])
+    product_a_id = ids["product_a"]
+
+    # Sell some of Product A to reduce physical stock-on-hand to 2.0
+    conn.execute(
+        """
+        INSERT INTO inventory_transactions (
+            product_id, quantity, uom_id, transaction_type,
+            reference_table, reference_id, reference_item_id,
+            date, txn_seq, notes, created_by
+        )
+        VALUES (?, -4.0, ?, 'adjustment', NULL, NULL, NULL, '2026-06-22', 50, 'Test Adjustment', NULL)
+        """,
+        (product_a_id, ids["uom_id"]),
+    )
+
+    # Rebuild valuations
+    from inventory_management.database.repositories.inventory_repo import (
+        rebuild_dirty_valuations,
+    )
+
+    rebuild_dirty_valuations(conn, product_a_id)
+
+    # Read path with stock_aware=True should return 2.0 instead of 6.0
+    service = AccountingService(conn)
+    ret_quantities_stock = service.get_purchase_returnable_quantities(
+        "PO-RETURN-VALUATION", stock_aware=True
+    )
+    assert float(ret_quantities_stock[item_a_id]) == pytest.approx(2.0)
+

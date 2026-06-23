@@ -727,14 +727,14 @@ class PurchasesRepo:
             for value in self.accounting.get_purchase_return_values(purchase_id)
         ]
 
-    def get_returnable_map(self, purchase_id: str) -> dict[int, float]:
+    def get_returnable_map(self, purchase_id: str, *, stock_aware: bool = False) -> dict[int, float]:
         """
         Get the returnable quantity for each item in a purchase.
         """
         return {
             item_id: float(qty)
             for item_id, qty in self.accounting.get_purchase_returnable_quantities(
-                purchase_id
+                purchase_id, stock_aware=stock_aware
             ).items()
         }
 
