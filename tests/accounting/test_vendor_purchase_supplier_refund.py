@@ -168,6 +168,7 @@ def test_record_supplier_refund_event_preserves_purchase_refund_row(
     supplier_refund_db,
 ):
     db = supplier_refund_db
+    AccountingService(db["conn"]).record_purchase_return_event(_return_payload(db, 2.0, "credit_note"))
 
     result = AccountingService(db["conn"]).record_supplier_refund_event(
         _refund_payload(db)
@@ -213,3 +214,47 @@ def test_supplier_refund_preserves_prior_refund_and_credit_note_behavior(
     assert VendorAdvancesRepo(db["conn"]).get_balance(db["vendor_id"]) == pytest.approx(
         30.0
     )
+
+
+def test_supplier_refund_rejects_amount_above_unsettled_return_value(
+    supplier_refund_db,
+):
+    db = supplier_refund_db
+    conn = db["conn"]
+    service = AccountingService(conn)
+
+    service.record_purchase_return_event(_return_payload(db, 4.0, "credit_note"))
+
+    with pytest.raises(ValueError, match="exceeds the remaining refundable value"):
+        service.record_supplier_refund_event(_refund_payload(db, Decimal("45.00")))
+
+
+def test_supplier_refund_rejects_refund_without_purchase_return_value(
+    supplier_refund_db,
+):
+    db = supplier_refund_db
+    conn = db["conn"]
+    service = AccountingService(conn)
+
+    with pytest.raises(ValueError, match="exceeds the remaining refundable value"):
+        service.record_supplier_refund_event(_refund_payload(db, Decimal("10.00")))
+
+
+def test_supplier_refund_rejects_repeated_over_refund(
+    supplier_refund_db,
+):
+    db = supplier_refund_db
+    conn = db["conn"]
+    service = AccountingService(conn)
+
+    service.record_purchase_return_event(_return_payload(db, 4.0, "credit_note"))
+
+    service.record_supplier_refund_event(_refund_payload(db, Decimal("25.00")))
+
+    with pytest.raises(ValueError, match="exceeds the remaining refundable value"):
+        service.record_supplier_refund_event(_refund_payload(db, Decimal("20.00")))
+
+    service.record_supplier_refund_event(_refund_payload(db, Decimal("15.00")))
+
+
+

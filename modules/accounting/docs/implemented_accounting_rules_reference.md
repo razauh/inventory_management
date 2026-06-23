@@ -131,7 +131,7 @@ This design isolates accounting calculations from views and controllers, route-h
 - **Call Sites**: `AccountingService.get_vendor_open_purchases`
 
 ### VND-RULE-006: Supplier Refunds
-- **Definition**: Records a refund from a supplier, which matches against returned values.
+- **Definition**: Records a refund from a supplier, which matches against returned values. The refund amount is capped to the unresolved refundable value for the purchase (total return value minus prior refunds and prior return-credit settlements).
 - **Confidence**: High
 - **Implementation**: `modules/accounting/current_rules/vendor_rules.py#record_supplier_refund_event` (L932-L1001)
 - **Test Reference**: `tests/accounting/test_vendor_purchase_supplier_refund.py`

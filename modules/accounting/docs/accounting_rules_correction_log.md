@@ -69,3 +69,31 @@ Copy this template for each completed card:
 - Follow-up questions:
   - None.
 
+
+## ACC-FIX-007: Cap supplier refunds to unresolved return value
+
+- Problem ID:
+  - `ACC-PROB-007`
+- Related rule IDs:
+  - `PUR-RULE-003`
+  - `BANK-RULE-001`
+  - `VND-RULE-006`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_supplier_refund.py::test_supplier_refund_rejects_amount_above_unsettled_return_value`
+  - `tests/accounting/test_vendor_purchase_supplier_refund.py::test_supplier_refund_rejects_refund_without_purchase_return_value`
+  - `tests/accounting/test_vendor_purchase_supplier_refund.py::test_supplier_refund_rejects_repeated_over_refund`
+- Production files changed:
+  - `modules/accounting/current_rules/vendor_rules.py`
+  - `modules/accounting/docs/implemented_accounting_rules_reference.md`
+- Behavior before:
+  - record_supplier_refund_event allowed supplier refunds to be recorded for any positive amount, potentially exceeding the return value or prior settlements.
+- Behavior after:
+  - record_supplier_refund_event calculates the remaining refundable amount (return value minus prior refunds and credit notes) and rejects any refund exceeding this cap.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+

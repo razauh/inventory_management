@@ -950,6 +950,31 @@ def record_supplier_refund_event(
             vendor_label="purchase",
         ),
     )
+
+    returned_value_row = conn.execute(
+        "SELECT COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS val FROM purchase_return_valuations WHERE purchase_id = ?",
+        (payload.purchase_id,)
+    ).fetchone()
+    returned_value = Decimal(str(returned_value_row["val"] if returned_value_row else 0.0))
+
+    prior_refunds_row = conn.execute(
+        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS val FROM purchase_refunds WHERE purchase_id = ? AND clearing_state = 'cleared'",
+        (payload.purchase_id,)
+    ).fetchone()
+    prior_refunds = Decimal(str(prior_refunds_row["val"] if prior_refunds_row else 0.0))
+
+    prior_credits_row = conn.execute(
+        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS val FROM vendor_advances WHERE source_id = ? AND source_type = 'return_credit'",
+        (payload.purchase_id,)
+    ).fetchone()
+    prior_credits = Decimal(str(prior_credits_row["val"] if prior_credits_row else 0.0))
+
+    remaining_refundable = returned_value - prior_refunds - prior_credits
+    if payload.amount > remaining_refundable:
+        raise ValueError(
+            f"Supplier refund amount {payload.amount} exceeds the remaining refundable value of {remaining_refundable}"
+        )
+
     cur = conn.execute(
         """
         INSERT INTO purchase_refunds (
