@@ -239,10 +239,12 @@ class AccountingService:
             self._not_implemented("get_purchase_return_totals")
         return get_current_purchase_return_totals(self.conn, purchase_id)
 
-    def get_purchase_outstanding(self, purchase_id: int | str) -> PurchaseOutstanding:
+    def get_purchase_outstanding(
+        self, purchase_id: int | str, *, clamp: bool = False
+    ) -> PurchaseOutstanding:
         if self.conn is None:
             self._not_implemented("get_purchase_outstanding")
-        return get_current_purchase_outstanding(self.conn, purchase_id)
+        return get_current_purchase_outstanding(self.conn, purchase_id, clamp=clamp)
 
     def get_purchase_remaining_due_header(
         self, purchase_id: int | str

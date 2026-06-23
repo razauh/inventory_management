@@ -530,6 +530,7 @@ class PurchaseFinancials:
     returned_value: Decimal
     refunded_amount: Decimal
     outstanding: Decimal
+    clamped_outstanding: Decimal = Decimal("0")
     total_amount: Decimal = Decimal("0")
     return_credit_amount: Decimal = Decimal("0")
     is_fully_paid: bool = False

@@ -258,5 +258,29 @@ Copy this template for each completed card:
 - Follow-up questions:
   - None.
 
+## ACC-FIX-001: Define one purchase outstanding presentation contract
+
+- Problem ID:
+  - `ACC-PROB-001`
+- Related rule IDs:
+  - `PUR-RULE-006`
+  - `VND-RULE-005`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_outstanding.py::test_purchase_outstanding_api_conventions_match_documented_policy`
+  - `tests/accounting/test_vendor_purchase_outstanding.py::test_purchase_outstanding_overpayment_values_are_exposed_consistently`
+- Production files changed:
+  - `modules/accounting/dto.py`
+  - `modules/accounting/current_rules/purchase_rules.py`
+- Behavior before:
+  - `get_purchase_financials`, `get_purchase_outstanding`, and `get_purchase_remaining_due_header` returned inconsistent signed vs clamped outstanding amounts based on different sources (header vs payments rollup).
+- Behavior after:
+  - All three APIs use the same formula based on `purchases` table columns (`calculated_total_amount - paid_amount - advance_payment_applied`). They consistently return signed values, with clamped values exposed via `clamp=True` or `clamped_outstanding` DTO field.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
 
 

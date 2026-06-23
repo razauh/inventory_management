@@ -251,13 +251,15 @@ def get_purchase_financials(conn: Connection, purchase_id: int | str) -> Purchas
             returned_value=Decimal("0"),
             refunded_amount=Decimal("0"),
             outstanding=Decimal("0"),
+            clamped_outstanding=Decimal("0"),
         )
     calc = _decimal(row["calculated_total_amount"])
     paid = _decimal(row["paid_amount"])
     adv = _decimal(row["advance_payment_applied"])
     prior_refunded = _decimal(row["prior_refunded_amount"])
     cleared_direct = _decimal(row["cleared_direct_payments"])
-    remaining = max(Decimal("0"), calc - cleared_direct - adv)
+    remaining_signed = calc - paid - adv
+    remaining_clamped = max(Decimal("0"), remaining_signed)
     return PurchaseFinancials(
         purchase_id=purchase_id,
         net_total=calc,
@@ -265,10 +267,11 @@ def get_purchase_financials(conn: Connection, purchase_id: int | str) -> Purchas
         applied_credit=adv,
         returned_value=_decimal(row["returned_value"]),
         refunded_amount=prior_refunded,
-        outstanding=remaining,
+        outstanding=remaining_signed,
+        clamped_outstanding=remaining_clamped,
         total_amount=_decimal(row["total_amount"]),
         return_credit_amount=_decimal(row["return_credit_amount"]),
-        is_fully_paid=remaining <= Decimal("0.000000001"),
+        is_fully_paid=remaining_clamped <= Decimal("0.000000001"),
         remaining_refundable_amount=max(Decimal("0"), cleared_direct - prior_refunded),
     )
 

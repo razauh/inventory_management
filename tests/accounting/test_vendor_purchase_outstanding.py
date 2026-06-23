@@ -1,4 +1,5 @@
 import sqlite3
+from decimal import Decimal
 
 import pytest
 
@@ -119,9 +120,8 @@ def test_purchase_outstanding_matches_repo_remaining_due(purchase_outstanding_db
 
     conn.execute("UPDATE purchases SET paid_amount = 120 WHERE purchase_id = 'PO-DUE'")
     assert float(service.get_purchase_outstanding("PO-DUE").outstanding) == -20.0
-    assert float(service.get_purchase_remaining_due_header("PO-DUE").outstanding) == (
-        pytest.approx(repo.get_purchase_remaining_due("PO-DUE")["remaining_due"])
-    )
+    assert float(service.get_purchase_remaining_due_header("PO-DUE").outstanding) == 0.0
+    assert repo.get_purchase_remaining_due("PO-DUE")["remaining_due"] == -20.0
     assert repo.get_remaining_due_header("PO-DUE") == pytest.approx(0.0)
 
 
@@ -162,3 +162,54 @@ def test_purchase_outstanding_preserves_returns_payments_and_applied_credit(
 
     assert float(outstanding.outstanding) == pytest.approx(expected["remaining_due"])
     assert expected["remaining_due"] == pytest.approx(40.0)
+
+
+def test_purchase_outstanding_api_conventions_match_documented_policy(purchase_outstanding_db):
+    conn, ids = purchase_outstanding_db
+    _create_purchase(conn, ids, "PO-POLICY")
+    service = AccountingService(conn)
+
+    # Unpaid purchase of 100
+    financials = service.get_purchase_financials("PO-POLICY")
+    outstanding = service.get_purchase_outstanding("PO-POLICY")
+    remaining_due_header = service.get_purchase_remaining_due_header("PO-POLICY")
+
+    assert financials.outstanding == Decimal("100.0")
+    assert financials.clamped_outstanding == Decimal("100.0")
+    assert outstanding.outstanding == Decimal("100.0")
+    assert remaining_due_header.outstanding == Decimal("100.0")
+
+    # Partially paid: 40 paid
+    _pay(conn, "PO-POLICY", 40.0)
+    financials = service.get_purchase_financials("PO-POLICY")
+    outstanding = service.get_purchase_outstanding("PO-POLICY")
+    remaining_due_header = service.get_purchase_remaining_due_header("PO-POLICY")
+
+    assert financials.outstanding == Decimal("60.0")
+    assert financials.clamped_outstanding == Decimal("60.0")
+    assert outstanding.outstanding == Decimal("60.0")
+    assert remaining_due_header.outstanding == Decimal("60.0")
+
+
+def test_purchase_outstanding_overpayment_values_are_exposed_consistently(purchase_outstanding_db):
+    conn, ids = purchase_outstanding_db
+    _create_purchase(conn, ids, "PO-OVER")
+    service = AccountingService(conn)
+
+    # Force paid_amount = 120 (overpayment of 20)
+    conn.execute("UPDATE purchases SET paid_amount = 120 WHERE purchase_id = 'PO-OVER'")
+
+    # All 3 APIs must evaluate consistently based on p.paid_amount
+    financials = service.get_purchase_financials("PO-OVER")
+    outstanding_signed = service.get_purchase_outstanding("PO-OVER", clamp=False)
+    outstanding_clamped = service.get_purchase_outstanding("PO-OVER", clamp=True)
+    remaining_due_header = service.get_purchase_remaining_due_header("PO-OVER")
+
+    # Assert signed conventions
+    assert financials.outstanding == Decimal("-20.0")
+    assert outstanding_signed.outstanding == Decimal("-20.0")
+
+    # Assert clamped conventions
+    assert financials.clamped_outstanding == Decimal("0.0")
+    assert outstanding_clamped.outstanding == Decimal("0.0")
+    assert remaining_due_header.outstanding == Decimal("0.0")
