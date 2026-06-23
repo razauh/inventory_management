@@ -456,178 +456,92 @@ class ReportingRepo:
 
     def expense_summary_by_category(
         self, date_from: str, date_to: str, category_id: Optional[int], limit: Optional[int] = 1000
-    ) -> list[sqlite3.Row]:
+    ) -> list[dict]:
         """
         Totals per category in [date_from, date_to].
         """
-        if category_id is not None:
-            if category_id == 0:
-                sql = """
-                SELECT
-                    0                                  AS category_id,
-                    '(Uncategorized)'                  AS category_name,
-                    SUM(CAST(e.amount AS REAL))        AS total_amount
-                FROM expenses e
-                WHERE e.category_id IS NULL
-                  AND e.date >= ?
-                  AND e.date <= ?
-                GROUP BY e.category_id
-                """
-                params = [date_from, date_to]
-            else:
-                sql = """
-                SELECT
-                    e.category_id                      AS category_id,
-                    ec.name                            AS category_name,
-                    SUM(CAST(e.amount AS REAL))        AS total_amount
-                FROM expenses e
-                JOIN expense_categories ec ON ec.category_id = e.category_id
-                WHERE e.category_id = ?
-                  AND e.date >= ?
-                  AND e.date <= ?
-                GROUP BY e.category_id, ec.name
-                """
-                params = [category_id, date_from, date_to]
-        else:
-            sql = """
-            SELECT
-                COALESCE(e.category_id, 0)          AS category_id,
-                COALESCE(ec.name, '(Uncategorized)') AS category_name,
-                SUM(CAST(e.amount AS REAL))        AS total_amount
-            FROM expenses e
-            LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
-            WHERE e.date >= ?
-              AND e.date <= ?
-            GROUP BY e.category_id, ec.name
-            ORDER BY category_name COLLATE NOCASE
-            """
-            params = [date_from, date_to]
-
-        lim_sql, lim_params = self._limit_clause(limit)
-        sql += lim_sql
-        params.extend(lim_params)
-        return list(self.conn.execute(sql, params))
+        from modules.accounting.service import AccountingService
+        totals = AccountingService(self.conn).get_expense_report_category_totals(
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+        )
+        if limit is not None:
+            totals = totals[:limit]
+        return [
+            {
+                "category_id": t.category_id,
+                "category_name": t.category_name,
+                "total_amount": float(t.total_amount),
+            }
+            for t in totals
+        ]
 
     def expense_summary_by_category_iter(
         self, date_from: str, date_to: str, category_id: Optional[int]
-    ) -> Iterable[sqlite3.Row]:
+    ) -> Iterable[dict]:
         """
         Generator version of expense_summary_by_category that yields rows one at a time.
         """
-        if category_id is not None:
-            if category_id == 0:
-                sql = """
-                SELECT
-                    0                                  AS category_id,
-                    '(Uncategorized)'                  AS category_name,
-                    SUM(CAST(e.amount AS REAL))        AS total_amount
-                FROM expenses e
-                WHERE e.category_id IS NULL
-                  AND e.date >= ?
-                  AND e.date <= ?
-                GROUP BY e.category_id
-                """
-                params = [date_from, date_to]
-            else:
-                sql = """
-                SELECT
-                    e.category_id                      AS category_id,
-                    ec.name                            AS category_name,
-                    SUM(CAST(e.amount AS REAL))        AS total_amount
-                FROM expenses e
-                JOIN expense_categories ec ON ec.category_id = e.category_id
-                WHERE e.category_id = ?
-                  AND e.date >= ?
-                  AND e.date <= ?
-                GROUP BY e.category_id, ec.name
-                """
-                params = [category_id, date_from, date_to]
-        else:
-            sql = """
-            SELECT
-                COALESCE(e.category_id, 0)          AS category_id,
-                COALESCE(ec.name, '(Uncategorized)') AS category_name,
-                SUM(CAST(e.amount AS REAL))        AS total_amount
-            FROM expenses e
-            LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
-            WHERE e.date >= ?
-              AND e.date <= ?
-            GROUP BY e.category_id, ec.name
-            ORDER BY category_name COLLATE NOCASE
-            """
-            params = [date_from, date_to]
-
-        cursor = self.conn.execute(sql, params)
-        for row in cursor:
-            yield row
+        from modules.accounting.service import AccountingService
+        totals = AccountingService(self.conn).get_expense_report_category_totals(
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+        )
+        for t in totals:
+            yield {
+                "category_id": t.category_id,
+                "category_name": t.category_name,
+                "total_amount": float(t.total_amount),
+            }
 
     def expense_lines(
         self, date_from: str, date_to: str, category_id: Optional[int], limit: Optional[int] = 1000
-    ) -> list[sqlite3.Row]:
+    ) -> list[dict]:
         """
         Raw expense lines for the period and optional category.
         """
-        params: list[object] = [date_from, date_to]
-        where_extra = ""
-        if category_id is not None:
-            if category_id == 0:
-                where_extra = " AND e.category_id IS NULL "
-            else:
-                where_extra = " AND e.category_id = ? "
-                params.append(category_id)
-
-        sql = f"""
-        SELECT
-            e.expense_id                 AS expense_id,
-            e.date                       AS date,
-            COALESCE(ec.name, '(Uncategorized)') AS category_name,
-            e.description                AS description,
-            COALESCE(CAST(e.amount AS REAL), 0.0) AS amount
-        FROM expenses e
-        LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
-        WHERE e.date >= ?
-          AND e.date <= ?
-          {where_extra}
-        ORDER BY e.date DESC, e.expense_id DESC
-        """
-        # Return list for API compatibility, but consider using iterators for large datasets
-        sql += " LIMIT ? "
-        params.append(int(limit)) if limit is not None else None
-        return list(self.conn.execute(sql, params))
+        from modules.accounting.service import AccountingService
+        lines = AccountingService(self.conn).get_expense_report_lines(
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+        )
+        if limit is not None:
+            lines = lines[:limit]
+        return [
+            {
+                "expense_id": l.expense_id,
+                "date": l.date,
+                "category_name": l.category_name,
+                "description": l.description,
+                "amount": float(l.amount),
+            }
+            for l in lines
+        ]
 
     def expense_lines_iter(
         self, date_from: str, date_to: str, category_id: Optional[int]
-    ) -> Iterable[sqlite3.Row]:
+    ) -> Iterable[dict]:
         """
         Generator version of expense_lines that yields rows one at a time.
         This prevents loading all results into memory at once for large datasets.
         """
-        params: list[object] = [date_from, date_to]
-        where_extra = ""
-        if category_id is not None:
-            if category_id == 0:
-                where_extra = " AND e.category_id IS NULL "
-            else:
-                where_extra = " AND e.category_id = ? "
-                params.append(category_id)
-
-        sql = f"""
-        SELECT
-            e.expense_id                 AS expense_id,
-            e.date                       AS date,
-            COALESCE(ec.name, '(Uncategorized)') AS category_name,
-            e.description                AS description,
-            COALESCE(CAST(e.amount AS REAL), 0.0) AS amount
-        FROM expenses e
-        LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
-        WHERE e.date >= ?
-          AND e.date <= ?
-          {where_extra}
-        ORDER BY e.date DESC, e.expense_id DESC
-        """
-        cursor = self.conn.execute(sql, params)
-        for row in cursor:
-            yield row
+        from modules.accounting.service import AccountingService
+        lines = AccountingService(self.conn).get_expense_report_lines(
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+        )
+        for l in lines:
+            yield {
+                "expense_id": l.expense_id,
+                "date": l.date,
+                "category_name": l.category_name,
+                "description": l.description,
+                "amount": float(l.amount),
+            }
 
     # ----------------------------------------------------------------------
     # ------------------------------ INVENTORY -----------------------------
@@ -860,36 +774,27 @@ class ReportingRepo:
 
     def expenses_by_category(
         self, date_from: str, date_to: str, limit: Optional[int] = 1000
-    ) -> list[sqlite3.Row]:
+    ) -> list[dict]:
         """
         Detailed expense totals by category for P&L middle block.
         Returns category_id, category_name, total_amount (names match UI).
         """
-        sql = """
-        SELECT
-          ec.category_id                     AS category_id,
-          ec.name                            AS category_name,
-          COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
-        FROM expense_categories ec
-        LEFT JOIN expenses e
-               ON e.category_id = ec.category_id
-              AND e.date >= ? AND e.date <= ?
-        GROUP BY ec.category_id, ec.name
-        
-        UNION ALL
-        
-        SELECT
-          0                                  AS category_id,
-          '(Uncategorized)'                  AS category_name,
-          COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
-        FROM expenses e
-        WHERE e.category_id IS NULL
-          AND e.date >= ? AND e.date <= ?
-        ORDER BY category_name COLLATE NOCASE
-        """
-        lim_sql, lim_params = self._limit_clause(limit)
-        sql += lim_sql
-        return list(self.conn.execute(sql, [date_from, date_to, date_from, date_to, *lim_params]))
+        from modules.accounting.service import AccountingService
+        summary = AccountingService(self.conn).get_profit_loss_expense_summary(
+            date_from=date_from,
+            date_to=date_to,
+        )
+        expenses = summary.expenses
+        if limit is not None:
+            expenses = expenses[:limit]
+        return [
+            {
+                "category_id": e.category_id,
+                "category_name": e.category_name,
+                "total_amount": float(e.total_amount),
+            }
+            for e in expenses
+        ]
 
     def sale_collections_by_day(self, date_from: str, date_to: str, limit: Optional[int] = 1000) -> list[sqlite3.Row]:
         """

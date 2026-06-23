@@ -6,7 +6,7 @@ These rules mirror current code first. They are not assumed correct.
 from decimal import Decimal
 import sqlite3
 from typing import Optional, Any
-from ..dto import ExpenseFinancialSummary, ExpenseCategoryTotal
+from ..dto import ExpenseFinancialSummary, ExpenseCategoryTotal, ExpenseReportLine, ExpenseProfitLossSummary
 
 
 def _build_where_clause(
@@ -211,3 +211,159 @@ def get_expense_screen_category_totals(
             )
         )
     return tuple(out)
+
+
+def get_expense_report_category_totals(
+    conn: sqlite3.Connection,
+    date_from: str,
+    date_to: str,
+    category_id: Optional[int],
+) -> tuple[ExpenseCategoryTotal, ...]:
+    if category_id is not None:
+        if category_id == 0:
+            sql = """
+            SELECT
+                0                                  AS category_id,
+                '(Uncategorized)'                  AS category_name,
+                SUM(CAST(e.amount AS REAL))        AS total_amount
+            FROM expenses e
+            WHERE e.category_id IS NULL
+              AND e.date >= ?
+              AND e.date <= ?
+            GROUP BY e.category_id
+            """
+            params = [date_from, date_to]
+        else:
+            sql = """
+            SELECT
+                e.category_id                      AS category_id,
+                ec.name                            AS category_name,
+                SUM(CAST(e.amount AS REAL))        AS total_amount
+            FROM expenses e
+            JOIN expense_categories ec ON ec.category_id = e.category_id
+            WHERE e.category_id = ?
+              AND e.date >= ?
+              AND e.date <= ?
+            GROUP BY e.category_id, ec.name
+            """
+            params = [category_id, date_from, date_to]
+    else:
+        sql = """
+        SELECT
+            COALESCE(e.category_id, 0)          AS category_id,
+            COALESCE(ec.name, '(Uncategorized)') AS category_name,
+            SUM(CAST(e.amount AS REAL))        AS total_amount
+        FROM expenses e
+        LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
+        WHERE e.date >= ?
+          AND e.date <= ?
+        GROUP BY e.category_id, ec.name
+        ORDER BY category_name COLLATE NOCASE
+        """
+        params = [date_from, date_to]
+
+    rows = conn.execute(sql, params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append(
+            ExpenseCategoryTotal(
+                category_id=d["category_id"],
+                category_name=d["category_name"],
+                total_amount=Decimal(str(d["total_amount"])) if d["total_amount"] is not None else Decimal("0.00"),
+            )
+        )
+    return tuple(out)
+
+
+def get_expense_report_lines(
+    conn: sqlite3.Connection,
+    date_from: str,
+    date_to: str,
+    category_id: Optional[int],
+) -> tuple[ExpenseReportLine, ...]:
+    params = [date_from, date_to]
+    where_extra = ""
+    if category_id is not None:
+        if category_id == 0:
+            where_extra = " AND e.category_id IS NULL "
+        else:
+            where_extra = " AND e.category_id = ? "
+            params.append(category_id)
+
+    sql = f"""
+    SELECT
+        e.expense_id                 AS expense_id,
+        e.date                       AS date,
+        COALESCE(ec.name, '(Uncategorized)') AS category_name,
+        e.description                AS description,
+        COALESCE(CAST(e.amount AS REAL), 0.0) AS amount
+    FROM expenses e
+    LEFT JOIN expense_categories ec ON ec.category_id = e.category_id
+    WHERE e.date >= ?
+      AND e.date <= ?
+      {where_extra}
+    ORDER BY e.date DESC, e.expense_id DESC
+    """
+
+    rows = conn.execute(sql, params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append(
+            ExpenseReportLine(
+                expense_id=d["expense_id"],
+                date=d["date"],
+                category_name=d["category_name"],
+                description=d["description"] or "",
+                amount=Decimal(str(d["amount"])) if d["amount"] is not None else Decimal("0.00"),
+            )
+        )
+    return tuple(out)
+
+
+def get_profit_loss_expense_summary(
+    conn: sqlite3.Connection,
+    date_from: str,
+    date_to: str,
+) -> ExpenseProfitLossSummary:
+    sql = """
+    SELECT
+      ec.category_id                     AS category_id,
+      ec.name                            AS category_name,
+      COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+    FROM expense_categories ec
+    LEFT JOIN expenses e
+           ON e.category_id = ec.category_id
+          AND e.date >= ? AND e.date <= ?
+    GROUP BY ec.category_id, ec.name
+    
+    UNION ALL
+    
+    SELECT
+      0                                  AS category_id,
+      '(Uncategorized)'                  AS category_name,
+      COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS total_amount
+    FROM expenses e
+    WHERE e.category_id IS NULL
+      AND e.date >= ? AND e.date <= ?
+    ORDER BY category_name COLLATE NOCASE
+    """
+    rows = conn.execute(sql, [date_from, date_to, date_from, date_to]).fetchall()
+    expenses = []
+    total_val = Decimal("0.00")
+    for r in rows:
+        d = dict(r)
+        amt = Decimal(str(d["total_amount"])) if d["total_amount"] is not None else Decimal("0.00")
+        total_val += amt
+        expenses.append(
+            ExpenseCategoryTotal(
+                category_id=d["category_id"],
+                category_name=d["category_name"],
+                total_amount=amt,
+            )
+        )
+    return ExpenseProfitLossSummary(
+        expenses=tuple(expenses),
+        total_expenses=total_val,
+    )

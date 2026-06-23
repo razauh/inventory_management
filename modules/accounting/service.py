@@ -170,6 +170,9 @@ from .current_rules.expense_rules import (
     get_expense_financial_summary as get_current_expense_financial_summary,
     list_expense_rows as list_current_expense_rows,
     get_expense_screen_category_totals as get_current_expense_screen_category_totals,
+    get_expense_report_category_totals as get_current_expense_report_category_totals,
+    get_expense_report_lines as get_current_expense_report_lines,
+    get_profit_loss_expense_summary as get_current_profit_loss_expense_summary,
 )
 from .validators import (
     validate_customer_payment_metadata as validate_current_customer_payment_metadata,
@@ -841,17 +844,47 @@ class AccountingService:
             amount_max=amount_max,
         )
 
-    def get_expense_report_category_totals(self, *args: Any, **kwargs: Any) -> tuple[ExpenseCategoryTotal, ...]:
-        self._not_implemented("get_expense_report_category_totals")
+    def get_expense_report_category_totals(
+        self,
+        date_from: str,
+        date_to: str,
+        category_id: int | None,
+    ) -> tuple[ExpenseCategoryTotal, ...]:
+        if self.conn is None:
+            self._not_implemented("get_expense_report_category_totals")
+        return get_current_expense_report_category_totals(
+            self.conn,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+        )
 
-    def get_expense_report_lines(self, *args: Any, **kwargs: Any) -> tuple[ExpenseReportLine, ...]:
-        self._not_implemented("get_expense_report_lines")
+    def get_expense_report_lines(
+        self,
+        date_from: str,
+        date_to: str,
+        category_id: int | None,
+    ) -> tuple[ExpenseReportLine, ...]:
+        if self.conn is None:
+            self._not_implemented("get_expense_report_lines")
+        return get_current_expense_report_lines(
+            self.conn,
+            date_from=date_from,
+            date_to=date_to,
+            category_id=category_id,
+        )
 
     def get_dashboard_expense_total(self, date_from: str, date_to: str) -> Decimal:
         self._not_implemented("get_dashboard_expense_total")
 
     def get_profit_loss_expense_summary(self, date_from: str, date_to: str) -> ExpenseProfitLossSummary:
-        self._not_implemented("get_profit_loss_expense_summary")
+        if self.conn is None:
+            self._not_implemented("get_profit_loss_expense_summary")
+        return get_current_profit_loss_expense_summary(
+            self.conn,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
     def validate_expense_input(self, *args: Any, **kwargs: Any) -> None:
         self._not_implemented("validate_expense_input")

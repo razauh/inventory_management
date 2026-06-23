@@ -44,6 +44,7 @@ except Exception:  # pragma: no cover
 
 # Reporting repo consolidates the SQL
 from ...database.repositories.reporting_repo import ReportingRepo
+from ..accounting import AccountingService
 
 
 # ------------------------------ Logic ---------------------------------------
@@ -59,6 +60,7 @@ class ExpenseReports:
         self.conn = conn
         self.repo = ReportingRepo(conn)
         self.conn.row_factory = sqlite3.Row
+        self.accounting = AccountingService(conn)
 
     def summary_by_category(
         self, date_from: str, date_to: str, category_id: Optional[int]
@@ -67,12 +69,14 @@ class ExpenseReports:
         Return rows:
           { category_id, category_name, total_amount }
         """
-        rows = islice(self.repo.expense_summary_by_category_iter(date_from, date_to, category_id), self.MAX_ROWS)
+        rows = self.accounting.get_expense_report_category_totals(date_from, date_to, category_id)
+        if len(rows) > self.MAX_ROWS:
+            rows = rows[:self.MAX_ROWS]
         return [
             {
-                "category_id": int(r["category_id"]),
-                "category_name": str(r["category_name"]),
-                "total_amount": float(r["total_amount"] or 0.0),
+                "category_id": r.category_id,
+                "category_name": r.category_name,
+                "total_amount": float(r.total_amount),
             }
             for r in rows
         ]
@@ -85,16 +89,18 @@ class ExpenseReports:
           { expense_id, date, category_name, description, amount }
         Ordered by date desc, id desc (enforced in repo).
         """
-        rows = islice(self.repo.expense_lines_iter(date_from, date_to, category_id), self.MAX_ROWS)
+        rows = self.accounting.get_expense_report_lines(date_from, date_to, category_id)
+        if len(rows) > self.MAX_ROWS:
+            rows = rows[:self.MAX_ROWS]
         out: List[dict] = []
         for r in rows:
             out.append(
                 {
-                    "expense_id": int(r["expense_id"]),
-                    "date": str(r["date"]),
-                    "category_name": str(r["category_name"]),
-                    "description": (r["description"] or ""),
-                    "amount": float(r["amount"] or 0.0),
+                    "expense_id": r.expense_id,
+                    "date": r.date,
+                    "category_name": r.category_name,
+                    "description": r.description,
+                    "amount": float(r.amount),
                 }
             )
         return out

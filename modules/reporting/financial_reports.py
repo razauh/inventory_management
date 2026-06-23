@@ -115,13 +115,11 @@ class FinancialReports:
         cogs = float(self.repo.cogs_total(date_from, date_to))
         gross = revenue - cogs
 
-        exp_rows = self.repo.expenses_by_category(date_from, date_to)
+        summary = self.accounting.get_profit_loss_expense_summary(date_from, date_to)
         expenses: List[Dict] = []
-        total_exp = 0.0
-        for r in exp_rows:
-            amt = float(r["total_amount"] or 0.0)
-            expenses.append({"category": str(r["category_name"]), "amount": amt})
-            total_exp += amt
+        for r in summary.expenses:
+            expenses.append({"category": r.category_name, "amount": float(r.total_amount)})
+        total_exp = float(summary.total_expenses)
 
         operating_income = gross - total_exp
 

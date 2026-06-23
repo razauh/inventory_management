@@ -70,3 +70,43 @@ It records where legacy/current behavior moved and which application call sites 
   - Return types of migrated methods are standardized to DTO dataclasses with `Decimal` values for financial amounts.
 
 
+## EX-ACC-004: Consolidate expense report summary and line reads
+
+- Migrated behavior:
+  - Expense report category totals (`expense_summary_by_category`) and expense report raw lines (`expense_lines`).
+- Original location(s):
+  - `database/repositories/reporting_repo.py`
+- New accounting location(s):
+  - `modules/accounting/current_rules/expense_rules.py` (methods: `get_expense_report_category_totals`, `get_expense_report_lines`)
+  - `modules/accounting/service.py` (implemented methods: `get_expense_report_category_totals`, `get_expense_report_lines`)
+- Rewired call site(s):
+  - `database/repositories/reporting_repo.py` (`expense_summary_by_category`, `expense_summary_by_category_iter`, `expense_lines`, `expense_lines_iter` now route through `AccountingService`)
+  - `modules/reporting/expense_reports.py` (read calls rewired to use `AccountingService` directly)
+- Tests added/updated:
+  - `tests/accounting/test_expense_report_reads.py` (new)
+- Behavior change:
+  - None intended.
+- Notes / unresolved correctness questions:
+  - None.
+
+
+## EX-ACC-005: Consolidate expense Profit & Loss breakdown
+
+- Migrated behavior:
+  - Detailed expense totals by category for P&L middle block (`expenses_by_category`).
+- Original location(s):
+  - `database/repositories/reporting_repo.py`
+- New accounting location(s):
+  - `modules/accounting/current_rules/expense_rules.py` (method: `get_profit_loss_expense_summary`)
+  - `modules/accounting/service.py` (implemented method: `get_profit_loss_expense_summary`)
+- Rewired call site(s):
+  - `database/repositories/reporting_repo.py` (`expenses_by_category` now routes through `AccountingService`)
+  - `modules/reporting/financial_reports.py` (read calls rewired to use `AccountingService` directly)
+- Tests added/updated:
+  - `tests/accounting/test_expense_profit_loss_summary.py` (new)
+- Behavior change:
+  - None intended.
+- Notes / unresolved correctness questions:
+  - None.
+
+
