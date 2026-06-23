@@ -210,10 +210,18 @@ def get_sales_dashboard_metrics(
           WHERE s.doc_type = 'sale' AND srt.remaining_due > 0.0000001
         ),
         all_payables AS (
-          SELECT MAX(0.0, COALESCE(SUM(CAST(p.total_amount AS REAL)
-            - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
-            - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)), 0.0)) AS open_payables
-          FROM purchases p
+          SELECT COALESCE(SUM(remaining), 0.0) AS open_payables
+          FROM (
+            SELECT
+              MAX(0.0,
+                COALESCE(pdt.calculated_total_amount, p.total_amount)
+                - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+              ) AS remaining
+            FROM purchases p
+            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+          )
+          WHERE remaining > 0.0000001
         )
         SELECT sales_cte.total_sales, sales_cte.total_cogs, expenses_cte.total_expenses,
                receipts.receipts_cleared, payables.vendor_payments_cleared,

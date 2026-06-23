@@ -95,13 +95,14 @@ class DashboardRepo:
               SELECT COALESCE(SUM(remaining), 0.0) AS open_payables
               FROM (
                 SELECT
-                  CAST(p.total_amount AS REAL)
+                  COALESCE(pdt.calculated_total_amount, p.total_amount)
                   - (
                       COALESCE(CAST(p.paid_amount AS REAL), 0.0)
                       + COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
                     )
                   AS remaining
                 FROM purchases p
+                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
               )
               WHERE remaining > 0.0000001
             ),
@@ -298,13 +299,14 @@ class DashboardRepo:
             SELECT COALESCE(SUM(remaining), 0.0) AS v
             FROM (
               SELECT
-                CAST(p.total_amount AS REAL)
+                COALESCE(pdt.calculated_total_amount, p.total_amount)
                 - (
                     COALESCE(CAST(p.paid_amount AS REAL), 0.0)
                     + COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
                   )
                 AS remaining
               FROM purchases p
+              LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
             )
             WHERE remaining > 0.0000001
         """

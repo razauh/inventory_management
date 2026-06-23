@@ -21,7 +21,7 @@ def _ensure_schema(conn):
             product_id INTEGER, quantity REAL, uom_id INTEGER,
             unit_price REAL, item_discount REAL DEFAULT 0
         );
-        CREATE TABLE IF NOT EXISTS products (product_id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE IF NOT EXISTS products (product_id INTEGER PRIMARY KEY, name TEXT, min_stock_level REAL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS uoms (uom_id INTEGER PRIMARY KEY, unit_name TEXT);
         CREATE TABLE IF NOT EXISTS expenses (
             expense_id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, amount REAL,
@@ -173,4 +173,89 @@ def test_customer_receivable_summary_matches_sale_receivable_totals_remaining_du
     # Remaining due should be (100 - 40) + (50 - 50) = 60.0
     assert float(summary.open_due_sum) == pytest.approx(60.0)
     conn.close()
+
+
+def test_dashboard_open_payables_match_purchase_outstanding_after_returns():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+
+    # Create purchase_detailed_totals table/view to control the calculated total
+    conn.execute(
+        """
+        CREATE VIEW IF NOT EXISTS purchase_detailed_totals AS
+        SELECT p.purchase_id,
+               0.0 AS order_discount,
+               CAST(p.total_amount AS REAL) - 20.0 AS calculated_total_amount
+        FROM purchases p;
+        """
+    )
+    conn.execute(
+        """
+        CREATE VIEW IF NOT EXISTS v_stock_on_hand AS
+        SELECT 1 AS product_id, 10.0 AS qty_in_base;
+        """
+    )
+
+    # Insert a purchase with total_amount = 100.0. The detailed total view makes it 80.0 (net of returns)
+    conn.execute(
+        "INSERT INTO purchases (purchase_id, date, total_amount, paid_amount, advance_payment_applied) "
+        "VALUES ('P1', '2026-06-20', 100.0, 0.0, 0.0)"
+    )
+
+    svc = AccountingService(conn)
+    metrics = svc.get_sales_dashboard_metrics('2026-06-01', '2026-06-30')
+
+    # Should be 80.0, not 100.0!
+    import pytest
+    assert float(metrics.open_payables) == pytest.approx(80.0)
+
+    # Also test DashboardRepo.open_payables() and summary_metrics()
+    from database.repositories.dashboard_repo import DashboardRepo
+    repo = DashboardRepo(conn)
+    assert float(repo.open_payables()) == pytest.approx(80.0)
+    assert float(repo.summary_metrics('2026-06-01', '2026-06-30')['open_payables']) == pytest.approx(80.0)
+
+    conn.close()
+
+
+def test_dashboard_open_payables_use_purchase_net_total_basis():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+
+    conn.execute(
+        """
+        CREATE VIEW IF NOT EXISTS purchase_detailed_totals AS
+        SELECT p.purchase_id,
+               0.0 AS order_discount,
+               CAST(p.total_amount AS REAL) AS calculated_total_amount
+        FROM purchases p;
+        """
+    )
+    conn.execute(
+        """
+        CREATE VIEW IF NOT EXISTS v_stock_on_hand AS
+        SELECT 1 AS product_id, 10.0 AS qty_in_base;
+        """
+    )
+    conn.execute(
+        "INSERT INTO purchases (purchase_id, date, total_amount, paid_amount, advance_payment_applied) "
+        "VALUES ('P1', '2026-06-20', 120.0, 30.0, 10.0)"
+    )
+
+    svc = AccountingService(conn)
+    metrics = svc.get_sales_dashboard_metrics('2026-06-01', '2026-06-30')
+
+    # Open payable remaining: 120 - 30 - 10 = 80.0
+    import pytest
+    assert float(metrics.open_payables) == pytest.approx(80.0)
+
+    from database.repositories.dashboard_repo import DashboardRepo
+    repo = DashboardRepo(conn)
+    assert float(repo.open_payables()) == pytest.approx(80.0)
+    assert float(repo.summary_metrics('2026-06-01', '2026-06-30')['open_payables']) == pytest.approx(80.0)
+
+    conn.close()
+
 

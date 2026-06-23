@@ -210,4 +210,29 @@ Copy this template for each completed card:
 - Follow-up questions:
   - None.
 
+## ACC-FIX-017: Align dashboard open payables with canonical purchase outstanding
+
+- Problem ID:
+  - `ACC-PROB-017`
+- Related rule IDs:
+  - `PUR-RULE-001`
+  - `REPORT`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_reports.py::test_dashboard_open_payables_match_purchase_outstanding_after_returns`
+  - `tests/accounting/test_customer_sales_reports.py::test_dashboard_open_payables_use_purchase_net_total_basis`
+- Production files changed:
+  - `modules/accounting/current_rules/sales_rules.py`
+  - `database/repositories/dashboard_repo.py`
+- Behavior before:
+  - Dashboard open payables metric calculation relied on raw purchase header totals, mismatching canonical accounting purchase outstanding that is net of returns.
+- Behavior after:
+  - Dashboard open payables metric calculation joins `purchase_detailed_totals` and uses `COALESCE(pdt.calculated_total_amount, p.total_amount)` to align with accounting rules.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+
 
