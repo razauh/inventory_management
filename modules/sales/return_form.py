@@ -4,9 +4,13 @@ from PySide6.QtWidgets import (
     QCheckBox, QDialogButtonBox, QDateEdit, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, QDate
+from decimal import Decimal
 from ...utils.helpers import today_str, fmt_money
 from ...database.repositories.sales_repo import SalesRepo
 from ...database.repositories.sales_returns_helpers import get_returnable_quantities
+from modules.accounting import AccountingService
+from modules.accounting.dto import SaleReturnPreviewPayload, SaleReturnPreviewLine
+
 
 
 class SaleReturnForm(QDialog):
@@ -419,16 +423,10 @@ class SaleReturnForm(QDialog):
         self._cash_user_set = True
         self._update_note()
 
-    # ---- math helpers ----
-    def _order_factor(self) -> float:
-        if self._sale_net_subtotal <= 0:
-            return 1.0
-        return float(self._sale_total_after_od) / float(self._sale_net_subtotal)
-
     # ---- recompute totals ----
     def _recalc(self, *args):
-        total = 0.0
-        of = self._order_factor()
+        preview_lines = []
+        rows_data = []
         for r in range(self.tbl_items.rowCount()):
             try:
                 remaining = float(self.tbl_items.item(r, self.COL_REMAINING).text() or 0)
@@ -436,6 +434,7 @@ class SaleReturnForm(QDialog):
                     (self.tbl_items.item(r, self.COL_UNIT_PRICE).text() or "0").replace(",", "")
                 )
                 qty = float(self.tbl_items.item(r, self.COL_QTY_RETURN).text() or 0)
+                sold_qty = float(self.tbl_items.item(r, self.COL_SOLD).text() or 0)
             except Exception:
                 continue
 
@@ -449,8 +448,39 @@ class SaleReturnForm(QDialog):
                     lt.setText(fmt_money(0.0))
                 continue
 
-            line_refund = qty * unit_net * of
-            total += line_refund
+            preview_lines.append(
+                SaleReturnPreviewLine(
+                    quantity=Decimal(str(sold_qty)),
+                    unit_price=Decimal(str(unit_net)),
+                    item_discount=Decimal("0"),
+                    return_qty=Decimal(str(qty)),
+                )
+            )
+            rows_data.append((r, qty, unit_net))
+
+        conn = getattr(self.repo, "conn", None)
+        service = AccountingService(conn)
+
+        payload = SaleReturnPreviewPayload(
+            lines=tuple(preview_lines),
+            order_discount=Decimal(str(self._sale_od)),
+        )
+        total = float(service.preview_sale_return_value(payload))
+
+        for idx, (r, qty, unit_net) in enumerate(rows_data):
+            single_line_payload = SaleReturnPreviewPayload(
+                lines=tuple(
+                    SaleReturnPreviewLine(
+                        quantity=line.quantity,
+                        unit_price=line.unit_price,
+                        item_discount=line.item_discount,
+                        return_qty=line.return_qty if i == idx else Decimal("0"),
+                    )
+                    for i, line in enumerate(preview_lines)
+                ),
+                order_discount=Decimal(str(self._sale_od)),
+            )
+            line_refund = float(service.preview_sale_return_value(single_line_payload))
             lt = self.tbl_items.item(r, self.COL_LINE_REFUND)
             if lt:
                 lt.setText(fmt_money(line_refund))

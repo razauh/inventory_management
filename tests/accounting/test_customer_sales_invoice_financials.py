@@ -159,3 +159,65 @@ def test_quotation_invoice_financials_match_current_controller_context():
     result = svc.get_quotation_financials('Q1')
     assert result.quotation_id == 'Q1'
     assert result.context == {"id": "Q1"}
+
+
+def test_sale_invoice_facade_scope_is_explicit():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+
+    conn.execute("INSERT INTO customers (customer_id, name) VALUES (1, 'Test Customer')")
+    conn.execute("INSERT INTO products (product_id, name) VALUES (1, 'Widget')")
+    conn.execute("INSERT INTO uoms (uom_id, unit_name) VALUES (1, 'pcs')")
+    conn.execute(
+        "INSERT INTO sales (sale_id, customer_id, date, total_amount, "
+        "order_discount, doc_type) VALUES ('S2', 1, '2026-06-21', 100, 10, 'sale')"
+    )
+    conn.execute(
+        "INSERT INTO sale_items (sale_id, product_id, quantity, uom_id, "
+        "unit_price, item_discount) VALUES ('S2', 1, 2, 1, 50, 5)"
+    )
+
+    svc = AccountingService(conn)
+    result = svc.get_sale_invoice_financials('S2')
+    ctx = result.context
+
+    # The facade must explicitly contain customer details, line items, and totals
+    assert ctx["customer"]["name"] == "Test Customer"
+    assert len(ctx["items"]) == 1
+    assert ctx["items"][0]["product_name"] == "Widget"
+    assert ctx["totals"]["order_discount"] == 10.0
+    conn.close()
+
+
+def test_sale_invoice_service_and_controller_contexts_match_documented_contract():
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    _ensure_schema(conn)
+
+    conn.execute("INSERT INTO customers (customer_id, name) VALUES (1, 'Test Customer')")
+    conn.execute("INSERT INTO products (product_id, name) VALUES (1, 'Widget')")
+    conn.execute("INSERT INTO uoms (uom_id, unit_name) VALUES (1, 'pcs')")
+    conn.execute(
+        "INSERT INTO sales (sale_id, customer_id, date, total_amount, "
+        "order_discount, doc_type) VALUES ('S3', 1, '2026-06-21', 100, 10, 'sale')"
+    )
+    conn.execute(
+        "INSERT INTO sale_items (sale_id, product_id, quantity, uom_id, "
+        "unit_price, item_discount) VALUES ('S3', 1, 2, 1, 50, 5)"
+    )
+    conn.execute(
+        "INSERT INTO sale_payments (sale_id, date, amount, method, clearing_state) "
+        "VALUES ('S3', '2026-06-22', 40, 'Cash', 'cleared')"
+    )
+
+    svc = AccountingService(conn)
+    result = svc.get_sale_invoice_financials('S3')
+    ctx = result.context
+
+    # Chronological payments list should match documented contract
+    assert len(ctx["payments"]) == 1
+    assert ctx["payments"][0]["amount"] == 40.0
+    assert ctx["payments"][0]["entry_type"] == "Payment"
+    conn.close()
+

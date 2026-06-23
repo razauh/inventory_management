@@ -2169,123 +2169,26 @@ class SalesController(BaseModule):
         # Prepare data for the template
         enriched_data = {"id": sale_id}
 
-        # Fetch sale header data using repository
-        header_row = self.repo.get_header_with_customer(sale_id)
+        # Retrieve the complete invoice financials context from AccountingService
+        invoice_fin = self.accounting.get_sale_invoice_financials(sale_id)
+        ctx = invoice_fin.context
 
-        if header_row:
-            doc_data = dict(header_row)
-            # Map sale_id to id for template compatibility (matching purchase invoice template)
-            doc_data['id'] = doc_data.get('sale_id', '')
-            enriched_data['doc'] = doc_data
-            enriched_data['customer'] = {
-                'name': doc_data.get('customer_name', ''),
-                'contact_info': doc_data.get('customer_contact_info', ''),
-                'address': doc_data.get('customer_address', '')
-            }
-
-            # Fetch sale items using repository
-            items_rows = self.repo.list_items(sale_id)
-
-            items = []
-            for row in items_rows:
-                item_dict = dict(row)
-                # Calculate line_total
-                quantity = float(item_dict.get('quantity', 0.0))
-                unit_price = float(item_dict.get('unit_price', 0.0))
-                item_discount = float(item_dict.get('item_discount', 0.0))
-                # Apply discount per unit: total_cost - (quantity * discount_per_unit)
-                line_total = (quantity * unit_price) - (quantity * item_discount)
-                item_dict['line_total'] = line_total
-
-                # Calculate idx (row number)
-                item_dict['idx'] = len(items) + 1
-
-                # Map unit_name to uom_name for template compatibility
-                if 'unit_name' in item_dict:
-                    item_dict['uom_name'] = item_dict['unit_name']
-                else:
-                    item_dict['uom_name'] = 'N/A'
-
-                items.append(item_dict)
-
-            enriched_data['items'] = items
-
-            sale_totals = self.accounting.get_sale_totals(sale_id)
-            line_discount_total = float(
-                sale_totals.subtotal_before_order_discount
-                - sale_totals.stored_total
-                - sale_totals.order_discount
-            )
-            enriched_data['totals'] = {
-                'subtotal_before_order_discount': float(sale_totals.subtotal_before_order_discount),
-                'line_discount_total': line_discount_total,
-                'order_discount': float(sale_totals.order_discount),
-                'total': float(sale_totals.stored_total or sale_totals.net_total),
-            }
-
-            invoice_fin = self.accounting.get_sale_invoice_financials(sale_id)
-            ctx = invoice_fin.context
-            enriched_data['returns'] = ctx['returns']
-            enriched_data['return_credit'] = ctx['return_credit']
-            enriched_data['applied_credit'] = ctx['applied_credit']
-            enriched_data['paid_amount'] = ctx['paid_amount']
-            enriched_data['advance_payment_applied'] = ctx['advance_payment_applied']
-            enriched_data['remaining'] = ctx['remaining']
-            enriched_data['totals']['returned_value'] = ctx['returned_value']
-            enriched_data['totals']['net_total'] = ctx['net_total']
+        if ctx.get("doc"):
+            enriched_data["doc"] = ctx["doc"]
+            enriched_data["customer"] = ctx["customer"]
+            enriched_data["items"] = ctx["items"]
+            enriched_data["totals"] = ctx["totals"]
+            enriched_data["returns"] = ctx["returns"]
+            enriched_data["return_credit"] = ctx["return_credit"]
+            enriched_data["applied_credit"] = ctx["applied_credit"]
+            enriched_data["paid_amount"] = ctx["paid_amount"]
+            enriched_data["advance_payment_applied"] = ctx["advance_payment_applied"]
+            enriched_data["remaining"] = ctx["remaining"]
+            enriched_data["payments"] = ctx["payments"]
+            enriched_data["initial_payment"] = ctx["initial_payment"]
 
             from ...database.repositories.company_info_repo import get_invoice_company_context
-            enriched_data['company'] = get_invoice_company_context(self.conn)
-
-            # Add payment status
-            enriched_data['doc']['payment_status'] = doc_data.get('payment_status', 'Unpaid')
-
-            # Get ALL payment rows for this sale so the invoice can show a
-            # full payment history, not just the initial payment.
-            from ...database.repositories.sale_payments_repo import SalePaymentsRepo
-            payments_repo = SalePaymentsRepo(self._db_path)
-
-            raw_payments = list(payments_repo.list_by_sale(sale_id)) or []
-
-            # Pre-load company bank labels to avoid querying inside the loop
-            bank_labels: dict[int, str] = {}
-            try:
-                cur = self.conn.execute(
-                    "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1"
-                )
-                bank_labels = {int(r["account_id"]): str(r["label"]) for r in cur.fetchall()}
-            except Exception:
-                bank_labels = {}
-
-            payments: list[dict] = []
-            for row in raw_payments:
-                d = dict(row)
-                amount = float(d.get("amount") or 0.0)
-                d["amount"] = amount
-                state = str(d.get("clearing_state") or "posted").lower()
-                if amount < 0:
-                    d["entry_type"] = "Payment Refund"
-                elif state == "pending":
-                    d["entry_type"] = "Pending Payment"
-                elif state == "bounced":
-                    d["entry_type"] = "Bounced Payment"
-                else:
-                    d["entry_type"] = "Payment"
-                bid = d.get("bank_account_id")
-                if bid is not None:
-                    try:
-                        d["bank_account_label"] = bank_labels.get(int(bid), "")
-                    except Exception:
-                        d["bank_account_label"] = ""
-                else:
-                    d["bank_account_label"] = ""
-                payments.append(d)
-
-            enriched_data["payments"] = payments
-
-            # For backward compatibility, still expose the latest payment as
-            # `initial_payment` (used by older templates).
-            enriched_data["initial_payment"] = payments[-1] if payments else None
+            enriched_data["company"] = get_invoice_company_context(self.conn)
 
         # Create Jinja2 template and render
         template = Template(template_content, autoescape=True)

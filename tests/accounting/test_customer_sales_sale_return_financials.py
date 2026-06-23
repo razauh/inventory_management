@@ -309,3 +309,58 @@ def test_sale_return_repo_service_boundary_is_explicit():
     repo.accounting.record_sale_return_event.assert_called_once()
     conn.close()
 
+
+def test_sale_return_helpers_match_accounting_service_math():
+    from modules.accounting.dto import SaleReturnPreviewPayload, SaleReturnPreviewLine
+    line = SaleReturnPreviewLine(
+        quantity=Decimal("10"),
+        unit_price=Decimal("100"),
+        item_discount=Decimal("10"),
+        return_qty=Decimal("2"),
+    )
+    payload = SaleReturnPreviewPayload(lines=(line,), order_discount=Decimal("20"))
+    svc = AccountingService(None)
+    val = svc.preview_sale_return_value(payload)
+    assert val == Decimal("176")
+
+
+def test_sale_return_preview_and_write_paths_share_one_formula():
+    from inventory_management.database.schema import SQL
+    from modules.accounting.dto import SaleReturnInventoryPayload, SaleReturnPreviewPayload, SaleReturnPreviewLine
+    conn = connect(":memory:")
+    conn.row_factory = SqliteRow
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(SQL)
+
+    customer_id = conn.execute("INSERT INTO customers (name) VALUES ('Cust')").lastrowid
+    uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
+    product_id = conn.execute("INSERT INTO products (name) VALUES ('Prod')").lastrowid
+    conn.execute("INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)", (product_id, uom_id))
+    conn.execute("INSERT INTO inventory_transactions (product_id, quantity, uom_id, transaction_type, date) VALUES (?, 100, ?, 'adjustment', '2026-06-20')", (product_id, uom_id))
+    conn.execute("INSERT INTO sales (sale_id, customer_id, date, total_amount, payment_status, paid_amount, order_discount) VALUES ('S1', ?, '2026-06-20', 880, 'unpaid', 0, 20)", (customer_id,))
+    item_id = conn.execute("INSERT INTO sale_items (sale_id, product_id, quantity, uom_id, unit_price, item_discount) VALUES ('S1', ?, 10, ?, 100, 10)", (product_id, uom_id)).lastrowid
+
+    line = SaleReturnPreviewLine(
+        quantity=Decimal("10"),
+        unit_price=Decimal("100"),
+        item_discount=Decimal("10"),
+        return_qty=Decimal("2"),
+    )
+    payload = SaleReturnPreviewPayload(lines=(line,), order_discount=Decimal("20"))
+    svc = AccountingService(conn)
+    preview_val = svc.preview_sale_return_value(payload)
+
+    inv_res = svc.record_sale_return_inventory_event(
+        SaleReturnInventoryPayload(
+            sale_id="S1",
+            date="2026-06-21",
+            created_by=None,
+            lines=({"item_id": item_id, "qty_return": 2},),
+        )
+    )
+    row = conn.execute("SELECT return_value FROM sale_return_snapshots WHERE transaction_id = ?", (inv_res.transaction_ids[0],)).fetchone()
+    actual_val = Decimal(str(row["return_value"]))
+    assert preview_val == actual_val
+    conn.close()
+
+

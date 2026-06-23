@@ -45,7 +45,7 @@ Enforcement rules for this repository:
 
 - Agents must strictly adhere to the Karpathy Guidelines for every non-trivial task in this repo.
 - Agents must not silently skip these disciplines because a task looks familiar, repetitive, or easy to improvise.
-- If a request is ambiguous, agents must surface assumptions or ask instead of guessing.
+- If a request is ambiguous, agents must ask instead of guessing, these questions should be in plain english with easy to understand example scenario.
 - If a solution grows beyond the smallest reasonable change, agents must simplify before continuing.
 - If a task requires multiple steps, agents must state a brief goal-driven plan before editing.
 - If a code change is made, every changed line must trace directly to the user request or to test/code cleanup caused by that change.

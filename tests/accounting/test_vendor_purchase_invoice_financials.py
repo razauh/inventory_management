@@ -108,7 +108,7 @@ def test_purchase_invoice_financials_preserve_controller_context(
     assert invoice.context["payments"][0]["amount"] == pytest.approx(10.0)
 
 
-def test_purchase_invoice_financials_preserve_preview_discount_fallback(
+def test_purchase_invoice_financials_preview_discount_matches_totals(
     purchase_invoice_db,
 ):
     invoice = AccountingService(purchase_invoice_db).get_purchase_invoice_financials(
@@ -118,7 +118,28 @@ def test_purchase_invoice_financials_preserve_preview_discount_fallback(
     assert invoice.preview_context["totals"] == {
         "subtotal_before_order_discount": 30.0,
         "line_discount_total": 0,
-        "order_discount": 0,
-        "total": 30.0,
+        "order_discount": 5.0,
+        "total": 25.0,
     }
     assert invoice.preview_context["initial_payment"]["amount"] == pytest.approx(10.0)
+
+
+def test_purchase_invoice_preview_discount_policy_is_explicit(
+    purchase_invoice_db,
+):
+    invoice = AccountingService(purchase_invoice_db).get_purchase_invoice_financials(
+        "PO-INVOICE"
+    )
+    # Under aligned policy, preview order discount must match actual order discount (5.0)
+    assert invoice.preview_context["totals"]["order_discount"] == pytest.approx(5.0)
+
+
+def test_purchase_invoice_preview_totals_match_documented_discount_rule(
+    purchase_invoice_db,
+):
+    invoice = AccountingService(purchase_invoice_db).get_purchase_invoice_financials(
+        "PO-INVOICE"
+    )
+    # Under aligned policy, preview total must match actual total (25.0)
+    assert invoice.preview_context["totals"]["total"] == pytest.approx(25.0)
+

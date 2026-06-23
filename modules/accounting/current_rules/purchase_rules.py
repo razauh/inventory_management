@@ -122,8 +122,8 @@ def get_purchase_invoice_financials(
     preview_context["totals"] = {
         "subtotal_before_order_discount": subtotal,
         "line_discount_total": 0,
-        "order_discount": 0,
-        "total": subtotal,
+        "order_discount": order_discount,
+        "total": total,
     }
     latest = conn.execute(
         """

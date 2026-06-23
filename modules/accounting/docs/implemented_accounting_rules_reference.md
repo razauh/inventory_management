@@ -88,7 +88,7 @@ This design isolates accounting calculations from views and controllers, route-h
 - **Definition**: Returns chronological direct payments for a purchase and sums them with overpayments.
 - **Confidence**: High
 - **Implementation**: `modules/accounting/current_rules/purchase_rules.py#get_purchase_payment_history` (L793-L826), `get_purchase_payment_summary` (L829-L882)
-- **Test Reference**: `tests/accounting/test_vendor_purchase_payment_history.py`, `tests/accounting/test_vendor_purchase_payment_summary.py`
+- **Test Reference**: `tests/accounting/test_vendor_purchase_payment_summary.py`
 - **Call Sites**: `AccountingService.get_purchase_payment_history`, `AccountingService.get_purchase_payment_summary`
 
 ---

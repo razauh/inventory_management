@@ -431,5 +431,107 @@ Copy this template for each completed card:
   - None.
 
 
+## ACC-FIX-020: Remove duplicated sale-return math outside AccountingService
+
+- Problem ID:
+  - `ACC-PROB-020`
+- Related rule IDs:
+  - `SAL-RULE-004`, `PUR-RULE-005`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_sale_return_financials.py::test_sale_return_helpers_match_accounting_service_math`
+  - `tests/accounting/test_customer_sales_sale_return_financials.py::test_sale_return_preview_and_write_paths_share_one_formula`
+- Production files changed:
+  - `modules/accounting/current_rules/sales_rules.py`
+  - `modules/accounting/service.py`
+  - `database/repositories/sales_returns_helpers.py`
+  - `modules/sales/return_form.py`
+- Behavior before:
+  - Sale return valuation and returnable quantity logic were duplicated across the repository helpers, the UI return form, and the DB trigger.
+- Behavior after:
+  - Centralized the math into `AccountingService.preview_sale_return_value` (under `modules/accounting/current_rules/sales_rules.py`). Rewired repository helpers and UI return form to use the centralized helper, removing duplicate logic.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+
+## ACC-FIX-002: Decide whether purchase invoice preview must show order discount
+
+- Problem ID:
+  - `ACC-PROB-002`
+- Related rule IDs:
+  - `REPORT` synthesis
+- Card mode:
+  - `Investigation First`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_invoice_financials.py::test_purchase_invoice_preview_discount_policy_is_explicit`
+  - `tests/accounting/test_vendor_purchase_invoice_financials.py::test_purchase_invoice_preview_totals_match_documented_discount_rule`
+  - `tests/accounting/test_vendor_purchase_invoice_financials.py::test_purchase_invoice_financials_preview_discount_matches_totals`
+- Production files changed:
+  - `modules/accounting/current_rules/purchase_rules.py`
+  - `modules/accounting/docs/purchase_vendor/vendor_purchase_migration_verification_audit.md`
+- Behavior before:
+  - `get_purchase_invoice_financials` intentionally override/zeroed out the order discount in `preview_context`, making the UI preview and the printed/detailed context mismatch.
+- Behavior after:
+  - Removed the zero-discount override in `preview_context`, aligning preview totals with the canonical database/print totals.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+
+## ACC-FIX-004: Fix purchase payment-history documentation and direct test coverage
+
+- Problem ID:
+  - `ACC-PROB-004`
+- Related rule IDs:
+  - `PUR-RULE-001`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_vendor_purchase_payment_summary.py::test_purchase_payment_history_order_and_metadata`
+- Production files changed:
+  - `modules/accounting/docs/implemented_accounting_rules_reference.md`
+  - `modules/accounting/docs/implemented_accounting_rules_explained.md`
+- Behavior before:
+  - Documentation pointed to a nonexistent test file `test_vendor_purchase_payment_history.py`. Direct test coverage for chronological ordering in `get_purchase_payment_history` was only indirect.
+- Behavior after:
+  - Corrected test file references in documentation to point to the correct test file (`test_vendor_purchase_payment_summary.py`). Added a direct test for payment history chronological ordering and bank labels metadata.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+
+## ACC-FIX-018: Decide whether sale invoice facade should become complete or stay partial
+
+- Problem ID:
+  - `ACC-PROB-018`
+- Related rule IDs:
+  - `REPORT` synthesis
+- Card mode:
+  - `Investigation First`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_invoice_financials.py::test_sale_invoice_facade_scope_is_explicit`
+  - `tests/accounting/test_customer_sales_invoice_financials.py::test_sale_invoice_service_and_controller_contexts_match_documented_contract`
+- Production files changed:
+  - `modules/accounting/current_rules/sales_rules.py`
+  - `modules/sales/controller.py`
+- Behavior before:
+  - `get_sale_invoice_financials` returned only partial settlement context, and template/report consumers assembled the rest of the invoice context (customer details, line items, totals, payment lists) manually from other repositories.
+- Behavior after:
+  - Expanded `get_sale_invoice_financials` to compile the complete invoice context (including customer, items, totals, payments) and refactored the controller's HTML generation to fetch this single consolidated source of truth.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+
+
+
+
+
 
 

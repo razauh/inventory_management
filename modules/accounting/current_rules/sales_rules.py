@@ -30,6 +30,8 @@ from ..dto import (
     SalesDashboardMetrics,
     SaleTotalInputLine,
     SaleTotals,
+    SaleReturnPreviewPayload,
+    SaleReturnPreviewLine,
 )
 
 
@@ -78,6 +80,32 @@ def preview_sale_total(
         net_total=total,
         stored_total=total,
     )
+
+
+def preview_sale_return_value(
+    payload: SaleReturnPreviewPayload,
+) -> Decimal:
+    subtotal = sum(
+        line.quantity * max(Decimal("0"), line.unit_price - line.item_discount)
+        for line in payload.lines
+    )
+    order_discount = max(Decimal("0"), payload.order_discount)
+    if subtotal > Decimal("0"):
+        order_discount = min(order_discount, subtotal)
+        value_factor = (subtotal - order_discount) / subtotal
+    else:
+        value_factor = Decimal("0")
+
+    return sum(
+        max(
+            Decimal("0"),
+            line.return_qty
+            * max(Decimal("0"), line.unit_price - line.item_discount)
+            * value_factor,
+        )
+        for line in payload.lines
+    )
+
 
 
 def get_sale_financial_summary(
@@ -149,6 +177,112 @@ def get_sale_invoice_financials(
         (sale_id,),
     ).fetchone()
 
+    # Fetch sale header and customer details
+    header_row = conn.execute(
+        """
+        SELECT s.sale_id, s.customer_id, s.date, s.total_amount, s.order_discount, s.payment_status,
+               s.paid_amount, s.advance_payment_applied, s.notes, s.created_by, s.doc_type,
+               c.name AS customer_name, c.contact_info AS customer_contact_info, c.address AS customer_address
+        FROM sales s
+        LEFT JOIN customers c ON c.customer_id = s.customer_id
+        WHERE s.sale_id = ?
+        """,
+        (sale_id,),
+    ).fetchone()
+
+    doc = {}
+    customer = {}
+    if header_row:
+        doc = dict(header_row)
+        doc["id"] = doc.get("sale_id", "")
+        doc["payment_status"] = doc.get("payment_status", "Unpaid")
+        customer = {
+            "name": doc.get("customer_name") or "",
+            "contact_info": doc.get("customer_contact_info") or "",
+            "address": doc.get("customer_address") or ""
+        }
+
+    # Fetch items
+    items_rows = conn.execute(
+        """
+        SELECT si.item_id, si.sale_id, si.product_id, si.quantity, si.uom_id, si.unit_price, si.item_discount,
+               p.name AS product_name, u.unit_name
+        FROM sale_items si
+        LEFT JOIN products p ON p.product_id = si.product_id
+        LEFT JOIN uoms u ON u.uom_id = si.uom_id
+        WHERE si.sale_id = ?
+        """,
+        (sale_id,),
+    ).fetchall()
+
+    items = []
+    for row in items_rows:
+        item_dict = dict(row)
+        quantity = float(item_dict.get("quantity") or 0.0)
+        unit_price = float(item_dict.get("unit_price") or 0.0)
+        item_discount = float(item_dict.get("item_discount") or 0.0)
+        line_total = (quantity * unit_price) - (quantity * item_discount)
+        item_dict["line_total"] = line_total
+        item_dict["idx"] = len(items) + 1
+        item_dict["uom_name"] = item_dict.get("unit_name") or "N/A"
+        items.append(item_dict)
+
+    # Fetch totals
+    sale_totals = get_sale_totals(conn, sale_id)
+    line_discount_total = float(
+        sale_totals.subtotal_before_order_discount
+        - sale_totals.stored_total
+        - sale_totals.order_discount
+    )
+    totals = {
+        "subtotal_before_order_discount": float(sale_totals.subtotal_before_order_discount),
+        "line_discount_total": line_discount_total,
+        "order_discount": float(sale_totals.order_discount),
+        "total": float(sale_totals.stored_total or sale_totals.net_total),
+        "returned_value": float(fin.returned_value),
+        "net_total": float(fin.net_total),
+    }
+
+    # Fetch payments
+    bank_labels = {}
+    try:
+        cur = conn.execute(
+            "SELECT account_id, label FROM company_bank_accounts WHERE is_active=1"
+        )
+        bank_labels = {int(r["account_id"]): str(r["label"]) for r in cur.fetchall()}
+    except Exception:
+        pass
+
+    raw_payments = conn.execute(
+        """
+        SELECT payment_id, sale_id, date, amount, method, bank_account_id, instrument_type, instrument_no, clearing_state
+        FROM sale_payments
+        WHERE sale_id = ?
+        """,
+        (sale_id,),
+    ).fetchall()
+
+    payments = []
+    for row in raw_payments:
+        d = dict(row)
+        amount = float(d.get("amount") or 0.0)
+        d["amount"] = amount
+        state = str(d.get("clearing_state") or "posted").lower()
+        if amount < 0:
+            d["entry_type"] = "Payment Refund"
+        elif state == "pending":
+            d["entry_type"] = "Pending Payment"
+        elif state == "bounced":
+            d["entry_type"] = "Bounced Payment"
+        else:
+            d["entry_type"] = "Payment"
+        bid = d.get("bank_account_id")
+        if bid is not None:
+            d["bank_account_label"] = bank_labels.get(int(bid), "")
+        else:
+            d["bank_account_label"] = ""
+        payments.append(d)
+
     context: dict[str, Any] = {
         "returns": [dict(r) for r in returns],
         "return_credit": float(credit_row["return_credit"] or 0.0),
@@ -158,6 +292,12 @@ def get_sale_invoice_financials(
         "remaining": float(fin.outstanding),
         "returned_value": float(fin.returned_value),
         "net_total": float(fin.net_total),
+        "doc": doc,
+        "customer": customer,
+        "items": items,
+        "totals": totals,
+        "payments": payments,
+        "initial_payment": payments[-1] if payments else None,
     }
     return SaleInvoiceFinancials(sale_id=sale_id, context=context)
 

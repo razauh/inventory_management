@@ -485,7 +485,7 @@ None.
 - `modules/purchase/controller.py`
 
 #### Test references
-- `tests/accounting/test_vendor_purchase_payment_history.py`
+- `tests/accounting/test_vendor_purchase_payment_summary.py`
 
 #### Confidence
 High.

@@ -161,3 +161,47 @@ def test_purchase_payment_summary_preserves_overpayment_credit():
         "counterparty_label": "Vendor",
     }
     conn.close()
+
+
+def test_purchase_payment_history_order_and_metadata():
+    conn, company_bank_id, vendor_bank_id = _payment_summary_db()
+    repo = PurchasePaymentsRepo(conn)
+    _bank_payment(
+        repo,
+        company_bank_id,
+        vendor_bank_id,
+        amount=15.0,
+        date="2026-06-11",
+        instrument_no="TX-11",
+    )
+    _bank_payment(
+        repo,
+        company_bank_id,
+        vendor_bank_id,
+        amount=20.0,
+        date="2026-06-10",
+        instrument_no="TX-10",
+    )
+    _bank_payment(
+        repo,
+        company_bank_id,
+        vendor_bank_id,
+        amount=25.0,
+        date="2026-06-12",
+        instrument_no="TX-12",
+    )
+
+    history = AccountingService(conn).get_purchase_payment_history("PO-SUMMARY")
+    assert len(history) == 3
+    assert history[0].instrument_no == "TX-10"
+    assert history[0].date == "2026-06-10"
+    assert history[0].bank_account_label == "Main Bank"
+    assert history[0].vendor_bank_account_label == "Vendor Bank"
+
+    assert history[1].instrument_no == "TX-11"
+    assert history[1].date == "2026-06-11"
+
+    assert history[2].instrument_no == "TX-12"
+    assert history[2].date == "2026-06-12"
+    conn.close()
+

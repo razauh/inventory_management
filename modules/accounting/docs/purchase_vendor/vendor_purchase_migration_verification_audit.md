@@ -63,7 +63,7 @@ All verification tests for the consolidated accounting logic pass successfully:
 ## 6. Deferred Accounting Correctness Issues
 
 Per repository guardrails, the migration preserved legacy behavior and deferred any business rule corrections. The following existing issues were documented and preserved:
-1. **Invoice Preview Discount Fallback**: The purchase invoice preview intentionally preserves a legacy fallback where the order discount is shown as zero if not otherwise calculated, even if the database contains active discounts.
+1. **Invoice Preview Discount Fallback**: Resolved in `ACC-FIX-002`. The preview now matches the canonical totals and displays active order discounts.
 2. **Double-Entry Ledgers**: No double-entry ledger database tables have been introduced yet. Calculations remain read-model aggregations over current transaction tables.
 3. **Database Triggers vs. Repository Status Logic**: The payment status rollup logic (`paid`, `unpaid`, `partial`) is computed both by database triggers (`trg_paid_from_purchase_payments_*`) and by repository/service Python methods (`recalculate_purchase_payment_status`). Both systems were preserved to prevent integrity violations.
 4. **Cleared-Only Payment Assumption**: All payment and advance logic assumes that only cleared payments are processed; pending or bounced lifecycles are rejected.

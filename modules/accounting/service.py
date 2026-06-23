@@ -53,6 +53,8 @@ from .dto import (
     SalePaymentStatus,
     SaleTotalInputLine,
     SaleTotals,
+    SaleReturnPreviewPayload,
+    SaleReturnPreviewLine,
     SupplierRefundMetadata,
     SupplierRefundPayload,
     SupplierRefundResult,
@@ -142,6 +144,7 @@ from .current_rules.sales_rules import (
     get_sales_profit_summary as get_current_sales_profit_summary,
     get_sale_totals as get_current_sale_totals,
     preview_sale_total as preview_current_sale_total,
+    preview_sale_return_value as preview_current_sale_return_value,
     recalculate_sale_payment_status as recalculate_current_sale_payment_status,
     record_customer_payment_event as record_current_customer_payment_event,
     record_sale_return_event as record_current_sale_return_event,
@@ -470,6 +473,12 @@ class AccountingService:
         order_discount: Decimal,
     ) -> SaleTotals:
         return preview_current_sale_total(items, order_discount)
+
+    def preview_sale_return_value(
+        self,
+        payload: SaleReturnPreviewPayload,
+    ) -> Decimal:
+        return preview_current_sale_return_value(payload)
 
     def get_sale_financial_summary(self, sale_id: int | str) -> SaleFinancialSummary:
         if self.conn is None:
