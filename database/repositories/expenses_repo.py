@@ -343,25 +343,16 @@ class ExpensesRepo:
         DATE() functions).  `category_id` may be None.
         Returns the newly inserted expense_id.
         """
-        if not description or not description.strip():
-            raise DomainError("Description cannot be empty.")
-        if amount is None or not math.isfinite(amount) or float(amount) <= 0:
-            raise DomainError("Amount must be a finite positive number.")
-        if not date:
-            raise DomainError("Date cannot be empty.")
+        from modules.accounting.service import AccountingService
         try:
-            py_date.fromisoformat(date)
-        except ValueError:
-            raise DomainError("Date must be in YYYY-MM-DD format.")
-        was_in_transaction = self.conn.in_transaction
-        desc_n = description.strip()
-        cur = self.conn.execute(
-            "INSERT INTO expenses(description, amount, date, category_id) VALUES (?,?,?,?)",
-            (desc_n, float(amount), date, category_id),
-        )
-        if not was_in_transaction:
-            self.conn.commit()
-        return int(cur.lastrowid)
+            return AccountingService(self.conn).record_expense_create_event(
+                description=description,
+                amount=amount,
+                date=date,
+                category_id=category_id,
+            )
+        except ValueError as e:
+            raise DomainError(str(e))
 
     def update_expense(
         self,
@@ -376,42 +367,25 @@ class ExpensesRepo:
 
         Same validation rules as `create_expense` apply.
         """
-        if not description or not description.strip():
-            raise DomainError("Description cannot be empty.")
-        if amount is None or not math.isfinite(amount) or float(amount) <= 0:
-            raise DomainError("Amount must be a finite positive number.")
-        if not date:
-            raise DomainError("Date cannot be empty.")
+        from modules.accounting.service import AccountingService
         try:
-            py_date.fromisoformat(date)
-        except ValueError:
-            raise DomainError("Date must be in YYYY-MM-DD format.")
-        was_in_transaction = self.conn.in_transaction
-        desc_n = description.strip()
-        cur = self.conn.execute(
-            """
-            UPDATE expenses
-            SET description = ?, amount = ?, date = ?, category_id = ?
-            WHERE expense_id = ?
-            """,
-            (desc_n, float(amount), date, category_id, expense_id),
-        )
-        if cur.rowcount == 0:
-            raise DomainError(f"Expense with ID {expense_id} not found.")
-        if not was_in_transaction:
-            self.conn.commit()
+            AccountingService(self.conn).record_expense_update_event(
+                expense_id=expense_id,
+                description=description,
+                amount=amount,
+                date=date,
+                category_id=category_id,
+            )
+        except ValueError as e:
+            raise DomainError(str(e))
 
     def delete_expense(self, expense_id: int) -> None:
         """Delete an expense by ID."""
-        was_in_transaction = self.conn.in_transaction
-        cur = self.conn.execute(
-            "DELETE FROM expenses WHERE expense_id = ?",
-            (expense_id,),
-        )
-        if cur.rowcount == 0:
-            raise DomainError(f"Expense with ID {expense_id} not found.")
-        if not was_in_transaction:
-            self.conn.commit()
+        from modules.accounting.service import AccountingService
+        try:
+            AccountingService(self.conn).record_expense_delete_event(expense_id)
+        except ValueError as e:
+            raise DomainError(str(e))
 
     def get_expense(self, expense_id: int) -> Optional[Expense]:
         """

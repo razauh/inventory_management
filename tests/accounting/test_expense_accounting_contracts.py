@@ -88,10 +88,10 @@ def test_unmigrated_expense_methods_raise_not_implemented():
     with pytest.raises(AccountingNotImplementedError):
         service.get_profit_loss_expense_summary("2026-06-01", "2026-06-30")
     with pytest.raises(AccountingNotImplementedError):
-        service.validate_expense_input()
+        service.validate_expense_input("Coffee", 10.0, "2026-06-23", None)
     with pytest.raises(AccountingNotImplementedError):
-        service.record_expense_create_event()
+        service.record_expense_create_event("Coffee", 10.0, "2026-06-23", None)
     with pytest.raises(AccountingNotImplementedError):
-        service.record_expense_update_event()
+        service.record_expense_update_event(1, "Coffee", 10.0, "2026-06-23", None)
     with pytest.raises(AccountingNotImplementedError):
         service.record_expense_delete_event(1)

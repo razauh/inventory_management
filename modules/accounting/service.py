@@ -174,6 +174,9 @@ from .current_rules.expense_rules import (
     get_expense_report_lines as get_current_expense_report_lines,
     get_profit_loss_expense_summary as get_current_profit_loss_expense_summary,
     get_dashboard_expense_total as get_current_dashboard_expense_total,
+    record_expense_create_event as record_current_expense_create_event,
+    record_expense_update_event as record_current_expense_update_event,
+    record_expense_delete_event as record_current_expense_delete_event,
 )
 from .validators import (
     validate_customer_payment_metadata as validate_current_customer_payment_metadata,
@@ -893,17 +896,58 @@ class AccountingService:
             date_to=date_to,
         )
 
-    def validate_expense_input(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("validate_expense_input")
+    def validate_expense_input(
+        self,
+        description: str,
+        amount: float,
+        date: str,
+        category_id: int | None,
+    ) -> None:
+        if self.conn is None:
+            self._not_implemented("validate_expense_input")
+        from .validators import validate_expense_input as val_exp
+        val_exp(description, amount, date, category_id)
 
-    def record_expense_create_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_expense_create_event")
+    def record_expense_create_event(
+        self,
+        description: str,
+        amount: float,
+        date: str,
+        category_id: int | None,
+    ) -> int:
+        if self.conn is None:
+            self._not_implemented("record_expense_create_event")
+        return record_current_expense_create_event(
+            self.conn,
+            description=description,
+            amount=amount,
+            date=date,
+            category_id=category_id,
+        )
 
-    def record_expense_update_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_expense_update_event")
+    def record_expense_update_event(
+        self,
+        expense_id: int,
+        description: str,
+        amount: float,
+        date: str,
+        category_id: int | None,
+    ) -> None:
+        if self.conn is None:
+            self._not_implemented("record_expense_update_event")
+        record_current_expense_update_event(
+            self.conn,
+            expense_id=expense_id,
+            description=description,
+            amount=amount,
+            date=date,
+            category_id=category_id,
+        )
 
     def record_expense_delete_event(self, expense_id: int) -> None:
-        self._not_implemented("record_expense_delete_event")
+        if self.conn is None:
+            self._not_implemented("record_expense_delete_event")
+        record_current_expense_delete_event(self.conn, expense_id)
 
     def record_sale_inventory_event(
         self, payload: SaleInventoryPayload

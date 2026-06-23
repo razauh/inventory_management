@@ -179,3 +179,23 @@ def validate_accounting_event_type(event_type: str) -> None:
 
 def validate_balanced_journal_preview(preview: Any) -> None:
     _not_implemented("validate_balanced_journal_preview")
+
+
+def validate_expense_input(
+    description: str,
+    amount: float,
+    date: str,
+    category_id: int | None,
+) -> None:
+    if not description or not description.strip():
+        raise ValueError("Description cannot be empty.")
+    import math
+    if amount is None or not math.isfinite(amount) or float(amount) <= 0:
+        raise ValueError("Amount must be a finite positive number.")
+    if not date:
+        raise ValueError("Date cannot be empty.")
+    from datetime import date as py_date
+    try:
+        py_date.fromisoformat(date)
+    except ValueError:
+        raise ValueError("Date must be in YYYY-MM-DD format.")

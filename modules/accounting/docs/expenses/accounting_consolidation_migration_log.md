@@ -131,3 +131,25 @@ It records where legacy/current behavior moved and which application call sites 
   - None.
 
 
+## EX-ACC-007: Consolidate expense create/update/delete writes
+
+- Migrated behavior:
+  - Expense CRUD write operations (create, update, delete) and validation logic.
+- Original location(s):
+  - `database/repositories/expenses_repo.py`
+- New accounting location(s):
+  - `modules/accounting/validators.py` (method: `validate_expense_input`)
+  - `modules/accounting/current_rules/expense_rules.py` (methods: `record_expense_create_event`, `record_expense_update_event`, `record_expense_delete_event`)
+  - `modules/accounting/service.py` (implemented methods: `validate_expense_input`, `record_expense_create_event`, `record_expense_update_event`, `record_expense_delete_event`)
+- Rewired call site(s):
+  - `database/repositories/expenses_repo.py` (`create_expense`, `update_expense`, and `delete_expense` now delegate to `AccountingService`)
+- Tests added/updated:
+  - `tests/accounting/test_expense_write_events.py` (new)
+  - `tests/accounting/test_expense_accounting_contracts.py` (updated)
+- Behavior change:
+  - None.
+- Notes / unresolved correctness questions:
+  - None.
+
+
+

@@ -382,3 +382,66 @@ def get_dashboard_expense_total(
     row = conn.execute(sql, (date_from, date_to)).fetchone()
     val = row["v"] if row else 0.0
     return Decimal(str(val)) if val is not None else Decimal("0.00")
+
+
+def record_expense_create_event(
+    conn: sqlite3.Connection,
+    description: str,
+    amount: float,
+    date: str,
+    category_id: int | None,
+) -> int:
+    from ..validators import validate_expense_input
+    validate_expense_input(description, amount, date, category_id)
+
+    was_in_transaction = conn.in_transaction
+    desc_n = description.strip()
+    cur = conn.execute(
+        "INSERT INTO expenses(description, amount, date, category_id) VALUES (?,?,?,?)",
+        (desc_n, float(amount), date, category_id),
+    )
+    if not was_in_transaction:
+        conn.commit()
+    return int(cur.lastrowid)
+
+
+def record_expense_update_event(
+    conn: sqlite3.Connection,
+    expense_id: int,
+    description: str,
+    amount: float,
+    date: str,
+    category_id: int | None,
+) -> None:
+    from ..validators import validate_expense_input
+    validate_expense_input(description, amount, date, category_id)
+
+    was_in_transaction = conn.in_transaction
+    desc_n = description.strip()
+    cur = conn.execute(
+        """
+        UPDATE expenses
+        SET description = ?, amount = ?, date = ?, category_id = ?
+        WHERE expense_id = ?
+        """,
+        (desc_n, float(amount), date, category_id, expense_id),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"Expense with ID {expense_id} not found.")
+    if not was_in_transaction:
+        conn.commit()
+
+
+def record_expense_delete_event(
+    conn: sqlite3.Connection,
+    expense_id: int,
+) -> None:
+    was_in_transaction = conn.in_transaction
+    cur = conn.execute(
+        "DELETE FROM expenses WHERE expense_id = ?",
+        (expense_id,),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"Expense with ID {expense_id} not found.")
+    if not was_in_transaction:
+        conn.commit()
