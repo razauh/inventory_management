@@ -357,3 +357,29 @@ Copy this template for each completed card:
 - Follow-up questions:
   - None.
 
+
+## ACC-FIX-013: Make customer credit-event validation authoritative at service level
+
+- Problem ID:
+  - `ACC-PROB-013`
+- Related rule IDs:
+  - `SAL-RULE-005`
+  - `BANK-RULE-003`
+- Card mode:
+  - `Direct Fix`
+- Tests added or updated:
+  - `tests/accounting/test_customer_sales_customer_credit_event.py::test_customer_credit_event_validation_matches_receipt_rules`
+  - `tests/accounting/test_customer_sales_customer_credit_event.py::test_non_cash_customer_credit_requires_reference_and_bank_if_policy_requires_it`
+- Production files changed:
+  - `modules/accounting/current_rules/customer_rules.py`
+  - `database/repositories/customer_advances_repo.py`
+- Behavior before:
+  - `record_customer_credit_event` accepted weaker non-cash metadata than `CustomerAdvancesRepo.grant_credit`, allowing direct service usage to bypass bank account and reference number requirements.
+- Behavior after:
+  - Centered all non-cash payment metadata validations inside `record_customer_credit_event`, and updated the repository wrapper to delegate validations to the service.
+- Data repair / migration:
+  - None.
+- Follow-up questions:
+  - None.
+
+

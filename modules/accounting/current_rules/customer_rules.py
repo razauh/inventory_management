@@ -451,8 +451,21 @@ def record_customer_credit_event(
         raise ValueError("Credit amount must be positive.")
     if payload.source_type not in ("deposit", "return_credit"):
         raise ValueError(f"Invalid source_type: {payload.source_type}")
-    if payload.method and payload.method not in {"Cash", "Bank Transfer", "Card", "Cheque", "Other"}:
-        raise ValueError("Select a valid customer credit method.")
+
+    method = payload.method
+    reference_no = payload.reference_no
+
+    if payload.source_type == "deposit":
+        if method is None:
+            method = "Other"
+            reference_no = reference_no or "Legacy API credit"
+        if method not in {"Cash", "Bank Transfer", "Card", "Cheque", "Other"}:
+            raise ValueError("Select a valid customer credit method.")
+        if method in {"Bank Transfer", "Card", "Cheque"} and payload.bank_account_id is None:
+            raise ValueError("A company bank account is required for this method.")
+        if method != "Cash" and not (reference_no or "").strip():
+            raise ValueError("A reference is required for non-cash customer credit.")
+
     if payload.bank_account_id is not None:
         acct = conn.execute(
             "SELECT is_active FROM company_bank_accounts WHERE account_id = ?",
@@ -469,8 +482,8 @@ def record_customer_credit_event(
                    ?, ?, ?, ?, ?)""",
         (payload.customer_id, payload.date, float(payload.amount),
          payload.source_type, payload.source_id,
-         payload.method, payload.bank_account_id,
-         (payload.reference_no or "").strip() or None,
+         method, payload.bank_account_id,
+         (reference_no or "").strip() or None,
          payload.notes, payload.created_by),
     )
     return CustomerCreditResult(

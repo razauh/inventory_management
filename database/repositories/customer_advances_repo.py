@@ -72,16 +72,6 @@ class CustomerAdvancesRepo:
         notes: Optional[str] = None,
         created_by: Optional[int] = None,
     ) -> int:
-        if method is None:
-            method = "Other"
-            reference_no = reference_no or "Legacy API credit"
-        if method not in {"Cash", "Bank Transfer", "Card", "Cheque", "Other"}:
-            raise ValueError("Select a valid customer credit method.")
-        if method in {"Bank Transfer", "Card", "Cheque"} and bank_account_id is None:
-            raise ValueError("A company bank account is required for this method.")
-        if method != "Cash" and not (reference_no or "").strip():
-            raise ValueError("A reference is required for non-cash customer credit.")
-
         with self._connect() as con:
             result = AccountingService(con).record_customer_credit_event(
                 CustomerCreditPayload(
