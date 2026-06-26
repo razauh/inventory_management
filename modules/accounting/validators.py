@@ -21,6 +21,10 @@ def validate_vendor_payment_metadata(
     conn: Connection,
     metadata: VendorPaymentMetadata,
 ) -> None:
+    # ACC-RULE-001: Vendor payment metadata gate
+    # Accepts only known vendor payment methods and instrument types.
+    # Checks vendor payment clearing state and bank account references.
+    # Protects purchase payments, supplier refunds, and vendor credits.
     if metadata.method is not None and metadata.method not in METHODS:
         raise ValueError(f"Invalid vendor {metadata.vendor_label} payment method: {metadata.method}")
     if metadata.reject_card and metadata.method == "Card":
@@ -51,6 +55,10 @@ def validate_vendor_payment_metadata(
 def validate_customer_payment_metadata(
     conn: Connection, metadata: CustomerPaymentMetadata
 ) -> None:
+    # ACC-RULE-002: Customer payment metadata gate
+    # Accepts only known customer payment methods and clearing states.
+    # Checks customer payment bank metadata before cash state changes.
+    # Protects sale receipts, refunds, and return settlements.
     if metadata.method is not None and metadata.method not in METHODS:
         raise ValueError(f"Invalid customer payment method: {metadata.method}")
     if (
@@ -68,6 +76,10 @@ def validate_customer_payment_metadata(
 
 
 def _validate_customer_method_requirements(metadata: CustomerPaymentMetadata) -> None:
+    # ACC-RULE-003: Customer method detail requirements
+    # Requires account and reference details for non-cash customer methods.
+    # Blocks cash payments from carrying bank account metadata.
+    # Protects receipt and refund records from incomplete cash/bank data.
     method = metadata.method
     instr_no = (metadata.instrument_no or "").strip()
     if method == "Bank Transfer":
@@ -90,10 +102,18 @@ def validate_supplier_refund_metadata(
     conn: Connection,
     metadata: SupplierRefundMetadata,
 ) -> None:
+    # ACC-RULE-004: Supplier refund metadata reuse
+    # Applies vendor payment metadata checks to supplier refunds.
+    # Uses refund method, bank, instrument, and vendor account data.
+    # Protects refund records from bypassing vendor payment rules.
     validate_vendor_payment_metadata(conn, metadata)
 
 
 def _validate_method_requirements(metadata: VendorPaymentMetadata) -> None:
+    # ACC-RULE-005: Vendor method detail requirements
+    # Requires bank, instrument, and destination details by payment method.
+    # Uses vendor payment metadata and temporary vendor bank data.
+    # Protects outgoing vendor payments from incomplete cash/bank records.
     method = metadata.method
     instrument_no = (metadata.instrument_no or "").strip()
     temp_name = (metadata.temp_vendor_bank_name or "").strip()
@@ -187,6 +207,10 @@ def validate_expense_input(
     date: str,
     category_id: int | None,
 ) -> None:
+    # ACC-RULE-006: Expense input validity
+    # Requires a description, finite positive amount, and ISO date.
+    # Validates expense data before it mutates expense totals.
+    # Protects expense entry, update, reports, and profit/loss totals.
     if not description or not description.strip():
         raise ValueError("Description cannot be empty.")
     import math
@@ -202,5 +226,9 @@ def validate_expense_input(
 
 
 def validate_expense_category_input(name: str) -> None:
+    # ACC-RULE-007: Expense category name required
+    # Requires a non-empty category name before category writes.
+    # Controls expense category master data used by expense reports.
+    # Protects category totals from blank grouping labels.
     if not name or not name.strip():
         raise ValueError("Name cannot be empty.")

@@ -49,6 +49,10 @@ def _row_dict(row: object, keys: tuple[str, ...]) -> dict:
 
 
 def get_vendor_advance_balance(conn: Connection, vendor_id: int) -> VendorBalance:
+    # ACC-RULE-067: Vendor credit balance
+    # Reads current vendor advance balance for one vendor.
+    # Uses v_vendor_advance_balance as the credit source.
+    # Supports payable offset and vendor credit displays.
     row = conn.execute(
         "SELECT balance FROM v_vendor_advance_balance WHERE vendor_id = ?",
         (vendor_id,),
@@ -58,6 +62,10 @@ def get_vendor_advance_balance(conn: Connection, vendor_id: int) -> VendorBalanc
 
 
 def get_vendor_balance(conn: Connection, vendor_id: int) -> VendorBalance:
+    # ACC-RULE-068: Vendor net balance
+    # Calculates vendor balance as credit balance minus open payables.
+    # Uses vendor advances and unpaid purchase balances.
+    # Supports vendor account balance display.
     credit = get_vendor_advance_balance(conn, vendor_id).balance
     row = conn.execute(
         """
@@ -91,6 +99,10 @@ def get_vendor_advance_balances(
     conn: Connection,
     vendor_ids: tuple[int, ...],
 ) -> dict[int, VendorBalance]:
+    # ACC-RULE-069: Vendor credit balances batch
+    # Reads current vendor credit balances for selected vendors.
+    # Uses vendor advance balance view and returns zero when no credit exists.
+    # Supports list screens that need vendor balances in bulk.
     ids = tuple(int(vendor_id) for vendor_id in vendor_ids if vendor_id is not None)
     if not ids:
         return {}
@@ -151,6 +163,10 @@ def get_vendor_purchase_totals(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> VendorPurchaseTotals:
+    # ACC-RULE-070: Vendor purchase totals
+    # Sums purchase totals, paid totals, and applied advances by vendor.
+    # Uses purchase headers within optional date bounds.
+    # Supports vendor purchase summary reporting.
     row = conn.execute(
         "\n".join(
             [
@@ -184,6 +200,10 @@ def get_vendor_open_purchases(
     conn: Connection,
     vendor_id: int,
 ) -> tuple[VendorOpenPurchase, ...]:
+    # ACC-RULE-071: Vendor open purchase selection
+    # Selects purchases with positive remaining payable balance.
+    # Uses purchase total, paid amount, and applied advance amount.
+    # Supports vendor payment and auto-apply credit workflows.
     rows = conn.execute(
         """
         SELECT
@@ -389,6 +409,10 @@ def get_vendor_statement(
     include_opening: bool = True,
     show_return_origins: bool = False,
 ) -> dict:
+    # ACC-RULE-072: Vendor statement running balance
+    # Builds opening payable and period rows for purchases, payments, refunds, and credits.
+    # Applies signed effects to produce running and closing vendor balance.
+    # Supports vendor statement reports across a date range.
     opening_credit = 0.0
     opening_payable = 0.0
     if include_opening and date_from:
@@ -698,6 +722,10 @@ def preview_vendor_payment_effect(
     conn: Connection,
     payload: VendorPaymentPayload,
 ) -> VendorPaymentEffect:
+    # ACC-RULE-073: Vendor payment effect preview
+    # Caps direct payment at remaining purchase due and isolates overpayment credit.
+    # Uses purchase total, paid amount, applied advances, and metadata validation.
+    # Supports payment previews and protects against overpaying purchase rows.
     if payload.amount <= 0:
         raise ValueError("Vendor purchase payment amount must be greater than zero")
     state = payload.clearing_state or "cleared"
@@ -757,6 +785,10 @@ def _record_vendor_deposit_credit(
     temp_vendor_bank_name: str | None = None,
     temp_vendor_bank_number: str | None = None,
 ) -> int:
+    # ACC-RULE-074: Vendor deposit credit posting
+    # Records positive vendor credit with source_type deposit.
+    # Stores method, account, instrument, clearing, and reference metadata.
+    # Supports overpayment conversion and vendor advance tracking.
     cur = conn.execute(
         """
         INSERT INTO vendor_advances (
@@ -795,6 +827,10 @@ def record_vendor_payment_event(
     conn: Connection,
     payload: VendorPaymentPayload,
 ) -> VendorPaymentResult:
+    # ACC-RULE-075: Vendor payment posting
+    # Records payable payment and converts any excess to vendor credit.
+    # Uses previewed payable effect and payment clearing metadata.
+    # Supports purchase payment posting without creating negative payable due.
     effect = preview_vendor_payment_effect(conn, payload)
     state = payload.clearing_state or "cleared"
     cleared_date = payload.cleared_date or payload.date
@@ -901,6 +937,10 @@ def update_vendor_payment_state(
     cleared_date: str | None = None,
     notes: str | None = None,
 ) -> int:
+    # ACC-RULE-076: Vendor payment remains cleared
+    # Allows vendor purchase payments to stay only in cleared state.
+    # Updates cleared date or notes without reopening payable cash state.
+    # Protects payable status from unsupported vendor clearing transitions.
     if clearing_state != "cleared":
         raise ValueError("Vendor purchase payments must remain cleared")
     sets = ["clearing_state = ?"]
@@ -923,6 +963,10 @@ def record_vendor_advance_event(
     conn: Connection,
     payload: VendorAdvancePayload,
 ) -> VendorAdvanceResult:
+    # ACC-RULE-077: Vendor advance credit posting
+    # Records positive vendor credit as deposit or return credit only.
+    # Validates vendor payment metadata and available metadata columns.
+    # Supports vendor advances and purchase return credit balances.
     if payload.amount <= 0:
         raise ValueError("amount must be positive when granting credit")
     allowed_types = {"deposit", "return_credit"}
@@ -1008,6 +1052,10 @@ def record_supplier_refund_event(
     conn: Connection,
     payload: SupplierRefundPayload,
 ) -> SupplierRefundResult:
+    # ACC-RULE-078: Supplier refund posting
+    # Records positive cleared supplier refund against returned purchase value.
+    # Caps refund by return value minus prior refunds and return credits.
+    # Protects purchases from refunding more cash than returned value.
     if payload.amount <= 0:
         raise ValueError("amount must be positive when recording supplier refund")
     validate_supplier_refund_metadata(
@@ -1105,6 +1153,10 @@ def get_supplier_refunds_for_purchase(
     conn: Connection,
     purchase_id: int | str,
 ) -> tuple[SupplierRefundRow, ...]:
+    # ACC-RULE-079: Supplier refund rows
+    # Lists supplier refunds for a purchase in insert order.
+    # Uses refund method, bank, instrument, clearing, and vendor metadata.
+    # Supports purchase refund history display.
     rows = conn.execute(
         """
         SELECT
@@ -1150,6 +1202,10 @@ def get_vendor_credit_ledger(
     conn: Connection,
     vendor_id: int,
 ) -> tuple[VendorCreditLedgerRow, ...]:
+    # ACC-RULE-080: Vendor credit ledger rows
+    # Lists all vendor advance and credit application entries.
+    # Uses vendor_advances source, amount, date, and reference data.
+    # Supports vendor credit ledger display and audit review.
     rows = _list_vendor_advances(conn, vendor_id, None, None)
     return tuple(
         VendorCreditLedgerRow(
@@ -1170,6 +1226,10 @@ def preview_vendor_advance_allocation(
     vendor_id: int,
     amount: Decimal,
 ) -> dict:
+    # ACC-RULE-081: Vendor advance allocation preview
+    # Applies available credit to oldest open purchases until exhausted.
+    # Uses open purchase remaining due and requested credit amount.
+    # Supports previewing automatic vendor credit application.
     remaining_credit = max(Decimal("0"), amount)
     open_purchases = sorted(
         get_vendor_open_purchases(conn, vendor_id),
@@ -1217,6 +1277,10 @@ def _apply_vendor_credit_to_purchase(
     notes: str | None,
     created_by: int | None,
 ) -> int:
+    # ACC-RULE-082: Vendor credit application posting
+    # Records applied vendor credit as a negative vendor advance entry.
+    # Links the credit application to the target purchase.
+    # Supports reducing purchase payable using vendor credit.
     cur = conn.execute(
         """
         INSERT INTO vendor_advances (
@@ -1233,6 +1297,10 @@ def record_vendor_advance_with_auto_apply(
     conn: Connection,
     payload: VendorAdvancePayload,
 ) -> dict:
+    # ACC-RULE-083: Vendor advance auto-apply
+    # Records a vendor advance and applies it to open purchases in one transaction.
+    # Uses allocation preview rows and negative credit application entries.
+    # Protects vendor credit posting from partial auto-apply failures.
     conn.execute("BEGIN IMMEDIATE")
     try:
         preview = preview_vendor_advance_allocation(

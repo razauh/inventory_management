@@ -46,6 +46,10 @@ def get_inventory_value(
     conn: Connection,
     product_id: int | None = None,
 ) -> InventoryValue | tuple[InventoryValue, ...]:
+    # ACC-RULE-084: Inventory value read
+    # Rebuilds dirty valuations before reading stock quantity and value.
+    # Uses stock-on-hand and latest valuation history by product.
+    # Supports inventory valuation display for one or all products.
     _rebuild_dirty_valuations(conn)
     params: tuple[object, ...] = ()
     where = ""
@@ -101,6 +105,10 @@ def record_stock_adjustment_event(
     conn: Connection,
     payload: StockAdjustmentPayload,
 ) -> StockAdjustmentResult:
+    # ACC-RULE-085: Stock adjustment posting
+    # Records non-zero inventory adjustment transactions with sequence numbers.
+    # Uses product UoM, adjustment quantity, date, notes, and creator.
+    # Supports manual inventory corrections and valuation rebuilds.
     try:
         from ....database.repositories.inventory_repo import (
             DomainError,
@@ -129,6 +137,10 @@ def record_stock_adjustment_event(
         raise DomainError("Adjustment quantity must be non-zero.")
 
     if qty < 0.0:
+        # ACC-RULE-086: Negative adjustment stock cap
+        # Rejects negative stock adjustments above current stock on hand.
+        # Converts requested adjustment to base units for comparison.
+        # Protects stock state from manual adjustments that create negative quantity.
         _rebuild_dirty_valuations(conn)
         factor_to_base = float(_cell(uom_row, "factor_to_base", 0) or 1.0)
         on_hand_row = conn.execute(
@@ -181,6 +193,10 @@ def _delete_purchase_inventory_rows(
     purchase_id: int | str,
     transaction_types: tuple[str, ...] | None,
 ) -> None:
+    # ACC-RULE-087: Replace purchase inventory rows
+    # Deletes existing purchase inventory transactions before replacement.
+    # Can remove all purchase rows or only selected transaction types.
+    # Supports resaving purchase inventory effects without duplicate stock.
     if transaction_types is None:
         conn.execute(
             """
@@ -211,6 +227,10 @@ def record_purchase_inventory_event(
     conn: Connection,
     payload: PurchaseInventoryPayload,
 ) -> PurchaseInventoryResult:
+    # ACC-RULE-088: Purchase inventory posting
+    # Records purchase lines as inbound inventory transactions.
+    # Uses purchase id, item id, product, quantity, UoM, date, and sequence.
+    # Supports stock increases from purchase receiving.
     if payload.replace_existing:
         _delete_purchase_inventory_rows(
             conn,
@@ -262,6 +282,10 @@ def record_purchase_return_inventory_event(
     conn: Connection,
     payload: PurchaseReturnInventoryPayload,
 ) -> PurchaseReturnInventoryResult:
+    # ACC-RULE-089: Purchase return inventory posting
+    # Records purchase return lines as inventory return transactions.
+    # Verifies each returned item belongs to the purchase.
+    # Supports stock reductions from vendor returns.
     row = conn.execute(
         "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
         (payload.date,),
@@ -316,6 +340,10 @@ def get_purchase_returnable_quantities(
     *,
     stock_aware: bool = False,
 ) -> dict[int, Decimal]:
+    # ACC-RULE-090: Purchase returnable quantity
+    # Calculates purchased quantity minus prior returned quantity per item.
+    # Optionally caps returnable quantity by current stock on hand.
+    # Supports purchase return validation and return UI limits.
     rows = conn.execute(
         """
         SELECT
@@ -370,6 +398,10 @@ def get_inventory_accounting_events(
     source_type: str | None = None,
     source_id: int | str | None = None,
 ) -> tuple[InventoryAccountingEvent, ...]:
+    # ACC-RULE-091: Inventory accounting event read
+    # Lists inventory transactions with accounting source references.
+    # Can filter by source table and source id.
+    # Supports audit views for purchase, sale, return, and adjustment events.
     where: list[str] = []
     params: list[object] = []
     if source_type is not None:
@@ -422,6 +454,10 @@ def record_sale_inventory_event(
     conn: Connection,
     payload: SaleInventoryPayload,
 ) -> SaleInventoryResult:
+    # ACC-RULE-092: Sale inventory posting
+    # Records sale lines as outbound inventory transactions.
+    # Uses sale id, item id, product, quantity, UoM, date, and sequence.
+    # Supports stock reduction and COGS valuation for sales.
     row = conn.execute(
         "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
         (payload.date,),
@@ -449,6 +485,10 @@ def record_sale_return_inventory_event(
     conn: Connection,
     payload: SaleReturnInventoryPayload,
 ) -> SaleReturnInventoryResult:
+    # ACC-RULE-093: Sale return inventory posting
+    # Records sale return lines as inventory return transactions.
+    # Verifies each returned item belongs to the sale.
+    # Supports stock increases and COGS reversal from customer returns.
     row = conn.execute(
         "SELECT COALESCE(MAX(txn_seq), 0) AS max_seq FROM inventory_transactions WHERE date = ?",
         (payload.date,),
@@ -485,6 +525,10 @@ def record_sale_return_inventory_event(
 def get_sale_returnable_quantities(
     conn: Connection, sale_id: int | str
 ) -> dict[int, Decimal]:
+    # ACC-RULE-094: Sale returnable quantity
+    # Calculates sold quantity minus prior returned quantity per sale item.
+    # Uses sale inventory return transactions by sale item.
+    # Supports sale return validation and return UI limits.
     rows = conn.execute(
         """
         SELECT si.item_id, CAST(si.quantity AS REAL) -

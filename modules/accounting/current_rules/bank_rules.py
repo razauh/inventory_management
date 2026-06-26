@@ -16,6 +16,10 @@ def validate_company_bank_account_active(
     conn: Connection,
     bank_account_id: int | None,
 ) -> None:
+    # ACC-RULE-008: Active company bank account required
+    # Requires referenced company bank accounts to exist and be active.
+    # Uses company_bank_accounts before payment and refund writes.
+    # Protects cash and bank movements from inactive accounts.
     if bank_account_id is None:
         return
     row = conn.execute(
@@ -37,6 +41,10 @@ def validate_vendor_bank_account(
     vendor_bank_account_id: int | None,
     vendor_label: str,
 ) -> None:
+    # ACC-RULE-009: Active vendor bank account ownership
+    # Requires vendor bank accounts to exist, be active, and match vendor.
+    # Uses vendor_bank_accounts for outgoing vendor payment destinations.
+    # Protects vendor payments from posting to another vendor account.
     if vendor_bank_account_id is None:
         return
     row = conn.execute(
@@ -58,6 +66,10 @@ def validate_vendor_bank_account(
 
 
 def get_bank_balance(conn: Connection, bank_account_id: int) -> BankBalance:
+    # ACC-RULE-010: Bank balance from cleared ledger
+    # Calculates bank balance as ledger inflows minus outflows.
+    # Uses bank ledger rows for a single company bank account.
+    # Supports account balance display from cleared cash movement state.
     balance = sum(
         (
             row.amount_in - row.amount_out
@@ -73,6 +85,10 @@ def get_vendor_cash_movements(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> tuple[VendorCashMovement, ...]:
+    # ACC-RULE-011: Vendor cash movement classification
+    # Reports cleared vendor payments and advances as outflows.
+    # Reports cleared supplier refunds as inflows.
+    # Supports cash activity reports for payable-side transactions.
     date_where = ""
     params: list[object] = []
     if start_date is not None:
@@ -152,6 +168,10 @@ def get_customer_cash_movements(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> tuple[CustomerCashMovement, ...]:
+    # ACC-RULE-012: Customer cash movement classification
+    # Reports cleared sale payments as receipts or refunds by sign.
+    # Reports customer deposit credits as inflows.
+    # Supports cash activity reports for receivable-side transactions.
     date_where = ""
     params: list[object] = []
     if start_date is not None:
@@ -207,6 +227,11 @@ def get_bank_ledger(
     account_id: int | None = None,
 ) -> tuple[BankLedgerRow, ...]:
     """
+    ACC-RULE-013: Bank ledger cleared-date basis
+    Builds bank ledger rows only from cleared cash movements.
+    Splits sale receipts, refunds, purchase payments, supplier refunds, and advances.
+    Supports account ledger display and balance calculation.
+
     Get bank ledger entries.
     Uses cleared_date semantics for filtering and ordering.
     """

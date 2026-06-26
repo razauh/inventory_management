@@ -48,6 +48,10 @@ def _row_value(row: object, key: str, index: int) -> object:
 
 
 def get_customer_balance(conn: Connection, customer_id: int) -> CustomerBalance:
+    # ACC-RULE-055: Customer net balance
+    # Calculates customer balance as credit balance minus open receivables.
+    # Uses customer advances and remaining due on sale receivable totals.
+    # Supports customer account balance display.
     credit_row = conn.execute(
         "SELECT balance FROM v_customer_advance_balance WHERE customer_id = ?",
         (customer_id,),
@@ -80,6 +84,10 @@ def get_customer_balance(conn: Connection, customer_id: int) -> CustomerBalance:
 
 
 def get_customer_sales_with_items(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
+    # ACC-RULE-056: Customer sale receivable list
+    # Lists customer sales with calculated totals, remaining due, and item rows.
+    # Uses sale detailed totals and receivable totals.
+    # Supports customer history and receivable review.
     sales = conn.execute(
         """
         SELECT
@@ -180,6 +188,10 @@ def _sale_returns(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
 
 
 def _advances_ledger(conn: Connection, customer_id: int) -> dict[str, Any]:
+    # ACC-RULE-057: Customer credit ledger balance
+    # Reads customer advance entries and current credit balance.
+    # Uses customer_advances and v_customer_advance_balance.
+    # Supports customer history, statements, and credit application views.
     entries = conn.execute(
         """
         SELECT tx_id, customer_id, tx_date, amount, source_type, source_id,
@@ -201,6 +213,10 @@ def _advances_ledger(conn: Connection, customer_id: int) -> dict[str, Any]:
 
 
 def _timeline(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
+    # ACC-RULE-058: Customer accounting timeline
+    # Combines sales, returns, payments, refunds, and credit entries by date.
+    # Uses customer sales, sale returns, payments, and advances.
+    # Supports chronological customer account history.
     sales = get_customer_sales_with_items(conn, customer_id)
     returns = _sale_returns(conn, customer_id)
     payments = _sale_payments(conn, customer_id)
@@ -284,6 +300,10 @@ def _timeline(conn: Connection, customer_id: int) -> list[dict[str, Any]]:
 
 
 def _overview(conn: Connection, customer_id: int) -> dict[str, Any]:
+    # ACC-RULE-059: Customer receivable overview
+    # Calculates credit balance, open due, counts, and last activity dates.
+    # Uses customer sales, payments, and advance ledger state.
+    # Supports customer account summary cards.
     sales = get_customer_sales_with_items(conn, customer_id)
     advances = _advances_ledger(conn, customer_id)
     payments = _sale_payments(conn, customer_id)
@@ -335,6 +355,10 @@ def get_customer_statement(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> CustomerStatement:
+    # ACC-RULE-060: Customer credit statement running balance
+    # Builds opening, running, and closing balances from customer advances.
+    # Treats positive credit as debit and negative applied credit as credit.
+    # Supports customer credit statement printing and review.
     entries_raw = conn.execute(
         """
         SELECT tx_date, amount, source_type, source_id
@@ -384,6 +408,10 @@ def get_customer_statement(
 def get_customer_aging(
     conn: Connection, cutoff_date: str
 ) -> CustomerAgingReport:
+    # ACC-RULE-061: Customer aging report delegation
+    # Reads customer receivable aging as of a cutoff date.
+    # Uses reporting repository customer headers for all customers.
+    # Supports AR aging reports without local recalculation here.
     from database.repositories.reporting_repo import ReportingRepo
 
     repo = ReportingRepo(conn)
@@ -401,6 +429,10 @@ def get_customer_aging(
 def get_customer_receivable_summary(
     conn: Connection, customer_id: int
 ) -> CustomerReceivableSummary:
+    # ACC-RULE-062: Customer receivable summary
+    # Summarizes credit balance, sale count, open due, and last activity.
+    # Uses customer advances, sales, sale receivable totals, and payments.
+    # Supports customer detail receivable panels.
     row = conn.execute(
         """
         SELECT
@@ -491,6 +523,10 @@ def list_customer_sale_summaries(
 def record_customer_credit_event(
     conn: Connection, payload: CustomerCreditPayload
 ) -> CustomerCreditResult:
+    # ACC-RULE-063: Customer credit posting
+    # Records positive customer credit from deposits or return credits.
+    # Validates method, reference, and active company bank account when needed.
+    # Supports customer deposits and return-credit creation.
     if payload.amount <= Decimal("0"):
         raise ValueError("Credit amount must be positive.")
     if payload.source_type not in ("deposit", "return_credit"):
@@ -541,6 +577,10 @@ def record_customer_credit_event(
 def list_customer_credit_ledger(
     conn: Connection, customer_id: int
 ) -> tuple[CustomerCreditLedgerRow, ...]:
+    # ACC-RULE-064: Customer credit ledger rows
+    # Lists all customer credit and application entries in posting order.
+    # Uses customer_advances with source, method, account, and reference data.
+    # Supports credit ledger display and audit review.
     rows = conn.execute(
         """SELECT tx_id, customer_id, tx_date, amount, source_type, source_id,
                   method, bank_account_id, reference_no, notes, created_by
@@ -573,6 +613,10 @@ def list_customer_credit_ledger(
 def record_customer_credit_application_event(
     conn: Connection, payload: CustomerCreditApplicationPayload
 ) -> CustomerCreditApplicationResult:
+    # ACC-RULE-065: Customer credit application
+    # Applies positive customer credit only to that customer's open sale.
+    # Records application as a negative customer advance capped by remaining due.
+    # Supports settling sale receivables using available customer credit.
     if payload.amount <= Decimal("0"):
         raise ValueError("Apply amount must be positive.")
     row = conn.execute(
@@ -610,6 +654,10 @@ def record_customer_credit_application_event(
 
 
 def get_customer_refunds(conn: Connection, customer_id: int) -> tuple[CustomerRefundRow, ...]:
+    # ACC-RULE-066: Customer refund rows
+    # Reads negative sale payments for all sales of one customer.
+    # Uses absolute value for refund display while preserving payment sign in storage.
+    # Supports customer-level refund history.
     rows = conn.execute(
         "SELECT sp.payment_id, sp.sale_id, sp.date, sp.amount, sp.method, "
         "sp.clearing_state, sp.notes "

@@ -36,6 +36,10 @@ from ..dto import (
 
 
 def get_sale_totals(conn: Connection, sale_id: int | str) -> SaleTotals:
+    # ACC-RULE-032: Stored sale totals read
+    # Reads sale subtotal, order discount, returned value, and net total.
+    # Uses sale_detailed_totals as the accounting source.
+    # Supports sale screens and invoice financial context.
     row = conn.execute(
         """
         SELECT sale_id,
@@ -65,6 +69,10 @@ def preview_sale_total(
     items: tuple[SaleTotalInputLine, ...],
     order_discount: Decimal,
 ) -> SaleTotals:
+    # ACC-RULE-033: Sale total preview
+    # Calculates sale subtotal, line discounts, order discount, and net total.
+    # Uses sale input lines without database writes.
+    # Supports sale entry previews before a sale is saved.
     subtotal = Decimal("0")
     line_disc = Decimal("0")
     for item in items:
@@ -85,6 +93,10 @@ def preview_sale_total(
 def preview_sale_return_value(
     payload: SaleReturnPreviewPayload,
 ) -> Decimal:
+    # ACC-RULE-034: Sale return value preview
+    # Allocates order discount proportionally across returned sale lines.
+    # Calculates return value from quantity, unit price, and item discount.
+    # Supports return previews before settlement records are written.
     subtotal = sum(
         line.quantity * max(Decimal("0"), line.unit_price - line.item_discount)
         for line in payload.lines
@@ -111,6 +123,10 @@ def preview_sale_return_value(
 def get_sale_financial_summary(
     conn: Connection, sale_id: int | str
 ) -> SaleFinancialSummary:
+    # ACC-RULE-035: Sale financial position
+    # Reads gross total, net total, paid amount, credits, returns, and due.
+    # Uses sale detailed totals and receivable totals.
+    # Supports receivable decisions and invoice/accounting displays.
     row = conn.execute(
         """
         SELECT sdt.calculated_total_amount,
@@ -149,6 +165,10 @@ def get_sale_financial_summary(
 def get_sale_invoice_financials(
     conn: Connection, sale_id: int | str
 ) -> SaleInvoiceFinancials:
+    # ACC-RULE-036: Sale invoice financial context
+    # Builds invoice totals, return credits, applied credits, and payments.
+    # Uses sale header, items, receivable totals, returns, and payment rows.
+    # Supports invoice display without changing stored accounting state.
     fin = get_sale_financial_summary(conn, sale_id)
     returns = conn.execute(
         """
@@ -313,6 +333,10 @@ def get_quotation_financials(
 def get_sales_dashboard_metrics(
     conn: Connection, date_from: str, date_to: str
 ) -> SalesDashboardMetrics:
+    # ACC-RULE-037: Sales dashboard accounting metrics
+    # Sums revenue, COGS, expenses, cleared receipts, payments, AR, and AP.
+    # Uses financial event, payment, refund, receivable, and payable data.
+    # Supports dashboard totals for a selected date range.
     from .expense_rules import get_dashboard_expense_total
 
     total_expenses = float(get_dashboard_expense_total(conn, date_from, date_to))
@@ -403,6 +427,10 @@ def get_sales_dashboard_metrics(
 
 
 def get_sale_outstanding(conn: Connection, sale_id: int | str) -> SaleOutstanding:
+    # ACC-RULE-038: Sale outstanding balance
+    # Returns the current sale receivable amount still due.
+    # Uses sale financial summary outstanding state.
+    # Supports collection and customer balance workflows.
     summary = get_sale_financial_summary(conn, sale_id)
     return SaleOutstanding(
         sale_id=int(sale_id) if isinstance(sale_id, int) else sale_id,
@@ -413,6 +441,10 @@ def get_sale_outstanding(conn: Connection, sale_id: int | str) -> SaleOutstandin
 def _compute_payment_status(
     remaining_due: Decimal, paid_amount: Decimal, applied_credit: Decimal
 ) -> str:
+    # ACC-RULE-039: Sale payment status classifier
+    # Classifies sale payment state from remaining due, payments, and credit.
+    # Uses receivable balance and applied customer credit amounts.
+    # Supports paid, partial, and unpaid sale status decisions.
     if remaining_due <= Decimal("1e-9"):
         return "paid"
     if paid_amount + applied_credit > Decimal("1e-9"):
@@ -423,6 +455,10 @@ def _compute_payment_status(
 def get_sale_payment_status(
     conn: Connection, sale_id: int | str
 ) -> SalePaymentStatus:
+    # ACC-RULE-039: Sale payment status classifier
+    # Reads sale receivable state and applies the shared status thresholds.
+    # Uses remaining due, paid amount, and applied customer credit.
+    # Supports sale payment status display.
     row = conn.execute(
         """
         SELECT COALESCE(srt.remaining_due, 0.0) AS remaining_due,
@@ -452,6 +488,10 @@ def get_sale_payment_status(
 def recalculate_sale_payment_status(
     conn: Connection, sale_id: int | str
 ) -> SalePaymentStatus:
+    # ACC-RULE-040: Persist sale payment status
+    # Recomputes sale payment status and writes it to sale headers.
+    # Uses the sale payment status rule as the source of truth.
+    # Supports payment, credit, and return flows that alter receivable state.
     current = get_sale_payment_status(conn, sale_id)
     conn.execute(
         """
@@ -530,6 +570,10 @@ def get_latest_sale_payment(
 def get_sale_return_totals(
     conn: Connection, sale_id: int | str
 ) -> SaleReturnTotals:
+    # ACC-RULE-041: Sale return totals
+    # Sums returned quantity, return value, and reversed COGS for a sale.
+    # Uses sale return snapshots tied to inventory return transactions.
+    # Supports sale return summaries and financial displays.
     row = conn.execute(
         """
         SELECT COALESCE(SUM(CAST(srs.returned_quantity AS REAL)), 0.0) AS qty,
@@ -553,6 +597,10 @@ def get_sale_return_totals(
 def get_sale_return_values(
     conn: Connection, sale_id: int | str
 ) -> tuple[SaleReturnValue, ...]:
+    # ACC-RULE-042: Sale return valuation rows
+    # Reads stored valuation snapshots for each sale return transaction.
+    # Uses returned quantity, sale price, discounts, and allocated order discount.
+    # Supports return reports and settlement calculations.
     rows = conn.execute(
         """
         SELECT srs.transaction_id, srs.item_id,
@@ -588,6 +636,10 @@ def get_sale_return_values(
 def record_sale_return_event(
     conn: Connection, payload: SaleReturnPayload
 ) -> SaleReturnEffect:
+    # ACC-RULE-043: Sale return settlement
+    # Calculates return settlement due after remaining receivable.
+    # Splits settlement into customer cash refund and customer credit.
+    # Supports sale returns after payments or credit application.
     from .customer_rules import get_customer_receivable_summary
 
     fin = get_sale_financial_summary(conn, payload.sale_id)
@@ -620,6 +672,10 @@ def record_sale_return_event(
 
     if settlement_due > 0:
         if cash_refund > 0:
+            # ACC-RULE-044: Sale return cash refund posting
+            # Records cash refund as a negative cleared sale payment.
+            # Validates refund method and bank metadata before writing.
+            # Protects customer refund cash state for returned sales.
             refund_method = payload.refund_method or "Cash"
             refund_instr_type = payload.refund_instrument_type
             if refund_instr_type is None and refund_method == "Cash":
@@ -655,6 +711,10 @@ def record_sale_return_event(
                  payload.created_by),
             )
         if credit_amount > 0:
+            # ACC-RULE-045: Sale return credit posting
+            # Records remaining settlement as customer return credit.
+            # Uses customer_advances with source_type return_credit.
+            # Supports later use of return value against sale receivables.
             conn.execute(
                 "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, "
                 "source_id, notes, created_by) VALUES (?, ?, ?, 'return_credit', ?, ?, ?)",
@@ -682,6 +742,10 @@ def record_sale_return_event(
 def record_customer_payment_event(
     conn: Connection, payload: CustomerPaymentPayload
 ) -> CustomerPaymentResult:
+    # ACC-RULE-046: Customer payment posting
+    # Records sale payment cash state with method and clearing metadata.
+    # Defaults cleared date when a payment is posted as cleared.
+    # Supports customer collections and later overpayment conversion.
     from datetime import date as dt_date
 
     cs = payload.clearing_state or "posted"
@@ -724,6 +788,10 @@ def _handle_overpayment(
     conn: Connection, sale_id: str, customer_id: int,
     date: str | None, payment_id: int, source_id: str,
 ) -> None:
+    # ACC-RULE-047: Customer overpayment conversion
+    # Converts cleared payment excess into customer deposit credit.
+    # Uses total owed, current applied credit, cleared payments, and prior conversions.
+    # Protects receivables from showing negative due after overpayment.
     info = conn.execute(
         "SELECT COALESCE(canonical_total_amount, 0.0) AS total, "
         "COALESCE(advance_payment_applied, 0.0) AS adv "
@@ -771,6 +839,10 @@ def update_customer_payment_state(
     cleared_date: str | None = None,
     notes: str | None = None,
 ) -> int:
+    # ACC-RULE-048: Customer payment clearing transition
+    # Allows payment state changes only from posted or pending states.
+    # Updates clearing state/date and reconciles overpayment when cleared.
+    # Protects customer payment lifecycle from invalid state jumps.
     if clearing_state not in {"posted", "pending", "cleared", "bounced"}:
         raise ValueError(f"Invalid clearing_state: {clearing_state}")
     if clearing_state == "cleared" and not cleared_date:
@@ -805,6 +877,10 @@ def update_customer_payment_state(
 def _reconcile_overpayment_on_clear(
     conn: Connection, sale_id: str, payment_id: int, cleared_date: str | None
 ) -> None:
+    # ACC-RULE-047: Customer overpayment conversion
+    # Converts excess created by clearing an existing payment into credit.
+    # Uses total owed, cleared payments, applied credit, and prior conversions.
+    # Protects receivables from showing negative due after delayed clearing.
     info = conn.execute(
         "SELECT COALESCE(canonical_total_amount, 0.0) AS total, "
         "COALESCE(advance_payment_applied, 0.0) AS adv, c.customer_id "
@@ -845,6 +921,10 @@ def reopen_customer_payment_state(
     *,
     reason: str | None = None,
 ) -> int:
+    # ACC-RULE-049: Customer payment reopen reversal
+    # Reopens only cleared or bounced payments and requires a reason.
+    # Reverses unconsumed overpayment credit before resetting to pending.
+    # Protects customer credit balances when payment state is undone.
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("A reversal reason is required")
@@ -894,6 +974,10 @@ def reopen_customer_payment_state(
 
 
 def get_sale_refunds(conn: Connection, sale_id: int | str) -> tuple[CustomerRefundRow, ...]:
+    # ACC-RULE-050: Sale refund rows
+    # Reads negative sale payments as customer refund amounts.
+    # Uses absolute value for refund display while preserving payment sign in storage.
+    # Supports customer refund history on sale details.
     rows = conn.execute(
         "SELECT payment_id, sale_id, date, amount, method, clearing_state, notes "
         "FROM sale_payments WHERE sale_id = ? AND amount < 0 "
@@ -915,6 +999,10 @@ def get_sale_refunds(conn: Connection, sale_id: int | str) -> tuple[CustomerRefu
 
 
 def get_sale_cogs(conn: Connection, sale_id: int | str) -> SaleCogsSummary:
+    # ACC-RULE-051: Sale COGS total
+    # Sums item cost of goods sold for a sale.
+    # Uses sale_item_cogs valuation data.
+    # Supports profit and gross margin reporting.
     row = conn.execute(
         "SELECT COALESCE(SUM(CAST(cogs AS REAL)), 0.0) AS total "
         "FROM sale_item_cogs WHERE sale_id = ?",
@@ -931,6 +1019,10 @@ def get_sales_profit_summary(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> SalesProfitSummary:
+    # ACC-RULE-052: Sales gross profit
+    # Sums revenue and COGS, then calculates gross profit.
+    # Uses sale_financial_events with optional date filters.
+    # Supports profit reporting for sale activity.
     where = ""
     params: list[object] = []
     if start_date is not None:
@@ -957,6 +1049,10 @@ def get_sales_profit_summary(
 
 
 def validate_quotation_conversion(conn: Connection, quotation_id: int | str) -> None:
+    # ACC-RULE-053: Quotation conversion eligibility
+    # Allows conversion only for quotations in draft or sent status.
+    # Uses quotation header status before accepting it as a sale.
+    # Protects sales state from converting closed or invalid quotations.
     row = conn.execute(
         "SELECT quotation_status FROM sales WHERE sale_id = ? AND doc_type = 'quotation'",
         (quotation_id,),
@@ -972,6 +1068,10 @@ def validate_quotation_conversion(conn: Connection, quotation_id: int | str) -> 
 def record_quotation_conversion_event(
     conn: Connection, payload: QuotationConversionPayload
 ) -> QuotationConversionResult:
+    # ACC-RULE-054: Quotation conversion posting
+    # Marks a convertible quotation as accepted.
+    # Uses the quotation sale row and returns sale/quotation identifiers.
+    # Supports turning approved quotations into sales workflow state.
     validate_quotation_conversion(conn, payload.quotation_id)
     conn.execute(
         "UPDATE sales SET quotation_status = 'accepted' WHERE sale_id = ? AND doc_type = 'quotation'",

@@ -40,6 +40,10 @@ def get_purchase_invoice_financials(
     conn: Connection,
     purchase_id: int | str,
 ) -> PurchaseInvoiceFinancials:
+    # ACC-RULE-014: Purchase invoice financial context
+    # Rebuilds purchase invoice totals, remaining due, and payment context.
+    # Uses purchase header, items, vendor data, discounts, advances, and payments.
+    # Supports invoice display without changing stored accounting state.
     row = conn.execute(
         """
         SELECT p.*, v.name AS vendor_name, v.contact_info AS vendor_contact_info,
@@ -161,6 +165,10 @@ def preview_purchase_total(
     items: tuple[PurchaseTotalInputLine, ...],
     order_discount: Decimal,
 ) -> PurchaseTotals:
+    # ACC-RULE-015: Purchase total preview
+    # Calculates subtotal after item discounts and clamps order discount at zero.
+    # Produces a non-negative purchase net total without database writes.
+    # Supports purchase entry previews before an order is saved.
     subtotal = sum(
         line.quantity * (line.purchase_price - line.item_discount) for line in items
     )
@@ -178,6 +186,10 @@ def preview_purchase_total(
 def preview_purchase_return_effect(
     payload: PurchaseReturnPreviewPayload,
 ) -> PurchaseReturnEffect:
+    # ACC-RULE-016: Purchase return value preview
+    # Allocates order discount proportionally across returned purchase lines.
+    # Calculates return quantities and values from purchase prices and discounts.
+    # Supports return previews before inventory and settlement records are written.
     subtotal = sum(
         line.quantity * max(Decimal("0"), line.purchase_price - line.item_discount)
         for line in payload.lines
@@ -206,6 +218,10 @@ def preview_purchase_return_effect(
 
 
 def get_purchase_financials(conn: Connection, purchase_id: int | str) -> PurchaseFinancials:
+    # ACC-RULE-017: Purchase financial position
+    # Calculates net total, paid amount, applied credit, returns, and refunds.
+    # Uses purchase totals, cleared payments, return credits, and refund rows.
+    # Supports payable decisions and remaining refundable amount checks.
     row = conn.execute(
         """
         SELECT
@@ -280,6 +296,10 @@ def get_purchase_return_values(
     conn: Connection,
     purchase_id: int | str,
 ) -> tuple[PurchaseReturnValue, ...]:
+    # ACC-RULE-018: Purchase return valuation rows
+    # Reads stored valuation snapshots for each purchase return transaction.
+    # Uses returned quantity, buy price, discount, status, and value data.
+    # Supports return reports and settlement calculations.
     rows = conn.execute(
         """
         SELECT
@@ -316,6 +336,10 @@ def get_purchase_return_totals(
     conn: Connection,
     purchase_id: int | str,
 ) -> PurchaseReturnTotals:
+    # ACC-RULE-019: Purchase return totals
+    # Sums returned quantities and values for a purchase.
+    # Uses purchase return valuation rows as the accounting source.
+    # Supports purchase financial summaries and return displays.
     values = get_purchase_return_values(conn, purchase_id)
     return PurchaseReturnTotals(
         qty=sum((value.qty_returned for value in values), Decimal("0")),
@@ -327,6 +351,10 @@ def record_purchase_return_event(
     conn: Connection,
     payload: PurchaseReturnPayload,
 ) -> PurchaseReturnResult:
+    # ACC-RULE-020: Atomic purchase return event
+    # Records purchase return inventory, valuation, settlement, and audit together.
+    # Uses a savepoint so partial accounting state is rolled back on failure.
+    # Protects purchase returns from half-posted inventory or payable records.
     savepoint = "purchase_return_record"
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
@@ -401,6 +429,10 @@ def _record_purchase_return_event(
     returnable_by_item = get_purchase_returnable_quantities(conn, pid)
 
     for item_id, batch_qty in requested_per_item.items():
+        # ACC-RULE-021: Purchase return quantity cap
+        # Rejects return quantities above the item quantity still returnable.
+        # Uses prior purchase return inventory transactions by purchase item.
+        # Protects purchase returns from refunding the same item twice.
         row = conn.execute(
             """
             SELECT
@@ -429,6 +461,10 @@ def _record_purchase_return_event(
 
         product_id = int(row["product_id"])
         uom_id = int(row["uom_id"])
+        # ACC-RULE-022: Purchase return stock cap
+        # Rejects vendor returns that exceed current stock on hand.
+        # Converts requested return quantity into base stock units.
+        # Protects inventory valuation from negative stock caused by returns.
         factor_row = conn.execute(
             """
             SELECT COALESCE(CAST(factor_to_base AS REAL), 1.0) AS factor
@@ -461,6 +497,10 @@ def _record_purchase_return_event(
     prop_adv = 0.0
 
     if requested_return_value > 0:
+        # ACC-RULE-023: Purchase return settlement amount
+        # Calculates settlement from funded amount minus post-return total.
+        # Uses cleared direct payments, applied advances, refunds, and credits.
+        # Supports deciding whether return value becomes refund or vendor credit.
         position = conn.execute(
             """
             SELECT
@@ -515,6 +555,10 @@ def _record_purchase_return_event(
                 prop_adv = 0.0
 
         if settlement and mode == "refund_now":
+            # ACC-RULE-024: Purchase refund-now eligibility
+            # Allows immediate supplier refund only when purchase is fully settled.
+            # Caps refund against direct cleared payments not already refunded.
+            # Protects payable state from refunding unpaid or credited balances.
             if remaining_due > 1e-9:
                 raise ValueError(
                     "Refund Now requires a fully settled purchase; "
@@ -540,6 +584,10 @@ def _record_purchase_return_event(
     inserted_txn_ids = list(inventory_result.transaction_ids)
 
     if inserted_txn_ids:
+        # ACC-RULE-025: Purchase return valuation snapshot required
+        # Requires every return inventory transaction to have a valuation snapshot.
+        # Uses purchase_return_snapshots for the new transaction ids.
+        # Protects settlement math from missing return valuation data.
         placeholders = ",".join("?" for _ in inserted_txn_ids)
         val_row = conn.execute(
             f"""
@@ -560,6 +608,10 @@ def _record_purchase_return_event(
         return_value = 0.0
 
     if return_value > 0 and settlement_amount > 1e-9:
+        # ACC-RULE-026: Purchase return settlement split
+        # Splits settlement into supplier cash refund and vendor return credit.
+        # Uses direct payment refunds first, then records remaining vendor credit.
+        # Supports fully paid purchase returns and later credit application.
         mode = settlement.get("mode") if settlement else None
         if mode == "refund":
             mode = "refund_now"
@@ -649,6 +701,10 @@ def _record_purchase_return_event(
 
 
 def get_purchase_totals(conn: Connection, purchase_id: int | str) -> PurchaseTotals:
+    # ACC-RULE-027: Stored purchase totals read
+    # Reads purchase subtotal, order discount, returned value, and net total.
+    # Uses detailed totals when present and purchase header as fallback.
+    # Supports purchase screens that compare calculated and stored totals.
     row = conn.execute(
         """
         SELECT
@@ -689,6 +745,10 @@ def get_purchase_outstanding(
     *,
     clamp: bool = False,
 ) -> PurchaseOutstanding:
+    # ACC-RULE-028: Purchase outstanding balance
+    # Calculates purchase balance as total minus paid amount and applied advance.
+    # Uses detailed total fallback and can clamp negative balances to zero.
+    # Supports payables, headers, and open purchase lists.
     row = conn.execute(
         """
         SELECT
@@ -719,6 +779,10 @@ def get_purchase_payment_status(
     conn: Connection,
     purchase_id: int | str,
 ) -> PurchasePaymentStatus:
+    # ACC-RULE-029: Purchase payment status
+    # Classifies purchase as paid, partial, or unpaid from cleared payments.
+    # Uses purchase total, cleared direct payments, and applied vendor credit.
+    # Supports payable state and payment status display.
     row = conn.execute(
         """
         SELECT
@@ -762,6 +826,10 @@ def recalculate_purchase_payment_status(
     conn: Connection,
     purchase_id: int | str,
 ) -> PurchasePaymentStatus:
+    # ACC-RULE-030: Persist purchase payment status
+    # Recomputes purchase payment status and writes header paid/status fields.
+    # Uses the purchase payment status rule as the source of truth.
+    # Supports payment, credit, and return flows that alter payable state.
     status = get_purchase_payment_status(conn, purchase_id)
     conn.execute(
         "UPDATE purchases SET paid_amount = ?, payment_status = ? WHERE purchase_id = ?",
@@ -833,6 +901,10 @@ def get_purchase_payment_summary(
     conn: Connection,
     purchase_id: int | str,
 ) -> PurchasePaymentSummary:
+    # ACC-RULE-031: Purchase payment summary
+    # Combines payment status, latest payment, and overpayment credit.
+    # Uses purchase payments and vendor advance credit conversion rows.
+    # Supports purchase detail payment panels.
     status = get_purchase_payment_status(conn, purchase_id)
     latest = conn.execute(
         """

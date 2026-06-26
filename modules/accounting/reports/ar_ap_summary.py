@@ -45,6 +45,10 @@ def get_vendor_aging(
     max_rows: int = 1000,
     repo=None,
 ) -> VendorAgingReport:
+    # ACC-RULE-108: Vendor aging buckets
+    # Calculates vendor due amounts into 0-30, 31-60, 61-90, and 91+ day buckets.
+    # Uses vendor headers, paid amounts, applied advances, and credit as of cutoff.
+    # Supports accounts payable aging reports.
     repo = _reporting_repo(conn, repo)
     vendors = repo.get_all_vendors()
     vendor_ids = [int(v["vendor_id"]) for v in vendors]
@@ -108,6 +112,10 @@ def get_ap_summary(
     *,
     repo=None,
 ) -> APSummary:
+    # ACC-RULE-109: AR/AP open balance summary
+    # Sums positive customer receivables and vendor payables as of a cutoff.
+    # Uses total, paid amount, and applied advance amounts from reporting headers.
+    # Supports dashboard and reporting totals for open AR and AP.
     as_of = cutoff_date
     if as_of is None:
         row = conn.execute("SELECT DATE('now') AS today").fetchone()
@@ -143,6 +151,10 @@ def get_payment_activity(
     date_basis: str = "posting",
     repo=None,
 ) -> PaymentActivityReport:
+    # ACC-RULE-110: Payment activity date basis
+    # Uses posting date or cleared date depending on requested basis.
+    # Summarizes collections, disbursements, refunds, statuses, and detail rows.
+    # Supports cash-basis and posting-basis payment activity reports.
     repo = _reporting_repo(conn, repo)
     date_from = start_date or "0001-01-01"
     date_to = end_date or "9999-12-31"

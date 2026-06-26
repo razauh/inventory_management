@@ -51,6 +51,10 @@ def get_expense_financial_summary(
     conn: sqlite3.Connection,
     expense_id: int,
 ) -> Optional[ExpenseFinancialSummary]:
+    # ACC-RULE-095: Expense financial summary
+    # Reads one expense amount, date, description, and category.
+    # Uses expense and expense category state.
+    # Supports expense detail display and edit workflows.
     row = conn.execute(
         """
         SELECT e.expense_id,
@@ -88,6 +92,10 @@ def list_expense_rows(
     amount_min: Optional[float] = None,
     amount_max: Optional[float] = None,
 ) -> tuple[ExpenseFinancialSummary, ...]:
+    # ACC-RULE-096: Filtered expense rows
+    # Lists expenses filtered by text, dates, category, and amount range.
+    # Uses expense amount and category data without changing state.
+    # Supports expense search and screen totals.
     where_str, params = _build_where_clause(
         query=query,
         date=date,
@@ -138,6 +146,10 @@ def get_expense_screen_category_totals(
     amount_min: Optional[float] = None,
     amount_max: Optional[float] = None,
 ) -> tuple[ExpenseCategoryTotal, ...]:
+    # ACC-RULE-097: Expense screen category totals
+    # Sums expenses by category using active screen filters.
+    # Includes uncategorized expenses when requested or unfiltered.
+    # Supports category total panels on the expense screen.
     where_str, params = _build_where_clause(
         query=query,
         date=date,
@@ -219,6 +231,10 @@ def get_expense_report_category_totals(
     date_to: str,
     category_id: Optional[int],
 ) -> tuple[ExpenseCategoryTotal, ...]:
+    # ACC-RULE-098: Expense report category totals
+    # Sums expense amounts by category for a report date range.
+    # Handles selected category, uncategorized-only, or all categories.
+    # Supports expense report totals.
     if category_id is not None:
         if category_id == 0:
             sql = """
@@ -282,6 +298,10 @@ def get_expense_report_lines(
     date_to: str,
     category_id: Optional[int],
 ) -> tuple[ExpenseReportLine, ...]:
+    # ACC-RULE-099: Expense report lines
+    # Lists report expense rows within a date range and optional category.
+    # Uses expense amount, date, category, and description data.
+    # Supports detailed expense reports.
     params = [date_from, date_to]
     where_extra = ""
     if category_id is not None:
@@ -327,6 +347,10 @@ def get_profit_loss_expense_summary(
     date_from: str,
     date_to: str,
 ) -> ExpenseProfitLossSummary:
+    # ACC-RULE-100: Profit/loss expense summary
+    # Sums expense amounts by category and total expense for a date range.
+    # Includes zero category totals and uncategorized expenses.
+    # Supports profit/loss reporting.
     sql = """
     SELECT
       ec.category_id                     AS category_id,
@@ -374,6 +398,10 @@ def get_dashboard_expense_total(
     date_from: str,
     date_to: str,
 ) -> Decimal:
+    # ACC-RULE-101: Dashboard expense total
+    # Sums all expense amounts inside a dashboard date range.
+    # Uses expenses table date and amount data.
+    # Supports dashboard profit and activity metrics.
     sql = """
         SELECT COALESCE(SUM(CAST(e.amount AS REAL)), 0.0) AS v
         FROM expenses e
@@ -391,6 +419,10 @@ def record_expense_create_event(
     date: str,
     category_id: int | None,
 ) -> int:
+    # ACC-RULE-102: Expense create posting
+    # Validates and records a new expense amount, date, and category.
+    # Commits only when the caller did not already open a transaction.
+    # Supports expense entry and report totals.
     from ..validators import validate_expense_input
     validate_expense_input(description, amount, date, category_id)
 
@@ -413,6 +445,10 @@ def record_expense_update_event(
     date: str,
     category_id: int | None,
 ) -> None:
+    # ACC-RULE-103: Expense update posting
+    # Validates and updates an existing expense amount, date, and category.
+    # Requires the expense row to exist before preserving changes.
+    # Supports correcting expense totals and reports.
     from ..validators import validate_expense_input
     validate_expense_input(description, amount, date, category_id)
 
@@ -436,6 +472,10 @@ def record_expense_delete_event(
     conn: sqlite3.Connection,
     expense_id: int,
 ) -> None:
+    # ACC-RULE-104: Expense delete posting
+    # Deletes an existing expense row and requires a matching id.
+    # Commits only when the caller did not already open a transaction.
+    # Supports removing expense amounts from reports and totals.
     was_in_transaction = conn.in_transaction
     cur = conn.execute(
         "DELETE FROM expenses WHERE expense_id = ?",
@@ -451,6 +491,10 @@ def record_expense_category_create_event(
     conn: sqlite3.Connection,
     name: str,
 ) -> int:
+    # ACC-RULE-105: Expense category create
+    # Validates and records a new expense category name.
+    # Adds category master data used to group expenses.
+    # Supports expense classification.
     from ..validators import validate_expense_category_input
     validate_expense_category_input(name)
 
@@ -470,6 +514,10 @@ def record_expense_category_update_event(
     category_id: int,
     name: str,
 ) -> None:
+    # ACC-RULE-106: Expense category update
+    # Validates and renames an existing expense category.
+    # Requires the category row to exist before preserving changes.
+    # Supports correcting expense grouping labels.
     from ..validators import validate_expense_category_input
     validate_expense_category_input(name)
 
@@ -489,6 +537,10 @@ def record_expense_category_delete_event(
     conn: sqlite3.Connection,
     category_id: int,
 ) -> None:
+    # ACC-RULE-107: Expense category delete guard
+    # Deletes an unused category and rejects categories tied to expenses.
+    # Uses database integrity to protect existing expense classifications.
+    # Supports category cleanup without orphaning expense rows.
     was_in_transaction = conn.in_transaction
     try:
         cur = conn.execute(

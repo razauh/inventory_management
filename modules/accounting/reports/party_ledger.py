@@ -12,6 +12,10 @@ def get_purchase_reports(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> PurchaseReportBundle:
+    # ACC-RULE-111: Purchase report bundle
+    # Builds purchase drilldown rows and spend by period for a date range.
+    # Uses purchase totals, paid amounts, applied advances, and remaining due.
+    # Supports purchase reports without changing payable state.
     date_from = start_date or "0001-01-01"
     date_to = end_date or "9999-12-31"
 
