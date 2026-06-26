@@ -70,7 +70,16 @@ VENDOR_PURCHASE_METHODS = [
     ("get_vendor_open_purchases", ("vendor_id",)),
     ("get_vendor_purchase_totals", ("vendor_id", "date_from", "date_to")),
     ("list_vendor_purchases", ("vendor_id", "date_from", "date_to")),
-    ("get_vendor_statement", ("vendor_id", "start_date", "end_date")),
+    (
+        "get_vendor_statement",
+        (
+            "vendor_id",
+            "start_date",
+            "end_date",
+            "include_opening",
+            "show_return_origins",
+        ),
+    ),
     ("preview_purchase_total", ("items", "order_discount")),
 ]
 

@@ -187,10 +187,8 @@ class VendorController(BaseModule):
         if token != self._balance_token:
             return
         balances = {
-            vendor_id: float(balance.balance)
-            for vendor_id, balance in self.accounting.get_vendor_advance_balances(
-                tuple(self.base_model.vendor_ids())
-            ).items()
+            vendor_id: float(self.accounting.get_vendor_balance(vendor_id).balance)
+            for vendor_id in self.base_model.vendor_ids()
         }
         if token != self._balance_token:
             return

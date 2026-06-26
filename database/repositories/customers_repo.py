@@ -113,8 +113,10 @@ class CustomersRepo:
         if not row:
             return None
         fin = self.accounting.get_customer_receivable_summary(customer_id)
+        balance = self.accounting.get_customer_balance(customer_id)
         return {
             **dict(row),
+            "balance": float(balance.balance),
             "credit_balance": float(fin.credit_balance),
             "sales_count": fin.sales_count,
             "open_due_sum": float(fin.open_due_sum),

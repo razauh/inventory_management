@@ -316,8 +316,26 @@ def get_sales_dashboard_metrics(
     from .expense_rules import get_dashboard_expense_total
 
     total_expenses = float(get_dashboard_expense_total(conn, date_from, date_to))
-    row = conn.execute(
+    has_purchase_detailed_totals = conn.execute(
         """
+        SELECT 1
+        FROM sqlite_master
+        WHERE name = 'purchase_detailed_totals'
+          AND type IN ('table', 'view')
+        """
+    ).fetchone() is not None
+    purchase_total_expr = (
+        "COALESCE(pdt.calculated_total_amount, p.total_amount)"
+        if has_purchase_detailed_totals
+        else "p.total_amount"
+    )
+    purchase_totals_join = (
+        "LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id"
+        if has_purchase_detailed_totals
+        else ""
+    )
+    row = conn.execute(
+        f"""
         WITH
         sales_cte AS (
           SELECT
@@ -354,12 +372,12 @@ def get_sales_dashboard_metrics(
           FROM (
             SELECT
               MAX(0.0,
-                COALESCE(pdt.calculated_total_amount, p.total_amount)
+                {purchase_total_expr}
                 - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
                 - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
               ) AS remaining
             FROM purchases p
-            LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+            {purchase_totals_join}
           )
           WHERE remaining > 0.0000001
         )

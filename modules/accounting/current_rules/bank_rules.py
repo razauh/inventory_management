@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from sqlite3 import Connection
 
-from ..dto import BankLedgerRow, CustomerCashMovement, VendorCashMovement
+from ..dto import BankBalance, BankLedgerRow, CustomerCashMovement, VendorCashMovement
 
 
 def _decimal(value: object) -> Decimal:
@@ -55,6 +55,17 @@ def validate_vendor_bank_account(
         raise ValueError(
             "Selected vendor bank account is inactive and cannot be used for new transactions."
         )
+
+
+def get_bank_balance(conn: Connection, bank_account_id: int) -> BankBalance:
+    balance = sum(
+        (
+            row.amount_in - row.amount_out
+            for row in get_bank_ledger(conn, account_id=bank_account_id)
+        ),
+        Decimal("0"),
+    )
+    return BankBalance(bank_account_id=int(bank_account_id), balance=balance)
 
 
 def get_vendor_cash_movements(
@@ -300,4 +311,3 @@ def get_bank_ledger(
         )
         for row in rows
     )
-

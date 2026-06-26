@@ -13,6 +13,7 @@ from modules.accounting import (
     AccountingEvent,
     AccountingNotImplementedError,
     AccountingService,
+    BankBalance,
     CustomerAgingReport,
     CustomerBalance,
     CustomerOpenSale,
@@ -32,6 +33,9 @@ from modules.accounting import (
     SalesDashboardMetrics,
     SaleTotalInputLine,
     SaleTotals,
+    InventoryValue,
+    StockAdjustmentPayload,
+    StockAdjustmentResult,
     VendorBalance,
 )
 
@@ -50,8 +54,8 @@ def test_accounting_package_imports_and_service_instantiates():
         ("get_customer_credit_balance", (1,)),
         ("get_bank_balance", (1,)),
         ("get_inventory_value", ()),
-        ("record_purchase_event", ()),
-        ("record_sale_event", ()),
+        ("record_purchase_event", ("payment", None)),
+        ("record_sale_event", ("payment", None)),
         ("record_vendor_payment_event", ()),
         ("record_customer_payment_event", (None,)),
         (
@@ -66,8 +70,18 @@ def test_accounting_package_imports_and_service_instantiates():
             ),
         ),
         ("record_sale_return_event", ()),
-        ("record_expense_event", ()),
-        ("record_stock_adjustment_event", ()),
+        ("record_expense_event", ("create", ("Coffee", 10.0, "2026-06-23", None))),
+        (
+            "record_stock_adjustment_event",
+            (
+                StockAdjustmentPayload(
+                    product_id=1,
+                    uom_id=1,
+                    quantity=Decimal("1"),
+                    date="2026-06-21",
+                ),
+            ),
+        ),
         ("get_customer_open_sales", (1,)),
         ("get_purchase_totals", (1,)),
     ],
@@ -82,6 +96,15 @@ def test_accounting_service_placeholders_raise_accounting_error(method_name, arg
 def test_accounting_dtos_construct():
     assert VendorBalance(vendor_id=1, balance=Decimal("10.00"))
     assert CustomerBalance(customer_id=1, balance=Decimal("10.00"))
+    assert BankBalance(bank_account_id=1, balance=Decimal("10.00"))
+    assert InventoryValue(
+        product_id=1,
+        quantity=Decimal("2"),
+        unit_value=Decimal("5"),
+        total_value=Decimal("10"),
+        valuation_date="2026-06-21",
+    )
+    assert StockAdjustmentResult(transaction_id=1, product_id=1)
     assert PurchaseOutstanding(purchase_id=1, outstanding=Decimal("10.00"))
     assert SaleOutstanding(sale_id=1, outstanding=Decimal("10.00"))
     assert SaleTotalInputLine(quantity=Decimal("2"), unit_price=Decimal("10"), item_discount=Decimal("1"))

@@ -87,10 +87,10 @@ class VendorsRepo:
         ids = [int(vendor_id) for vendor_id in vendor_ids if vendor_id is not None]
         if not ids:
             return {}
-        balances = AccountingService(self.conn).get_vendor_advance_balances(tuple(ids))
+        accounting = AccountingService(self.conn)
         return {
-            vendor_id: float(balance.balance)
-            for vendor_id, balance in balances.items()
+            vendor_id: float(accounting.get_vendor_balance(vendor_id).balance)
+            for vendor_id in ids
         }
 
     def get(self, vendor_id: int) -> Vendor | None:

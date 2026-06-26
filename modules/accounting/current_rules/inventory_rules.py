@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlite3 import Connection
 
 from ..dto import (
+    InventoryValue,
     InventoryAccountingEvent,
     PurchaseInventoryPayload,
     PurchaseInventoryResult,
@@ -16,6 +17,8 @@ from ..dto import (
     SaleInventoryResult,
     SaleReturnInventoryPayload,
     SaleReturnInventoryResult,
+    StockAdjustmentPayload,
+    StockAdjustmentResult,
 )
 
 
@@ -30,6 +33,147 @@ def _rebuild_dirty_valuations(conn: Connection) -> None:
 
 def _decimal(value: object) -> Decimal:
     return Decimal(str(value or "0"))
+
+
+def _cell(row: object, key: str, index: int) -> object:
+    try:
+        return row[key]  # type: ignore[index]
+    except (TypeError, KeyError, IndexError):
+        return row[index]  # type: ignore[index]
+
+
+def get_inventory_value(
+    conn: Connection,
+    product_id: int | None = None,
+) -> InventoryValue | tuple[InventoryValue, ...]:
+    _rebuild_dirty_valuations(conn)
+    params: tuple[object, ...] = ()
+    where = ""
+    if product_id is not None:
+        where = "WHERE p.product_id = ?"
+        params = (int(product_id),)
+    rows = conn.execute(
+        f"""
+        SELECT
+          p.product_id,
+          COALESCE(CAST(v.qty_in_base AS REAL), 0.0) AS quantity,
+          COALESCE(CAST(v.unit_value AS REAL), 0.0) AS unit_value,
+          COALESCE(CAST(v.total_value AS REAL), 0.0) AS total_value,
+          (
+            SELECT svh.valuation_date
+            FROM stock_valuation_history svh
+            WHERE svh.product_id = p.product_id
+            ORDER BY DATE(svh.valuation_date) DESC, svh.valuation_id DESC
+            LIMIT 1
+          ) AS valuation_date
+        FROM products p
+        LEFT JOIN v_stock_on_hand v ON v.product_id = p.product_id
+        {where}
+        ORDER BY p.product_id
+        """,
+        params,
+    ).fetchall()
+
+    values = tuple(
+        InventoryValue(
+            product_id=int(_cell(row, "product_id", 0)),
+            quantity=_decimal(_cell(row, "quantity", 1)),
+            unit_value=_decimal(_cell(row, "unit_value", 2)),
+            total_value=_decimal(_cell(row, "total_value", 3)),
+            valuation_date=_cell(row, "valuation_date", 4),
+        )
+        for row in rows
+    )
+    if product_id is None:
+        return values
+    if values:
+        return values[0]
+    return InventoryValue(
+        product_id=int(product_id),
+        quantity=Decimal("0"),
+        unit_value=Decimal("0"),
+        total_value=Decimal("0"),
+        valuation_date=None,
+    )
+
+
+def record_stock_adjustment_event(
+    conn: Connection,
+    payload: StockAdjustmentPayload,
+) -> StockAdjustmentResult:
+    try:
+        from ....database.repositories.inventory_repo import (
+            DomainError,
+            next_inventory_txn_seq,
+        )
+    except ImportError:
+        from database.repositories.inventory_repo import DomainError, next_inventory_txn_seq
+
+    uom_row = conn.execute(
+        """
+        SELECT CAST(factor_to_base AS REAL) AS factor_to_base
+        FROM product_uoms
+        WHERE product_id=? AND uom_id=?
+        LIMIT 1
+        """,
+        (int(payload.product_id), int(payload.uom_id)),
+    ).fetchone()
+    if not uom_row:
+        raise DomainError(
+            "Selected unit of measure does not belong to the chosen product. "
+            "Please pick a valid UoM for this product."
+        )
+
+    qty = float(payload.quantity)
+    if qty == 0.0:
+        raise DomainError("Adjustment quantity must be non-zero.")
+
+    if qty < 0.0:
+        _rebuild_dirty_valuations(conn)
+        factor_to_base = float(_cell(uom_row, "factor_to_base", 0) or 1.0)
+        on_hand_row = conn.execute(
+            """
+            SELECT CAST(qty_in_base AS REAL) AS qty_in_base
+            FROM v_stock_on_hand
+            WHERE product_id = ?
+            """,
+            (int(payload.product_id),),
+        ).fetchone()
+        on_hand_base = (
+            float(_cell(on_hand_row, "qty_in_base", 0) or 0.0)
+            if on_hand_row
+            else 0.0
+        )
+        reduction_base = abs(qty) * factor_to_base
+        if reduction_base > on_hand_base + 1e-9:
+            raise DomainError("Adjustment quantity exceeds available stock for this product.")
+
+    cur = conn.execute(
+        """
+        INSERT INTO inventory_transactions
+            (product_id, quantity, uom_id, transaction_type,
+             reference_table, reference_id, reference_item_id,
+             date, txn_seq, notes, created_by)
+        VALUES
+            (?, ?, ?, 'adjustment',
+             NULL, NULL, NULL,
+             ?, ?, ?, ?)
+        """,
+        (
+            int(payload.product_id),
+            qty,
+            int(payload.uom_id),
+            payload.date,
+            next_inventory_txn_seq(conn, payload.date),
+            payload.notes,
+            payload.created_by,
+        ),
+    )
+    _rebuild_dirty_valuations(conn)
+    return StockAdjustmentResult(
+        transaction_id=int(cur.lastrowid),
+        product_id=int(payload.product_id),
+    )
 
 
 def _delete_purchase_inventory_rows(

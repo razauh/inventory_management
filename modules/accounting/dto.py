@@ -20,6 +20,37 @@ class CustomerBalance:
 
 
 @dataclass(frozen=True)
+class BankBalance:
+    bank_account_id: int
+    balance: Decimal
+
+
+@dataclass(frozen=True)
+class InventoryValue:
+    product_id: int
+    quantity: Decimal
+    unit_value: Decimal
+    total_value: Decimal
+    valuation_date: str | None
+
+
+@dataclass(frozen=True)
+class StockAdjustmentPayload:
+    product_id: int
+    uom_id: int
+    quantity: Decimal
+    date: str
+    notes: str | None = None
+    created_by: int | None = None
+
+
+@dataclass(frozen=True)
+class StockAdjustmentResult:
+    transaction_id: int
+    product_id: int
+
+
+@dataclass(frozen=True)
 class PurchaseOutstanding:
     purchase_id: int | str
     outstanding: Decimal
@@ -940,4 +971,3 @@ class ExpenseReportLine:
 class ExpenseProfitLossSummary:
     expenses: tuple[ExpenseCategoryTotal, ...]
     total_expenses: Decimal
-

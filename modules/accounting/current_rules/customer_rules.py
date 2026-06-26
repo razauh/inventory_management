@@ -11,6 +11,7 @@ from typing import Any
 
 from ..dto import (
     CustomerAgingReport,
+    CustomerBalance,
     CustomerCreditApplicationPayload,
     CustomerCreditApplicationResult,
     CustomerCreditLedgerRow,
@@ -33,6 +34,49 @@ def _collect_headers(rows: list[dict]) -> list[str]:
                 seen.add(k)
                 headers.append(k)
     return headers
+
+
+def _decimal(value: object) -> Decimal:
+    return Decimal(str(value or "0"))
+
+
+def _row_value(row: object, key: str, index: int) -> object:
+    try:
+        return row[key]  # type: ignore[index]
+    except (TypeError, KeyError, IndexError):
+        return row[index]  # type: ignore[index]
+
+
+def get_customer_balance(conn: Connection, customer_id: int) -> CustomerBalance:
+    credit_row = conn.execute(
+        "SELECT balance FROM v_customer_advance_balance WHERE customer_id = ?",
+        (customer_id,),
+    ).fetchone()
+    due_row = conn.execute(
+        """
+        SELECT
+          COALESCE(SUM(
+            CASE
+              WHEN COALESCE(srt.remaining_due, 0.0) > 0.0
+              THEN COALESCE(srt.remaining_due, 0.0)
+              ELSE 0.0
+            END
+          ), 0.0) AS open_receivable
+        FROM sales s
+        LEFT JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
+        WHERE s.customer_id = ?
+          AND s.doc_type = 'sale'
+        """,
+        (customer_id,),
+    ).fetchone()
+    credit = _decimal(_row_value(credit_row, "balance", 0) if credit_row else 0)
+    open_receivable = _decimal(
+        _row_value(due_row, "open_receivable", 0) if due_row else 0
+    )
+    return CustomerBalance(
+        customer_id=int(customer_id),
+        balance=credit - open_receivable,
+    )
 
 
 def get_customer_sales_with_items(conn: Connection, customer_id: int) -> list[dict[str, Any]]:

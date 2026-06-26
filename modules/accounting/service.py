@@ -8,6 +8,7 @@ from typing import Any
 
 from .dto import (
     APSummary,
+    BankBalance,
     BankLedgerRow,
     CustomerBalance,
     CustomerOpenSale,
@@ -19,6 +20,7 @@ from .dto import (
     CustomerRefundRow,
     CustomerStatement,
     InventoryAccountingEvent,
+    InventoryValue,
     PaymentActivityReport,
     PurchaseFinancials,
     PurchaseInvoiceFinancials,
@@ -55,6 +57,8 @@ from .dto import (
     SaleTotals,
     SaleReturnPreviewPayload,
     SaleReturnPreviewLine,
+    StockAdjustmentPayload,
+    StockAdjustmentResult,
     SupplierRefundMetadata,
     SupplierRefundPayload,
     SupplierRefundResult,
@@ -86,6 +90,7 @@ from .reports.party_ledger import (
     get_purchase_reports as get_current_purchase_reports,
 )
 from .current_rules.inventory_rules import (
+    get_inventory_value as get_current_inventory_value,
     get_inventory_accounting_events as get_current_inventory_accounting_events,
     get_purchase_returnable_quantities as get_current_purchase_returnable_quantities,
     get_sale_returnable_quantities as get_current_sale_returnable_quantities,
@@ -93,8 +98,10 @@ from .current_rules.inventory_rules import (
     record_purchase_return_inventory_event as record_current_purchase_return_inventory_event,
     record_sale_inventory_event as record_current_sale_inventory_event,
     record_sale_return_inventory_event as record_current_sale_return_inventory_event,
+    record_stock_adjustment_event as record_current_stock_adjustment_event,
 )
 from .current_rules.bank_rules import (
+    get_bank_balance as get_current_bank_balance,
     get_bank_ledger as get_current_bank_ledger,
     get_customer_cash_movements as get_current_customer_cash_movements,
     get_vendor_cash_movements as get_current_vendor_cash_movements,
@@ -115,6 +122,7 @@ from .current_rules.purchase_rules import (
     recalculate_purchase_payment_status as recalculate_current_purchase_payment_status,
 )
 from .current_rules.customer_rules import (
+    get_customer_balance as get_current_customer_balance,
     get_customer_aging as get_current_customer_aging,
     get_customer_history as get_current_customer_history,
     get_customer_payment_history as get_current_customer_payment_history,
@@ -152,6 +160,7 @@ from .current_rules.sales_rules import (
     reopen_customer_payment_state as reopen_current_customer_payment_state,
 )
 from .current_rules.vendor_rules import (
+    get_vendor_balance as get_current_vendor_balance,
     get_vendor_advance_balance as get_current_vendor_advance_balance,
     get_vendor_advance_balances as get_current_vendor_advance_balances,
     get_vendor_credit_ledger as get_current_vendor_credit_ledger,
@@ -203,10 +212,14 @@ class AccountingService:
         )
 
     def get_vendor_balance(self, vendor_id: int) -> VendorBalance:
-        self._not_implemented("get_vendor_balance")
+        if self.conn is None:
+            self._not_implemented("get_vendor_balance")
+        return get_current_vendor_balance(self.conn, vendor_id)
 
     def get_customer_balance(self, customer_id: int) -> CustomerBalance:
-        self._not_implemented("get_customer_balance")
+        if self.conn is None:
+            self._not_implemented("get_customer_balance")
+        return get_current_customer_balance(self.conn, customer_id)
 
     def get_purchase_totals(self, purchase_id: int | str) -> PurchaseTotals:
         if self.conn is None:
@@ -628,8 +641,10 @@ class AccountingService:
             self._not_implemented("get_sales_dashboard_metrics")
         return get_current_sales_dashboard_metrics(self.conn, date_from, date_to)
 
-    def get_bank_balance(self, bank_account_id: int) -> None:
-        self._not_implemented("get_bank_balance")
+    def get_bank_balance(self, bank_account_id: int) -> BankBalance:
+        if self.conn is None:
+            self._not_implemented("get_bank_balance")
+        return get_current_bank_balance(self.conn, bank_account_id)
 
     def get_customer_cash_movements(
         self,
@@ -659,11 +674,28 @@ class AccountingService:
             self._not_implemented("get_bank_ledger")
         return get_current_bank_ledger(self.conn, start_date, end_date, account_id)
 
-    def get_inventory_value(self, product_id: int | None = None) -> None:
-        self._not_implemented("get_inventory_value")
+    def get_inventory_value(
+        self,
+        product_id: int | None = None,
+    ) -> InventoryValue | tuple[InventoryValue, ...]:
+        if self.conn is None:
+            self._not_implemented("get_inventory_value")
+        return get_current_inventory_value(self.conn, product_id)
 
-    def record_purchase_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_purchase_event")
+    def record_purchase_event(self, event_type: str, payload: Any) -> Any:
+        dispatch = {
+            "inventory_purchase": self.record_purchase_inventory_event,
+            "payment": self.record_vendor_payment_event,
+            "return": self.record_purchase_return_event,
+            "return_inventory": self.record_purchase_return_inventory_event,
+            "supplier_refund": self.record_supplier_refund_event,
+            "vendor_advance": self.record_vendor_advance_event,
+            "vendor_advance_auto_apply": self.record_vendor_advance_with_auto_apply,
+        }
+        handler = dispatch.get(event_type)
+        if handler is None:
+            raise ValueError(f"Unknown purchase event type: {event_type}")
+        return handler(payload)
 
     def record_purchase_inventory_event(
         self,
@@ -702,8 +734,25 @@ class AccountingService:
             self._not_implemented("get_inventory_accounting_events")
         return get_current_inventory_accounting_events(self.conn, source_type, source_id)
 
-    def record_sale_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_sale_event")
+    def record_sale_event(self, event_type: str, payload: Any) -> Any:
+        dispatch = {
+            "inventory_sale": self.record_sale_inventory_event,
+            "payment": self.record_customer_payment_event,
+            "payment_state_update": self.update_customer_payment_state,
+            "return": self.record_sale_return_event,
+            "return_inventory": self.record_sale_return_inventory_event,
+            "customer_credit": self.record_customer_credit_event,
+            "customer_credit_application": self.record_customer_credit_application_event,
+            "quotation_conversion": self.record_quotation_conversion_event,
+        }
+        handler = dispatch.get(event_type)
+        if handler is None:
+            raise ValueError(f"Unknown sale event type: {event_type}")
+        if event_type == "payment_state_update" and isinstance(payload, dict):
+            payment_id = payload["payment_id"]
+            kwargs = {k: v for k, v in payload.items() if k != "payment_id"}
+            return handler(payment_id, **kwargs)
+        return handler(payload)
 
     def preview_vendor_payment_effect(
         self,
@@ -831,8 +880,20 @@ class AccountingService:
             self._not_implemented("record_sale_return_event")
         return record_current_sale_return_event(self.conn, payload)
 
-    def record_expense_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_expense_event")
+    def record_expense_event(self, event_type: str, payload: Any = None) -> Any:
+        dispatch = {
+            "create": self.record_expense_create_event,
+            "update": self.record_expense_update_event,
+            "delete": self.record_expense_delete_event,
+        }
+        handler = dispatch.get(event_type)
+        if handler is None:
+            raise ValueError(f"Unknown expense event type: {event_type}")
+        if isinstance(payload, dict):
+            return handler(**payload)
+        if isinstance(payload, tuple):
+            return handler(*payload)
+        return handler(payload)
 
     def get_expense_financial_summary(self, expense_id: int) -> ExpenseFinancialSummary | None:
         if self.conn is None:
@@ -1042,5 +1103,10 @@ class AccountingService:
             self._not_implemented("get_sales_profit_summary")
         return get_current_sales_profit_summary(self.conn, start_date, end_date)
 
-    def record_stock_adjustment_event(self, *args: Any, **kwargs: Any) -> None:
-        self._not_implemented("record_stock_adjustment_event")
+    def record_stock_adjustment_event(
+        self,
+        payload: StockAdjustmentPayload,
+    ) -> StockAdjustmentResult:
+        if self.conn is None:
+            self._not_implemented("record_stock_adjustment_event")
+        return record_current_stock_adjustment_event(self.conn, payload)

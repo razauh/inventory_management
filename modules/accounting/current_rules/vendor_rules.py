@@ -57,6 +57,36 @@ def get_vendor_advance_balance(conn: Connection, vendor_id: int) -> VendorBalanc
     return VendorBalance(vendor_id=int(vendor_id), balance=balance)
 
 
+def get_vendor_balance(conn: Connection, vendor_id: int) -> VendorBalance:
+    credit = get_vendor_advance_balance(conn, vendor_id).balance
+    row = conn.execute(
+        """
+        SELECT
+          COALESCE(SUM(
+            CASE
+              WHEN (
+                COALESCE(pdt.calculated_total_amount, p.total_amount)
+                - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+              ) > 0.0
+              THEN (
+                COALESCE(pdt.calculated_total_amount, p.total_amount)
+                - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
+                - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
+              )
+              ELSE 0.0
+            END
+          ), 0.0) AS open_payable
+        FROM purchases p
+        LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
+        WHERE p.vendor_id = ?
+        """,
+        (vendor_id,),
+    ).fetchone()
+    open_payable = _decimal(_row_value(row, "open_payable", 0) if row else 0)
+    return VendorBalance(vendor_id=int(vendor_id), balance=credit - open_payable)
+
+
 def get_vendor_advance_balances(
     conn: Connection,
     vendor_ids: tuple[int, ...],

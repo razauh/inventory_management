@@ -332,7 +332,9 @@ def test_sale_return_preview_and_write_paths_share_one_formula():
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SQL)
 
-    customer_id = conn.execute("INSERT INTO customers (name) VALUES ('Cust')").lastrowid
+    customer_id = conn.execute(
+        "INSERT INTO customers (name, contact_info) VALUES ('Cust', 'Test')"
+    ).lastrowid
     uom_id = conn.execute("INSERT INTO uoms (unit_name) VALUES ('Piece')").lastrowid
     product_id = conn.execute("INSERT INTO products (name) VALUES ('Prod')").lastrowid
     conn.execute("INSERT INTO product_uoms (product_id, uom_id, is_base, factor_to_base) VALUES (?, ?, 1, 1)", (product_id, uom_id))
@@ -362,5 +364,4 @@ def test_sale_return_preview_and_write_paths_share_one_formula():
     actual_val = Decimal(str(row["return_value"]))
     assert preview_val == actual_val
     conn.close()
-
 

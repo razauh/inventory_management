@@ -396,67 +396,23 @@ class InventoryRepo:
           date, posted_at, txn_seq, notes, created_by
         """
         was_in_transaction = self.conn.in_transaction
-        # Pre-validate product↔UoM mapping to prevent silent stock corruption.
-        # (The schema triggers will also guard this, but we fail early with a clear message.)
-        uom_row = self.conn.execute(
-            """
-            SELECT CAST(factor_to_base AS REAL) AS factor_to_base
-            FROM product_uoms
-            WHERE product_id=? AND uom_id=?
-            LIMIT 1
-            """,
-            (int(product_id), int(uom_id)),
-        ).fetchone()
-        if not uom_row:
-            raise DomainError(
-                "Selected unit of measure does not belong to the chosen product. "
-                "Please pick a valid UoM for this product."
-            )
         qty = float(quantity)
-        if qty == 0.0:
-            raise DomainError("Adjustment quantity must be non-zero.")
 
-        if qty < 0.0:
-            rebuild_dirty_valuations(self.conn, int(product_id))
-            factor_to_base = float(_cell(uom_row, "factor_to_base", 0) or 1.0)
-            on_hand_row = self.conn.execute(
-                """
-                SELECT CAST(qty_in_base AS REAL) AS qty_in_base
-                FROM v_stock_on_hand
-                WHERE product_id = ?
-                """,
-                (int(product_id),),
-            ).fetchone()
-            on_hand_base = float(_cell(on_hand_row, "qty_in_base", 0) or 0.0) if on_hand_row else 0.0
-            reduction_base = abs(qty) * factor_to_base
-            if reduction_base > on_hand_base + 1e-9:
-                raise DomainError("Adjustment quantity exceeds available stock for this product.")
+        from modules.accounting import AccountingService, StockAdjustmentPayload
 
-        cur = self.conn.execute(
-            """
-            INSERT INTO inventory_transactions
-                (product_id, quantity, uom_id, transaction_type,
-                 reference_table, reference_id, reference_item_id,
-                 date, txn_seq, notes, created_by)
-            VALUES
-                (?, ?, ?, 'adjustment',
-                 NULL, NULL, NULL,
-                 ?, ?, ?, ?)
-            """,
-            (
-                int(product_id),
-                qty,
-                int(uom_id),
-                date,
-                next_inventory_txn_seq(self.conn, date),
-                notes,
-                created_by,
-            ),
+        result = AccountingService(self.conn).record_stock_adjustment_event(
+            StockAdjustmentPayload(
+                product_id=int(product_id),
+                uom_id=int(uom_id),
+                quantity=qty,
+                date=date,
+                notes=notes,
+                created_by=created_by,
+            )
         )
-        rebuild_dirty_valuations(self.conn, int(product_id))
         if not was_in_transaction:
             self.conn.commit()
-        return int(cur.lastrowid)
+        return result.transaction_id
 
     # ------------------------------------------------------------------
     # Utilities
