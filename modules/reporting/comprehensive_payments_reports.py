@@ -402,7 +402,7 @@ class ComprehensivePaymentReportsTab(QWidget):
         rows_for_totals: List[Dict],
     ) -> None:
         self.lbl_basis.setText(f"Date basis: {basis_label}")
-        inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(rows_for_totals)
+        inflow_total, outflow_total, refund_total, net_total = ComprehensivePaymentReports._cash_direction_totals(rows_for_totals)
         self.lbl_inflow_total.setText(f"Inflows: {fmt_money(inflow_total)}")
         self.lbl_outflow_total.setText(f"Outflows: {fmt_money(outflow_total)}")
         self.lbl_refund_total.setText(f"Refunds: {fmt_money(refund_total)}")
@@ -492,7 +492,7 @@ class ComprehensivePaymentReportsTab(QWidget):
                 
                 writer.writerow([])  # Empty row
 
-                inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(self._rows_detailed)
+                inflow_total, outflow_total, refund_total, net_total = ComprehensivePaymentReports._cash_direction_totals(self._rows_detailed)
                 writer.writerow(["CASH DIRECTION TOTALS"])
                 writer.writerow(["Inflows", f"{inflow_total:.2f}"])
                 writer.writerow(["Outflows", f"{outflow_total:.2f}"])

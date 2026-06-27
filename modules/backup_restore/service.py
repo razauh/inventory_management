@@ -39,6 +39,8 @@ from .logging_utils import get_logger, log_event
 
 RESTORE_RESTART_REQUIRED_MARKER = "RESTORE_RESTART_REQUIRED"
 PURGE_TABLES = (
+    "accounting_rule_audit_reviews",
+    "accounting_rule_audit_events",
     "sale_payment_state_reversals",
     "customer_advances",
     "vendor_advances",

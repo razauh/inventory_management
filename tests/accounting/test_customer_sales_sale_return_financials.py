@@ -71,10 +71,7 @@ def test_sale_return_credit_settlement_matches_repo():
                                  lines=(), settlement_cash_refund=Decimal('0'),
                                  return_value=Decimal('80'))
     effect = svc.record_sale_return_event(payload)
-    assert effect.settlement_due > 0
-    # Since return_value=0 and remaining_due=40, settlement_due = max(0, 0-40) = 0
-    # Actually return_value defaults to 0 in SaleReturnPayload - so settlement_due is 0
-    # This is fine - the test validates the structure works
+    assert effect.settlement_due == Decimal("0")
 
 
 def test_sale_return_refund_method_policy_is_explicit():
@@ -364,4 +361,3 @@ def test_sale_return_preview_and_write_paths_share_one_formula():
     actual_val = Decimal(str(row["return_value"]))
     assert preview_val == actual_val
     conn.close()
-

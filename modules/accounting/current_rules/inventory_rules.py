@@ -494,8 +494,6 @@ def record_sale_return_inventory_event(
         (payload.date,),
     ).fetchone()
     seq = int(row["max_seq"] if isinstance(row, sqlite3.Row) else row[0]) + 10
-    if seq < 100:
-        seq = 100
 
     txn_ids: list[int] = []
     for line in payload.lines:

@@ -178,7 +178,7 @@ def test_customer_repo_detail_snapshot_returns_financial_fields():
         INSERT INTO sale_payments(sale_id, date, amount, method, clearing_state)
         VALUES (?,?,?,?,?)
         """,
-        ("SO-1", "2026-01-12", 5, "Cash", "posted"),
+        ("SO-1", "2026-01-12", 5, "Cash", "cleared"),
     )
     conn.execute(
         """

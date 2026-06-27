@@ -41,6 +41,8 @@ def _make_db(tmp_path: Path) -> Path:
         CREATE TABLE users(user_id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT);
         CREATE TABLE audit_logs(log_id INTEGER PRIMARY KEY AUTOINCREMENT, action_type TEXT);
         CREATE TABLE error_logs(error_id INTEGER PRIMARY KEY AUTOINCREMENT, error_type TEXT);
+        CREATE TABLE accounting_rule_audit_events(audit_event_id INTEGER PRIMARY KEY AUTOINCREMENT);
+        CREATE TABLE accounting_rule_audit_reviews(review_id INTEGER PRIMARY KEY AUTOINCREMENT, audit_event_id INTEGER REFERENCES accounting_rule_audit_events(audit_event_id) ON DELETE CASCADE);
 
         CREATE TABLE purchases(purchase_id TEXT PRIMARY KEY);
         CREATE TABLE sales(sale_id TEXT PRIMARY KEY);
@@ -87,6 +89,8 @@ def _make_db(tmp_path: Path) -> Path:
         INSERT INTO purchase_refunds(purchase_id) VALUES ('P-1');
         INSERT INTO customer_advances DEFAULT VALUES;
         INSERT INTO vendor_advances DEFAULT VALUES;
+        INSERT INTO accounting_rule_audit_events DEFAULT VALUES;
+        INSERT INTO accounting_rule_audit_reviews(audit_event_id) VALUES (1);
         """
     )
     conn.commit()

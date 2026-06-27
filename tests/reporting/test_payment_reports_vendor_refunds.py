@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from inventory_management.database.schema import SQL
 from inventory_management.modules.reporting.comprehensive_payments_reports import (
     ComprehensivePaymentReports,
+    ComprehensivePaymentReportsTab,
     _DetailedPaymentsTableModel,
     _PaymentSummaryTableModel,
 )
@@ -82,6 +83,21 @@ def test_comprehensive_payment_reports_include_vendor_refunds(payment_reports_db
     assert [row["type"] for row in detailed] == ["Vendor Refund", "Disbursement"]
     assert detailed[0]["amount"] == pytest.approx(15.0)
     assert detailed[1]["amount"] == pytest.approx(100.0)
+
+
+def test_comprehensive_payment_reports_tab_refresh_updates_totals(
+    app, qtbot, payment_reports_db: sqlite3.Connection
+) -> None:
+    tab = ComprehensivePaymentReportsTab(payment_reports_db, auto_refresh=False)
+    qtbot.addWidget(tab)
+
+    tab.dt_from.setDate(QDate.fromString("2026-06-10", "yyyy-MM-dd"))
+    tab.dt_to.setDate(QDate.fromString("2026-06-12", "yyyy-MM-dd"))
+    tab.refresh()
+
+    assert tab.lbl_inflow_total.text().endswith("15.00")
+    assert tab.lbl_outflow_total.text().endswith("100.00")
+    assert tab.lbl_refund_total.text().endswith("15.00")
 
 
 def test_enhanced_payment_reports_include_vendor_refunds(

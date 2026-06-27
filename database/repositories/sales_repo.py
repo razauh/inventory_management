@@ -910,6 +910,7 @@ class SalesRepo:
         settlement: dict | None = None,
     ) -> dict:
         with self.conn:
+            settlement = settlement or {}
             if not lines:
                 raise ValueError("At least one return line is required")
             # Validate return quantities
@@ -967,6 +968,10 @@ class SalesRepo:
                     settlement_cash_refund=Decimal(str(settlement.get("cash_refund") or 0)),
                     notes=notes,
                     return_value=Decimal(str(vr["rv"])),
+                    refund_method=settlement.get("refund_method", "Cash"),
+                    refund_bank_account_id=settlement.get("refund_bank_account_id"),
+                    refund_instrument_no=settlement.get("refund_instrument_no"),
+                    refund_instrument_type=settlement.get("refund_instrument_type"),
                 )
             )
             self._refresh_sale_payment_status(sid)

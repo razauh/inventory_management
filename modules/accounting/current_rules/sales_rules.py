@@ -643,7 +643,20 @@ def record_sale_return_event(
     from .customer_rules import get_customer_receivable_summary
 
     fin = get_sale_financial_summary(conn, payload.sale_id)
-    remaining_due_before = fin.outstanding
+    pre_net_total = fin.net_total + payload.return_value
+    if pre_net_total > fin.net_total:
+        row = conn.execute(
+            "SELECT total_amount FROM sales WHERE sale_id = ?",
+            (payload.sale_id,),
+        ).fetchone()
+        if row and row["total_amount"] is not None:
+            sale_total = Decimal(str(row["total_amount"]))
+            if sale_total >= fin.net_total:
+                pre_net_total = sale_total
+    remaining_due_before = max(
+        Decimal("0"),
+        pre_net_total - fin.paid_amount - fin.applied_credit,
+    )
 
     prior_credit = conn.execute(
         "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS total "
@@ -651,19 +664,24 @@ def record_sale_return_event(
         (payload.sale_id,),
     ).fetchone()["total"]
 
-    net_total_before = fin.net_total
     advance_applied = fin.applied_credit
     net_advance = max(Decimal("0"), advance_applied - Decimal(str(prior_credit or 0)))
 
     prop_adv = Decimal("0")
-    if net_total_before > Decimal("1e-9"):
+    if pre_net_total > Decimal("1e-9"):
         prop_adv = min(
-            (payload.return_value / net_total_before) * advance_applied,
+            (payload.return_value / pre_net_total) * advance_applied,
             net_advance,
         )
 
-    settlement_due = max(Decimal("0"), payload.return_value - remaining_due_before)
     paid_before = fin.paid_amount
+    settlement_due = max(Decimal("0"), payload.return_value - remaining_due_before)
+    coverage_before = paid_before + advance_applied
+    if (
+        payload.settlement_cash_refund <= Decimal("0")
+        and coverage_before < pre_net_total
+    ):
+        settlement_due = Decimal("0")
     max_cash = max(Decimal("0"), settlement_due - prop_adv)
     cash_cap = min(settlement_due, paid_before, max_cash)
     requested = payload.settlement_cash_refund
@@ -752,6 +770,7 @@ def record_customer_payment_event(
     cleared_date = payload.cleared_date
     if cs == "cleared" and not cleared_date:
         cleared_date = (payload.date or dt_date.today().isoformat())
+    payment_date = payload.date or cleared_date or dt_date.today().isoformat()
 
     cur = conn.execute(
         """
@@ -762,7 +781,7 @@ def record_customer_payment_event(
             overpayment_converted, converted_to_credit)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
         """,
-        (payload.sale_id, payload.date, float(payload.amount), payload.method,
+        (payload.sale_id, payment_date, float(payload.amount), payload.method,
          payload.bank_account_id, payload.instrument_type, payload.instrument_no,
          payload.instrument_date, payload.deposited_date, cleared_date,
          cs, payload.ref_no, payload.notes, payload.created_by),
@@ -859,7 +878,9 @@ def update_customer_payment_state(
     if old == clearing_state:
         return 1
     if old not in ("posted", "pending"):
-        raise ValueError(f"Cannot transition from {old} to {clearing_state}")
+        raise ValueError(
+            f"Invalid payment clearing transition: cannot transition from {old} to {clearing_state}"
+        )
 
     conn.execute(
         "UPDATE sale_payments SET clearing_state = ?, cleared_date = ?, notes = COALESCE(?, notes) "
@@ -883,7 +904,7 @@ def _reconcile_overpayment_on_clear(
     # Protects receivables from showing negative due after delayed clearing.
     info = conn.execute(
         "SELECT COALESCE(canonical_total_amount, 0.0) AS total, "
-        "COALESCE(advance_payment_applied, 0.0) AS adv, c.customer_id "
+        "COALESCE(srt.advance_payment_applied, 0.0) AS adv, c.customer_id "
         "FROM sales s JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id "
         "JOIN customers c ON c.customer_id = s.customer_id WHERE s.sale_id = ?",
         (sale_id,),
@@ -952,18 +973,25 @@ def reopen_customer_payment_state(
         ).fetchone()["b"])
         if bal < converted_amount - 1e-9:
             raise ValueError(
-                f"Cannot reopen: customer credit of {converted_amount:g} consumed. Balance: {bal:g}."
+                f"Cannot reopen payment: converted credit has already been consumed. Balance: {bal:g}."
             )
-        conn.execute(
-            "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id, notes, created_by) "
-            "VALUES (?, CURRENT_DATE, ?, 'deposit', ?, ?, ?)",
-            (cid, -converted_amount, str(payment_id),
-             f"Reversal of excess credit from payment #{payment_id}", None),
-        )
-        conn.execute(
-            "UPDATE sale_payments SET overpayment_converted = 0, converted_to_credit = 0 WHERE payment_id = ?",
-            (payment_id,),
-        )
+        conn.execute("SAVEPOINT reopen_customer_payment_credit")
+        try:
+            conn.execute(
+                "INSERT INTO customer_advances (customer_id, tx_date, amount, source_type, source_id, notes, created_by) "
+                "VALUES (?, CURRENT_DATE, ?, 'deposit', ?, ?, ?)",
+                (cid, -converted_amount, str(payment_id),
+                 f"Reversal of excess credit from payment #{payment_id}", None),
+            )
+            conn.execute(
+                "UPDATE sale_payments SET overpayment_converted = 0, converted_to_credit = 0 WHERE payment_id = ?",
+                (payment_id,),
+            )
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT reopen_customer_payment_credit")
+            conn.execute("RELEASE SAVEPOINT reopen_customer_payment_credit")
+            raise
+        conn.execute("RELEASE SAVEPOINT reopen_customer_payment_credit")
 
     conn.execute(
         "UPDATE sale_payments SET clearing_state = 'pending', cleared_date = NULL "

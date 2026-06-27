@@ -400,16 +400,21 @@ class InventoryRepo:
 
         from modules.accounting import AccountingService, StockAdjustmentPayload
 
-        result = AccountingService(self.conn).record_stock_adjustment_event(
-            StockAdjustmentPayload(
-                product_id=int(product_id),
-                uom_id=int(uom_id),
-                quantity=qty,
-                date=date,
-                notes=notes,
-                created_by=created_by,
+        try:
+            result = AccountingService(self.conn).record_stock_adjustment_event(
+                StockAdjustmentPayload(
+                    product_id=int(product_id),
+                    uom_id=int(uom_id),
+                    quantity=qty,
+                    date=date,
+                    notes=notes,
+                    created_by=created_by,
+                )
             )
-        )
+        except Exception as exc:
+            if exc.__class__.__name__ == "DomainError":
+                raise DomainError(str(exc)) from exc
+            raise
         if not was_in_transaction:
             self.conn.commit()
         return result.transaction_id

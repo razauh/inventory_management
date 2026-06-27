@@ -178,6 +178,7 @@ from .current_rules.vendor_rules import (
     update_vendor_payment_state as update_current_vendor_payment_state,
 )
 from .exceptions import AccountingNotImplementedError
+from .audit.service import AccountingAuditService
 from .current_rules.expense_rules import (
     get_expense_financial_summary as get_current_expense_financial_summary,
     list_expense_rows as list_current_expense_rows,
@@ -203,13 +204,36 @@ from .validators import (
 class AccountingService:
     """Future single entry point for accounting calculations and postings."""
 
-    def __init__(self, conn: Connection | None = None):
+    def __init__(self, conn: Connection | None = None, *, audit_enabled: bool = True):
         self.conn = conn
+        self.audit_enabled = audit_enabled
 
     def _not_implemented(self, operation: str) -> None:
         raise AccountingNotImplementedError(
             f"Accounting operation is not implemented yet: {operation}"
         )
+
+    def _audit(self) -> AccountingAuditService | None:
+        if not self.audit_enabled or self.conn is None:
+            return None
+        tables = {
+            row[0]
+            for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('accounting_rule_audit_events', 'accounting_rule_audit_reviews')"
+            ).fetchall()
+        }
+        if {
+            "accounting_rule_audit_events",
+            "accounting_rule_audit_reviews",
+        } - tables:
+            return None
+        return AccountingAuditService(self.conn)
+
+    def _log_audit_event(self, **kwargs: Any) -> None:
+        audit = self._audit()
+        if audit is not None:
+            audit.log_business_event(**kwargs)
 
     def get_vendor_balance(self, vendor_id: int) -> VendorBalance:
         if self.conn is None:
@@ -348,7 +372,25 @@ class AccountingService:
     ) -> SupplierRefundResult:
         if self.conn is None:
             self._not_implemented("record_supplier_refund_event")
-        return record_current_supplier_refund_event(self.conn, payload)
+        result = record_current_supplier_refund_event(self.conn, payload)
+        self._log_audit_event(
+            rule_id="ACC-RULE-078",
+            event_type="supplier_refund",
+            source_type="purchase",
+            source_id=payload.purchase_id,
+            source_label=f"Purchase {payload.purchase_id}",
+            party_type="vendor",
+            party_id=payload.vendor_id,
+            party_name=self._audit().party_name("vendor", payload.vendor_id) if self._audit() else None,
+            amount=payload.amount,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"refund_id": result.refund_id},
+            human_summary=f"Supplier refund recorded for purchase {payload.purchase_id}.",
+            source_function="record_supplier_refund_event",
+        )
+        return result
 
     def get_supplier_refunds_for_purchase(
         self,
@@ -566,7 +608,25 @@ class AccountingService:
     ) -> CustomerCreditResult:
         if self.conn is None:
             self._not_implemented("record_customer_credit_event")
-        return record_current_customer_credit_event(self.conn, payload)
+        result = record_current_customer_credit_event(self.conn, payload)
+        self._log_audit_event(
+            rule_id="ACC-RULE-063",
+            event_type="customer_credit",
+            source_type=payload.source_type,
+            source_id=payload.source_id or result.tx_id,
+            source_label=f"Customer credit {result.tx_id}",
+            party_type="customer",
+            party_id=payload.customer_id,
+            party_name=self._audit().party_name("customer", payload.customer_id) if self._audit() else None,
+            amount=payload.amount,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"tx_id": result.tx_id},
+            human_summary=f"Customer credit recorded for customer {payload.customer_id}.",
+            source_function="record_customer_credit_event",
+        )
+        return result
 
     def list_customer_credit_ledger(
         self, customer_id: int
@@ -590,7 +650,25 @@ class AccountingService:
     ) -> CustomerCreditApplicationResult:
         if self.conn is None:
             self._not_implemented("record_customer_credit_application_event")
-        return record_current_customer_credit_application_event(self.conn, payload)
+        result = record_current_customer_credit_application_event(self.conn, payload)
+        self._log_audit_event(
+            rule_id="ACC-RULE-065",
+            event_type="customer_credit_application",
+            source_type="sale",
+            source_id=payload.sale_id,
+            source_label=f"Sale {payload.sale_id}",
+            party_type="customer",
+            party_id=payload.customer_id,
+            party_name=self._audit().party_name("customer", payload.customer_id) if self._audit() else None,
+            amount=payload.amount,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"tx_id": result.tx_id},
+            human_summary=f"Customer credit applied to sale {payload.sale_id}.",
+            source_function="record_customer_credit_application_event",
+        )
+        return result
 
     def get_customer_receivable_summary(
         self, customer_id: int
@@ -632,7 +710,26 @@ class AccountingService:
     ) -> QuotationConversionResult:
         if self.conn is None:
             self._not_implemented("record_quotation_conversion_event")
-        return record_current_quotation_conversion_event(self.conn, payload)
+        result = record_current_quotation_conversion_event(self.conn, payload)
+        audit = self._audit()
+        customer_id, customer_name = audit.customer_for_sale(result.sale_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-054",
+            event_type="quotation_conversion",
+            source_type="quotation",
+            source_id=payload.quotation_id,
+            source_label=f"Quotation {payload.quotation_id}",
+            party_type="customer",
+            party_id=customer_id,
+            party_name=customer_name,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"sale_id": result.sale_id},
+            human_summary=f"Quotation {payload.quotation_id} converted to sale {result.sale_id}.",
+            source_function="record_quotation_conversion_event",
+        )
+        return result
 
     def get_sales_dashboard_metrics(
         self, date_from: str, date_to: str
@@ -703,7 +800,26 @@ class AccountingService:
     ) -> PurchaseInventoryResult:
         if self.conn is None:
             self._not_implemented("record_purchase_inventory_event")
-        return record_current_purchase_inventory_event(self.conn, payload)
+        result = record_current_purchase_inventory_event(self.conn, payload)
+        audit = self._audit()
+        vendor_id, vendor_name = audit.vendor_for_purchase(payload.purchase_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-088",
+            event_type="purchase_inventory_posting",
+            source_type="purchase",
+            source_id=payload.purchase_id,
+            source_label=f"Purchase {payload.purchase_id}",
+            party_type="vendor",
+            party_id=vendor_id,
+            party_name=vendor_name,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"transaction_ids": result.transaction_ids},
+            human_summary=f"Purchase inventory posted for {payload.purchase_id}.",
+            source_function="record_purchase_inventory_event",
+        )
+        return result
 
     def record_purchase_return_inventory_event(
         self,
@@ -711,7 +827,26 @@ class AccountingService:
     ) -> PurchaseReturnInventoryResult:
         if self.conn is None:
             self._not_implemented("record_purchase_return_inventory_event")
-        return record_current_purchase_return_inventory_event(self.conn, payload)
+        result = record_current_purchase_return_inventory_event(self.conn, payload)
+        audit = self._audit()
+        vendor_id, vendor_name = audit.vendor_for_purchase(payload.purchase_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-089",
+            event_type="purchase_return_inventory_posting",
+            source_type="purchase",
+            source_id=payload.purchase_id,
+            source_label=f"Purchase {payload.purchase_id}",
+            party_type="vendor",
+            party_id=vendor_id,
+            party_name=vendor_name,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"transaction_ids": result.transaction_ids},
+            human_summary=f"Purchase return inventory posted for {payload.purchase_id}.",
+            source_function="record_purchase_return_inventory_event",
+        )
+        return result
 
     def get_purchase_returnable_quantities(
         self,
@@ -768,7 +903,30 @@ class AccountingService:
     ) -> VendorPaymentResult:
         if self.conn is None or payload is None:
             self._not_implemented("record_vendor_payment_event")
-        return record_current_vendor_payment_event(self.conn, payload)
+        result = record_current_vendor_payment_event(self.conn, payload)
+        audit = self._audit()
+        vendor_id, vendor_name = audit.vendor_for_purchase(payload.purchase_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-075",
+            event_type="vendor_payment",
+            source_type="purchase",
+            source_id=payload.purchase_id,
+            source_label=f"Purchase {payload.purchase_id}",
+            party_type="vendor",
+            party_id=vendor_id,
+            party_name=vendor_name,
+            amount=payload.amount,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={
+                "payment_id": result.payment_id,
+                "credit_tx_id": result.credit_tx_id,
+            },
+            human_summary=f"Vendor payment recorded for purchase {payload.purchase_id}.",
+            source_function="record_vendor_payment_event",
+        )
+        return result
 
     def update_vendor_payment_state(
         self,
@@ -780,13 +938,26 @@ class AccountingService:
     ) -> int:
         if self.conn is None:
             self._not_implemented("update_vendor_payment_state")
-        return update_current_vendor_payment_state(
+        result = update_current_vendor_payment_state(
             self.conn,
             payment_id,
             clearing_state=clearing_state,
             cleared_date=cleared_date,
             notes=notes,
         )
+        self._log_audit_event(
+            rule_id="ACC-RULE-076",
+            event_type="vendor_payment_state_update",
+            source_type="purchase_payment",
+            source_id=payment_id,
+            source_label=f"Vendor payment {payment_id}",
+            business_date=cleared_date,
+            payload={"payment_id": payment_id, "clearing_state": clearing_state, "cleared_date": cleared_date, "notes": notes},
+            result={"rowcount": result},
+            human_summary=f"Vendor payment {payment_id} state updated.",
+            source_function="update_vendor_payment_state",
+        )
+        return result
 
     def record_vendor_advance_event(
         self,
@@ -794,7 +965,25 @@ class AccountingService:
     ) -> VendorAdvanceResult:
         if self.conn is None:
             self._not_implemented("record_vendor_advance_event")
-        return record_current_vendor_advance_event(self.conn, payload)
+        result = record_current_vendor_advance_event(self.conn, payload)
+        self._log_audit_event(
+            rule_id="ACC-RULE-077",
+            event_type="vendor_advance",
+            source_type=payload.source_type,
+            source_id=payload.source_id or result.tx_id,
+            source_label=f"Vendor advance {result.tx_id}",
+            party_type="vendor",
+            party_id=payload.vendor_id,
+            party_name=self._audit().party_name("vendor", payload.vendor_id) if self._audit() else None,
+            amount=payload.amount,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"tx_id": result.tx_id},
+            human_summary=f"Vendor advance recorded for vendor {payload.vendor_id}.",
+            source_function="record_vendor_advance_event",
+        )
+        return result
 
     def get_vendor_credit_ledger(
         self,
@@ -819,14 +1008,50 @@ class AccountingService:
     ) -> dict:
         if self.conn is None:
             self._not_implemented("record_vendor_advance_with_auto_apply")
-        return record_current_vendor_advance_with_auto_apply(self.conn, payload)
+        result = record_current_vendor_advance_with_auto_apply(self.conn, payload)
+        self._log_audit_event(
+            rule_id="ACC-RULE-083",
+            event_type="vendor_advance_auto_apply",
+            source_type=payload.source_type,
+            source_id=payload.source_id or result.get("advance_tx_id"),
+            source_label="Vendor advance auto-apply",
+            party_type="vendor",
+            party_id=payload.vendor_id,
+            party_name=self._audit().party_name("vendor", payload.vendor_id) if self._audit() else None,
+            amount=payload.amount,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects=result,
+            human_summary=f"Vendor advance auto-applied for vendor {payload.vendor_id}.",
+            source_function="record_vendor_advance_with_auto_apply",
+        )
+        return result
 
     def record_customer_payment_event(
         self, payload: CustomerPaymentPayload
     ) -> CustomerPaymentResult:
         if self.conn is None:
             self._not_implemented("record_customer_payment_event")
-        return record_current_customer_payment_event(self.conn, payload)
+        result = record_current_customer_payment_event(self.conn, payload)
+        self._log_audit_event(
+            rule_id="ACC-RULE-046",
+            event_type="customer_payment",
+            source_type="sale",
+            source_id=payload.sale_id,
+            source_label=f"Sale {payload.sale_id}",
+            party_type="customer",
+            party_id=payload.customer_id,
+            party_name=self._audit().party_name("customer", payload.customer_id) if self._audit() else None,
+            amount=payload.amount,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"payment_id": result.payment_id},
+            human_summary=f"Customer payment recorded for sale {payload.sale_id}.",
+            source_function="record_customer_payment_event",
+        )
+        return result
 
     def update_customer_payment_state(
         self,
@@ -838,12 +1063,25 @@ class AccountingService:
     ) -> int:
         if self.conn is None:
             self._not_implemented("update_customer_payment_state")
-        return update_current_customer_payment_state(
+        result = update_current_customer_payment_state(
             self.conn, payment_id,
             clearing_state=clearing_state,
             cleared_date=cleared_date,
             notes=notes,
         )
+        self._log_audit_event(
+            rule_id="ACC-RULE-048",
+            event_type="customer_payment_state_update",
+            source_type="sale_payment",
+            source_id=payment_id,
+            source_label=f"Customer payment {payment_id}",
+            business_date=cleared_date,
+            payload={"payment_id": payment_id, "clearing_state": clearing_state, "cleared_date": cleared_date, "notes": notes},
+            result={"rowcount": result},
+            human_summary=f"Customer payment {payment_id} state updated.",
+            source_function="update_customer_payment_state",
+        )
+        return result
 
     def reopen_customer_payment_state(
         self,
@@ -853,9 +1091,21 @@ class AccountingService:
     ) -> int:
         if self.conn is None:
             self._not_implemented("reopen_customer_payment_state")
-        return reopen_current_customer_payment_state(
+        result = reopen_current_customer_payment_state(
             self.conn, payment_id, reason=reason,
         )
+        self._log_audit_event(
+            rule_id="ACC-RULE-049",
+            event_type="customer_payment_reopen",
+            source_type="sale_payment",
+            source_id=payment_id,
+            source_label=f"Customer payment {payment_id}",
+            payload={"payment_id": payment_id, "reason": reason},
+            result={"rowcount": result},
+            human_summary=f"Customer payment {payment_id} reopened.",
+            source_function="reopen_customer_payment_state",
+        )
+        return result
 
     def record_purchase_return_event(
         self,
@@ -863,7 +1113,27 @@ class AccountingService:
     ) -> PurchaseReturnResult:
         if self.conn is None:
             self._not_implemented("record_purchase_return_event")
-        return record_current_purchase_return_event(self.conn, payload)
+        result = record_current_purchase_return_event(self.conn, payload)
+        audit = self._audit()
+        vendor_id, vendor_name = audit.vendor_for_purchase(payload.purchase_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-020",
+            event_type="purchase_return",
+            source_type="purchase",
+            source_id=payload.purchase_id,
+            source_label=f"Purchase {payload.purchase_id}",
+            party_type="vendor",
+            party_id=vendor_id,
+            party_name=vendor_name,
+            amount=result.return_value,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"transaction_ids": result.transaction_ids},
+            human_summary=f"Purchase return recorded for {payload.purchase_id}.",
+            source_function="record_purchase_return_event",
+        )
+        return result
 
     def get_sale_return_totals(self, sale_id: int | str) -> SaleReturnTotals:
         if self.conn is None:
@@ -875,10 +1145,30 @@ class AccountingService:
             self._not_implemented("get_sale_return_values")
         return get_current_sale_return_values(self.conn, sale_id)
 
-    def record_sale_return_event(self, payload: SaleReturnPayload) -> SaleReturnEffect:
-        if self.conn is None:
+    def record_sale_return_event(self, payload: SaleReturnPayload | None = None) -> SaleReturnEffect:
+        if self.conn is None or payload is None:
             self._not_implemented("record_sale_return_event")
-        return record_current_sale_return_event(self.conn, payload)
+        result = record_current_sale_return_event(self.conn, payload)
+        audit = self._audit()
+        customer_id, customer_name = audit.customer_for_sale(payload.sale_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-043",
+            event_type="sale_return_settlement",
+            source_type="sale",
+            source_id=payload.sale_id,
+            source_label=f"Sale {payload.sale_id}",
+            party_type="customer",
+            party_id=customer_id,
+            party_name=customer_name,
+            amount=result.return_value,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"cash_refund": result.cash_refund, "credit_amount": result.credit_amount},
+            human_summary=f"Sale return settlement recorded for {payload.sale_id}.",
+            source_function="record_sale_return_event",
+        )
+        return result
 
     def record_expense_event(self, event_type: str, payload: Any = None) -> Any:
         dispatch = {
@@ -1015,13 +1305,31 @@ class AccountingService:
     ) -> int:
         if self.conn is None:
             self._not_implemented("record_expense_create_event")
-        return record_current_expense_create_event(
+        was_in_transaction = self.conn.in_transaction
+        result = record_current_expense_create_event(
             self.conn,
             description=description,
             amount=amount,
             date=date,
             category_id=category_id,
         )
+        self._log_audit_event(
+            rule_id="ACC-RULE-102",
+            event_type="expense_create",
+            source_type="expense",
+            source_id=result,
+            source_label=f"Expense {result}",
+            amount=amount,
+            business_date=date,
+            payload={"description": description, "amount": amount, "date": date, "category_id": category_id},
+            result={"expense_id": result},
+            side_effects={"expense_id": result},
+            human_summary=f"Expense {result} created.",
+            source_function="record_expense_create_event",
+        )
+        if not was_in_transaction:
+            self.conn.commit()
+        return result
 
     def record_expense_update_event(
         self,
@@ -1033,6 +1341,7 @@ class AccountingService:
     ) -> None:
         if self.conn is None:
             self._not_implemented("record_expense_update_event")
+        was_in_transaction = self.conn.in_transaction
         record_current_expense_update_event(
             self.conn,
             expense_id=expense_id,
@@ -1041,11 +1350,40 @@ class AccountingService:
             date=date,
             category_id=category_id,
         )
+        self._log_audit_event(
+            rule_id="ACC-RULE-103",
+            event_type="expense_update",
+            source_type="expense",
+            source_id=expense_id,
+            source_label=f"Expense {expense_id}",
+            amount=amount,
+            business_date=date,
+            payload={"expense_id": expense_id, "description": description, "amount": amount, "date": date, "category_id": category_id},
+            result={"expense_id": expense_id},
+            human_summary=f"Expense {expense_id} updated.",
+            source_function="record_expense_update_event",
+        )
+        if not was_in_transaction:
+            self.conn.commit()
 
     def record_expense_delete_event(self, expense_id: int) -> None:
         if self.conn is None:
             self._not_implemented("record_expense_delete_event")
+        was_in_transaction = self.conn.in_transaction
         record_current_expense_delete_event(self.conn, expense_id)
+        self._log_audit_event(
+            rule_id="ACC-RULE-104",
+            event_type="expense_delete",
+            source_type="expense",
+            source_id=expense_id,
+            source_label=f"Expense {expense_id}",
+            payload={"expense_id": expense_id},
+            result={"expense_id": expense_id},
+            human_summary=f"Expense {expense_id} deleted.",
+            source_function="record_expense_delete_event",
+        )
+        if not was_in_transaction:
+            self.conn.commit()
 
     def validate_expense_category_input(self, name: str) -> None:
         if self.conn is None:
@@ -1056,24 +1394,85 @@ class AccountingService:
     def record_expense_category_create_event(self, name: str) -> int:
         if self.conn is None:
             self._not_implemented("record_expense_category_create_event")
-        return record_current_expense_category_create_event(self.conn, name)
+        was_in_transaction = self.conn.in_transaction
+        result = record_current_expense_category_create_event(self.conn, name)
+        self._log_audit_event(
+            rule_id="ACC-RULE-105",
+            event_type="expense_category_create",
+            source_type="expense_category",
+            source_id=result,
+            source_label=name,
+            payload={"name": name},
+            result={"category_id": result},
+            human_summary=f"Expense category {name} created.",
+            source_function="record_expense_category_create_event",
+        )
+        if not was_in_transaction:
+            self.conn.commit()
+        return result
 
     def record_expense_category_update_event(self, category_id: int, name: str) -> None:
         if self.conn is None:
             self._not_implemented("record_expense_category_update_event")
+        was_in_transaction = self.conn.in_transaction
         record_current_expense_category_update_event(self.conn, category_id, name)
+        self._log_audit_event(
+            rule_id="ACC-RULE-106",
+            event_type="expense_category_update",
+            source_type="expense_category",
+            source_id=category_id,
+            source_label=name,
+            payload={"category_id": category_id, "name": name},
+            result={"category_id": category_id},
+            human_summary=f"Expense category {category_id} updated.",
+            source_function="record_expense_category_update_event",
+        )
+        if not was_in_transaction:
+            self.conn.commit()
 
     def record_expense_category_delete_event(self, category_id: int) -> None:
         if self.conn is None:
             self._not_implemented("record_expense_category_delete_event")
+        was_in_transaction = self.conn.in_transaction
         record_current_expense_category_delete_event(self.conn, category_id)
+        self._log_audit_event(
+            rule_id="ACC-RULE-107",
+            event_type="expense_category_delete",
+            source_type="expense_category",
+            source_id=category_id,
+            payload={"category_id": category_id},
+            result={"category_id": category_id},
+            human_summary=f"Expense category {category_id} deleted.",
+            source_function="record_expense_category_delete_event",
+        )
+        if not was_in_transaction:
+            self.conn.commit()
 
     def record_sale_inventory_event(
         self, payload: SaleInventoryPayload
     ) -> SaleInventoryResult:
         if self.conn is None:
             self._not_implemented("record_sale_inventory_event")
-        return record_current_sale_inventory_event(self.conn, payload)
+        result = record_current_sale_inventory_event(self.conn, payload)
+        audit = self._audit()
+        customer_id, customer_name = audit.customer_for_sale(payload.sale_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-092",
+            event_type="sale_inventory_posting",
+            source_type="sale",
+            source_id=payload.sale_id,
+            source_label=f"Sale {payload.sale_id}",
+            party_type="customer",
+            party_id=customer_id,
+            party_name=customer_name,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"transaction_ids": result.transaction_ids},
+            human_summary=f"Sale inventory posted for {payload.sale_id}.",
+            source_function="record_sale_inventory_event",
+        )
+        return result
 
     def get_sale_returnable_quantities(
         self, sale_id: int | str
@@ -1087,7 +1486,26 @@ class AccountingService:
     ) -> SaleReturnInventoryResult:
         if self.conn is None:
             self._not_implemented("record_sale_return_inventory_event")
-        return record_current_sale_return_inventory_event(self.conn, payload)
+        result = record_current_sale_return_inventory_event(self.conn, payload)
+        audit = self._audit()
+        customer_id, customer_name = audit.customer_for_sale(payload.sale_id) if audit else (None, None)
+        self._log_audit_event(
+            rule_id="ACC-RULE-093",
+            event_type="sale_return_inventory_posting",
+            source_type="sale",
+            source_id=payload.sale_id,
+            source_label=f"Sale {payload.sale_id}",
+            party_type="customer",
+            party_id=customer_id,
+            party_name=customer_name,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"transaction_ids": result.transaction_ids},
+            human_summary=f"Sale return inventory posted for {payload.sale_id}.",
+            source_function="record_sale_return_inventory_event",
+        )
+        return result
 
     def get_sale_cogs(self, sale_id: int | str) -> SaleCogsSummary:
         if self.conn is None:
@@ -1109,4 +1527,19 @@ class AccountingService:
     ) -> StockAdjustmentResult:
         if self.conn is None:
             self._not_implemented("record_stock_adjustment_event")
-        return record_current_stock_adjustment_event(self.conn, payload)
+        result = record_current_stock_adjustment_event(self.conn, payload)
+        self._log_audit_event(
+            rule_id="ACC-RULE-085",
+            event_type="stock_adjustment",
+            source_type="inventory_adjustment",
+            source_id=result.transaction_id,
+            source_label=f"Stock adjustment {result.transaction_id}",
+            amount=payload.quantity,
+            business_date=payload.date,
+            payload=payload,
+            result=result,
+            side_effects={"transaction_id": result.transaction_id},
+            human_summary=f"Stock adjustment recorded for product {payload.product_id}.",
+            source_function="record_stock_adjustment_event",
+        )
+        return result

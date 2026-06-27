@@ -885,6 +885,8 @@ class SalesController(BaseModule):
 
     # --- small helper: fetch financials using calc view + header -----------
     def _fetch_sale_financials(self, sale_id: str) -> dict:
+        if not hasattr(self, "accounting"):
+            self.accounting = AccountingService(self.conn)
         fin = self.accounting.get_sale_financial_summary(sale_id)
         return {
             "total_amount": float(fin.gross_total_amount),
@@ -2170,6 +2172,8 @@ class SalesController(BaseModule):
         enriched_data = {"id": sale_id}
 
         # Retrieve the complete invoice financials context from AccountingService
+        if not hasattr(self, "accounting"):
+            self.accounting = AccountingService(self.conn)
         invoice_fin = self.accounting.get_sale_invoice_financials(sale_id)
         ctx = invoice_fin.context
 

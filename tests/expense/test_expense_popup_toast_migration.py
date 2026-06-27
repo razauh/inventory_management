@@ -49,8 +49,8 @@ def test_expense_totals_failure_uses_error_toast_not_blocking_information(qtbot,
     calls = []
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: calls.append(args))
     monkeypatch.setattr(
-        controller.repo,
-        "total_by_category",
+        controller.accounting,
+        "get_expense_screen_category_totals",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 

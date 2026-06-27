@@ -418,6 +418,69 @@ CREATE INDEX IF NOT EXISTS idx_cadv_sale_source
   ON customer_advances(source_id)
   WHERE source_type IN ('applied_to_sale', 'return_credit');
 
+/* -------- accounting rule audit pilot -------- */
+CREATE TABLE IF NOT EXISTS accounting_rule_audit_events (
+    audit_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    rule_id TEXT NOT NULL,
+    rule_name TEXT NOT NULL,
+    rule_area TEXT NOT NULL,
+    rule_version TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT,
+    source_label TEXT,
+    party_type TEXT,
+    party_id INTEGER,
+    party_name TEXT,
+    amount NUMERIC,
+    currency TEXT NOT NULL DEFAULT 'PKR',
+    business_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    output_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    side_effects_json TEXT NOT NULL DEFAULT '{}',
+    human_summary TEXT NOT NULL DEFAULT '',
+    technical_summary TEXT NOT NULL DEFAULT '',
+    source_module TEXT NOT NULL DEFAULT '',
+    source_function TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_acct_rule_audit_created
+  ON accounting_rule_audit_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_acct_rule_audit_business_date
+  ON accounting_rule_audit_events(business_date);
+CREATE INDEX IF NOT EXISTS idx_acct_rule_audit_rule
+  ON accounting_rule_audit_events(rule_id, rule_area);
+CREATE INDEX IF NOT EXISTS idx_acct_rule_audit_source
+  ON accounting_rule_audit_events(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_acct_rule_audit_party
+  ON accounting_rule_audit_events(party_type, party_id);
+
+CREATE TABLE IF NOT EXISTS accounting_rule_audit_reviews (
+    review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_event_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unreviewed'
+      CHECK (status IN (
+        'unreviewed',
+        'accepted',
+        'data_entry_error',
+        'unclear',
+        'needs_rule_change',
+        'manager_decision',
+        'resolved'
+      )),
+    notes TEXT,
+    expected_behavior TEXT,
+    linked_issue TEXT,
+    reviewed_by INTEGER,
+    reviewed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (audit_event_id) REFERENCES accounting_rule_audit_events(audit_event_id) ON DELETE CASCADE,
+    FOREIGN KEY (reviewed_by) REFERENCES users(user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_acct_rule_audit_reviews_event
+  ON accounting_rule_audit_reviews(audit_event_id, review_id);
+CREATE INDEX IF NOT EXISTS idx_acct_rule_audit_reviews_status
+  ON accounting_rule_audit_reviews(status);
+
 /* -------- logs -------- */
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -545,7 +608,7 @@ WHEN NEW.clearing_state <> OLD.clearing_state
    )
  )
 BEGIN
-  SELECT RAISE(ABORT, 'Invalid sale payment clearing-state transition');
+  SELECT RAISE(ABORT, 'Invalid sale payment clearing-state transition: Invalid payment clearing transition');
 END;
 
 DROP TRIGGER IF EXISTS trg_sale_payment_reversal_consume;

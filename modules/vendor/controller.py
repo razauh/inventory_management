@@ -186,9 +186,12 @@ class VendorController(BaseModule):
     def _hydrate_visible_balances(self, token: int):
         if token != self._balance_token:
             return
+        vendor_ids = tuple(self.base_model.vendor_ids())
+        advance_balances = self.accounting.get_vendor_advance_balances(vendor_ids)
         balances = {
-            vendor_id: float(self.accounting.get_vendor_balance(vendor_id).balance)
-            for vendor_id in self.base_model.vendor_ids()
+            vendor_id: float(advance_balances[vendor_id].balance)
+            for vendor_id in vendor_ids
+            if vendor_id in advance_balances
         }
         if token != self._balance_token:
             return
@@ -809,13 +812,36 @@ class VendorController(BaseModule):
         self._reload()
     def build_vendor_statement(self, vendor_id: int, *, date_from: Optional[str] = None, date_to: Optional[str] = None, include_opening: bool = True, show_return_origins: bool = False) -> dict:
         accounting = getattr(self, "accounting", AccountingService(self.conn))
-        return accounting.get_vendor_statement(
+        statement = accounting.get_vendor_statement(
             vendor_id,
             date_from,
             date_to,
             include_opening=include_opening,
             show_return_origins=show_return_origins,
         )
+        if include_opening and date_from:
+            row = self.conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE
+                        WHEN LOWER(COALESCE(source_type, '')) NOT IN ('return_credit', 'applied_to_purchase')
+                        THEN CAST(amount AS REAL) ELSE 0.0 END), 0.0) AS display_credit,
+                    COALESCE(SUM(CASE
+                        WHEN LOWER(COALESCE(source_type, '')) IN ('return_credit', 'applied_to_purchase')
+                        THEN CAST(amount AS REAL) ELSE 0.0 END), 0.0) AS hidden_credit
+                FROM vendor_advances
+                WHERE vendor_id = ?
+                  AND DATE(tx_date) < DATE(?)
+                """,
+                (vendor_id, date_from),
+            ).fetchone()
+            if row:
+                hidden_credit = float(row["hidden_credit"] or 0.0)
+                statement["opening_credit"] = float(row["display_credit"] or 0.0)
+                statement["opening_payable"] = float(statement.get("opening_payable") or 0.0) + hidden_credit
+                if "closing_balance" in statement:
+                    statement["closing_balance"] = float(statement["closing_balance"] or 0.0) + hidden_credit
+        return statement
 
     def _on_history(self):
         vid = self._selected_id()

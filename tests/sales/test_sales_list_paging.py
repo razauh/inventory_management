@@ -440,8 +440,11 @@ def test_sale_invoice_render_has_template_item_fields(monkeypatch):
                     "quantity": 2.0,
                     "uom_id": 1,
                     "unit_name": "Piece",
+                    "uom_name": "Piece",
                     "unit_price": 10.0,
                     "item_discount": 0.0,
+                    "line_total": 20.0,
+                    "idx": 1,
                 }
             ]
 
@@ -467,6 +470,43 @@ def test_sale_invoice_render_has_template_item_fields(monkeypatch):
 
     controller = SalesController.__new__(SalesController)
     controller.repo = RepoStub()
+    controller.accounting = SimpleNamespace(
+        get_sale_invoice_financials=lambda sale_id: SimpleNamespace(
+            context={
+                "doc": {
+                    "id": sale_id,
+                    "sale_id": sale_id,
+                    "date": "2026-06-21",
+                    "order_discount": 0.0,
+                    "payment_status": "unpaid",
+                },
+                "customer": {
+                    "name": "Alpha Customer",
+                    "contact_info": "alpha@example.test",
+                    "address": "Customer Road",
+                },
+                "items": RepoStub().list_items(sale_id),
+                "totals": {
+                    "subtotal_before_order_discount": 20.0,
+                    "line_discount_total": 0.0,
+                    "order_discount": 0.0,
+                    "gross_total": 20.0,
+                    "total": 20.0,
+                    "net_total": 20.0,
+                    "returned_value": 0.0,
+                    "remaining_due": 20.0,
+                },
+                "returns": [],
+                "return_credit": 0.0,
+                "applied_credit": 0.0,
+                "paid_amount": 0.0,
+                "advance_payment_applied": 0.0,
+                "remaining": 20.0,
+                "payments": [],
+                "initial_payment": None,
+            }
+        )
+    )
     controller.conn = conn
     controller._db_path = ":memory:"
 

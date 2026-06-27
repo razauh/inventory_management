@@ -325,14 +325,6 @@ class MainWindow(QMainWindow):
             fallback_placeholder=True,
         )
 
-        self._add_module_deferred(
-            "Updates",
-            "inventory_management.modules.updater",
-            "create_module",
-            self,
-            fallback_placeholder=True,
-        )
-
         # Payments (read-only shortcut to Reporting > Payments)
         self._add_module_deferred(
             "Payments",
@@ -343,9 +335,26 @@ class MainWindow(QMainWindow):
             fallback_placeholder=True,
         )
 
+        self._add_module_deferred(
+            "Updates",
+            "inventory_management.modules.updater",
+            "create_module",
+            self,
+            fallback_placeholder=True,
+        )
+
         # Admin-only: System Logs
         # if self.user and self.user.get("role") == "admin":
         #     self.add_placeholder("System Logs")
+
+        self._add_module_deferred(
+            "Accounting",
+            "inventory_management.modules.accounting_review.controller",
+            "AccountingReviewController",
+            self.conn,
+            current_user=self.user,
+            fallback_placeholder=True,
+        )
 
         # ---- Backup & Restore (replace previous placeholder) ----
         self._add_backup_restore_module_deferred()

@@ -347,15 +347,30 @@ class SalePaymentsRepo:
             if not admin or str(admin["role"]).lower() != "admin" or int(admin["is_active"] or 0) != 1:
                 raise ValueError("Payment state reversal requires an active admin user")
 
-            svc = AccountingService(con)
-            result = svc.reopen_customer_payment_state(payment_id, reason=reason)
+            payment = con.execute(
+                "SELECT clearing_state FROM sale_payments WHERE payment_id = ?",
+                (payment_id,),
+            ).fetchone()
+            if not payment:
+                raise ValueError(f"Payment not found: {payment_id}")
+            old_state = str(payment["clearing_state"])
+            if old_state not in {"cleared", "bounced"}:
+                raise ValueError(f"Only cleared or bounced payments can be reopened; current state is {old_state}")
 
-            # Audit trail in repo scope
-            con.execute(
-                "INSERT INTO sale_payment_state_reversals (payment_id, old_state, new_state, admin_user_id, reason) "
-                "VALUES (?, (SELECT clearing_state FROM sale_payments WHERE payment_id = ?), 'pending', ?, ?)",
-                (payment_id, payment_id, admin_user_id, reason),
-            )
+            con.execute("SAVEPOINT reopen_customer_payment_state")
+            svc = AccountingService(con)
+            try:
+                con.execute(
+                    "INSERT INTO sale_payment_state_reversals (payment_id, old_state, new_state, admin_user_id, reason) "
+                    "VALUES (?, ?, 'pending', ?, ?)",
+                    (payment_id, old_state, admin_user_id, reason),
+                )
+                result = svc.reopen_customer_payment_state(payment_id, reason=reason)
+            except Exception:
+                con.execute("ROLLBACK TO SAVEPOINT reopen_customer_payment_state")
+                con.execute("RELEASE SAVEPOINT reopen_customer_payment_state")
+                raise
+            con.execute("RELEASE SAVEPOINT reopen_customer_payment_state")
             return result
 
 

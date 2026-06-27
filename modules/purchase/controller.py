@@ -1053,7 +1053,7 @@ class PurchaseController(BaseModule):
             return
         pid = row["purchase_id"]
         items = self.repo.list_items(pid)
-        returnable_contractual = self._returnable_map(pid, stock_aware=False)
+        returnable_contractual = self._returnable_map(pid)
         if not any(float(qty or 0.0) > _EPS for qty in returnable_contractual.values()):
             info(self.view, "Return unavailable", "Purchase is fully returned.")
             self._set_return_action_state({"returned_value": 1.0, "calculated_total_amount": 0.0})
