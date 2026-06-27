@@ -5,8 +5,17 @@ from modules.accounting.audit.repository import AccountingAuditRepository
 from modules.accounting.dto import CustomerCreditPayload
 
 
+def _create_customer(conn) -> int:
+    return int(
+        conn.execute(
+            "INSERT INTO customers (name, contact_info) VALUES (?, ?)",
+            ("Audit Customer", "audit@example.test"),
+        ).lastrowid
+    )
+
+
 def test_customer_credit_write_creates_audit_event(conn):
-    customer_id = conn.execute("SELECT customer_id FROM customers LIMIT 1").fetchone()[0]
+    customer_id = _create_customer(conn)
 
     result = AccountingService(conn).record_customer_credit_event(
         CustomerCreditPayload(
@@ -26,7 +35,7 @@ def test_customer_credit_write_creates_audit_event(conn):
 
 
 def test_audit_event_rolls_back_with_business_write(conn):
-    customer_id = conn.execute("SELECT customer_id FROM customers LIMIT 1").fetchone()[0]
+    customer_id = _create_customer(conn)
     conn.execute("SAVEPOINT audit_rollback")
     AccountingService(conn).record_customer_credit_event(
         CustomerCreditPayload(
@@ -45,7 +54,7 @@ def test_audit_event_rolls_back_with_business_write(conn):
 
 
 def test_read_side_balance_does_not_create_audit_event(conn):
-    customer_id = conn.execute("SELECT customer_id FROM customers LIMIT 1").fetchone()[0]
+    customer_id = _create_customer(conn)
     before = len(AccountingAuditRepository(conn).list_events({}))
 
     AccountingService(conn).get_customer_balance(customer_id)

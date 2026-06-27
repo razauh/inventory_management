@@ -51,7 +51,7 @@ def test_customer_sales_modules_do_not_import_accounting_internals():
     bad_imports: list[str] = []
 
     for path in _tracked_module_python_files():
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for module_name in _imported_modules(tree):
             if module_name.startswith(FORBIDDEN_ACCOUNTING_INTERNALS):
                 bad_imports.append(
