@@ -9,7 +9,6 @@ import tempfile
 import time
 
 from jinja2 import Template
-from weasyprint import HTML
 from importlib import resources as importlib_resources
 from utils.invoice_preview import show_invoice_preview
 from utils.ui_helpers import info
@@ -328,6 +327,8 @@ class _CustomerHistoryDialog(QDialog):
             return
 
         try:
+            from weasyprint import HTML
+
             HTML(string=html).write_pdf(file_path)
         except Exception as e:
             _log.error("Failed to render customer history PDF to %s: %s", file_path, e, exc_info=True)
