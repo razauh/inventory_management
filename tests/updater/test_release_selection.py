@@ -28,6 +28,21 @@ def test_select_installer_prefers_setup_exe_on_windows(monkeypatch):
     assert selected.name == "InventoryManagement-Setup-v1.2.3.exe"
 
 
+def test_select_installer_prefers_exact_release_name_when_multiple_setups_exist(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    release = _release(
+        ReleaseAsset("InventoryManagement-Setup-v1.2.2.exe", "https://example.com/InventoryManagement-Setup-v1.2.2.exe"),
+        ReleaseAsset("InventoryManagement-Setup.exe", "https://example.com/InventoryManagement-Setup.exe"),
+        ReleaseAsset("InventoryManagement-Setup-v1.2.3.exe", "https://example.com/InventoryManagement-Setup-v1.2.3.exe"),
+        ReleaseAsset("InventoryManagement.msi", "https://example.com/InventoryManagement.msi"),
+    )
+
+    selected = select_installer_asset(release)
+
+    assert selected is not None
+    assert selected.name == "InventoryManagement-Setup-v1.2.3.exe"
+
+
 def test_select_installer_rejects_non_windows(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Linux")
     release = _release(ReleaseAsset("InventoryManagement-Setup-v1.2.3.exe", "https://example.com/app.exe"))

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import threading
+import sys
 from pathlib import Path
 
 from constants import APP_SETTINGS_NAME, APP_SETTINGS_ORG, APP_UPDATE_TEMP_PREFIX
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication
+from version import APP_VERSION
 
 from .downloader import download_asset, download_text
 from .logging_utils import get_logger, log_event
@@ -25,6 +28,35 @@ def _cleanup_dir(dir_path: Path) -> None:
             dir_path.rmdir()
     except Exception:
         pass
+
+
+def _installer_cache_key(update: UpdateInfo) -> str:
+    installer_name = update.installer_asset.name if update.installer_asset is not None else ""
+    return f"{update.release.tag_name}|{installer_name}"
+
+
+def _current_application_executable() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve()
+    return Path(sys.argv[0]).resolve()
+
+
+def build_updater_bootstrap_command(
+    executable: Path,
+    installer: Path,
+    install_dir: Path,
+    parent_pid: int,
+) -> list[str]:
+    return [
+        str(executable),
+        "--updater-bootstrap",
+        "--updater-installer",
+        str(installer),
+        "--updater-install-dir",
+        str(install_dir),
+        "--updater-parent-pid",
+        str(parent_pid),
+    ]
 
 
 class UpdateDownloadWorker(QThread):
@@ -88,6 +120,7 @@ class UpdaterController(QObject):
     SETTINGS_KEY_AUTO_CHECK = "updater/auto_check"
     SETTINGS_KEY_INCLUDE_PRERELEASE = "updater/include_prerelease"
     SETTINGS_KEY_DEFERRED_TAG = "updater/deferred_tag"
+    SETTINGS_KEY_PENDING_EXPECTED_VERSION = "updater/pending_expected_version"
 
     STATUS_LABELS = {
         "idle": "Idle",
@@ -112,6 +145,7 @@ class UpdaterController(QObject):
         self._download_status = ""
         self._progress = 0
         self._downloaded_installer: Path | None = None
+        self._download_cache_key: str | None = None
         self._install_after_download = False
         self._check_finished.connect(self._on_check_finished)
         self._state = UpdateState(
@@ -175,6 +209,9 @@ class UpdaterController(QObject):
         if self._download_worker is not None:
             self.emit_state()
             return
+        cache_key = _installer_cache_key(update)
+        if self._downloaded_installer is not None and self._download_cache_key != cache_key:
+            self._discard_download_cache()
         if self._downloaded_installer is not None and self._downloaded_installer.exists():
             self._install_after_download = install_after_download
             self._set_state(
@@ -232,10 +269,31 @@ class UpdaterController(QObject):
             )
             return
 
+        update = self._current_update
+        if update is None:
+            self._set_state(
+                "error",
+                "No update is selected.",
+                error_text="The selected update is no longer available.",
+            )
+            return
+
         self._close_database_before_install()
+        self._settings.setValue(self.SETTINGS_KEY_PENDING_EXPECTED_VERSION, update.release.version)
+        self._settings.sync()
+        executable = _current_application_executable()
+        install_dir = executable.parent
         try:
-            subprocess.Popen([str(installer)], close_fds=True)
+            bootstrap_command = build_updater_bootstrap_command(
+                executable,
+                installer,
+                install_dir,
+                os.getpid(),
+            )
+            subprocess.Popen(bootstrap_command, close_fds=True)
         except OSError as exc:
+            self._settings.remove(self.SETTINGS_KEY_PENDING_EXPECTED_VERSION)
+            self._settings.sync()
             error = f"Could not start installer: {exc}"
             log_event(self._log, "launch_failed", "Update installer could not be started.", error=error)
             self._set_state(
@@ -246,14 +304,18 @@ class UpdaterController(QObject):
                 download_path=str(installer),
             )
             return
-        log_event(self._log, "installer_started", "Installer launched.", path=str(installer))
+        log_event(
+            self._log,
+            "installer_started",
+            "Installer bootstrap launched.",
+            path=str(installer),
+            install_dir=str(install_dir),
+            parent_pid=os.getpid(),
+        )
         QApplication.quit()
 
     def clear_download(self) -> None:
-        installer = self._downloaded_installer
-        if installer is not None:
-            _cleanup_dir(installer.parent)
-        self._downloaded_installer = None
+        self._discard_download_cache()
         self._progress = 0
         self._download_status = ""
         if self._current_update is not None:
@@ -295,13 +357,15 @@ class UpdaterController(QObject):
 
         if update is None:
             self._current_update = None
-            self._downloaded_installer = None
+            self._discard_download_cache()
             self._set_state(
                 "up_to_date",
                 f"Version {self._service.local_version} is the latest available release.",
             )
             return
 
+        if self._download_cache_key != _installer_cache_key(update):
+            self._discard_download_cache()
         self._current_update = update
         detail = update.availability_message or f"Release {update.release.tag_name} is available to download."
         self._set_state(
@@ -339,6 +403,8 @@ class UpdaterController(QObject):
     def _on_download_success(self, path_str: str) -> None:
         installer = Path(path_str)
         self._downloaded_installer = installer
+        if self._current_update is not None:
+            self._download_cache_key = _installer_cache_key(self._current_update)
         self._progress = 100
         log_event(self._log, "verified", "Installer checksum verified.", path=str(installer))
         self._set_state(
@@ -353,7 +419,7 @@ class UpdaterController(QObject):
 
     @Slot(str)
     def _on_download_failure(self, error_message: str) -> None:
-        self._downloaded_installer = None
+        self._discard_download_cache()
         log_event(self._log, "download_failed", "Update download failed.", error=error_message)
         self._set_state(
             "error",
@@ -434,3 +500,34 @@ class UpdaterController(QObject):
             self._main_window.conn = None
         except Exception:
             pass
+
+    def _discard_download_cache(self) -> None:
+        installer = self._downloaded_installer
+        if installer is not None:
+            _cleanup_dir(installer.parent)
+        self._downloaded_installer = None
+        self._download_cache_key = None
+
+    def verify_pending_installation(self) -> bool:
+        expected_version = self._settings.value(self.SETTINGS_KEY_PENDING_EXPECTED_VERSION, "", str)
+        if not expected_version:
+            return True
+        if expected_version == APP_VERSION:
+            self._settings.remove(self.SETTINGS_KEY_PENDING_EXPECTED_VERSION)
+            self._settings.sync()
+            log_event(
+                self._log,
+                "install_verified",
+                "Pending update matched the running version.",
+                expected_version=expected_version,
+                actual_version=APP_VERSION,
+            )
+            return True
+        log_event(
+            self._log,
+            "install_mismatch",
+            "Pending update did not match the running version.",
+            expected_version=expected_version,
+            actual_version=APP_VERSION,
+        )
+        return False

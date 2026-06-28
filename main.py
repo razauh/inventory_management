@@ -16,9 +16,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QEvent, QSize
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from pathlib import Path
+import subprocess
 import sys
 import traceback
 import os
+import time
 from importlib import import_module
 
 import sys
@@ -70,6 +72,65 @@ def _lazy_get(name: str, attr: str):
         return getattr(mod, attr)
     except AttributeError as e:
         raise ImportError(f"'{attr}' not found in module '{name}'.") from e
+
+
+def _updater_bootstrap_arg(argv: list[str], flag: str) -> str | None:
+    try:
+        idx = argv.index(flag)
+    except ValueError:
+        return None
+    if idx + 1 >= len(argv):
+        return None
+    return argv[idx + 1]
+
+
+def _wait_for_process_exit(parent_pid: int) -> None:
+    if parent_pid <= 0:
+        return
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, parent_pid)
+        if handle:
+            kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+            kernel32.CloseHandle(handle)
+        return
+
+    while True:
+        try:
+            os.kill(parent_pid, 0)
+        except OSError:
+            return
+        time.sleep(0.25)
+
+
+def _run_updater_bootstrap(argv: list[str]) -> bool:
+    if "--updater-bootstrap" not in argv:
+        return False
+
+    installer_text = _updater_bootstrap_arg(argv, "--updater-installer")
+    install_dir_text = _updater_bootstrap_arg(argv, "--updater-install-dir")
+    parent_pid_text = _updater_bootstrap_arg(argv, "--updater-parent-pid")
+    if not installer_text or not install_dir_text or not parent_pid_text:
+        print("Updater bootstrap mode missing required arguments.", file=sys.stderr)
+        return True
+
+    try:
+        parent_pid = int(parent_pid_text)
+    except ValueError:
+        print("Updater bootstrap mode had an invalid parent PID.", file=sys.stderr)
+        return True
+
+    _wait_for_process_exit(parent_pid)
+
+    installer = Path(installer_text)
+    install_dir = Path(install_dir_text)
+    try:
+        subprocess.Popen([str(installer), f"/DIR={install_dir}"], close_fds=True)
+    except OSError as exc:
+        print(f"Could not start installer: {exc}", file=sys.stderr)
+    return True
 
 
 class MainWindow(QMainWindow):
@@ -978,6 +1039,9 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    if _run_updater_bootstrap(sys.argv):
+        return
+
     # Hold named mutex on Windows during app execution to prevent installer collisions
     if sys.platform == "win32":
         import ctypes
@@ -1081,7 +1145,14 @@ def main():
     # Show UI (smaller default)
     win.resize(900, 560)
     win.show()
-    win._get_updater_controller().check_on_startup()
+    updater = win._get_updater_controller()
+    if not updater.verify_pending_installation():
+        QMessageBox.warning(
+            win,
+            "Update installation failed",
+            "The previous update did not finish installing.",
+        )
+    updater.check_on_startup()
     
     # Only call exec_ if we're running standalone (not under dev_launcher.py)
     # When running under dev_launcher.py, just return and let it handle the event loop

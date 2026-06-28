@@ -72,6 +72,10 @@ def select_installer_asset(release: ReleaseInfo) -> ReleaseAsset | None:
     if platform.system().lower() != "windows":
         return None
     assets = sorted(release.assets, key=lambda asset: asset.name.lower())
+    exact_name = f"InventoryManagement-Setup-{release.tag_name}.exe".lower()
+    for asset in assets:
+        if asset.name.lower() == exact_name:
+            return asset
     exe_assets = [
         asset for asset in assets
         if asset.name.lower().endswith(".exe") and "setup" in asset.name.lower()
