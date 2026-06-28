@@ -115,10 +115,10 @@ def test_install_downloaded_update_uses_bootstrap_launch_args(monkeypatch, tmp_p
 
     controller.install_downloaded_update()
 
-    assert captured["args"][0] == "/opt/inventory/InventoryManagement.exe"
+    assert captured["args"][0] == str(Path("/opt/inventory/InventoryManagement.exe"))
     assert "--updater-bootstrap" in captured["args"]
     assert captured["args"][captured["args"].index("--updater-installer") + 1] == str(installer)
-    assert captured["args"][captured["args"].index("--updater-install-dir") + 1] == "/opt/inventory"
+    assert captured["args"][captured["args"].index("--updater-install-dir") + 1] == str(Path("/opt/inventory"))
     assert captured["args"][captured["args"].index("--updater-parent-pid") + 1] == str(os.getpid())
     assert captured["close_fds"] is True
     assert captured["quit"] is True
