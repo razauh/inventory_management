@@ -15,19 +15,32 @@ import main
 def test_frozen_bootstrap_registers_inventory_management_package(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
 
-    names_to_clear = [
-        "inventory_management",
-        "inventory_management.modules.customer",
-        "inventory_management.modules.customer.controller",
-        "inventory_management.modules",
-    ]
-    for name in names_to_clear:
-        monkeypatch.delitem(sys.modules, name, raising=False)
+    saved = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "inventory_management" or name.startswith("inventory_management.")
+    }
+    for name in list(sys.modules):
+        if name == "inventory_management" or name.startswith("inventory_management."):
+            del sys.modules[name]
 
-    main._bootstrap_inventory_management_namespace()
+    try:
+        main._bootstrap_inventory_management_namespace()
 
-    package = sys.modules["inventory_management"]
-    assert str(PROJECT_ROOT) in list(getattr(package, "__path__", []))
-    controller_module = import_module("inventory_management.modules.customer.controller")
-    assert controller_module.__name__ == "inventory_management.modules.customer.controller"
-    assert controller_module.__package__ == "inventory_management.modules.customer"
+        package = sys.modules["inventory_management"]
+        assert str(PROJECT_ROOT) in list(getattr(package, "__path__", []))
+        controller_module = import_module("inventory_management.modules.customer.controller")
+        assert controller_module.__name__ == "inventory_management.modules.customer.controller"
+        assert controller_module.__package__ == "inventory_management.modules.customer"
+    finally:
+        for name in list(sys.modules):
+            if name == "inventory_management" or name.startswith("inventory_management."):
+                del sys.modules[name]
+        sys.modules.update(saved)
+        for name, module in saved.items():
+            if "." not in name:
+                continue
+            parent_name, _, child_name = name.rpartition(".")
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                setattr(parent, child_name, module)
