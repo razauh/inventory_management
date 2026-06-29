@@ -22,9 +22,7 @@ import traceback
 import os
 import time
 from importlib import import_module
-
-import sys
-from pathlib import Path
+from types import ModuleType
 # Add the project root to the Python path for imports
 project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(project_root))
@@ -41,6 +39,38 @@ def load_qss() -> str:
     if f.exists():
         qss = f.read_text(encoding="utf-8")
     return qss
+
+
+def _bootstrap_inventory_management_namespace() -> None:
+    project_root = Path(__file__).resolve().parent
+    root_str = str(project_root)
+    parent_dir = str(project_root.parent)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+
+    package_name = "inventory_management"
+    package = sys.modules.get(package_name)
+    if package is None:
+        package = ModuleType(package_name)
+        package.__file__ = str(project_root / "__init__.py")
+        package.__package__ = package_name
+        package.__path__ = [root_str]
+        sys.modules[package_name] = package
+    else:
+        package_paths = list(getattr(package, "__path__", []))
+        if root_str not in package_paths:
+            package_paths.append(root_str)
+            package.__path__ = package_paths
+
+
+def _log_module_load_failure(title: str, module_path: str, class_name: str, exc: Exception) -> None:
+    print(
+        f"[{title}] failed to load {module_path}.{class_name}: {exc}",
+        file=sys.stderr,
+    )
+    traceback.print_exc()
 
 
 def _lazy_get(name: str, attr: str):
@@ -63,6 +93,8 @@ def _lazy_get(name: str, attr: str):
     warnings.filterwarnings("ignore",
                            message=r".*Failed to disconnect.*selectionChanged.*",
                            category=RuntimeWarning)
+
+    _bootstrap_inventory_management_namespace()
 
     try:
         mod = import_module(name)
@@ -245,6 +277,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, conn, current_user: dict):
         super().__init__()
+        _bootstrap_inventory_management_namespace()
         self.setWindowTitle(APP_NAME)
         # ensure normal window controls + sensible minimum
         self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
@@ -490,12 +523,7 @@ class MainWindow(QMainWindow):
             controller = Controller(*args, **kwargs)
             self.add_module(title, controller)
         except Exception as e:
-            # === DEBUG Reporting only ===
-            if title in ["Sales", "Dashboard"]:
-                import traceback as _tb, sys as _sys
-                print(f"[{title}] failed to load:", e, file=_sys.stderr)
-                _tb.print_exc()
-            # ============================
+            _log_module_load_failure(title, module_path, class_name, e)
             if fallback_placeholder:
                 self.add_placeholder(title)
 
@@ -864,12 +892,12 @@ class MainWindow(QMainWindow):
             self.modules[index] = (module_info['title'], controller)
 
         except Exception as e:
-            # === DEBUG Reporting only ===
-            if module_info['title'] in ["Sales", "Dashboard"]:
-                import traceback as _tb, sys as _sys
-                print(f"[{module_info['title']}] failed to load:", e, file=_sys.stderr)
-                _tb.print_exc()
-            # ============================
+            _log_module_load_failure(
+                module_info['title'],
+                module_info['module_path'],
+                module_info['class_name'],
+                e,
+            )
             if module_info['fallback_placeholder']:
                 self._replace_placeholder_widget(index, f"{module_info['title']}\n\nComing soon...")
 
@@ -1041,6 +1069,8 @@ class MainWindow(QMainWindow):
 def main():
     if _run_updater_bootstrap(sys.argv):
         return
+
+    _bootstrap_inventory_management_namespace()
 
     # Hold named mutex on Windows during app execution to prevent installer collisions
     if sys.platform == "win32":

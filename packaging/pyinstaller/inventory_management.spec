@@ -24,10 +24,13 @@ a = Analysis(
         "inventory_management.modules.vendor.controller",
         "inventory_management.modules.company_info.controller",
         "inventory_management.modules.expense.controller",
+        "inventory_management.modules.payments.controller",
         "inventory_management.modules.reporting.controller",
-        "inventory_management.modules.backup_restore",
+        "inventory_management.modules.accounting_review.controller",
         "inventory_management.modules.updater",
-    ] + collect_submodules("inventory_management.modules.reporting"),
+    ]
+    + collect_submodules("inventory_management.modules.backup_restore")
+    + collect_submodules("inventory_management.modules.reporting"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
