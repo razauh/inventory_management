@@ -29,6 +29,7 @@ a = Analysis(
         "inventory_management.modules.accounting_review.controller",
         "inventory_management.modules.updater",
     ]
+    + collect_submodules("inventory_management.modules.updater")
     + collect_submodules("inventory_management.modules.backup_restore")
     + collect_submodules("inventory_management.modules.reporting"),
     hookspath=[],

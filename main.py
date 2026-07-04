@@ -723,7 +723,10 @@ class MainWindow(QMainWindow):
     def _get_updater_controller(self):
         controller = getattr(self, "_updater_controller", None)
         if controller is None:
-            from inventory_management.modules.updater import UpdaterController
+            try:
+                from inventory_management.modules.updater import UpdaterController
+            except ModuleNotFoundError:
+                return None
             controller = UpdaterController(self)
             self._updater_controller = controller
         return controller
@@ -1176,13 +1179,16 @@ def main():
     win.resize(900, 560)
     win.show()
     updater = win._get_updater_controller()
-    if not updater.verify_pending_installation():
-        QMessageBox.warning(
-            win,
-            "Update installation failed",
-            "The previous update did not finish installing.",
-        )
-    updater.check_on_startup()
+    if updater is None:
+        print("[main] updater module not available, skipping startup checks", file=sys.stderr)
+    else:
+        if not updater.verify_pending_installation():
+            QMessageBox.warning(
+                win,
+                "Update installation failed",
+                "The previous update did not finish installing.",
+            )
+        updater.check_on_startup()
     
     # Only call exec_ if we're running standalone (not under dev_launcher.py)
     # When running under dev_launcher.py, just return and let it handle the event loop
