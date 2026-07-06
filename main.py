@@ -53,11 +53,16 @@ def _bootstrap_inventory_management_namespace() -> None:
     package_name = "inventory_management"
     package = sys.modules.get(package_name)
     if package is None:
-        package = ModuleType(package_name)
-        package.__file__ = str(project_root / "__init__.py")
-        package.__package__ = package_name
-        package.__path__ = [root_str]
-        sys.modules[package_name] = package
+        try:
+            package = import_module(package_name)
+        except ModuleNotFoundError as exc:
+            if exc.name != package_name:
+                raise
+            package = ModuleType(package_name)
+            package.__file__ = str(project_root / "__init__.py")
+            package.__package__ = package_name
+            package.__path__ = [root_str]
+            sys.modules[package_name] = package
     else:
         package_paths = list(getattr(package, "__path__", []))
         if root_str not in package_paths:

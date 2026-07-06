@@ -32,6 +32,9 @@ def test_frozen_bootstrap_registers_inventory_management_package(monkeypatch):
         controller_module = import_module("inventory_management.modules.customer.controller")
         assert controller_module.__name__ == "inventory_management.modules.customer.controller"
         assert controller_module.__package__ == "inventory_management.modules.customer"
+        updater_module = import_module("inventory_management.modules.updater")
+        assert updater_module.__name__ == "inventory_management.modules.updater"
+        assert hasattr(updater_module, "UpdaterController")
     finally:
         for name in list(sys.modules):
             if name == "inventory_management" or name.startswith("inventory_management."):
@@ -44,3 +47,11 @@ def test_frozen_bootstrap_registers_inventory_management_package(monkeypatch):
             parent = sys.modules.get(parent_name)
             if parent is not None:
                 setattr(parent, child_name, module)
+
+
+def test_pyinstaller_spec_collects_updater_submodules():
+    spec_text = (PROJECT_ROOT / "packaging" / "pyinstaller" / "inventory_management.spec").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'collect_submodules("inventory_management.modules.updater")' in spec_text
