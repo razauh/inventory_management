@@ -111,6 +111,54 @@ def _lazy_get(name: str, attr: str):
         raise ImportError(f"'{attr}' not found in module '{name}'.") from e
 
 
+_PACKAGED_IMPORT_TARGETS = (
+    ("inventory_management.modules.dashboard.controller", "DashboardController"),
+    ("inventory_management.modules.product.controller", "ProductController"),
+    ("inventory_management.modules.inventory.controller", "InventoryController"),
+    ("inventory_management.modules.purchase.controller", "PurchaseController"),
+    ("inventory_management.modules.sales.controller", "SalesController"),
+    ("inventory_management.modules.customer.controller", "CustomerController"),
+    ("inventory_management.modules.vendor.controller", "VendorController"),
+    ("inventory_management.modules.expense.controller", "ExpenseController"),
+    ("inventory_management.modules.reporting.controller", "ReportingController"),
+    ("inventory_management.modules.payments.controller", "PaymentsController"),
+    ("inventory_management.modules.updater", "UpdaterController"),
+    ("inventory_management.modules.accounting_review.controller", "AccountingReviewController"),
+    ("inventory_management.modules.backup_restore", "create_module"),
+    ("inventory_management.modules.company_info.controller", "CompanyInfoController"),
+    ("inventory_management.modules.reporting.vendor_aging_reports", "VendorAgingTab"),
+    ("inventory_management.modules.reporting.customer_aging_reports", "CustomerAgingTab"),
+    ("inventory_management.modules.reporting.inventory_reports", "InventoryReportsTab"),
+    ("inventory_management.modules.reporting.expense_reports", "ExpenseReportsTab"),
+    ("inventory_management.modules.reporting.financial_reports", "FinancialReportsTab"),
+    ("inventory_management.modules.reporting.sales_reports", "SalesReportsTab"),
+    ("inventory_management.modules.reporting.purchase_reports", "PurchaseReportsTab"),
+    ("inventory_management.modules.reporting.payment_reports", "PaymentReportsTab"),
+    ("inventory_management.modules.reporting.enhanced_payment_reports", "EnhancedPaymentReportsTab"),
+    ("inventory_management.modules.reporting.comprehensive_payments_reports", "ComprehensivePaymentReportsTab"),
+)
+
+
+def _validate_packaged_module_imports() -> int:
+    _bootstrap_inventory_management_namespace()
+    failures: list[str] = []
+    for module_path, attr_name in _PACKAGED_IMPORT_TARGETS:
+        try:
+            module = import_module(module_path)
+            getattr(module, attr_name)
+        except Exception as exc:
+            failures.append(f"{module_path}.{attr_name}: {exc.__class__.__name__}: {exc}")
+
+    if failures:
+        print("Packaged module import validation failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"- {failure}", file=sys.stderr)
+        return 1
+
+    print("Packaged module import validation passed.")
+    return 0
+
+
 def _updater_bootstrap_arg(argv: list[str], flag: str) -> str | None:
     try:
         idx = argv.index(flag)
@@ -1075,6 +1123,9 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    if "--validate-module-imports" in sys.argv:
+        raise SystemExit(_validate_packaged_module_imports())
+
     if _run_updater_bootstrap(sys.argv):
         return
 

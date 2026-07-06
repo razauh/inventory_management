@@ -43,6 +43,7 @@ jobs:
           python -c "import inventory_management.main; import inventory_management.modules.dashboard.controller; import inventory_management.modules.product.controller; import inventory_management.modules.inventory.controller; import inventory_management.modules.purchase.controller; import inventory_management.modules.sales.controller; import inventory_management.modules.customer.controller; import inventory_management.modules.vendor.controller; import inventory_management.modules.expense.controller; import inventory_management.modules.reporting.controller; import inventory_management.modules.reporting.vendor_aging_reports; import inventory_management.modules.reporting.customer_aging_reports; import inventory_management.modules.reporting.inventory_reports; import inventory_management.modules.reporting.expense_reports; import inventory_management.modules.reporting.financial_reports; import inventory_management.modules.reporting.sales_reports; import inventory_management.modules.reporting.purchase_reports; import inventory_management.modules.reporting.payment_reports; import inventory_management.modules.reporting.enhanced_payment_reports; import inventory_management.modules.reporting.comprehensive_payments_reports; import inventory_management.modules.backup_restore; import inventory_management.modules.updater"
 
       - name: Run tests
+        timeout-minutes: 15
         shell: pwsh
         env:
           PYTHONPATH: ..
@@ -53,6 +54,11 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller packaging/pyinstaller/inventory_management.spec --noconfirm
+
+      - name: Validate packaged module imports
+        shell: pwsh
+        run: |
+          dist\InventoryManagement\InventoryManagement.exe --validate-module-imports
 
       - name: Cache Chocolatey packages
         uses: actions/cache@v4

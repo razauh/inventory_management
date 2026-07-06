@@ -7,6 +7,10 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = Path(SPECPATH).resolve().parents[1]
 
 
+def _not_tests(module_name):
+    return ".test_" not in module_name and not module_name.rsplit(".", 1)[-1].startswith("test_")
+
+
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT), str(ROOT.parent)],
@@ -14,23 +18,10 @@ a = Analysis(
     datas=[
         (str(ROOT / "resources"), "resources"),
     ],
-    hiddenimports=[
-        "inventory_management.modules.dashboard.controller",
-        "inventory_management.modules.product.controller",
-        "inventory_management.modules.inventory.controller",
-        "inventory_management.modules.purchase.controller",
-        "inventory_management.modules.sales.controller",
-        "inventory_management.modules.customer.controller",
-        "inventory_management.modules.vendor.controller",
-        "inventory_management.modules.company_info.controller",
-        "inventory_management.modules.expense.controller",
-        "inventory_management.modules.payments.controller",
-        "inventory_management.modules.reporting.controller",
-        "inventory_management.modules.accounting_review.controller",
-    ]
-    + collect_submodules("inventory_management.modules.updater")
-    + collect_submodules("inventory_management.modules.backup_restore")
-    + collect_submodules("inventory_management.modules.reporting"),
+    hiddenimports=collect_submodules("inventory_management.modules", filter=_not_tests)
+    + collect_submodules("inventory_management.database", filter=_not_tests)
+    + collect_submodules("inventory_management.utils", filter=_not_tests)
+    + collect_submodules("inventory_management.widgets", filter=_not_tests),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
