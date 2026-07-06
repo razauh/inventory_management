@@ -19,9 +19,13 @@ a = Analysis(
         (str(ROOT / "resources"), "resources"),
     ],
     hiddenimports=collect_submodules("inventory_management.modules", filter=_not_tests)
+    + collect_submodules("modules", filter=_not_tests)
     + collect_submodules("inventory_management.database", filter=_not_tests)
+    + collect_submodules("database", filter=_not_tests)
     + collect_submodules("inventory_management.utils", filter=_not_tests)
-    + collect_submodules("inventory_management.widgets", filter=_not_tests),
+    + collect_submodules("utils", filter=_not_tests)
+    + collect_submodules("inventory_management.widgets", filter=_not_tests)
+    + collect_submodules("widgets", filter=_not_tests),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

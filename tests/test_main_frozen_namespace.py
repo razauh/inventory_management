@@ -56,9 +56,13 @@ def test_pyinstaller_spec_collects_lazy_app_submodules():
     )
 
     assert 'collect_submodules("inventory_management.modules", filter=_not_tests)' in spec_text
+    assert 'collect_submodules("modules", filter=_not_tests)' in spec_text
     assert 'collect_submodules("inventory_management.database", filter=_not_tests)' in spec_text
+    assert 'collect_submodules("database", filter=_not_tests)' in spec_text
     assert 'collect_submodules("inventory_management.utils", filter=_not_tests)' in spec_text
+    assert 'collect_submodules("utils", filter=_not_tests)' in spec_text
     assert 'collect_submodules("inventory_management.widgets", filter=_not_tests)' in spec_text
+    assert 'collect_submodules("widgets", filter=_not_tests)' in spec_text
     assert 'def _not_tests(module_name):' in spec_text
 
 
@@ -97,3 +101,20 @@ def test_packaged_import_validation_reports_failures(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "Packaged module import validation failed:" in captured.err
     assert broken_module in captured.err
+
+
+def test_placeholder_text_detection(qtbot):
+    from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+    ok_widget = QWidget()
+    ok_layout = QVBoxLayout(ok_widget)
+    ok_layout.addWidget(QLabel("Products"))
+    qtbot.addWidget(ok_widget)
+
+    placeholder = QWidget()
+    placeholder_layout = QVBoxLayout(placeholder)
+    placeholder_layout.addWidget(QLabel("Products\n\nComing soon..."))
+    qtbot.addWidget(placeholder)
+
+    assert main._widget_has_placeholder_text(ok_widget) is False
+    assert main._widget_has_placeholder_text(placeholder) is True

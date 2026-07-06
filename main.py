@@ -71,11 +71,21 @@ def _bootstrap_inventory_management_namespace() -> None:
 
 
 def _log_module_load_failure(title: str, module_path: str, class_name: str, exc: Exception) -> None:
-    print(
-        f"[{title}] failed to load {module_path}.{class_name}: {exc}",
-        file=sys.stderr,
-    )
+    message = f"[{title}] failed to load {module_path}.{class_name}: {exc}"
+    print(message, file=sys.stderr)
     traceback.print_exc()
+
+    try:
+        from config import DATA_PATH
+
+        log_dir = DATA_PATH / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / "module_load_failures.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+            fh.writelines(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            fh.write("\n")
+    except Exception:
+        pass
 
 
 def _lazy_get(name: str, attr: str):
@@ -156,6 +166,115 @@ def _validate_packaged_module_imports() -> int:
         return 1
 
     print("Packaged module import validation passed.")
+    return 0
+
+
+def _validation_connection():
+    import sqlite3
+    import tempfile
+    from database import schema as schema_module
+
+    temp_dir = tempfile.TemporaryDirectory(prefix="inventory-management-validation-")
+    db_path = Path(temp_dir.name) / "validation.db"
+    schema_module.init_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
+    return conn, temp_dir
+
+
+def _widget_has_placeholder_text(widget: QWidget | None) -> bool:
+    if widget is None:
+        return True
+
+    labels = []
+    if isinstance(widget, QLabel):
+        labels.append(widget)
+    labels.extend(widget.findChildren(QLabel))
+
+    placeholder_markers = (
+        "Coming soon",
+        "Loading failed",
+        "Open tab to load report",
+        "failed to load",
+        "not available yet",
+    )
+    for label in labels:
+        text = label.text()
+        if any(marker in text for marker in placeholder_markers):
+            return True
+    return False
+
+
+def _validate_reporting_tabs(controller) -> list[str]:
+    failures: list[str] = []
+    tabs = getattr(controller, "tabs", None)
+    if tabs is None:
+        return failures
+
+    for index in range(tabs.count()):
+        tabs.setCurrentIndex(index)
+        ensure_tab = getattr(controller, "_ensure_tab", None)
+        if callable(ensure_tab):
+            ensure_tab(index)
+        QApplication.processEvents()
+        widget = tabs.widget(index)
+        title = tabs.tabText(index)
+        if _widget_has_placeholder_text(widget):
+            failures.append(f"Reporting tab '{title}' stayed placeholder")
+
+        inner_tabs = getattr(widget, "tabs", None)
+        if inner_tabs is None:
+            continue
+        for inner_index in range(inner_tabs.count()):
+            inner_tabs.setCurrentIndex(inner_index)
+            QApplication.processEvents()
+            inner_widget = inner_tabs.widget(inner_index)
+            inner_title = inner_tabs.tabText(inner_index)
+            if _widget_has_placeholder_text(inner_widget):
+                failures.append(f"Reporting tab '{title} / {inner_title}' stayed placeholder")
+    return failures
+
+
+def _validate_packaged_module_loads() -> int:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    _bootstrap_inventory_management_namespace()
+    app = QApplication.instance() or QApplication(sys.argv)
+    conn, temp_dir = _validation_connection()
+    failures: list[str] = []
+    win = None
+    try:
+        user = {"username": "validation", "role": "admin", "id": 1, "user_id": 1}
+        win = MainWindow(conn, current_user=user)
+        for index, module_info in enumerate(win.module_info):
+            title = module_info["title"]
+            win._load_module_at_index(index)
+            QApplication.processEvents()
+            controller = win.modules[index][1] if index < len(win.modules) else None
+            if controller is None:
+                failures.append(f"{title} stayed unloaded")
+            if _widget_has_placeholder_text(win.stack.widget(index)):
+                failures.append(f"{title} stayed placeholder")
+            if title == "Reporting" and controller is not None:
+                failures.extend(_validate_reporting_tabs(controller))
+    except Exception as exc:
+        failures.append(f"MainWindow validation crashed: {exc.__class__.__name__}: {exc}")
+        traceback.print_exc()
+    finally:
+        if win is not None:
+            win.close()
+        conn.close()
+        temp_dir.cleanup()
+        app.processEvents()
+
+    if failures:
+        print("Packaged module load validation failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"- {failure}", file=sys.stderr)
+        return 1
+
+    print("Packaged module load validation passed.")
     return 0
 
 
@@ -955,7 +1074,7 @@ class MainWindow(QMainWindow):
                 e,
             )
             if module_info['fallback_placeholder']:
-                self._replace_placeholder_widget(index, f"{module_info['title']}\n\nComing soon...")
+                self._replace_placeholder_widget(index, f"{module_info['title']}\n\nLoading failed")
 
     def _load_backup_restore_module(self, index: int):
         """Load the special Backup & Restore module."""
@@ -995,10 +1114,13 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             # If anything goes wrong, fall back to placeholder to keep app usable.
-            print("[BackupRestore] failed to load:", e, file=sys.stderr)
-            import traceback
-            traceback.print_exc()
-            self._replace_placeholder_widget(index, f"{module_info['title']}\n\nComing soon...")
+            _log_module_load_failure(
+                module_info["title"],
+                module_info["module_path"],
+                module_info["class_name"],
+                e,
+            )
+            self._replace_placeholder_widget(index, f"{module_info['title']}\n\nLoading failed")
 
     def _replace_placeholder_widget(self, index: int, message: str):
         """Replace a placeholder widget with a message."""
@@ -1125,6 +1247,8 @@ class MainWindow(QMainWindow):
 def main():
     if "--validate-module-imports" in sys.argv:
         raise SystemExit(_validate_packaged_module_imports())
+    if "--validate-module-loads" in sys.argv:
+        raise SystemExit(_validate_packaged_module_loads())
 
     if _run_updater_bootstrap(sys.argv):
         return

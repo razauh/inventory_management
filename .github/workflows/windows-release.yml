@@ -59,6 +59,7 @@ jobs:
         shell: pwsh
         run: |
           dist\InventoryManagement\InventoryManagement.exe --validate-module-imports
+          dist\InventoryManagement\InventoryManagement.exe --validate-module-loads
 
       - name: Cache Chocolatey packages
         uses: actions/cache@v4
