@@ -22,6 +22,11 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(ROOT / "resources"), "resources"),
+        (str(ROOT / "modules" / "accounting" / "docs"), "modules/accounting/docs"),
+        (
+            str(ROOT / "modules" / "accounting" / "docs"),
+            "inventory_management/modules/accounting/docs",
+        ),
     ],
     hiddenimports=collect_submodules("inventory_management.modules", filter=_not_tests)
     + collect_submodules("modules", filter=_not_tests)

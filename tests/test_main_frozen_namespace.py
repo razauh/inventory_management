@@ -58,6 +58,8 @@ def test_pyinstaller_spec_collects_lazy_app_submodules():
     assert "import sys" in spec_text
     assert "for path in (ROOT.parent, ROOT):" in spec_text
     assert "sys.path.insert(0, path_text)" in spec_text
+    assert '(str(ROOT / "modules" / "accounting" / "docs"), "modules/accounting/docs")' in spec_text
+    assert '"inventory_management/modules/accounting/docs"' in spec_text
     assert 'collect_submodules("inventory_management.modules", filter=_not_tests)' in spec_text
     assert 'collect_submodules("modules", filter=_not_tests)' in spec_text
     assert 'collect_submodules("inventory_management.database", filter=_not_tests)' in spec_text
