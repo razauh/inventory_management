@@ -35,7 +35,7 @@ def test_lazy_load_failure_logs_target_and_keeps_placeholder(qtbot, monkeypatch)
     current_widget = window.stack.widget(products_index)
     label = current_widget.findChild(main.QLabel)
     assert label is not None
-    assert label.text() == "Products\n\nComing soon..."
+    assert label.text() == "Products\n\nLoading failed"
 
     output = stderr.getvalue()
     assert "[Products] failed to load inventory_management.modules.product.controller.ProductController" in output
