@@ -75,17 +75,55 @@ def _log_module_load_failure(title: str, module_path: str, class_name: str, exc:
     print(message, file=sys.stderr)
     traceback.print_exc()
 
+    entry = _format_module_load_failure_entry(message, exc)
+
     try:
         from config import DATA_PATH
 
         log_dir = DATA_PATH / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "module_load_failures.log").open("a", encoding="utf-8") as fh:
-            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
-            fh.writelines(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            fh.write("\n")
+            fh.write(entry)
     except Exception:
         pass
+
+    desktop_log = _desktop_error_log_path()
+    if desktop_log is not None:
+        try:
+            desktop_log.parent.mkdir(parents=True, exist_ok=True)
+            with desktop_log.open("a", encoding="utf-8") as fh:
+                fh.write(entry)
+        except Exception:
+            pass
+
+
+def _format_module_load_failure_entry(message: str, exc: Exception) -> str:
+    lines = [
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {APP_NAME} v{APP_VERSION}",
+        message,
+        *traceback.format_exception(type(exc), exc, exc.__traceback__),
+        "",
+    ]
+    return "\n".join(line.rstrip("\n") for line in lines) + "\n"
+
+
+def _desktop_error_log_path() -> Path | None:
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return None
+
+    candidates = []
+    user_profile = os.getenv("USERPROFILE")
+    if user_profile:
+        candidates.append(Path(user_profile) / "Desktop")
+    one_drive = os.getenv("OneDrive") or os.getenv("ONEDRIVE")
+    if one_drive:
+        candidates.append(Path(one_drive) / "Desktop")
+    candidates.append(Path.home() / "Desktop")
+
+    for desktop in candidates:
+        if desktop.exists():
+            return desktop / "InventoryManagement-error-log.txt"
+    return candidates[0] / "InventoryManagement-error-log.txt" if candidates else None
 
 
 def _lazy_get(name: str, attr: str):

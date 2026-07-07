@@ -1,10 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(SPECPATH).resolve().parents[1]
+for path in (ROOT.parent, ROOT):
+    path_text = str(path)
+    if path_text not in sys.path:
+        sys.path.insert(0, path_text)
 
 
 def _not_tests(module_name):

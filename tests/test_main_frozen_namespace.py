@@ -55,6 +55,9 @@ def test_pyinstaller_spec_collects_lazy_app_submodules():
         encoding="utf-8"
     )
 
+    assert "import sys" in spec_text
+    assert "for path in (ROOT.parent, ROOT):" in spec_text
+    assert "sys.path.insert(0, path_text)" in spec_text
     assert 'collect_submodules("inventory_management.modules", filter=_not_tests)' in spec_text
     assert 'collect_submodules("modules", filter=_not_tests)' in spec_text
     assert 'collect_submodules("inventory_management.database", filter=_not_tests)' in spec_text
@@ -118,3 +121,40 @@ def test_placeholder_text_detection(qtbot):
 
     assert main._widget_has_placeholder_text(ok_widget) is False
     assert main._widget_has_placeholder_text(placeholder) is True
+
+
+def test_desktop_error_log_path_only_for_frozen_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    user_profile = tmp_path / "User"
+    desktop = user_profile / "Desktop"
+    desktop.mkdir(parents=True)
+    monkeypatch.setenv("USERPROFILE", str(user_profile))
+
+    assert main._desktop_error_log_path() == desktop / "InventoryManagement-error-log.txt"
+
+
+def test_module_load_failure_writes_app_data_and_desktop_logs(monkeypatch, tmp_path):
+    data_path = tmp_path / "data"
+    user_profile = tmp_path / "User"
+    desktop = user_profile / "Desktop"
+    desktop.mkdir(parents=True)
+    monkeypatch.setitem(sys.modules, "config", SimpleNamespace(DATA_PATH=data_path))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("USERPROFILE", str(user_profile))
+
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError as exc:
+        main._log_module_load_failure("Products", "pkg.mod", "Controller", exc)
+
+    app_log = data_path / "logs" / "module_load_failures.log"
+    desktop_log = desktop / "InventoryManagement-error-log.txt"
+    app_text = app_log.read_text(encoding="utf-8")
+    desktop_text = desktop_log.read_text(encoding="utf-8")
+
+    assert "Inventory Management v" in app_text
+    assert "[Products] failed to load pkg.mod.Controller: boom" in app_text
+    assert "RuntimeError: boom" in app_text
+    assert desktop_text == app_text
