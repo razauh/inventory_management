@@ -689,6 +689,7 @@ class CustomerController(BaseModule):
             db_path=db_path or ":memory:",
             customer_id=cid,
             with_ui=True,
+            accounting=self.accounting,
         )
         if not result or not result.success:
             info(self.view, "History unavailable", result.message if result else "Customer history could not be loaded.")

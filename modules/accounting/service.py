@@ -864,10 +864,21 @@ class AccountingService:
         self,
         source_type: str | None = None,
         source_id: int | str | None = None,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        product_id: int | None = None,
     ) -> tuple[InventoryAccountingEvent, ...]:
         if self.conn is None:
             self._not_implemented("get_inventory_accounting_events")
-        return get_current_inventory_accounting_events(self.conn, source_type, source_id)
+        return get_current_inventory_accounting_events(
+            self.conn,
+            source_type,
+            source_id,
+            date_from=date_from,
+            date_to=date_to,
+            product_id=product_id,
+        )
 
     def record_sale_event(self, event_type: str, payload: Any) -> Any:
         dispatch = {

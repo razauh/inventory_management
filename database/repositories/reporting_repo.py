@@ -659,76 +659,55 @@ class ReportingRepo:
         Columns returned (UI expects): date, product_id, type, quantity, unit_name,
         qty_base, ref_table, ref_id, notes
         """
-        params: list[object] = [date_from, date_to]
-        where_extra = ""
-        if isinstance(product_id, int):
-            where_extra = " AND it.product_id = ? "
-            params.append(product_id)
-
-        sql = f"""
-        SELECT
-          it.date AS date,
-          it.product_id AS product_id,
-          it.transaction_type AS type,
-          CAST(it.quantity AS REAL) AS quantity,
-          COALESCE(u.unit_name, '') AS unit_name,
-          (CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base,
-          it.reference_table AS ref_table,
-          it.reference_id    AS ref_id,
-          it.notes           AS notes
-        FROM inventory_transactions it
-        LEFT JOIN product_uoms pu
-          ON pu.product_id = it.product_id
-         AND pu.uom_id     = it.uom_id
-        LEFT JOIN uoms u
-          ON u.uom_id = it.uom_id
-        WHERE it.date >= ? AND it.date <= ?
-        {where_extra}
-        ORDER BY it.date ASC, it.transaction_id ASC
-        """
-        lim_sql, lim_params = self._limit_clause(limit)
-        sql += lim_sql
-        params.extend(lim_params)
-        return list(self.conn.execute(sql, params))
+        return list(
+            self.inventory_transactions_iter(
+                date_from,
+                date_to,
+                product_id,
+                limit=limit,
+            )
+        )
 
     def inventory_transactions_iter(self, date_from: str, date_to: str, product_id: int | None, limit: Optional[int] = None) -> Iterable[sqlite3.Row]:
         """
         Generator version of inventory_transactions that yields rows one at a time.
         This prevents loading all results into memory at once for large datasets.
         """
-        params: list[object] = [date_from, date_to]
-        where_extra = ""
-        if isinstance(product_id, int):
-            where_extra = " AND it.product_id = ? "
-            params.append(product_id)
-
-        sql = f"""
-        SELECT
-          it.date AS date,
-          it.product_id AS product_id,
-          it.transaction_type AS type,
-          CAST(it.quantity AS REAL) AS quantity,
-          COALESCE(u.unit_name, '') AS unit_name,
-          (CAST(it.quantity AS REAL) * COALESCE(CAST(pu.factor_to_base AS REAL), 1.0)) AS qty_base,
-          it.reference_table AS ref_table,
-          it.reference_id    AS ref_id,
-          it.notes           AS notes
-        FROM inventory_transactions it
-        LEFT JOIN product_uoms pu
-          ON pu.product_id = it.product_id
-         AND pu.uom_id     = it.uom_id
-        LEFT JOIN uoms u
-          ON u.uom_id = it.uom_id
-        WHERE it.date >= ? AND it.date <= ?
-        {where_extra}
-        ORDER BY it.date ASC, it.transaction_id ASC
-        """
-        lim_sql, lim_params = self._limit_clause(limit)
-        sql += lim_sql
-        params.extend(lim_params)
-        cursor = self.conn.execute(sql, params)
-        for row in cursor:
-            yield row
+        product_uom_factors = {
+            (int(row["product_id"]), int(row["uom_id"])): float(row["factor_to_base"] or 1.0)
+            for row in self.conn.execute(
+                "SELECT product_id, uom_id, factor_to_base FROM product_uoms"
+            )
+        }
+        uom_names = {
+            int(row["uom_id"]): row["unit_name"]
+            for row in self.conn.execute("SELECT uom_id, unit_name FROM uoms")
+        }
+        count = 0
+        for event in self.accounting.get_inventory_accounting_events(
+            date_from=date_from,
+            date_to=date_to,
+            product_id=product_id if isinstance(product_id, int) else None,
+        ):
+            quantity = float(event.quantity)
+            factor = product_uom_factors.get(
+                (event.product_id, int(event.uom_id or 0)),
+                1.0,
+            )
+            yield {
+                "date": event.date,
+                "product_id": event.product_id,
+                "type": event.transaction_type,
+                "quantity": quantity,
+                "unit_name": uom_names.get(event.uom_id, ""),
+                "qty_base": quantity * factor,
+                "ref_table": event.source_type,
+                "ref_id": event.source_id,
+                "notes": event.notes,
+            }
+            count += 1
+            if limit is not None and count >= int(limit):
+                return
 
     def valuation_history(self, product_id: int, limit: int) -> list[sqlite3.Row]:
         """

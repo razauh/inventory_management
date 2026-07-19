@@ -772,18 +772,13 @@ class PurchaseReportsTab(QWidget):
                 for r in self.conn.execute(sql, params)
             ][: self.MAX_ROWS_PER_TABLE]
 
-        sql = """
-            SELECT date AS date,
-                   SUM(CASE WHEN CAST(amount AS REAL) > 0 THEN CAST(amount AS REAL) ELSE 0.0 END) AS amount_out
-            FROM purchase_payments
-            WHERE DATE(date) BETWEEN DATE(?) AND DATE(?)
-              AND clearing_state = 'cleared'
-            GROUP BY date
-            ORDER BY DATE(date)
-        """
         return [
-            {"date": r["date"], "amount_out": float(r["amount_out"] or 0.0)}
-            for r in self.conn.execute(sql, (df, dt))
+            {"date": row["date"], "amount_out": float(row["gross_outflow"] or 0.0)}
+            for row in self.repo.purchase_disbursements_by_day(
+                df,
+                dt,
+                limit=self.MAX_ROWS_PER_TABLE,
+            )
         ][: self.MAX_ROWS_PER_TABLE]
 
     def _ensure_loaded(self, key: str, force: bool = False) -> None:

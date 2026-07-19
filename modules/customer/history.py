@@ -229,13 +229,8 @@ class CustomerHistoryService:
     def full_history(self, customer_id: int) -> Dict[str, Any]:
         if self._accounting is not None:
             return self._accounting.get_customer_history(customer_id)
-        sales = self.sales_with_items(customer_id)
-        payments = self.sale_payments(customer_id)
-        advances = self.advances_ledger(customer_id)
-        timeline = self.timeline(customer_id)
-        summary = self.overview(customer_id)
-        return {"summary": summary, "sales": sales, "payments": payments,
-                "advances": advances, "timeline": timeline}
+        with self._connect() as con:
+            return AccountingService(con).get_customer_history(customer_id)
 
 
 # Convenience factory

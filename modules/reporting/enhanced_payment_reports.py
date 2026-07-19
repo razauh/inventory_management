@@ -290,71 +290,26 @@ class EnhancedPaymentReportsTab(QWidget):
         net = inflow - outflow
         return inflow, outflow, refunds, net
 
-    def _effective_date_expr(self, alias: str) -> str:
-        if self._date_basis_key() == "cash":
-            return (
-                f"CASE WHEN {alias}.clearing_state = 'cleared' "
-                f"AND {alias}.cleared_date IS NOT NULL AND {alias}.cleared_date != '' "
-                f"THEN {alias}.cleared_date ELSE {alias}.date END"
-            )
-        return f"{alias}.date"
-
     # ---- Data refresh ----
     def _load_rows(self) -> tuple[List[dict], List[dict], float, float, float, float, float, str, str, str]:
         date_from = self.dt_from.date().toString("yyyy-MM-dd")
         date_to = self.dt_to.date().toString("yyyy-MM-dd")
         basis_label = self._date_basis_label()
-        date_expr = self._effective_date_expr
         with self.repo.read_snapshot():
-            # Get all payments (collections and disbursements)
-            all_rows = []
-
-            # Collections (sale payments)
-            for r in self.repo.conn.execute("""
-                SELECT sp.date, sp.cleared_date, sp.amount, sp.clearing_state as state,
-                       {date_expr} AS effective_date
-                FROM sale_payments sp
-                WHERE {date_expr} >= ? AND {date_expr} <= ?
-                ORDER BY effective_date
-            """.format(date_expr=date_expr("sp")), (date_from, date_to)):
-                all_rows.append({
-                    "date": r["effective_date"],
-                    "amount": float(r["amount"] or 0.0),
-                    "status": str(r["state"]),
-                    "type": "Collection"
-                })
-
-            # Disbursements (purchase payments)
-            for r in self.repo.conn.execute("""
-                SELECT pp.date, pp.cleared_date, pp.amount, pp.clearing_state as state,
-                       {date_expr} AS effective_date
-                FROM purchase_payments pp
-                WHERE {date_expr} >= ? AND {date_expr} <= ?
-                ORDER BY effective_date
-            """.format(date_expr=date_expr("pp")), (date_from, date_to)):
-                all_rows.append({
-                    "date": r["effective_date"],
-                    "amount": float(r["amount"] or 0.0),
-                    "status": str(r["state"]),
-                    "type": "Disbursement"
-                })
-
-            # Vendor refunds (purchase_refunds)
-            for r in self.repo.conn.execute("""
-                SELECT pr.date, pr.cleared_date, pr.amount, pr.clearing_state as state,
-                       {date_expr} AS effective_date
-                FROM purchase_refunds pr
-                WHERE {date_expr} >= ? AND {date_expr} <= ?
-                ORDER BY effective_date
-            """.format(date_expr=date_expr("pr")), (date_from, date_to)):
-                all_rows.append({
-                    "date": r["effective_date"],
-                    "amount": float(r["amount"] or 0.0),
-                    "status": str(r["state"]),
-                    "type": "Vendor Refund"
-                })
-
-            all_rows = all_rows[: self.MAX_ROWS]
+            activity = self.repo.accounting.get_payment_activity(
+                date_from,
+                date_to,
+                date_basis=self._date_basis_key(),
+            )
+            type_order = {"Collection": 0, "Disbursement": 1, "Vendor Refund": 2}
+            all_rows = sorted(
+                activity.detailed,
+                key=lambda row: (
+                    type_order.get(str(row.get("type") or ""), 99),
+                    row.get("date") or "",
+                    row.get("doc_id") or "",
+                ),
+            )[: self.MAX_ROWS]
             inflow_total, outflow_total, refund_total, net_total = self._cash_direction_totals(all_rows)
             uncleared_rows = [r for r in all_rows if r.get("status") not in ["cleared"]][: self.MAX_ROWS]
             uncleared_total = sum(float(r.get("amount", 0.0)) for r in uncleared_rows)

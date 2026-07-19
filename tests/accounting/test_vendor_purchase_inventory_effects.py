@@ -185,3 +185,15 @@ def test_purchase_return_inventory_event_preserves_returnable_quantities_and_seq
         "purchase",
         "purchase_return",
     ]
+
+    filtered_events = AccountingService(conn).get_inventory_accounting_events(
+        "purchases",
+        "PO-INV",
+        date_from="2026-06-01",
+        date_to="2026-06-01",
+        product_id=product_a,
+    )
+    assert [event.transaction_type for event in filtered_events] == [
+        "purchase",
+        "purchase_return",
+    ]

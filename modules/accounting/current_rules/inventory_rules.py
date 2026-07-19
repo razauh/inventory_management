@@ -397,6 +397,10 @@ def get_inventory_accounting_events(
     conn: Connection,
     source_type: str | None = None,
     source_id: int | str | None = None,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    product_id: int | None = None,
 ) -> tuple[InventoryAccountingEvent, ...]:
     # ACC-RULE-091: Inventory accounting event read
     # Lists inventory transactions with accounting source references.
@@ -410,6 +414,15 @@ def get_inventory_accounting_events(
     if source_id is not None:
         where.append("reference_id = ?")
         params.append(source_id)
+    if date_from is not None:
+        where.append("date >= ?")
+        params.append(date_from)
+    if date_to is not None:
+        where.append("date <= ?")
+        params.append(date_to)
+    if product_id is not None:
+        where.append("product_id = ?")
+        params.append(int(product_id))
 
     sql = """
         SELECT

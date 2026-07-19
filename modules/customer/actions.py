@@ -324,6 +324,7 @@ def open_payment_history(
     db_path: str | Path,
     customer_id: int,
     with_ui: bool = True,
+    accounting=None,
 ) -> ActionResult:
     """
     Builds the customer's payment/credit history and (optionally) opens a UI view.
@@ -334,7 +335,7 @@ def open_payment_history(
     After change: if local UI import fails, do NOT fall back to legacy — just return success with payload.
     """
     try:
-        history_service = _get_customer_history_service(db_path)
+        history_service = _get_customer_history_service(db_path, accounting=accounting)
         history_payload = history_service.full_history(customer_id)
         history_payload["company"] = _get_invoice_company_context(db_path)
     except sqlite3.Error:

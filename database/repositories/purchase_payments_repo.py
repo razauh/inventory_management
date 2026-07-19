@@ -82,29 +82,29 @@ class PurchasePaymentsRepo:
 
     def list_payments(self, purchase_id: str) -> list[dict]:
         """List all cash movements (payments and refunds) for a purchase, ordered by date then id."""
-        sql = """
-        SELECT
-          payment_id,
-          purchase_id,
-          date,
-          CAST(amount AS REAL) AS amount,
-          method,
-          bank_account_id,
-          vendor_bank_account_id,
-          instrument_type,
-          instrument_no,
-          instrument_date,
-          deposited_date,
-          cleared_date,
-          clearing_state,
-          ref_no,
-          notes,
-          created_by
-        FROM purchase_payments
-        WHERE purchase_id = ?
-        ORDER BY DATE(date) ASC, payment_id ASC
-        """
-        return self.conn.execute(sql, (purchase_id,)).fetchall()
+        return [
+            {
+                "payment_id": row.payment_id,
+                "purchase_id": row.purchase_id,
+                "date": row.date,
+                "amount": float(row.amount),
+                "method": row.method,
+                "bank_account_id": row.bank_account_id,
+                "vendor_bank_account_id": row.vendor_bank_account_id,
+                "instrument_type": row.instrument_type,
+                "instrument_no": row.instrument_no,
+                "instrument_date": row.instrument_date,
+                "deposited_date": row.deposited_date,
+                "cleared_date": row.cleared_date,
+                "clearing_state": row.clearing_state,
+                "ref_no": row.ref_no,
+                "notes": row.notes,
+                "created_by": row.created_by,
+                "bank_account_label": row.bank_account_label,
+                "vendor_bank_account_label": row.vendor_bank_account_label,
+            }
+            for row in AccountingService(self.conn).get_purchase_payment_history(purchase_id)
+        ]
 
     def list_payments_for_vendor(
         self,
@@ -117,36 +117,39 @@ class PurchasePaymentsRepo:
         Fields: payment_id, date, amount, method, instrument_type, instrument_no,
         bank_account_id, vendor_bank_account_id, clearing_state, ref_no, notes, purchase_id.
         """
-        sql_parts = [
-            """
-            SELECT
-              pp.payment_id,
-              pp.date,
-              CAST(pp.amount AS REAL) AS amount,
-              pp.method,
-              pp.instrument_type,
-              pp.instrument_no,
-              pp.bank_account_id,
-              pp.vendor_bank_account_id,
-              pp.clearing_state,
-              pp.ref_no,
-              pp.notes,
-              pp.purchase_id
-            FROM purchase_payments pp
-            JOIN purchases p ON p.purchase_id = pp.purchase_id
-            WHERE p.vendor_id = ?
-            """
+        purchase_ids = [
+            row["purchase_id"]
+            for row in self.conn.execute(
+                "SELECT purchase_id FROM purchases WHERE vendor_id = ?",
+                (vendor_id,),
+            )
         ]
-        params: list[object] = [vendor_id]
-        if date_from:
-            sql_parts.append("AND DATE(pp.date) >= DATE(?)")
-            params.append(date_from)
-        if date_to:
-            sql_parts.append("AND DATE(pp.date) <= DATE(?)")
-            params.append(date_to)
-        sql_parts.append("ORDER BY DATE(pp.date) ASC, pp.payment_id ASC")
-        sql = "\n".join(sql_parts)
-        return self.conn.execute(sql, params).fetchall()
+        rows = []
+        service = AccountingService(self.conn)
+        for purchase_id in purchase_ids:
+            for payment in service.get_purchase_payment_history(purchase_id):
+                if date_from and (payment.date or "") < date_from:
+                    continue
+                if date_to and (payment.date or "") > date_to:
+                    continue
+                rows.append(
+                    {
+                        "payment_id": payment.payment_id,
+                        "date": payment.date,
+                        "amount": float(payment.amount),
+                        "method": payment.method,
+                        "instrument_type": payment.instrument_type,
+                        "instrument_no": payment.instrument_no,
+                        "bank_account_id": payment.bank_account_id,
+                        "vendor_bank_account_id": payment.vendor_bank_account_id,
+                        "clearing_state": payment.clearing_state,
+                        "ref_no": payment.ref_no,
+                        "notes": payment.notes,
+                        "purchase_id": payment.purchase_id,
+                    }
+                )
+        rows.sort(key=lambda row: (row["date"] or "", int(row["payment_id"] or 0)))
+        return rows
 
     def list_payments_for_purchase(self, purchase_id: str) -> list[dict]:
         """Alias of list_payments(purchase_id) for statement drilldowns."""

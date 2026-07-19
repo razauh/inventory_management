@@ -16,6 +16,8 @@ Conventions:
 import sqlite3
 from typing import Optional, List, Dict
 
+from modules.accounting import AccountingService
+
 
 class DomainError(Exception):
     """Domain-level error suitable for surfacing to the UI."""
@@ -210,24 +212,7 @@ class InventoryRepo:
         IMPORTANT: Column aliases are chosen to match the *model*:
           transaction_id, date, transaction_type, product, quantity, unit_name, notes
         """
-        lim = self._normalize_limit(limit)
-        sql = """
-            SELECT
-                t.transaction_id              AS transaction_id,
-                t.date                         AS date,
-                t.transaction_type             AS transaction_type,
-                p.name                         AS product,
-                CAST(t.quantity AS REAL)       AS quantity,
-                u.unit_name                    AS unit_name,
-                COALESCE(t.notes, '')          AS notes
-            FROM inventory_transactions t
-            LEFT JOIN products p ON p.product_id = t.product_id
-            LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
-            ORDER BY t.date DESC, t.transaction_id DESC
-            LIMIT ?
-        """
-        rows = self.conn.execute(sql, (lim,)).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        return self.find_transactions(limit=limit)
 
     # ------------------------------------------------------------------
     # NEW: filtered transactions for the Transactions tab
@@ -252,43 +237,36 @@ class InventoryRepo:
           transaction_id, date, transaction_type, product, quantity, unit_name, notes
         """
         lim = self._normalize_limit(limit)
-
-        where: List[str] = []
-        params: List = []
-
-        if date_from:
-            where.append("t.date >= ?")
-            params.append(date_from)
-        if date_to:
-            where.append("t.date <= ?")
-            params.append(date_to)
-        if product_id is not None:
-            where.append("t.product_id = ?")
-            params.append(int(product_id))
-
-        sql = """
-            SELECT
-                t.transaction_id              AS transaction_id,
-                t.date                         AS date,
-                t.transaction_type             AS transaction_type,
-                p.name                         AS product,
-                CAST(t.quantity AS REAL)       AS quantity,
-                u.unit_name                    AS unit_name,
-                COALESCE(t.notes, '')          AS notes
-            FROM inventory_transactions t
-            LEFT JOIN products p ON p.product_id = t.product_id
-            LEFT JOIN uoms     u ON u.uom_id     = t.uom_id
-        """
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += """
-            ORDER BY t.date DESC, t.transaction_id DESC
-            LIMIT ?
-        """
-        params.append(lim)
-
-        rows = self.conn.execute(sql, tuple(params)).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        product_names = {
+            int(row["product_id"]): row["name"]
+            for row in self.conn.execute("SELECT product_id, name FROM products")
+        }
+        uom_names = {
+            int(row["uom_id"]): row["unit_name"]
+            for row in self.conn.execute("SELECT uom_id, unit_name FROM uoms")
+        }
+        rows = []
+        for event in AccountingService(self.conn).get_inventory_accounting_events(
+            date_from=date_from,
+            date_to=date_to,
+            product_id=product_id,
+        ):
+            rows.append(
+                {
+                    "transaction_id": event.transaction_id,
+                    "date": event.date,
+                    "transaction_type": event.transaction_type,
+                    "product": product_names.get(event.product_id, ""),
+                    "quantity": float(event.quantity),
+                    "unit_name": uom_names.get(event.uom_id, ""),
+                    "notes": event.notes or "",
+                }
+            )
+        rows.sort(
+            key=lambda row: (row["date"] or "", int(row["transaction_id"] or 0)),
+            reverse=True,
+        )
+        return rows[:lim]
 
     # ------------------------------------------------------------------
     # Existing: stock on hand snapshot for Stock Valuation tab

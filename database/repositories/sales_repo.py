@@ -1064,19 +1064,31 @@ class SalesRepo:
         summary = self.get_sale_detail_summary(sale_id)
         doc_type = str(header["doc_type"] or "sale")
 
-        payments: list[sqlite3.Row] = []
+        payments: list[dict] = []
         customer_credit_balance: float | None = None
         returnable_lines = 0
         if doc_type == "sale":
-            payments = self.conn.execute(
-                """
-                SELECT *
-                  FROM sale_payments
-                 WHERE sale_id = ?
-                 ORDER BY date ASC, payment_id ASC
-                """,
-                (sale_id,),
-            ).fetchall()
+            payments = [
+                {
+                    "payment_id": row.payment_id,
+                    "sale_id": row.sale_id,
+                    "date": row.date,
+                    "amount": float(row.amount),
+                    "method": row.method,
+                    "bank_account_id": row.bank_account_id,
+                    "instrument_type": row.instrument_type,
+                    "instrument_no": row.instrument_no,
+                    "instrument_date": row.instrument_date,
+                    "deposited_date": row.deposited_date,
+                    "cleared_date": row.cleared_date,
+                    "clearing_state": row.clearing_state,
+                    "ref_no": row.ref_no,
+                    "notes": row.notes,
+                    "created_by": row.created_by,
+                    "bank_account_label": row.bank_account_label,
+                }
+                for row in self.accounting.get_sale_payment_history(sale_id)
+            ]
             credit_row = self.conn.execute(
                 """
                 SELECT balance
@@ -1121,7 +1133,7 @@ class SalesRepo:
             "header": dict(header),
             "items": [dict(row) for row in items],
             "summary": summary,
-            "payments": [dict(row) for row in payments],
+            "payments": payments,
             "customer_credit_balance": customer_credit_balance,
             "returnable_lines": returnable_lines,
         }
