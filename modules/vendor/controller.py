@@ -189,9 +189,8 @@ class VendorController(BaseModule):
         vendor_ids = tuple(self.base_model.vendor_ids())
         advance_balances = self.accounting.get_vendor_advance_balances(vendor_ids)
         balances = {
-            vendor_id: float(advance_balances[vendor_id].balance)
-            for vendor_id in vendor_ids
-            if vendor_id in advance_balances
+            vid: float(b.balance)
+            for vid, b in advance_balances.items()
         }
         if token != self._balance_token:
             return
@@ -239,11 +238,11 @@ class VendorController(BaseModule):
             if row and row.get("balance") is not None:
                 credit = float(row.get("balance") or 0.0)
             elif vid:
-                balance = self.accounting.get_vendor_advance_balance(int(vid))
+                balance = self.accounting.get_vendor_balance(int(vid))
                 credit = float(balance.balance)
         except Exception as e:
-            _log.exception("Failed to load vendor credit balance for vendor_id=%s", vid)
-            credit_error = f"Available advance could not be loaded: {e}"
+            _log.exception("Failed to load vendor balance for vendor_id=%s", vid)
+            credit_error = f"Vendor balance could not be loaded: {e}"
             credit = 0.0
         if hasattr(self.view, "details") and hasattr(self.view.details, "set_credit"):
             if credit_error and hasattr(self.view.details, "set_credit_error"):
@@ -348,12 +347,12 @@ class VendorController(BaseModule):
             )
         except Exception:
             return 0.0
-    def _vendor_credit_balance(self, vendor_id: int) -> float:
+    def _vendor_balance(self, vendor_id: int) -> float:
         try:
-            return float(self.accounting.get_vendor_advance_balance(vendor_id).balance)
+            return float(self.accounting.get_vendor_balance(vendor_id).balance)
         except Exception as e:
-            _log.exception("Failed to load vendor credit balance for vendor_id=%s", vendor_id)
-            info(self.view, "Data unavailable", f"Vendor credit balance could not be loaded:\n{e}")
+            _log.exception("Failed to load vendor balance for vendor_id=%s", vendor_id)
+            info(self.view, "Data unavailable", f"Vendor balance could not be loaded:\n{e}")
             return 0.0
     def _format_bank_account_choice(
         self,

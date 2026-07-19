@@ -10,6 +10,7 @@ from modules.accounting import (
     PurchaseInventoryLine,
     PurchaseInventoryPayload,
     PurchaseReturnPayload,
+    PurchaseTotalInputLine,
 )
 
 
@@ -252,25 +253,11 @@ class PurchasesRepo:
               CAST(p.paid_amount AS REAL) AS paid_amount,
               CAST(p.advance_payment_applied AS REAL) AS advance_payment_applied,
               p.notes,
-              COALESCE(CAST(pr.qty_returned AS REAL), 0.0) AS returned_qty,
-              COALESCE(CAST(pr.value_returned AS REAL), 0.0) AS returned_value,
               COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL)) AS calculated_total_amount,
-              MAX(
-                  0.0,
-                  COALESCE(CAST(pdt.calculated_total_amount AS REAL), CAST(p.total_amount AS REAL))
-                  - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
-                  - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
-              ) AS remaining_due
+              0.0 AS remaining_due
             FROM purchases p
             JOIN vendors v ON v.vendor_id = p.vendor_id
             LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            LEFT JOIN (
-                SELECT purchase_id,
-                       SUM(CAST(qty_returned AS REAL)) AS qty_returned,
-                       SUM(CAST(return_value AS REAL)) AS value_returned
-                FROM purchase_return_valuations
-                GROUP BY purchase_id
-            ) pr ON pr.purchase_id = p.purchase_id
             WHERE p.purchase_id = ?
             """,
             (purchase_id,),
@@ -278,7 +265,12 @@ class PurchasesRepo:
         if not header:
             return {}
 
-        header_row = self._with_purchase_totals(header)
+        header_row = dict(header)
+        return_totals = self.accounting.get_purchase_return_totals(purchase_id)
+        header_row["returned_qty"] = float(return_totals.qty)
+        header_row["returned_value"] = float(return_totals.value)
+
+        header_row = self._with_purchase_totals(header_row)
         payment_summary = self.accounting.get_purchase_payment_summary(
             purchase_id
         ).to_detail_payload()
@@ -368,13 +360,19 @@ class PurchasesRepo:
         items_list = list(items)
 
         # 1) Totals
-        order_disc = float(header.order_discount or 0.0)
-        subtotal = 0.0
+        order_disc = Decimal(str(header.order_discount or 0.0))
+        input_lines = []
         for it in items_list:
             _ensure_purchase_item_prices(float(it.purchase_price), float(it.sale_price))
-            line_total = float(it.quantity) * (float(it.purchase_price) - float(it.item_discount or 0.0))
-            subtotal += line_total
-        total_amount = max(0.0, subtotal - order_disc)
+            input_lines.append(
+                PurchaseTotalInputLine(
+                    quantity=Decimal(str(it.quantity)),
+                    purchase_price=Decimal(str(it.purchase_price)),
+                    item_discount=Decimal(str(it.item_discount or 0.0)),
+                )
+            )
+        totals = self.accounting.preview_purchase_total(tuple(input_lines), order_disc)
+        total_amount = float(totals.net_total)
 
         # 2) Header
         self.conn.execute(
@@ -483,13 +481,19 @@ class PurchasesRepo:
                 raise ValueError(f"Cannot remove returned purchase item {item_id}")
 
         # Totals
-        order_disc = float(header.order_discount or 0.0)
-        subtotal = 0.0
+        order_disc = Decimal(str(header.order_discount or 0.0))
+        input_lines = []
         for it in items_list:
             _ensure_purchase_item_prices(float(it.purchase_price), float(it.sale_price))
-            line_total = float(it.quantity) * (float(it.purchase_price) - float(it.item_discount or 0.0))
-            subtotal += line_total
-        total_amount = max(0.0, subtotal - order_disc)
+            input_lines.append(
+                PurchaseTotalInputLine(
+                    quantity=Decimal(str(it.quantity)),
+                    purchase_price=Decimal(str(it.purchase_price)),
+                    item_discount=Decimal(str(it.item_discount or 0.0)),
+                )
+            )
+        totals = self.accounting.preview_purchase_total(tuple(input_lines), order_disc)
+        total_amount = float(totals.net_total)
 
         settlement = self.conn.execute(
             """

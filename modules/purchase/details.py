@@ -102,14 +102,11 @@ class PurchaseDetails(QWidget):
         self.lab_return_credit.setText(fmt_money(return_credit))
         self.lab_total_settled.setText(fmt_money(paid_amount + advance_payment_applied))
 
-        # Prefer precomputed remaining_due if present, otherwise derive from net total
-        if "remaining_due" in row:
-            try:
-                remaining = float(row.get("remaining_due", 0.0))
-            except (TypeError, ValueError):
-                remaining = max(0.0, net_after - paid_amount - advance_payment_applied)
-        else:
-            remaining = max(0.0, net_after - paid_amount - advance_payment_applied)
+        # Prefer precomputed remaining_due if present
+        try:
+            remaining = float(row.get("remaining_due", 0.0))
+        except (TypeError, ValueError):
+            remaining = 0.0
         self.lab_remain.setText(fmt_money(remaining))
         
         payment_status = row.get("payment_status", "-")

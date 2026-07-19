@@ -117,15 +117,12 @@ class PurchasePaymentsRepo:
         Fields: payment_id, date, amount, method, instrument_type, instrument_no,
         bank_account_id, vendor_bank_account_id, clearing_state, ref_no, notes, purchase_id.
         """
+        service = AccountingService(self.conn)
         purchase_ids = [
             row["purchase_id"]
-            for row in self.conn.execute(
-                "SELECT purchase_id FROM purchases WHERE vendor_id = ?",
-                (vendor_id,),
-            )
+            for row in service.list_vendor_purchases(vendor_id)
         ]
         rows = []
-        service = AccountingService(self.conn)
         for purchase_id in purchase_ids:
             for payment in service.get_purchase_payment_history(purchase_id):
                 if date_from and (payment.date or "") < date_from:

@@ -366,38 +366,20 @@ def _list_vendor_advances(
 
 
 def _list_return_values_by_purchase(conn: Connection, purchase_id: str) -> tuple[dict, ...]:
-    rows = conn.execute(
-        """
-        SELECT
-          transaction_id,
-          item_id,
-          CAST(qty_returned AS REAL) AS qty_returned,
-          CAST(unit_buy_price AS REAL) AS unit_buy_price,
-          CAST(unit_discount AS REAL) AS unit_discount,
-          return_date,
-          valuation_status,
-          CAST(return_value AS REAL) AS return_value,
-          CAST(return_value AS REAL) AS line_value,
-          CAST(return_value AS REAL) AS value
-        FROM purchase_return_valuations
-        WHERE purchase_id = ?
-        ORDER BY transaction_id
-        """,
-        (purchase_id,),
-    ).fetchall()
-    keys = (
-        "transaction_id",
-        "item_id",
-        "qty_returned",
-        "unit_buy_price",
-        "unit_discount",
-        "return_date",
-        "valuation_status",
-        "return_value",
-        "line_value",
-        "value",
-    )
-    return tuple(_row_dict(row, keys) for row in rows)
+    from .purchase_rules import get_purchase_return_values
+    dtos = get_purchase_return_values(conn, purchase_id)
+    return tuple({
+        "transaction_id": dto.transaction_id,
+        "item_id": dto.item_id,
+        "qty_returned": float(dto.qty_returned),
+        "unit_buy_price": float(dto.unit_buy_price),
+        "unit_discount": float(dto.unit_discount),
+        "return_date": dto.return_date,
+        "valuation_status": dto.valuation_status,
+        "return_value": float(dto.return_value),
+        "line_value": float(dto.return_value),
+        "value": float(dto.return_value),
+    } for dto in dtos)
 
 
 def get_vendor_statement(
@@ -1074,11 +1056,9 @@ def record_supplier_refund_event(
         ),
     )
 
-    returned_value_row = conn.execute(
-        "SELECT COALESCE(SUM(CAST(return_value AS REAL)), 0.0) AS val FROM purchase_return_valuations WHERE purchase_id = ?",
-        (payload.purchase_id,)
-    ).fetchone()
-    returned_value = Decimal(str(returned_value_row["val"] if returned_value_row else 0.0))
+    from .purchase_rules import get_purchase_return_totals
+    totals = get_purchase_return_totals(conn, payload.purchase_id)
+    returned_value = totals.value
 
     prior_refunds_row = conn.execute(
         "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0.0) AS val FROM purchase_refunds WHERE purchase_id = ? AND clearing_state = 'cleared'",

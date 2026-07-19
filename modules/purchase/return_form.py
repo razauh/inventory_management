@@ -429,7 +429,6 @@ class PurchaseReturnForm(QDialog):
                 "unit_cost", "cost_price", default=0.0
             ))
             disc = float(_first_key(it, "item_discount", "discount", "disc", "unit_discount", default=0.0))
-            net_unit = max(0.0, buy - disc) * self._return_value_factor
 
             def ro(text):
                 x = QTableWidgetItem(text)
@@ -440,7 +439,6 @@ class PurchaseReturnForm(QDialog):
             id_item.setData(Qt.UserRole, {
                 "purchase_price": buy,
                 "item_discount": disc,
-                "net_unit": net_unit,
                 "qty_purchased": qty_purchased,
                 "max_returnable": max_returnable,
             })
@@ -509,9 +507,6 @@ class PurchaseReturnForm(QDialog):
             qty_ret = 0.0
         meta = self._meta_for_row(r)
         max_ret = float(meta.get("max_returnable") or 0.0)
-        net_unit = float(meta.get("net_unit") or 0.0)
-
-        bad = qty_ret < 0 or qty_ret > max_ret + EPSILON
         try:
             if bad:
                 q_item.setBackground(QBrush(QColor(255, 200, 200)))  # Light red
@@ -522,9 +517,6 @@ class PurchaseReturnForm(QDialog):
         except Exception:
             q_item.setBackground(Qt.red if bad else Qt.white)
             q_item.setToolTip(f"Invalid: must be between 0 and {max_ret:.2f}" if bad else "")
-
-        it_val = self.tbl.item(r, self.COL_LINE_VALUE)
-        it_val.setText(fmt_money(max(0.0, qty_ret * net_unit)))
         
         # Update return value and remaining amount - debounce the expensive operation
         self._refresh_return_value()
@@ -582,14 +574,19 @@ class PurchaseReturnForm(QDialog):
                     return_qty=Decimal(str(q)),
                 )
             )
-        effect = self.accounting.preview_purchase_return_effect(
+        self._current_effect = self.accounting.preview_purchase_return_effect(
             PurchaseReturnPreviewPayload(
                 lines=tuple(lines),
                 order_discount=Decimal(str(self.order_discount)),
             )
         )
-        qty_total = float(effect.total_qty)
-        val_total = float(effect.total_value)
+        for r, line_val in enumerate(self._current_effect.line_values):
+            it_val = self.tbl.item(r, self.COL_LINE_VALUE)
+            if it_val:
+                it_val.setText(fmt_money(float(line_val)))
+
+        qty_total = float(self._current_effect.total_qty)
+        val_total = float(self._current_effect.total_value)
         self.lab_qty_total.setText(f"{qty_total:g}")
         self.lab_val_total.setText(f"Total Return Value: {fmt_money(val_total)}")
         
@@ -791,19 +788,9 @@ class PurchaseReturnForm(QDialog):
 
     def _calculate_return_value(self) -> float:
         """Calculate the total return value based on quantities entered."""
-        total_val = 0.0
-        for r in range(self.tbl.rowCount()):
-            it_qty = self.tbl.item(r, self.COL_QTY_RETURN)
-            if not it_qty:
-                continue
-            try:
-                q_text = (it_qty.text() or "").strip()
-                q = parse_strict_float(q_text) if q_text else 0.0
-            except Exception:
-                q = 0.0
-            meta = self._meta_for_row(r)
-            total_val += max(0.0, q * float(meta.get("net_unit") or 0.0))
-        return total_val
+        if hasattr(self, "_current_effect") and self._current_effect:
+            return float(self._current_effect.total_value)
+        return 0.0
 
     def _update_remaining_amount(self):
         """Update the remaining amount label for the purchase."""
@@ -841,7 +828,9 @@ class PurchaseReturnForm(QDialog):
                 self._remaining_refundable_amount = refundable
 
                 current_return_value = self._calculate_return_value()
-                original_remaining = total_calc - paid_amount - advance_applied
+                
+                header_due = self.accounting.get_purchase_remaining_due_header(self.purchase_id)
+                original_remaining = float(header_due.outstanding)
                 adjusted_remaining = original_remaining - current_return_value
                 payable_remaining = max(0.0, adjusted_remaining)
                 excess_settlement = max(0.0, -adjusted_remaining)

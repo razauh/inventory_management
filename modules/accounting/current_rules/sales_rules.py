@@ -338,26 +338,10 @@ def get_sales_dashboard_metrics(
     # Uses financial event, payment, refund, receivable, and payable data.
     # Supports dashboard totals for a selected date range.
     from .expense_rules import get_dashboard_expense_total
+    from ..reports.ar_ap_summary import get_ap_summary
 
+    ap_summary = get_ap_summary(conn, cutoff_date=date_to)
     total_expenses = float(get_dashboard_expense_total(conn, date_from, date_to))
-    has_purchase_detailed_totals = conn.execute(
-        """
-        SELECT 1
-        FROM sqlite_master
-        WHERE name = 'purchase_detailed_totals'
-          AND type IN ('table', 'view')
-        """
-    ).fetchone() is not None
-    purchase_total_expr = (
-        "COALESCE(pdt.calculated_total_amount, p.total_amount)"
-        if has_purchase_detailed_totals
-        else "p.total_amount"
-    )
-    purchase_totals_join = (
-        "LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id"
-        if has_purchase_detailed_totals
-        else ""
-    )
     row = conn.execute(
         f"""
         WITH
@@ -384,34 +368,13 @@ def get_sales_dashboard_metrics(
             - COALESCE((SELECT SUM(CAST(pr.amount AS REAL)) FROM purchase_refunds pr
                         WHERE pr.clearing_state = 'cleared' AND pr.cleared_date >= ? AND pr.cleared_date <= ?), 0.0)
             AS vendor_payments_cleared
-        ),
-        receivables AS (
-          SELECT COALESCE(SUM(srt.remaining_due), 0.0) AS open_receivables
-          FROM sales s
-          JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-          WHERE s.doc_type = 'sale' AND srt.remaining_due > 0.0000001
-        ),
-        all_payables AS (
-          SELECT COALESCE(SUM(remaining), 0.0) AS open_payables
-          FROM (
-            SELECT
-              MAX(0.0,
-                {purchase_total_expr}
-                - COALESCE(CAST(p.paid_amount AS REAL), 0.0)
-                - COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
-              ) AS remaining
-            FROM purchases p
-            {purchase_totals_join}
-          )
-          WHERE remaining > 0.0000001
         )
         SELECT sales_cte.total_sales, sales_cte.total_cogs, expenses_cte.total_expenses,
-               receipts.receipts_cleared, payables.vendor_payments_cleared,
-               receivables.open_receivables, all_payables.open_payables
-        FROM sales_cte, expenses_cte, receipts, payables, receivables, all_payables
+               receipts.receipts_cleared, payables.vendor_payments_cleared
+        FROM sales_cte, expenses_cte, receipts, payables
         """,
         (date_from, date_to, total_expenses, date_from, date_to,
-         date_from, date_to, date_from, date_to),
+         date_from, date_to),
     ).fetchone()
     # ponytail: empty result set is degenerate — the CROSS JOIN yields one row
     return SalesDashboardMetrics(
@@ -421,8 +384,8 @@ def get_sales_dashboard_metrics(
         total_expenses=Decimal(str(row["total_expenses"] or 0)),
         receipts_cleared=Decimal(str(row["receipts_cleared"] or 0)),
         vendor_payments_cleared=Decimal(str(row["vendor_payments_cleared"] or 0)),
-        open_receivables=Decimal(str(row["open_receivables"] or 0)),
-        open_payables=Decimal(str(row["open_payables"] or 0)),
+        open_receivables=ap_summary.ar_total,
+        open_payables=ap_summary.ap_total,
     )
 
 

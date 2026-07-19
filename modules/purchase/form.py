@@ -13,7 +13,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QCompleter
 from ...database.repositories.vendors_repo import VendorsRepo
 from ...database.repositories.products_repo import ProductsRepo
-from ..accounting import AccountingService, PurchaseTotalInputLine, VendorPaymentMetadata
+from ..accounting import AccountingService, PurchaseTotalInputLine, VendorPaymentMetadata, PurchaseTotals
 from ...utils.combo_search import configure_contains_completer
 from ...utils.helpers import today_str, fmt_money
 from .validation import SALE_PRICE_RULE_MESSAGE, parse_strict_float
@@ -1131,8 +1131,9 @@ class PurchaseForm(QDialog):
         line_total = self.accounting.preview_purchase_total(
             (
                 PurchaseTotalInputLine(
-                    quantity=Decimal("1"),
-                    purchase_price=Decimal(str(max(0.0, qty * buy))),
+                    quantity=Decimal(str(qty)),
+                    purchase_price=Decimal(str(buy)),
+                    item_discount=Decimal(str(self._row_item_discount(r))),
                 ),
             ),
             Decimal("0"),
@@ -1141,7 +1142,7 @@ class PurchaseForm(QDialog):
         if lt_item:
             lt_item.setText(fmt_money(float(line_total)))
 
-    def _calc_subtotal(self) -> float:
+    def _calc_totals(self) -> PurchaseTotals:
         lines = []
         for r in range(self.tbl.rowCount()):
             try:
@@ -1151,18 +1152,18 @@ class PurchaseForm(QDialog):
                 continue
             lines.append(
                 PurchaseTotalInputLine(
-                    quantity=Decimal("1"),
-                    purchase_price=Decimal(str(max(0.0, qty * buy))),
+                    quantity=Decimal(str(qty)),
+                    purchase_price=Decimal(str(buy)),
+                    item_discount=Decimal(str(self._row_item_discount(r))),
                 )
             )
-        totals = self.accounting.preview_purchase_total(tuple(lines), Decimal("0"))
-        return float(totals.net_total)
+        order_discount = Decimal(str(self._initial_data.get("order_discount", 0.0) or 0.0)) if self._initial_data else Decimal("0.0")
+        return self.accounting.preview_purchase_total(tuple(lines), order_discount)
 
     def _refresh_totals(self):
-        sub = self._calc_subtotal()
-        tot = sub
-        self.lab_sub.setText(fmt_money(sub))
-        self.lab_total.setText(fmt_money(tot))
+        totals = self._calc_totals()
+        self.lab_sub.setText(fmt_money(float(totals.subtotal_before_order_discount)))
+        self.lab_total.setText(fmt_money(float(totals.net_total)))
 
     def _row_payload(self, r: int) -> dict | None:
         cmb_prod: QComboBox = self.tbl.cellWidget(r, 1)
@@ -1489,7 +1490,7 @@ class PurchaseForm(QDialog):
             return None  # No vendor selected, return None to indicate invalid state
         vendor_id = int(vendor_data)
         date_str = self.date.date().toString("yyyy-MM-dd")
-        total_amount = self._calc_subtotal()
+        total_amount = float(self._calc_totals().net_total)
 
         
         rows = []

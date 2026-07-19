@@ -50,6 +50,7 @@ class DashboardRepo:
         These numbers are independent aggregates, so we cross join aggregate
         CTEs instead of issuing separate queries from the UI thread.
         """
+        ap_summary = self.accounting.get_ap_summary(date_to)
         total_expenses = float(self.accounting.get_dashboard_expense_total(date_from, date_to))
         sql = """
             WITH
@@ -84,28 +85,6 @@ class DashboardRepo:
                     AND pr.cleared_date >= ? AND pr.cleared_date <= ?
                 ), 0.0) AS vendor_payments_cleared
             ),
-            receivables AS (
-              SELECT COALESCE(SUM(srt.remaining_due), 0.0) AS open_receivables
-              FROM sales s
-              JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-              WHERE s.doc_type = 'sale'
-                AND srt.remaining_due > 0.0000001
-            ),
-            payables AS (
-              SELECT COALESCE(SUM(remaining), 0.0) AS open_payables
-              FROM (
-                SELECT
-                  COALESCE(pdt.calculated_total_amount, p.total_amount)
-                  - (
-                      COALESCE(CAST(p.paid_amount AS REAL), 0.0)
-                      + COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
-                    )
-                  AS remaining
-                FROM purchases p
-                LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-              )
-              WHERE remaining > 0.0000001
-            ),
             stock AS (
               SELECT COUNT(*) AS low_stock_count
               FROM products p
@@ -118,15 +97,11 @@ class DashboardRepo:
               expenses.total_expenses,
               receipts.receipts_cleared,
               vendor_payments.vendor_payments_cleared,
-              receivables.open_receivables,
-              payables.open_payables,
               stock.low_stock_count
             FROM sales_cte
             CROSS JOIN expenses
             CROSS JOIN receipts
             CROSS JOIN vendor_payments
-            CROSS JOIN receivables
-            CROSS JOIN payables
             CROSS JOIN stock
         """
         row = self.conn.execute(
@@ -150,8 +125,8 @@ class DashboardRepo:
                 "total_expenses": 0.0,
                 "receipts_cleared": 0.0,
                 "vendor_payments_cleared": 0.0,
-                "open_receivables": 0.0,
-                "open_payables": 0.0,
+                "open_receivables": float(ap_summary.ar_total),
+                "open_payables": float(ap_summary.ap_total),
                 "low_stock_count": 0,
             }
         return {
@@ -160,8 +135,8 @@ class DashboardRepo:
             "total_expenses": _to_float(row["total_expenses"]),
             "receipts_cleared": _to_float(row["receipts_cleared"]),
             "vendor_payments_cleared": _to_float(row["vendor_payments_cleared"]),
-            "open_receivables": _to_float(row["open_receivables"]),
-            "open_payables": _to_float(row["open_payables"]),
+            "open_receivables": float(ap_summary.ar_total),
+            "open_payables": float(ap_summary.ap_total),
             "low_stock_count": int(row["low_stock_count"] or 0),
         }
 
@@ -280,14 +255,7 @@ class DashboardRepo:
         """
         Sum canonical net remaining amounts for real sales.
         """
-        sql = """
-            SELECT COALESCE(SUM(srt.remaining_due), 0.0) AS v
-            FROM sales s
-            JOIN sale_receivable_totals srt ON srt.sale_id = s.sale_id
-            WHERE s.doc_type = 'sale'
-              AND srt.remaining_due > 0.0000001
-        """
-        return _to_float(self._scalar(sql))
+        return float(self.accounting.get_ap_summary().ar_total)
 
     def open_payables(self) -> float:
         """
@@ -295,22 +263,7 @@ class DashboardRepo:
         Only positive remaining.
         (For purchases, paid_amount is already a cleared-only rollup via triggers.)
         """
-        sql = """
-            SELECT COALESCE(SUM(remaining), 0.0) AS v
-            FROM (
-              SELECT
-                COALESCE(pdt.calculated_total_amount, p.total_amount)
-                - (
-                    COALESCE(CAST(p.paid_amount AS REAL), 0.0)
-                    + COALESCE(CAST(p.advance_payment_applied AS REAL), 0.0)
-                  )
-                AS remaining
-              FROM purchases p
-              LEFT JOIN purchase_detailed_totals pdt ON pdt.purchase_id = p.purchase_id
-            )
-            WHERE remaining > 0.0000001
-        """
-        return _to_float(self._scalar(sql))
+        return float(self.accounting.get_ap_summary().ap_total)
 
     def low_stock_count(self) -> int:
         """

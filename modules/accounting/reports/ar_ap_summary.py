@@ -132,13 +132,8 @@ def get_ap_summary(
             ar_total += remaining
 
     ap_total = Decimal("0")
-    vendor_ids = [int(row["vendor_id"]) for row in repo.get_all_vendors()]
-    for header in repo.vendor_headers_as_of_batch(vendor_ids, as_of):
-        remaining = _decimal(header["total_amount"]) - _decimal(
-            header["paid_amount"]
-        ) - _decimal(header["advance_payment_applied"])
-        if remaining > 0:
-            ap_total += remaining
+    for row in get_vendor_aging(conn, as_of, repo=repo).rows:
+        ap_total += Decimal(str(row["total_due"]))
 
     return APSummary(as_of, ar_total, ap_total)
 

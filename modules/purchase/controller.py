@@ -858,50 +858,10 @@ class PurchaseController(BaseModule):
             self.accounting.get_purchase_invoice_financials(purchase_id).context
         )
         if "doc" not in enriched_data:
-            header_row = self.repo.get_header_with_vendor(purchase_id)
-            if header_row:
-                doc_data = dict(header_row)
-                items = []
-                for row in self.repo.list_items(purchase_id):
-                    item = dict(row)
-                    quantity = float(item.get("quantity") or 0.0)
-                    purchase_price = float(item.get("purchase_price") or 0.0)
-                    item["unit_price"] = purchase_price
-                    item["line_total"] = quantity * purchase_price
-                    item["uom_name"] = item.get("unit_name") or "N/A"
-                    item["idx"] = len(items) + 1
-                    items.append(item)
-                subtotal = sum(float(item["line_total"]) for item in items)
-                order_discount = float(doc_data.get("order_discount") or 0.0)
-                total = max(0.0, subtotal - order_discount)
-                paid_amount = float(doc_data.get("paid_amount") or 0.0)
-                advance = float(doc_data.get("advance_payment_applied") or 0.0)
-                total_amount = float(doc_data.get("total_amount") or total)
-                payments = [dict(row) for row in self.payments.list_payments(purchase_id)]
-                enriched_data = {
-                    "purchase_id": purchase_id,
-                    "doc": doc_data,
-                    "vendor": {
-                        "name": doc_data.get("vendor_name", ""),
-                        "contact_info": doc_data.get("vendor_contact_info", ""),
-                        "address": doc_data.get("vendor_address", ""),
-                    },
-                    "items": items,
-                    "totals": {
-                        "subtotal_before_order_discount": subtotal,
-                        "line_discount_total": 0,
-                        "order_discount": order_discount,
-                        "total": total,
-                    },
-                    "paid_amount": paid_amount,
-                    "advance_payment_applied": advance,
-                    "remaining": max(0.0, total_amount - paid_amount - advance),
-                    "payments": payments,
-                    "initial_payment": payments[0] if payments else None,
-                }
-        if "doc" in enriched_data:
-            from ...database.repositories.company_info_repo import get_invoice_company_context
-            enriched_data['company'] = get_invoice_company_context(self.conn)
+            raise ValueError(f"Unknown purchase ID: {purchase_id}")
+
+        from ...database.repositories.company_info_repo import get_invoice_company_context
+        enriched_data['company'] = get_invoice_company_context(self.conn)
         
         # Create Jinja2 template and render
         template = Template(template_content, autoescape=True)
@@ -1266,24 +1226,16 @@ class PurchaseController(BaseModule):
     def _list_open_purchases_for_vendor(self, vendor_id: int) -> list[dict]:
         out: list[dict] = []
         try:
-            cur = self.conn.execute(
-                "SELECT purchase_id, date, total_amount AS total, COALESCE(paid_amount,0) AS paid, COALESCE(advance_payment_applied,0) AS adv "
-                "FROM purchases WHERE vendor_id = ? ORDER BY date DESC, purchase_id DESC LIMIT 300;",
-                (vendor_id,),
-            )
-            for row in cur.fetchall():
-                pid = str(row["purchase_id"])
-                fin = self._fetch_purchase_financials(pid)
-                if fin["remaining_due"] > 1e-9:
-                    out.append(
-                        {
-                            "purchase_id": pid,
-                            "date": str(row["date"]),
-                            "total": float(fin["calculated_total_amount"]),
-                            "paid": float(fin["paid_amount"]),
-                            "remaining_due": float(fin["remaining_due"]),
-                        }
-                    )
+            for p in self.accounting.get_vendor_open_purchases(vendor_id):
+                out.append(
+                    {
+                        "purchase_id": str(p.purchase_id),
+                        "date": str(p.purchase_date or ""),
+                        "total": float(p.calculated_total_amount),
+                        "paid": float(p.paid_amount),
+                        "remaining_due": float(p.outstanding),
+                    }
+                )
         except Exception:
             return []
         return out

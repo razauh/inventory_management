@@ -256,7 +256,7 @@ class PaymentForm(QDialog):
             try:
                 remaining = AccountingService(
                     self.vendors.conn
-                ).get_purchase_outstanding(self.purchase_id)
+                ).get_purchase_remaining_due_header(self.purchase_id)
             except ValueError:
                 self.lbl_remaining.setText("Purchase not found")
             else:

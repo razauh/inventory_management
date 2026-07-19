@@ -92,12 +92,14 @@ def get_purchase_invoice_financials(
         item["idx"] = index
         items.append(item)
 
-    subtotal = sum(float(item.get("line_total") or 0.0) for item in items)
-    order_discount = float(doc.get("order_discount") or 0.0)
-    total = max(0.0, subtotal - order_discount)
+    totals = get_purchase_totals(conn, purchase_id)
+    subtotal = float(totals.subtotal_before_order_discount)
+    order_discount = float(totals.order_discount)
+    total = float(totals.net_total)
+
     paid_amount = float(doc.get("paid_amount") or 0.0)
-    total_amount = float(doc.get("total_amount") or total)
     advance = float(doc.get("advance_payment_applied") or 0.0)
+    outstanding = float(get_purchase_outstanding(conn, purchase_id, clamp=True).outstanding)
 
     payments = [
         dict(payment.__dict__)
@@ -116,7 +118,7 @@ def get_purchase_invoice_financials(
         },
         "paid_amount": paid_amount,
         "advance_payment_applied": advance,
-        "remaining": max(0.0, total_amount - paid_amount - advance),
+        "remaining": outstanding,
         "payments": payments,
         "initial_payment": payments[0] if payments else None,
     }
@@ -402,30 +404,47 @@ def _record_purchase_return_event(
             line["qty_return"]
         )
 
-    totals_row = conn.execute(
+    from ..dto import PurchaseReturnPreviewLine
+
+    order_discount_row = conn.execute(
+        "SELECT COALESCE(CAST(order_discount AS REAL), 0.0) AS order_discount FROM purchases WHERE purchase_id = ?",
+        (pid,)
+    ).fetchone()
+    order_discount = Decimal(str(order_discount_row["order_discount"] if order_discount_row else 0.0))
+
+    items_rows = conn.execute(
         """
         SELECT
-          COALESCE(SUM(
-            CAST(pi.quantity AS REAL) *
-            MAX(0.0, CAST(pi.purchase_price AS REAL) - CAST(pi.item_discount AS REAL))
-          ), 0.0) AS subtotal,
-          COALESCE(CAST(p.order_discount AS REAL), 0.0) AS order_discount
-        FROM purchases p
-        LEFT JOIN purchase_items pi ON pi.purchase_id = p.purchase_id
-        WHERE p.purchase_id = ?
-        GROUP BY p.purchase_id
+          pi.item_id,
+          CAST(pi.quantity AS REAL) AS quantity,
+          CAST(pi.purchase_price AS REAL) AS purchase_price,
+          CAST(pi.item_discount AS REAL) AS item_discount
+        FROM purchase_items pi
+        WHERE pi.purchase_id = ?
         """,
-        (pid,),
-    ).fetchone()
-    purchase_subtotal = float(totals_row["subtotal"] or 0.0) if totals_row else 0.0
-    order_discount = float(totals_row["order_discount"] or 0.0) if totals_row else 0.0
-    effective_order_discount = min(max(0.0, order_discount), purchase_subtotal)
-    return_value_factor = (
-        (purchase_subtotal - effective_order_discount) / purchase_subtotal
-        if purchase_subtotal > 0.0
-        else 0.0
+        (pid,)
+    ).fetchall()
+
+    preview_lines = []
+    for row in items_rows:
+        item_id = int(row["item_id"])
+        ret_qty = requested_per_item.get(item_id, 0.0)
+        preview_lines.append(
+            PurchaseReturnPreviewLine(
+                quantity=Decimal(str(row["quantity"])),
+                purchase_price=Decimal(str(row["purchase_price"])),
+                item_discount=Decimal(str(row["item_discount"])),
+                return_qty=Decimal(str(ret_qty))
+            )
+        )
+        
+    effect = preview_purchase_return_effect(
+        PurchaseReturnPreviewPayload(
+            lines=tuple(preview_lines),
+            order_discount=order_discount
+        )
     )
-    requested_return_value = 0.0
+    requested_return_value = float(effect.total_value)
     returnable_by_item = get_purchase_returnable_quantities(conn, pid)
 
     for item_id, batch_qty in requested_per_item.items():
@@ -452,12 +471,6 @@ def _record_purchase_return_event(
             raise ValueError(
                 f"Return qty exceeds remaining for item {item_id}: requested {batch_qty:g}, remaining {remaining:g}"
             )
-
-        requested_return_value += batch_qty * return_value_factor * max(
-            0.0,
-            float(row["purchase_price"] or 0.0)
-            - float(row["item_discount"] or 0.0),
-        )
 
         product_id = int(row["product_id"])
         uom_id = int(row["uom_id"])
